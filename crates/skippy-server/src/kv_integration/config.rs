@@ -1,5 +1,7 @@
 use std::{
     collections::BTreeSet,
+    fs,
+    path::Path,
     path::PathBuf,
     sync::{Arc, Mutex},
 };
@@ -92,15 +94,48 @@ fn kv_cache_inspection_path(config: &StageConfig) -> Option<PathBuf> {
     match config.load_mode {
         LoadMode::LayerPackage => {
             let package_dir = std::path::Path::new(path);
-            let metadata = package_dir.join("shared").join("metadata.gguf");
-            if metadata.is_file() {
-                Some(metadata)
-            } else {
-                Some(PathBuf::from(path))
-            }
+            layer_package_inspection_path(package_dir, config.layer_start, config.layer_end)
+                .or_else(|| layer_package_metadata_path(package_dir))
+                .or_else(|| Some(PathBuf::from(path)))
         }
         LoadMode::RuntimeSlice | LoadMode::ArtifactSlice => Some(PathBuf::from(path)),
     }
+}
+
+fn layer_package_inspection_path(
+    package_dir: &Path,
+    layer_start: u32,
+    layer_end: u32,
+) -> Option<PathBuf> {
+    let manifest_path = package_dir.join("model-package.json");
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(manifest_path).ok()?).ok()?;
+    let layers = manifest.get("layers")?.as_array()?;
+    let selected = layers
+        .iter()
+        .enumerate()
+        .find(|(index, layer)| {
+            let layer_index = layer
+                .get("layer_index")
+                .and_then(|value| value.as_u64())
+                .and_then(|value| u32::try_from(value).ok())
+                .unwrap_or(*index as u32);
+            layer_index >= layer_start && layer_index < layer_end
+        })
+        .or_else(|| layers.first().map(|layer| (0, layer)))?
+        .1;
+    let path = selected.get("path")?.as_str()?;
+    let path = PathBuf::from(path);
+    if path.is_absolute() {
+        return None;
+    }
+    let absolute = package_dir.join(path);
+    absolute.is_file().then_some(absolute)
+}
+
+fn layer_package_metadata_path(package_dir: &Path) -> Option<PathBuf> {
+    let metadata = package_dir.join("shared/metadata.gguf");
+    metadata.is_file().then_some(metadata)
 }
 
 fn tensor_name_requires_recurrent_state(name: &str) -> bool {
@@ -231,6 +266,62 @@ mod tests {
         assert!(!tensor_name_requires_recurrent_state(
             "blk.0.ffn_down.weight"
         ));
+    }
+
+    #[test]
+    fn layer_package_inspection_uses_representative_layer_file() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("shared")).unwrap();
+        fs::create_dir_all(dir.path().join("layers")).unwrap();
+        fs::write(dir.path().join("shared/metadata.gguf"), b"metadata").unwrap();
+        fs::write(dir.path().join("layers/00000.gguf"), b"layer0").unwrap();
+        fs::write(dir.path().join("layers/00001.gguf"), b"layer1").unwrap();
+        let manifest = serde_json::json!({
+            "layers": [
+                { "layer_index": 0, "path": "layers/00000.gguf" },
+                { "layer_index": 1, "path": "layers/00001.gguf" }
+            ]
+        });
+        fs::write(
+            dir.path().join("model-package.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let mut config = test_config("example/recurrent-package");
+        config.load_mode = LoadMode::LayerPackage;
+        config.model_path = Some(dir.path().to_string_lossy().to_string());
+        config.layer_start = 1;
+        config.layer_end = 2;
+
+        assert_eq!(
+            kv_cache_inspection_path(&config),
+            Some(dir.path().join("layers/00001.gguf"))
+        );
+    }
+
+    #[test]
+    fn layer_package_inspection_falls_back_to_shared_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("shared")).unwrap();
+        fs::write(dir.path().join("shared/metadata.gguf"), b"metadata").unwrap();
+        let manifest = serde_json::json!({
+            "layers": [
+                { "layer_index": 0, "path": "layers/missing.gguf" }
+            ]
+        });
+        fs::write(
+            dir.path().join("model-package.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let mut config = test_config("example/recurrent-package");
+        config.load_mode = LoadMode::LayerPackage;
+        config.model_path = Some(dir.path().to_string_lossy().to_string());
+
+        assert_eq!(
+            kv_cache_inspection_path(&config),
+            Some(dir.path().join("shared/metadata.gguf"))
+        );
     }
 
     #[test]

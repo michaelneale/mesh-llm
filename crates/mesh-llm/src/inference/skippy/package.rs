@@ -298,7 +298,8 @@ pub(crate) fn identity_from_layer_package(package_ref: &str) -> Result<SkippyPac
     let info = skippy_runtime::package::inspect_layer_package(&local_ref)
         .with_context(|| format!("inspect layer package {package_ref}"))?;
 
-    let activation_width = info.activation_width.unwrap_or(4096);
+    let activation_width =
+        required_layer_package_activation_width(package_ref, info.activation_width)?;
     let source_model_bytes = info
         .source_model_bytes
         .unwrap_or_else(|| info.layers.iter().map(|l| l.artifact_bytes).sum::<u64>());
@@ -306,8 +307,7 @@ pub(crate) fn identity_from_layer_package(package_ref: &str) -> Result<SkippyPac
     // For local paths inside an HF cache, convert to an exact hf:// ref so all
     // nodes resolve the same snapshot independently. HF cache dirs look like:
     // .../models--owner--name/snapshots/<hash>/
-    let canonical_package_ref =
-        hf_ref_from_cache_path(package_ref).unwrap_or_else(|| package_ref.to_string());
+    let canonical_package_ref = canonical_layer_package_ref(package_ref, &local_ref);
 
     Ok(SkippyPackageIdentity {
         package_ref: canonical_package_ref,
@@ -354,6 +354,23 @@ fn hf_ref_from_cache_path(path: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn canonical_layer_package_ref(package_ref: &str, local_ref: &str) -> String {
+    hf_ref_from_cache_path(local_ref)
+        .or_else(|| hf_ref_from_cache_path(package_ref))
+        .unwrap_or_else(|| package_ref.to_string())
+}
+
+fn required_layer_package_activation_width(
+    package_ref: &str,
+    activation_width: Option<u32>,
+) -> Result<u32> {
+    activation_width.with_context(|| {
+        format!(
+            "layer package {package_ref} is missing activation_width; rebuild the package manifest"
+        )
+    })
 }
 
 #[cfg(test)]
@@ -469,5 +486,26 @@ mod tests {
             hf_ref_from_cache_path(package_ref),
             Some("hf://meshllm/Qwen3-layers@abc123".to_string())
         );
+    }
+
+    #[test]
+    fn canonical_layer_package_ref_prefers_resolved_snapshot() {
+        let local_ref = "/cache/hub/models--meshllm--Qwen3-layers/snapshots/abc123";
+
+        assert_eq!(
+            canonical_layer_package_ref("hf://meshllm/Qwen3-layers@main", local_ref),
+            "hf://meshllm/Qwen3-layers@abc123"
+        );
+    }
+
+    #[test]
+    fn layer_package_activation_width_is_required() {
+        let error =
+            required_layer_package_activation_width("hf://meshllm/Qwen3-layers@abc123", None)
+                .unwrap_err()
+                .to_string();
+
+        assert!(error.contains("missing activation_width"));
+        assert!(error.contains("rebuild the package manifest"));
     }
 }

@@ -572,6 +572,8 @@ async fn load_split_runtime_generation(
     } else {
         LoadMode::RuntimeSlice
     };
+    let activation_width =
+        skippy_stage_activation_width(spec.package.activation_width, spec.model_ref)?;
 
     for stage in spec.generation.stages.iter().skip(1).rev() {
         let load = skippy::StageLoadRequest {
@@ -594,7 +596,7 @@ async fn load_split_runtime_generation(
             projector_path: spec.projector_path.clone(),
             selected_device: None,
             bind_addr: "127.0.0.1:0".to_string(),
-            activation_width: spec.package.activation_width as i32,
+            activation_width,
             wire_dtype: family_policy.activation_wire_dtype,
             ctx_size: spec.ctx_size,
             lane_count: spec.slots as u32,
@@ -698,7 +700,6 @@ async fn load_split_runtime_generation(
         spec.pinned_gpu,
         load_mode.clone(),
     );
-    let activation_width = spec.package.activation_width as i32;
     let slots = spec.slots;
     let node_for_hook = spec.node.clone();
     let handle = tokio::task::spawn_blocking(move || {
@@ -1779,6 +1780,14 @@ pub(super) fn local_process_snapshot(
     }
 }
 
+fn skippy_stage_activation_width(activation_width: u32, model_ref: &str) -> Result<i32> {
+    i32::try_from(activation_width).with_context(|| {
+        format!(
+            "activation width {activation_width} for {model_ref} exceeds skippy stage ABI limit"
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1999,6 +2008,16 @@ mod tests {
             let path = stage_load_model_path(mode, "hf://meshllm/demo-package", &model_path);
             assert_eq!(path, "/models/runtime-slice.gguf");
         }
+    }
+
+    #[test]
+    fn skippy_stage_activation_width_rejects_i32_overflow() {
+        let error = skippy_stage_activation_width(i32::MAX as u32 + 1, "overflow-model")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("exceeds skippy stage ABI limit"));
+        assert!(error.contains("overflow-model"));
     }
 
     #[test]

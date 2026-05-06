@@ -275,23 +275,10 @@ pub fn inspect_layer_package(package_ref: &str) -> Result<LayerPackageInfo> {
     let manifest_sha256 = sha256_bytes(&manifest_contents);
     let manifest = load_manifest(&manifest_path, &manifest_contents)?;
     validate_manifest_identity(&manifest)?;
-    // If the manifest doesn't specify activation_width, infer it from the
-    // first layer's attn_norm.weight tensor (a 1-D tensor of shape [n_embd]).
-    let activation_width = manifest.activation_width.or_else(|| {
-        manifest.layers.first().and_then(|layer| {
-            let layer_path = package_dir.join(&layer.path);
-            let info = crate::ModelInfo::open(&layer_path).ok()?;
-            let count = info.tensor_count().ok()?;
-            for i in 0..count {
-                if let Ok(t) = info.tensor_at(i) {
-                    if t.name.contains("attn_norm.weight") {
-                        return Some(t.element_count as u32);
-                    }
-                }
-            }
-            None
-        })
-    });
+    let activation_width = match manifest.activation_width {
+        Some(width) => Some(width),
+        None => infer_activation_width_from_layers(&package_dir, &manifest.layers)?,
+    };
 
     Ok(LayerPackageInfo {
         package_dir,
@@ -325,6 +312,51 @@ pub fn inspect_layer_package(package_ref: &str) -> Result<LayerPackageInfo> {
                 artifact_bytes: layer.artifact_bytes,
             })
             .collect(),
+    })
+}
+
+fn infer_activation_width_from_layers(
+    package_dir: &Path,
+    layers: &[PackageLayer],
+) -> Result<Option<u32>> {
+    let Some(layer) = layers.first() else {
+        return Ok(None);
+    };
+    let layer_path = package_dir.join(&layer.path);
+    let info = match crate::ModelInfo::open(&layer_path) {
+        Ok(info) => info,
+        Err(_) => return Ok(None),
+    };
+    let count = match info.tensor_count() {
+        Ok(count) => count,
+        Err(_) => return Ok(None),
+    };
+    for i in 0..count {
+        let Ok(tensor) = info.tensor_at(i) else {
+            continue;
+        };
+        if tensor.name.contains("attn_norm.weight") {
+            let width = activation_width_from_tensor_count(
+                &tensor.name,
+                &layer_path,
+                tensor.element_count,
+            )?;
+            return Ok(Some(width));
+        }
+    }
+    Ok(None)
+}
+
+fn activation_width_from_tensor_count(
+    name: &str,
+    layer_path: &Path,
+    element_count: u64,
+) -> Result<u32> {
+    u32::try_from(element_count).with_context(|| {
+        format!(
+            "activation width tensor {name} in {} has {element_count} elements, which exceeds u32::MAX",
+            layer_path.display()
+        )
     })
 }
 
@@ -812,5 +844,20 @@ mod tests {
         assert_eq!(info.activation_width, Some(4096));
         assert_eq!(info.source_model_bytes, Some(123));
         assert_eq!(info.manifest_sha256.len(), 64);
+    }
+
+    #[test]
+    fn activation_width_inference_rejects_u32_overflow() {
+        let path = Path::new("/package/layers/00000.gguf");
+
+        let error = activation_width_from_tensor_count(
+            "blk.0.attn_norm.weight",
+            path,
+            u64::from(u32::MAX) + 1,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("exceeds u32::MAX"));
     }
 }
