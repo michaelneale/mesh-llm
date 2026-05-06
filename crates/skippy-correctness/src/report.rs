@@ -124,6 +124,8 @@ pub struct StateHandoffReport {
     pub roundtrip_state_matches: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub restored_output_matches: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suffix_prefill_matches: Option<bool>,
     pub cache_hit_matches: bool,
     pub stage_index: u32,
     pub layer_start: u32,

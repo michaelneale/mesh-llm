@@ -886,12 +886,19 @@ index 3002b720..56ab40d7 100644
 +        return SKIPPY_STATUS_UNSUPPORTED;
 +    }
 +
++    std::vector<uint8_t> remapped(input_bytes);
++    std::memcpy(remapped.data(), input, input_bytes);
++    if (input_bytes >= sizeof(uint32_t) + sizeof(session->seq_id)) {
++        std::memcpy(remapped.data() + sizeof(uint32_t), &session->seq_id, sizeof(session->seq_id));
++    }
++
 +    session->ctx->synchronize();
-+    const size_t read = llama_state_seq_set_data(
++    const size_t read = llama_state_seq_set_data_ext(
 +            session->ctx,
-+            static_cast<const uint8_t *>(input),
-+            input_bytes,
-+            session->seq_id);
++            remapped.data(),
++            remapped.size(),
++            session->seq_id,
++            LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
 +    if (read != input_bytes) {
 +        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to import recurrent state");
 +        return SKIPPY_STATUS_RUNTIME_ERROR;

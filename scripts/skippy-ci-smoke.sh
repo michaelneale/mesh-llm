@@ -18,7 +18,7 @@ RECURRENT_MODEL_SELECTOR="${RECURRENT_MODEL_SELECTOR:-Q4_K_M}"
 RECURRENT_MODEL_ID="${RECURRENT_MODEL_ID:-${RECURRENT_MODEL_REPO}:${RECURRENT_MODEL_SELECTOR}}"
 RECURRENT_MODEL_PATH="${RECURRENT_MODEL_PATH:-}"
 
-CTX_SIZE="${CTX_SIZE:-256}"
+CTX_SIZE="${CTX_SIZE:-384}"
 PROMPT_CTX_SIZE="${PROMPT_CTX_SIZE:-1536}"
 STATE_PREFIX_TOKENS="${STATE_PREFIX_TOKENS:-128}"
 PROMPT_PREFILL_CHUNK_SIZE="${PROMPT_PREFILL_CHUNK_SIZE:-128}"
@@ -269,7 +269,7 @@ LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" \
     --borrow-resident-hits \
     --report-out "$REPORT_DIR/dense-resident-kv.json"
 assert_json "$REPORT_DIR/dense-resident-kv.json" \
-  '.matches == true and .cache_hit_matches == true and .state_payload_kind == "resident-kv" and .borrowed_resident_hits == true and .cache_hit_repeats == 2 and ((.cache_storage_bytes // 0) > 0 or (.resident_state_bytes // 0) > 0)'
+  '.matches == true and .cache_hit_matches == true and .suffix_prefill_matches == true and .state_payload_kind == "resident-kv" and .borrowed_resident_hits == true and .cache_hit_repeats == 2 and ((.cache_storage_bytes // 0) > 0 or (.resident_state_bytes // 0) > 0)'
 
 echo "smoke: recurrent KvRecurrent cache hit correctness"
 LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" \
@@ -287,7 +287,7 @@ LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" \
     --cache-hit-repeats 2 \
     --report-out "$REPORT_DIR/recurrent-kv-recurrent.json"
 assert_json "$REPORT_DIR/recurrent-kv-recurrent.json" \
-  '.matches == true and .cache_hit_matches == true and .state_payload_kind == "kv-recurrent" and .cache_hit_repeats == 2 and .state_bytes > 0 and .payload_digest.recurrent_bytes > 0 and .payload_digest.kv_bytes > 0'
+  '.matches == true and .cache_hit_matches == true and .suffix_prefill_matches == true and .state_payload_kind == "kv-recurrent" and .cache_hit_repeats == 2 and .state_bytes > 0 and .payload_digest.recurrent_bytes > 0 and .payload_digest.kv_bytes > 0'
 
 PROMPT_PORT="$(pick_port)"
 PROMPT_CONFIG="$WORK_DIR/prompt-stage.json"

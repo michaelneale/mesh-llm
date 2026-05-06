@@ -174,6 +174,7 @@ struct BinaryStateHandoffResult {
     predicted_token_matches: bool,
     roundtrip_state_matches: bool,
     restored_output_matches: Option<bool>,
+    suffix_prefill_matches: Option<bool>,
     cache_hit_matches: bool,
     stage_models: Vec<StageModelReport>,
 }
@@ -489,6 +490,7 @@ pub fn state_handoff(args: StateHandoffArgs) -> Result<()> {
         predicted_token_matches: handoff.predicted_token_matches,
         roundtrip_state_matches: handoff.roundtrip_state_matches,
         restored_output_matches: handoff.restored_output_matches,
+        suffix_prefill_matches: handoff.suffix_prefill_matches,
         cache_hit_matches: handoff.cache_hit_matches,
         stage_index: handoff.stage_index,
         layer_start: handoff.layer_start,
@@ -1369,6 +1371,7 @@ fn run_binary_state_handoff(args: BinaryStateHandoffConfig) -> Result<BinaryStat
         predicted_token_matches,
         roundtrip_state_matches,
         restored_output_matches: None,
+        suffix_prefill_matches: None,
         cache_hit_matches,
         stage_models,
     })
@@ -1498,55 +1501,34 @@ fn run_local_state_handoff(
         );
     }
 
-    let (
-        state_payload,
-        resident_state_bytes,
-        source_predicted_token,
-        source_output,
-        source_prefill_ms,
-        source_export_ms,
-        source_decode_ms,
-    ) = {
-        let mut source = model
-            .create_session()
-            .context("failed to create local state handoff source session")?;
-        let source_prefill_started = Instant::now();
-        if prefill_input.is_some() {
-            source
-                .prefill_chunk_frame(&prefix, prefill_input.as_ref(), 0)
-                .context("local state handoff source prefill failed")?;
-        } else {
-            source
-                .prefill_chunked(&prefix)
-                .context("local state handoff source prefill failed")?;
-        }
-        let source_prefill_ms = elapsed_ms(source_prefill_started);
+    let mut source = model
+        .create_session()
+        .context("failed to create local state handoff source session")?;
+    let source_prefill_started = Instant::now();
+    if prefill_input.is_some() {
+        source
+            .prefill_chunk_frame(&prefix, prefill_input.as_ref(), 0)
+            .context("local state handoff source prefill failed")?;
+    } else {
+        source
+            .prefill_chunked(&prefix)
+            .context("local state handoff source prefill failed")?;
+    }
+    let source_prefill_ms = elapsed_ms(source_prefill_started);
 
-        let source_export_started = Instant::now();
-        let state_payload = export_local_state_payload(&mut source, args, prefix.len() as u64)
-            .context("local state handoff source export failed")?;
-        let source_export_ms = elapsed_ms(source_export_started);
+    let source_export_started = Instant::now();
+    let state_payload = export_local_state_payload(&mut source, args, prefix.len() as u64)
+        .context("local state handoff source export failed")?;
+    let source_export_ms = elapsed_ms(source_export_started);
 
-        let source_decode_started = Instant::now();
-        let (source_predicted_token, source_output) = source
-            .decode_step_frame(continuation, decode_input.as_ref(), 0)
-            .context("local state handoff source decode failed")?;
-        let source_decode_ms = elapsed_ms(source_decode_started);
+    let source_decode_started = Instant::now();
+    let (source_predicted_token, source_output) = source
+        .decode_step_frame(continuation, decode_input.as_ref(), 0)
+        .context("local state handoff source decode failed")?;
+    let source_decode_ms = elapsed_ms(source_decode_started);
 
-        let resident_state_bytes =
-            measure_resident_state_bytes(&mut source, args, prefix.len() as u64)
-                .context("local state handoff resident KV size measurement failed")?;
-
-        (
-            state_payload,
-            resident_state_bytes,
-            source_predicted_token,
-            source_output,
-            source_prefill_ms,
-            source_export_ms,
-            source_decode_ms,
-        )
-    };
+    let resident_state_bytes = measure_resident_state_bytes(&mut source, args, prefix.len() as u64)
+        .context("local state handoff resident KV size measurement failed")?;
 
     let (
         roundtrip_state_payload,
@@ -1616,6 +1598,20 @@ fn run_local_state_handoff(
         cache_hit_matches &=
             predicted == source_predicted_token && output.payload == source_output.payload;
     }
+    let mut suffix_restored =
+        create_local_cache_hit_session(&model, args, &state_payload, prefix.len() as u64, &prefix)
+            .context("local state handoff suffix-prefill restore import failed")?;
+    drop(source);
+    let suffix_prefill_matches = run_local_suffix_prefill_remap_check(
+        &model,
+        &mut suffix_restored,
+        &prefix,
+        continuation,
+        prefill_input.as_ref(),
+        decode_input.as_ref(),
+        include_output,
+    )
+    .context("local state handoff suffix-prefill remap check failed")?;
 
     let mut stage_models = Vec::new();
     if let Some(input_resolution) = input_resolution {
@@ -1659,10 +1655,14 @@ fn run_local_state_handoff(
         restore_decode_ms,
         cache_hit_import_ms,
         cache_hit_decode_ms,
-        matches: predicted_token_matches && restored_output_matches && cache_hit_matches,
+        matches: predicted_token_matches
+            && restored_output_matches
+            && suffix_prefill_matches
+            && cache_hit_matches,
         predicted_token_matches,
         roundtrip_state_matches,
         restored_output_matches: Some(restored_output_matches),
+        suffix_prefill_matches: Some(suffix_prefill_matches),
         cache_hit_matches,
         stage_models,
     })
@@ -1713,7 +1713,6 @@ fn run_local_resident_slot_handoff(
         .decode_step_frame(continuation, decode_input.as_ref(), 0)
         .context("local resident slot source decode failed")?;
     let source_decode_ms = elapsed_ms(source_decode_started);
-    drop(slot);
 
     let restore_import_started = Instant::now();
     let mut restore = model
@@ -1792,6 +1791,20 @@ fn run_local_resident_slot_handoff(
         cache_hit_matches &=
             predicted == source_predicted_token && output.payload == source_output.payload;
     }
+    let mut suffix_restored =
+        create_local_cache_hit_session(&model, args, &state_payload, prefix.len() as u64, &prefix)
+            .context("local resident slot suffix-prefill restore import failed")?;
+    drop(slot);
+    let suffix_prefill_matches = run_local_suffix_prefill_remap_check(
+        &model,
+        &mut suffix_restored,
+        &prefix,
+        continuation,
+        prefill_input.as_ref(),
+        decode_input.as_ref(),
+        include_output,
+    )
+    .context("local resident slot suffix-prefill remap check failed")?;
 
     let mut stage_models = Vec::new();
     if let Some(input_resolution) = input_resolution {
@@ -1830,13 +1843,69 @@ fn run_local_resident_slot_handoff(
         restore_decode_ms,
         cache_hit_import_ms,
         cache_hit_decode_ms,
-        matches: predicted_token_matches && restored_output_matches && cache_hit_matches,
+        matches: predicted_token_matches
+            && restored_output_matches
+            && suffix_prefill_matches
+            && cache_hit_matches,
         predicted_token_matches,
         roundtrip_state_matches: true,
         restored_output_matches: Some(restored_output_matches),
+        suffix_prefill_matches: Some(suffix_prefill_matches),
         cache_hit_matches,
         stage_models,
     })
+}
+
+fn run_local_suffix_prefill_remap_check(
+    model: &StageModel,
+    restored: &mut StageSession,
+    prefix: &[i32],
+    suffix_token: i32,
+    prefill_input: Option<&ActivationFrame>,
+    decode_input: Option<&ActivationFrame>,
+    include_output: bool,
+) -> Result<bool> {
+    let mut source = model
+        .create_session()
+        .context("failed to create suffix-prefill source session")?;
+    if prefill_input.is_some() {
+        source
+            .prefill_chunk_frame(prefix, prefill_input, 0)
+            .context("suffix-prefill source prefix prefill failed")?;
+    } else {
+        source
+            .prefill_chunked(prefix)
+            .context("suffix-prefill source prefix prefill failed")?;
+    }
+    let (source_predicted, source_frame) = if include_output {
+        let (predicted, frame) = source
+            .verify_tokens_frame(&[suffix_token], decode_input, 0)
+            .context("suffix-prefill source suffix verify failed")?;
+        (Some(predicted), frame)
+    } else {
+        (
+            None,
+            source
+                .prefill_chunk_frame(&[suffix_token], decode_input, 0)
+                .context("suffix-prefill source suffix prefill failed")?,
+        )
+    };
+
+    let (restored_predicted, restored_frame) = if include_output {
+        let (predicted, frame) = restored
+            .verify_tokens_frame(&[suffix_token], decode_input, 0)
+            .context("suffix-prefill restored suffix verify failed")?;
+        (Some(predicted), frame)
+    } else {
+        (
+            None,
+            restored
+                .prefill_chunk_frame(&[suffix_token], decode_input, 0)
+                .context("suffix-prefill restored suffix prefill failed")?,
+        )
+    };
+
+    Ok(source_frame.payload == restored_frame.payload && source_predicted == restored_predicted)
 }
 
 fn create_local_cache_hit_session(
