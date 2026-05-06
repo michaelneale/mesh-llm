@@ -1780,7 +1780,7 @@ pub(crate) async fn run() -> Result<()> {
         write_stderr_newline();
         return Ok(());
     }
-    let mut startup_models = resolve_startup_models(&startup_specs).await?;
+    let mut startup_models = resolve_startup_models(&startup_specs, cli.split).await?;
     let bin_dir = match &cli.bin_dir {
         Some(d) => d.clone(),
         None => detect_bin_dir()?,
@@ -1908,18 +1908,55 @@ fn build_startup_model_specs(
     Ok(specs)
 }
 
-async fn resolve_startup_models(specs: &[StartupModelSpec]) -> Result<Vec<StartupModelPlan>> {
+async fn resolve_startup_models(
+    specs: &[StartupModelSpec],
+    split: bool,
+) -> Result<Vec<StartupModelPlan>> {
     let mut plans = Vec::with_capacity(specs.len());
     for spec in specs {
-        let resolved_path = resolve_model(&spec.model_ref).await?;
+        let requested_ref = spec.model_ref.to_string_lossy();
+
+        // In split mode, check the remote catalog for a pre-split layer package
+        // before downloading the full monolithic GGUF. This avoids downloading
+        // hundreds of GB that won't be used — each node only needs its layers.
+        let resolved_path = if split {
+            let requested_ref_for_catalog = requested_ref.to_string();
+            let model_ref_for_catalog = spec.model_ref.clone();
+            if let Some(package_ref) = tokio::task::spawn_blocking(move || {
+                resolve_split_layer_package(&requested_ref_for_catalog, &model_ref_for_catalog)
+            })
+            .await
+            .context("join resolve split layer package task")?
+            {
+                PathBuf::from(package_ref)
+            } else {
+                resolve_model(&spec.model_ref).await?
+            }
+        } else {
+            resolve_model(&spec.model_ref).await?
+        };
+
         let mmproj_path = match spec.mmproj_ref.as_ref() {
             Some(mmproj) => Some(resolve_model(mmproj).await?),
             None => None,
         };
-        let requested_ref = spec.model_ref.to_string_lossy();
         let declared_ref = models::find_catalog_model_exact(&requested_ref)
             .map(models::catalog_model_ref)
-            .unwrap_or_else(|| models::model_ref_for_path(&resolved_path));
+            .unwrap_or_else(|| {
+                // For hf:// layer package refs, use the requested ref as the model ref
+                // rather than trying to parse the hf:// URL as a filesystem path.
+                let path_str = resolved_path.to_string_lossy();
+                if path_str.starts_with("hf://") {
+                    requested_ref.to_string()
+                } else if resolved_path.join("model-package.json").is_file() {
+                    // Layer package directory: read the canonical model_id from the manifest
+                    // so that all nodes agree on the model name regardless of local path.
+                    read_layer_package_model_id(&resolved_path)
+                        .unwrap_or_else(|| models::model_ref_for_path(&resolved_path))
+                } else {
+                    models::model_ref_for_path(&resolved_path)
+                }
+            });
         plans.push(StartupModelPlan {
             declared_ref,
             resolved_path,
@@ -1936,6 +1973,39 @@ async fn resolve_startup_models(specs: &[StartupModelSpec]) -> Result<Vec<Startu
         });
     }
     Ok(plans)
+}
+
+/// Read the `model_id` field from a layer package's `model-package.json`.
+fn read_layer_package_model_id(package_dir: &Path) -> Option<String> {
+    let manifest_path = package_dir.join("model-package.json");
+    let contents = std::fs::read(&manifest_path).ok()?;
+    let manifest: serde_json::Value = serde_json::from_slice(&contents).ok()?;
+    manifest
+        .get("model_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+/// Check the remote catalog for a layer package matching the model.
+/// Returns `Some("hf://meshllm/...")` or a local package dir if found, None otherwise.
+fn resolve_split_layer_package(model_query: &str, model_path: &Path) -> Option<String> {
+    // Already an hf:// ref — use as-is
+    let path_str = model_path.to_string_lossy();
+    if path_str.starts_with("hf://") {
+        return Some(path_str.to_string());
+    }
+
+    // Local directory with model-package.json — already a layer package on disk
+    if model_path.join("model-package.json").is_file() {
+        return Some(path_str.to_string());
+    }
+
+    // Try remote catalog
+    if let Err(err) = models::remote_catalog::ensure_catalog() {
+        tracing::debug!("remote catalog unavailable: {err:#}");
+        return None;
+    }
+    models::remote_catalog::find_layer_package(model_query)
 }
 
 fn preflight_config_owned_startup_models(
@@ -4902,6 +4972,45 @@ mod tests {
         }
     }
 
+    fn remote_catalog_layer_entry(
+        variant_name: &str,
+        curated_name: &str,
+        source_repo: &str,
+        package_repo: &str,
+    ) -> models::remote_catalog::CatalogEntry {
+        let mut variants = std::collections::HashMap::new();
+        variants.insert(
+            variant_name.to_string(),
+            models::remote_catalog::CatalogVariant {
+                source: models::remote_catalog::CatalogSource {
+                    repo: source_repo.to_string(),
+                    revision: Some("main".to_string()),
+                    file: Some(format!("{variant_name}.gguf")),
+                },
+                curated: models::remote_catalog::CatalogCurated {
+                    name: curated_name.to_string(),
+                    size: None,
+                    description: None,
+                    draft: None,
+                    moe: None,
+                    extra_files: Vec::new(),
+                    mmproj: None,
+                },
+                packages: vec![models::remote_catalog::CatalogPackage {
+                    package_type: "layer-package".to_string(),
+                    repo: package_repo.to_string(),
+                    layer_count: Some(12),
+                    total_bytes: Some(42),
+                }],
+            },
+        );
+        models::remote_catalog::CatalogEntry {
+            schema_version: 1,
+            source_repo: source_repo.to_string(),
+            variants,
+        }
+    }
+
     fn startup_model_plan(model_ref: &str) -> StartupModelPlan {
         StartupModelPlan {
             declared_ref: model_ref.to_string(),
@@ -4917,6 +5026,28 @@ mod tests {
             n_ubatch: None,
             flash_attention: FlashAttentionType::Auto,
         }
+    }
+
+    #[test]
+    #[serial]
+    fn split_layer_package_resolution_checks_remote_catalog_for_model_name() {
+        let _catalog_guard =
+            models::remote_catalog::set_catalog_entries_for_test(vec![remote_catalog_layer_entry(
+                "RemoteSplitOnlyModel-Q4_K_M",
+                "Remote Split Only Model Q4_K_M",
+                "mesh-test/remote-split-only-model",
+                "meshllm/remote-split-only-model-layers",
+            )]);
+
+        let resolved = resolve_split_layer_package(
+            "Remote Split Only Model",
+            Path::new("Remote Split Only Model"),
+        );
+
+        assert_eq!(
+            resolved,
+            Some("hf://meshllm/remote-split-only-model-layers".to_string())
+        );
     }
 
     #[test]

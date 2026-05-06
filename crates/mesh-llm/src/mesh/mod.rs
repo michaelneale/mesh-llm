@@ -1686,8 +1686,8 @@ impl Node {
         request: &crate::inference::skippy::StageControlRequest,
     ) -> std::time::Duration {
         match request {
-            crate::inference::skippy::StageControlRequest::Load(_) => {
-                std::time::Duration::from_secs(180)
+            crate::inference::skippy::StageControlRequest::Load(load) => {
+                crate::inference::skippy::stage_load_timeout(load)
             }
             crate::inference::skippy::StageControlRequest::Stop(_)
             | crate::inference::skippy::StageControlRequest::Status(_)
@@ -4999,6 +4999,7 @@ fn stage_load_to_proto(
         layer_start: load.layer_start,
         layer_end: load.layer_end,
         model_path: load.model_path,
+        source_model_bytes: load.source_model_bytes,
         projector_path: load.projector_path,
         selected_device: load.selected_device.map(stage_device_to_proto),
         bind_addr: load.bind_addr,
@@ -5138,6 +5139,7 @@ fn stage_load_from_proto(
         layer_start: load.layer_start,
         layer_end: load.layer_end,
         model_path: load.model_path,
+        source_model_bytes: load.source_model_bytes,
         projector_path: load.projector_path,
         selected_device: load
             .selected_device
@@ -5340,7 +5342,7 @@ fn stage_status_from_load(
         manifest_sha256: Some(load.manifest_sha256.clone()),
         source_model_path: load.model_path.clone(),
         source_model_sha256: None,
-        source_model_bytes: None,
+        source_model_bytes: load.source_model_bytes,
         materialized_path: None,
         materialized_pinned: false,
         projector_path: load.projector_path.clone(),

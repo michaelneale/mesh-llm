@@ -31,6 +31,40 @@ fn quic_bind_addr_keeps_endpoint_default_on_non_windows() {
     assert_eq!(quic_bind_addr(None), None);
 }
 
+fn stage_load_request() -> crate::inference::skippy::StageLoadRequest {
+    crate::inference::skippy::StageLoadRequest {
+        topology_id: "topology-a".to_string(),
+        run_id: "run-a".to_string(),
+        model_id: "model-a".to_string(),
+        backend: "skippy".to_string(),
+        package_ref: "hf://meshllm/demo-package".to_string(),
+        manifest_sha256: "manifest".to_string(),
+        stage_id: "stage-1".to_string(),
+        stage_index: 1,
+        layer_start: 4,
+        layer_end: 8,
+        model_path: Some("/models/demo.gguf".to_string()),
+        source_model_bytes: Some(123_456_789),
+        projector_path: None,
+        selected_device: None,
+        bind_addr: "127.0.0.1:0".to_string(),
+        activation_width: 4096,
+        wire_dtype: crate::inference::skippy::StageWireDType::F16,
+        ctx_size: 8192,
+        lane_count: 2,
+        n_batch: Some(1024),
+        n_ubatch: Some(512),
+        n_gpu_layers: -1,
+        cache_type_k: "f16".to_string(),
+        cache_type_v: "q8_0".to_string(),
+        flash_attn_type: skippy_protocol::FlashAttentionType::Auto,
+        shutdown_generation: 3,
+        load_mode: skippy_protocol::LoadMode::RuntimeSlice,
+        upstream: None,
+        downstream: None,
+    }
+}
+
 async fn make_test_node(role: super::NodeRole) -> Result<Node> {
     use iroh::endpoint::QuicTransportConfig;
 
@@ -150,6 +184,37 @@ async fn local_request_metrics_snapshot_tracks_accepted_and_completed_requests()
     assert_eq!(snapshot.accepted_request_counts.len(), 24 * 60 * 60);
     assert_eq!(snapshot.accepted_request_counts.iter().sum::<u64>(), 1);
     assert_eq!(snapshot.latency_samples_ms.len(), 1);
+}
+
+#[test]
+fn stage_load_proto_roundtrip_preserves_source_model_bytes() {
+    let load = stage_load_request();
+    let proto = stage_load_to_proto(load.clone());
+    assert_eq!(proto.source_model_bytes, Some(123_456_789));
+
+    let decoded = stage_load_from_proto(proto).unwrap();
+    assert_eq!(decoded.source_model_bytes, Some(123_456_789));
+    assert_eq!(decoded.model_path.as_deref(), Some("/models/demo.gguf"));
+}
+
+#[test]
+fn stage_control_request_timeout_uses_stage_load_floor() {
+    let mut load = stage_load_request();
+    load.source_model_bytes = None;
+    assert_eq!(
+        Node::stage_control_request_timeout(&crate::inference::skippy::StageControlRequest::Load(
+            load.clone()
+        )),
+        std::time::Duration::from_secs(900)
+    );
+
+    load.source_model_bytes = Some(170 * 1024 * 1024 * 1024);
+    assert_eq!(
+        Node::stage_control_request_timeout(&crate::inference::skippy::StageControlRequest::Load(
+            load
+        )),
+        std::time::Duration::from_secs(1360)
+    );
 }
 
 #[test]
@@ -4756,6 +4821,7 @@ fn test_stage_load_request() -> crate::inference::skippy::StageLoadRequest {
         layer_start: 12,
         layer_end: 24,
         model_path: Some("/model.gguf".to_string()),
+        source_model_bytes: Some(123_456_789),
         projector_path: None,
         selected_device: None,
         bind_addr: "127.0.0.1:0".to_string(),

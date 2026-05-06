@@ -34,18 +34,20 @@ pub(crate) use family_policy::{family_policy_for_model_path, family_policy_for_s
 pub(crate) use hooks::MeshAutoHookPolicy;
 pub(crate) use kv_cache::KvCachePolicy;
 pub(crate) use materialization::{
-    configure_materialized_stage_cache, materialize_stage_config, materialize_stage_load,
+    configure_materialized_stage_cache, is_layer_package_ref, materialize_stage_config,
     materialized_stage_cache_dir, materialized_stages_for_sources,
     prune_unpinned_materialized_stages, remove_materialized_stages_for_sources,
 };
-pub(crate) use package::{synthetic_direct_gguf_package, SkippyPackageIdentity};
+pub(crate) use package::{
+    identity_from_layer_package, synthetic_direct_gguf_package, SkippyPackageIdentity,
+};
 pub(crate) use stage::{
-    spawn_stage_control_loop, LayerRange, SourceModelKind, StageCancelPrepareRequest,
-    StageControlCommand, StageControlRequest, StageControlResponse, StageInventoryRequest,
-    StageLayerInventory, StageLoadRequest, StagePeerDescriptor, StagePreparationState,
-    StagePreparationStatus, StagePrepareAcceptedResponse, StagePrepareRequest, StageReadyResponse,
-    StageRuntimeState, StageStatusAck, StageStatusFilter, StageStatusSnapshot, StageStopRequest,
-    StageWireDType,
+    spawn_stage_control_loop, stage_load_timeout, LayerRange, SourceModelKind,
+    StageCancelPrepareRequest, StageControlCommand, StageControlRequest, StageControlResponse,
+    StageInventoryRequest, StageLayerInventory, StageLoadRequest, StagePeerDescriptor,
+    StagePreparationState, StagePreparationStatus, StagePrepareAcceptedResponse,
+    StagePrepareRequest, StageReadyResponse, StageRuntimeState, StageStatusAck, StageStatusFilter,
+    StageStatusSnapshot, StageStopRequest, StageWireDType,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -304,16 +306,30 @@ impl SkippyModelHandle {
         hook_policy: Option<Arc<dyn OpenAiHookPolicy>>,
     ) -> Result<Self> {
         configure_materialized_stage_cache();
-        let materialized = materialize_stage_config(&config)?;
-        let materialized_pin = materialized.map(|(artifact, pin)| {
-            config.manifest_sha256 = Some(artifact.manifest_sha256);
-            config.source_model_path = Some(artifact.source_model_path);
-            config.source_model_sha256 = Some(artifact.source_model_sha256);
-            config.source_model_bytes = artifact.source_model_bytes;
-            config.materialized_path = Some(artifact.path.to_string_lossy().to_string());
-            config.materialized_pinned = true;
-            pin
-        });
+        let materialized_pin = if config.load_mode == LoadMode::LayerPackage {
+            if let Some(model_path) = config.model_path.as_deref() {
+                let local_ref = materialization::resolve_hf_package_to_local(
+                    model_path,
+                    config.layer_start,
+                    config.layer_end,
+                    config.layer_start == 0,
+                    config.downstream.is_none(),
+                )?;
+                config.model_path = Some(local_ref);
+            }
+            None
+        } else {
+            let materialized = materialize_stage_config(&config)?;
+            materialized.map(|(artifact, pin)| {
+                config.manifest_sha256 = Some(artifact.manifest_sha256);
+                config.source_model_path = Some(artifact.source_model_path);
+                config.source_model_sha256 = Some(artifact.source_model_sha256);
+                config.source_model_bytes = artifact.source_model_bytes;
+                config.materialized_path = Some(artifact.path.to_string_lossy().to_string());
+                config.materialized_pinned = true;
+                pin
+            })
+        };
         let family_policy = family_policy_for_stage_config(&config);
         config.kv_cache = family_policy.stage_kv_cache_config_for_stage(&config);
         let runtime = SkippyRuntimeHandle::load(EmbeddedRuntimeOptions {

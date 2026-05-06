@@ -6,6 +6,7 @@ pub mod gguf;
 pub mod inventory;
 pub mod local;
 mod maintenance;
+pub mod remote_catalog;
 pub mod resolve;
 pub use resolve::ResolvedModel;
 #[cfg(test)]

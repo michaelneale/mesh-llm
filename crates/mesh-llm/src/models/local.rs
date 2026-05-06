@@ -86,7 +86,9 @@ fn distribution_ref_file(file: &str) -> String {
 }
 
 fn hf_hub_cache_override() -> Option<PathBuf> {
-    let path = std::env::var("HF_HUB_CACHE").ok()?;
+    let path = std::env::var("HF_HUB_CACHE")
+        .ok()
+        .or_else(|| std::env::var("HUGGINGFACE_HUB_CACHE").ok())?;
     let trimmed = path.trim();
     if trimmed.is_empty() {
         None
@@ -218,6 +220,44 @@ fn identity_from_cache_snapshot_path(
     })
 }
 
+fn identity_from_snapshot_layout_ancestors(path: &Path) -> Option<HuggingFaceModelIdentity> {
+    for revision_dir in path.ancestors() {
+        let Some(snapshots_dir) = revision_dir.parent() else {
+            continue;
+        };
+        if snapshots_dir.file_name()? != OsStr::new("snapshots") {
+            continue;
+        }
+        let repo_dir = snapshots_dir.parent()?;
+        let repo_folder = repo_dir.file_name()?.to_str()?;
+        let repo_id = parse_model_repo_folder_name(repo_folder)?;
+        let revision = revision_dir.file_name()?.to_str()?.to_string();
+        let relative_file = path
+            .strip_prefix(revision_dir)
+            .ok()?
+            .components()
+            .map(|component| component.as_os_str().to_str())
+            .collect::<Option<Vec<_>>>()?
+            .join("/");
+        if relative_file.is_empty() {
+            continue;
+        }
+        let local_file_name = Path::new(&relative_file)
+            .file_name()
+            .and_then(|value| value.to_str())?
+            .to_string();
+        let canonical_ref = format!("{repo_id}@{revision}/{relative_file}");
+        return Some(HuggingFaceModelIdentity {
+            repo_id,
+            revision,
+            file: relative_file,
+            canonical_ref,
+            local_file_name,
+        });
+    }
+    None
+}
+
 fn scan_hf_cache_identity_for_path(
     path: &Path,
     cache_root: &Path,
@@ -292,6 +332,14 @@ pub fn huggingface_identity_for_path(path: &Path) -> Option<HuggingFaceModelIden
             {
                 return Some(identity);
             }
+        }
+    }
+    if let Some(identity) = identity_from_snapshot_layout_ancestors(path) {
+        return Some(identity);
+    }
+    if resolved != path {
+        if let Some(identity) = identity_from_snapshot_layout_ancestors(&resolved) {
+            return Some(identity);
         }
     }
     scan_hf_cache_identity_for_path(path, &cache_root)
@@ -970,9 +1018,11 @@ mod tests {
     #[serial]
     fn huggingface_cache_prefers_explicit_hub_cache() {
         let prev_hub_cache = std::env::var_os("HF_HUB_CACHE");
+        let prev_huggingface_hub_cache = std::env::var_os("HUGGINGFACE_HUB_CACHE");
         let prev_hf_home = std::env::var_os("HF_HOME");
         let prev_xdg = std::env::var_os("XDG_CACHE_HOME");
         std::env::set_var("HF_HUB_CACHE", "/tmp/mesh-llm-hub-cache");
+        std::env::set_var("HUGGINGFACE_HUB_CACHE", "/tmp/mesh-llm-alt-hub-cache");
         std::env::set_var("HF_HOME", "/tmp/mesh-llm-hf-home");
         std::env::set_var("XDG_CACHE_HOME", "/tmp/mesh-llm-xdg");
 
@@ -982,6 +1032,30 @@ mod tests {
         );
 
         restore_env("HF_HUB_CACHE", prev_hub_cache);
+        restore_env("HUGGINGFACE_HUB_CACHE", prev_huggingface_hub_cache);
+        restore_env("HF_HOME", prev_hf_home);
+        restore_env("XDG_CACHE_HOME", prev_xdg);
+    }
+
+    #[test]
+    #[serial]
+    fn huggingface_cache_accepts_huggingface_hub_cache_alias() {
+        let prev_hub_cache = std::env::var_os("HF_HUB_CACHE");
+        let prev_huggingface_hub_cache = std::env::var_os("HUGGINGFACE_HUB_CACHE");
+        let prev_hf_home = std::env::var_os("HF_HOME");
+        let prev_xdg = std::env::var_os("XDG_CACHE_HOME");
+        std::env::remove_var("HF_HUB_CACHE");
+        std::env::set_var("HUGGINGFACE_HUB_CACHE", "/tmp/mesh-llm-alt-hub-cache");
+        std::env::set_var("HF_HOME", "/tmp/mesh-llm-hf-home");
+        std::env::set_var("XDG_CACHE_HOME", "/tmp/mesh-llm-xdg");
+
+        assert_eq!(
+            huggingface_hub_cache_dir(),
+            PathBuf::from("/tmp/mesh-llm-alt-hub-cache")
+        );
+
+        restore_env("HF_HUB_CACHE", prev_hub_cache);
+        restore_env("HUGGINGFACE_HUB_CACHE", prev_huggingface_hub_cache);
         restore_env("HF_HOME", prev_hf_home);
         restore_env("XDG_CACHE_HOME", prev_xdg);
     }
@@ -990,9 +1064,11 @@ mod tests {
     #[serial]
     fn huggingface_cache_falls_back_to_hf_home() {
         let prev_hub_cache = std::env::var_os("HF_HUB_CACHE");
+        let prev_huggingface_hub_cache = std::env::var_os("HUGGINGFACE_HUB_CACHE");
         let prev_hf_home = std::env::var_os("HF_HOME");
         let prev_xdg = std::env::var_os("XDG_CACHE_HOME");
         std::env::remove_var("HF_HUB_CACHE");
+        std::env::remove_var("HUGGINGFACE_HUB_CACHE");
         std::env::set_var("HF_HOME", "/tmp/mesh-llm-hf-home");
         std::env::set_var("XDG_CACHE_HOME", "/tmp/mesh-llm-xdg");
 
@@ -1002,6 +1078,7 @@ mod tests {
         );
 
         restore_env("HF_HUB_CACHE", prev_hub_cache);
+        restore_env("HUGGINGFACE_HUB_CACHE", prev_huggingface_hub_cache);
         restore_env("HF_HOME", prev_hf_home);
         restore_env("XDG_CACHE_HOME", prev_xdg);
     }
@@ -1060,6 +1137,46 @@ mod tests {
             identity.local_file_name,
             "Llama-3.2-1B-Instruct-Q4_K_M.gguf"
         );
+
+        let _ = std::fs::remove_dir_all(&temp);
+        restore_env("HF_HUB_CACHE", prev_hub_cache);
+        restore_env("HF_HOME", prev_hf_home);
+        restore_env("XDG_CACHE_HOME", prev_xdg);
+    }
+
+    #[test]
+    #[serial]
+    fn huggingface_identity_for_path_falls_back_to_snapshot_layout_ancestors() {
+        let prev_hub_cache = std::env::var_os("HF_HUB_CACHE");
+        let prev_hf_home = std::env::var_os("HF_HOME");
+        let prev_xdg = std::env::var_os("XDG_CACHE_HOME");
+
+        let temp = std::env::temp_dir().join(format!(
+            "mesh-llm-hf-ancestor-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let snapshot_path = temp
+            .join("nested")
+            .join("cache-root")
+            .join("models--bartowski--Llama-3.2-1B-Instruct-GGUF")
+            .join("snapshots")
+            .join("abcdef1234567890")
+            .join("nested")
+            .join("Llama-3.2-1B-Instruct-Q4_K_M.gguf");
+        std::fs::create_dir_all(snapshot_path.parent().unwrap()).unwrap();
+        std::fs::write(&snapshot_path, b"gguf").unwrap();
+
+        std::env::set_var("HF_HUB_CACHE", temp.join("some-other-cache-root"));
+        std::env::remove_var("HF_HOME");
+        std::env::remove_var("XDG_CACHE_HOME");
+
+        let identity = huggingface_identity_for_path(&snapshot_path).unwrap();
+        assert_eq!(identity.repo_id, "bartowski/Llama-3.2-1B-Instruct-GGUF");
+        assert_eq!(identity.revision, "abcdef1234567890");
+        assert_eq!(identity.file, "nested/Llama-3.2-1B-Instruct-Q4_K_M.gguf");
 
         let _ = std::fs::remove_dir_all(&temp);
         restore_env("HF_HUB_CACHE", prev_hub_cache);

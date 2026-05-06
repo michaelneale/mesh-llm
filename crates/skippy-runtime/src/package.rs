@@ -1,10 +1,8 @@
 use std::{
     collections::BTreeMap,
-    ffi::OsString,
     fs,
     io::Read,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 use anyhow::{bail, Context, Result};
@@ -277,6 +275,11 @@ pub fn inspect_layer_package(package_ref: &str) -> Result<LayerPackageInfo> {
     let manifest_sha256 = sha256_bytes(&manifest_contents);
     let manifest = load_manifest(&manifest_path, &manifest_contents)?;
     validate_manifest_identity(&manifest)?;
+    let activation_width = match manifest.activation_width {
+        Some(width) => Some(width),
+        None => infer_activation_width_from_layers(&package_dir, &manifest.layers)?,
+    };
+
     Ok(LayerPackageInfo {
         package_dir,
         manifest_sha256,
@@ -298,7 +301,7 @@ pub fn inspect_layer_package(package_ref: &str) -> Result<LayerPackageInfo> {
             })
             .flatten(),
         layer_count: manifest.layer_count,
-        activation_width: manifest.activation_width,
+        activation_width,
         layers: manifest
             .layers
             .into_iter()
@@ -312,65 +315,73 @@ pub fn inspect_layer_package(package_ref: &str) -> Result<LayerPackageInfo> {
     })
 }
 
+fn infer_activation_width_from_layers(
+    package_dir: &Path,
+    layers: &[PackageLayer],
+) -> Result<Option<u32>> {
+    let Some(layer) = layers.first() else {
+        return Ok(None);
+    };
+    let layer_path = package_dir.join(&layer.path);
+    let info = match crate::ModelInfo::open(&layer_path) {
+        Ok(info) => info,
+        Err(_) => return Ok(None),
+    };
+    let count = match info.tensor_count() {
+        Ok(count) => count,
+        Err(_) => return Ok(None),
+    };
+    for i in 0..count {
+        let Ok(tensor) = info.tensor_at(i) else {
+            continue;
+        };
+        if tensor.name.contains("attn_norm.weight") {
+            let width = activation_width_from_tensor_count(
+                &tensor.name,
+                &layer_path,
+                tensor.element_count,
+            )?;
+            return Ok(Some(width));
+        }
+    }
+    Ok(None)
+}
+
+fn activation_width_from_tensor_count(
+    name: &str,
+    layer_path: &Path,
+    element_count: u64,
+) -> Result<u32> {
+    u32::try_from(element_count).with_context(|| {
+        format!(
+            "activation width tensor {name} in {} has {element_count} elements, which exceeds u32::MAX",
+            layer_path.display()
+        )
+    })
+}
+
 pub fn is_hf_package_ref(value: &str) -> bool {
     value.starts_with("hf://")
 }
 
 fn resolve_package_dir(package_ref: &str) -> Result<PathBuf> {
     if is_hf_package_ref(package_ref) {
-        download_hf_package(package_ref)
-    } else {
-        Ok(PathBuf::from(package_ref))
-    }
-}
-
-fn download_hf_package(package_ref: &str) -> Result<PathBuf> {
-    let reference = parse_hf_package_ref(package_ref)?;
-    let package_dir = hf_cache_root().join(sanitize(&format!(
-        "{}-{}",
-        reference.repo_id,
-        reference.revision.as_deref().unwrap_or("main")
-    )));
-    if package_dir.join("model-package.json").is_file() {
-        return Ok(package_dir);
-    }
-
-    fs::create_dir_all(&package_dir)
-        .with_context(|| format!("create HF package cache {}", package_dir.display()))?;
-    let mut args = vec![
-        OsString::from("download"),
-        OsString::from(reference.repo_id.as_str()),
-        OsString::from("--local-dir"),
-        package_dir.as_os_str().to_os_string(),
-        OsString::from("--quiet"),
-    ];
-    if let Some(revision) = reference.revision.as_ref() {
-        args.push(OsString::from("--revision"));
-        args.push(OsString::from(revision));
-    }
-
-    let status = Command::new("hf")
-        .args(args)
-        .status()
-        .context("run hf download for layer package")?;
-    if !status.success() {
-        bail!("hf download failed for {}", reference.repo_id);
-    }
-    if !package_dir.join("model-package.json").is_file() {
         bail!(
-            "downloaded HF package is missing model-package.json: {}",
-            package_dir.display()
+            "hf:// package refs must be resolved to a local path before calling skippy-runtime. \
+             Use the mesh-llm layer package resolver to download first. Got: {package_ref}"
         );
     }
-    Ok(package_dir)
+    Ok(PathBuf::from(package_ref))
 }
 
+#[cfg(test)]
 #[derive(Debug, PartialEq, Eq)]
 struct HfPackageRef {
     repo_id: String,
     revision: Option<String>,
 }
 
+#[cfg(test)]
 fn parse_hf_package_ref(value: &str) -> Result<HfPackageRef> {
     let Some(rest) = value.strip_prefix("hf://") else {
         bail!("HF package references must start with hf://");
@@ -400,22 +411,6 @@ fn parse_hf_package_ref(value: &str) -> Result<HfPackageRef> {
         repo_id: repo_id.to_string(),
         revision: revision.map(ToString::to_string),
     })
-}
-
-fn hf_cache_root() -> PathBuf {
-    std::env::var_os("SKIPPY_HF_PACKAGE_CACHE")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HF_HOME")
-                .map(PathBuf::from)
-                .map(|path| path.join("skippy-runtime/packages"))
-        })
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .map(|path| path.join(".cache/skippy-runtime/hf-packages"))
-        })
-        .unwrap_or_else(|| std::env::temp_dir().join("skippy-runtime/hf-packages"))
 }
 
 fn load_manifest(path: &Path, contents: &[u8]) -> Result<PackageManifest> {
@@ -849,5 +844,20 @@ mod tests {
         assert_eq!(info.activation_width, Some(4096));
         assert_eq!(info.source_model_bytes, Some(123));
         assert_eq!(info.manifest_sha256.len(), 64);
+    }
+
+    #[test]
+    fn activation_width_inference_rejects_u32_overflow() {
+        let path = Path::new("/package/layers/00000.gguf");
+
+        let error = activation_width_from_tensor_count(
+            "blk.0.attn_norm.weight",
+            path,
+            u64::from(u32::MAX) + 1,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("exceeds u32::MAX"));
     }
 }
