@@ -104,8 +104,10 @@
     {
       "llama_model": "phimoe",
       "family": "phimoe",
-      "status": "needs_candidate",
-      "search": "Phi MoE GGUF Q4_K_M"
+      "status": "certified",
+      "repo": "bartowski/Phi-3.5-MoE-instruct-GGUF",
+      "include": "Phi-3.5-MoE-instruct-Q4_K_M.gguf",
+      "notes": "text lane passed in llama-parity-phimoe-runtime-slice-2 after adding PhiMoE to the runtime-slice ABI allowlist; q8 activation wire validated; ResidentKv native-sequence remap cache smoke passed"
     },
     {
       "llama_model": "gemma",

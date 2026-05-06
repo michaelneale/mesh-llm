@@ -805,6 +805,26 @@
     }
   },
   {
+    "model_id": "bartowski/Phi-3.5-MoE-instruct-GGUF:Q4_K_M",
+    "source_repo": "bartowski/Phi-3.5-MoE-instruct-GGUF",
+    "source_revision": "4b580329100cf44d7d041b6f63967b26869a6937",
+    "source_file": "Phi-3.5-MoE-instruct-Q4_K_M.gguf",
+    "canonical_ref": "bartowski/Phi-3.5-MoE-instruct-GGUF@4b580329100cf44d7d041b6f63967b26869a6937/Phi-3.5-MoE-instruct-Q4_K_M.gguf",
+    "distribution_id": "Phi-3.5-MoE-instruct-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "phimoe",
+      "layer_count": 32,
+      "activation_width": 4096,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
     "model_id": "QuantFactory/gpt2-GGUF:Q4_K_M",
     "source_repo": "QuantFactory/gpt2-GGUF",
     "source_revision": "7eae6f079f0164bff66b86eea5159f7a368f9381",

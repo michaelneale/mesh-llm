@@ -225,6 +225,7 @@ themselves until the reviewed topology records are updated.
 | `mistral3` | `lmstudio-community/Ministral-3-3B-Instruct-2512-GGUF` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 88.40x cache-hit speedup |
 | `baichuan` | see `target/family-certify/llama-parity-baichuan-runtime-slice-1` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 130.11x cache-hit speedup |
 | `phi` | see `target/family-certify/llama-parity-phi-runtime-slice-1` | `single-step`, `chain`, and f16 dtype matrix passed | rejected | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 2645.30x cache-hit speedup |
+| `phimoe` | see `target/family-certify/llama-parity-phimoe-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed after PhiMoE ABI allowlist support | validated | accepted | `ResidentKv` native-sequence remap cache smoke passed |
 | `bloom` | see `target/family-certify/llama-parity-bloom-runtime-slice-1` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 328.66x cache-hit speedup |
 | `gptneox` | see `target/family-certify/llama-parity-gptneox-runtime-slice-1` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 282.70x cache-hit speedup |
 | `stablelm` | see `target/family-certify/llama-parity-stablelm-runtime-slice-1` | `single-step`, `chain`, and f16 dtype matrix passed | rejected | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 211.80x cache-hit speedup |
@@ -275,6 +276,7 @@ Raw run directories:
 - `target/family-certify/llama-parity-mpt-runtime-slice-1`
 - `target/family-certify/llama-parity-olmo2-runtime-slice-1`
 - `target/family-certify/llama-parity-olmoe-runtime-slice-1`
+- `target/family-certify/llama-parity-phimoe-runtime-slice-2`
 - `target/family-certify/llama-parity-remaining-local-1`
 - `target/family-certify/llama-parity-remaining-external-1`
 - `target/family-certify/llama-parity-decoder-tranche-3c`

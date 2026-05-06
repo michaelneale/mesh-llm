@@ -45,6 +45,7 @@ Last updated: 2026-05-06.
 | Falcon | Supported | `Kondara/falcon-7b-instruct-Q4_K_M-GGUF:q4_k_m` | `layer_end=32`, `splits=10,21`, activation width `4544` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` native sequence remap cache smoke passed. |
 | InternLM2 | Supported | `lmstudio-community/internlm2_5-1_8b-chat-GGUF:Q4_K_M` | `layer_end=24`, `splits=8,16`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` native sequence remap cache smoke passed. |
 | Phi3 | Supported | `bartowski/Phi-3.5-mini-instruct-GGUF:Q4_K_M` | `layer_end=32`, `splits=10,21`, activation width `3072` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` native sequence remap cache smoke passed. |
+| PhiMoE | Supported | `bartowski/Phi-3.5-MoE-instruct-GGUF:Q4_K_M` | `layer_end=32`, `splits=10,21`, activation width `4096` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Shares the Phi3 graph path; exact state mobility accepted after adding PhiMoE to the runtime-slice ABI allowlist. |
 | OLMo | Supported | `meshllm/olmo-7b-instruct-hf-parity-f16-gguf:F16` | `layer_end=32`, `splits=10,21`, activation width `4096` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. |
 | OLMo2 | Supported | `allenai/OLMo-2-1124-7B-Instruct-GGUF:Q4_K_M` | `layer_end=32`, `splits=10,21`, activation width `4096` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` native sequence remap cache smoke passed. |
 | OLMoE | Supported | `bartowski/OLMoE-1B-7B-0924-Instruct-GGUF:Q4_K_M` | `layer_end=16`, `splits=5,10`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` cache restore and MoE expert-stage smoke passed. |
@@ -114,6 +115,7 @@ Jamba
 Mamba
 Mamba2
 RWKV7
+PhiMoE
 Mistral3
 Hunyuan-MoE
 InternLM2
@@ -156,6 +158,7 @@ activation handoff sizes for the recommended split.
 | Phi2 | 5,120 | Full-state rejected as too large; `ResidentKv` cache restore accepted |
 | Falcon-H1 | 4,096 | Accepted for `KvRecurrent` cache restore, 663.5x Qwen recurrent state |
 | Phi3 | 6,144 | Accepted; `ResidentKv` 64-token smoke passed, 2645.30x cache-hit speedup |
+| PhiMoE | 8,192 | Accepted; runtime-slice parity passed after PhiMoE ABI allowlist support |
 | Qwen2-MoE | 3,072 | Accepted, 0.25x Qwen |
 | Qwen3-MoE | 2,048 | Accepted, 1.00x Qwen |
 | EXAONE | 5,120 | Accepted; `ResidentKv` 64-token smoke passed, 868.76x cache-hit speedup |
