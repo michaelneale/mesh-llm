@@ -27,8 +27,8 @@ use skippy_runtime::{
 
 use crate::{
     cli::{
-        ChainArgs, DtypeMatrixArgs, RuntimeArgs, ServerArgs, SingleStepArgs, SplitScanArgs,
-        StageLoadMode, StateHandoffArgs, StatePayloadKind,
+        ChainArgs, DtypeMatrixArgs, FlashAttentionArg, RuntimeArgs, ServerArgs, SingleStepArgs,
+        SplitScanArgs, StageLoadMode, StateHandoffArgs, StatePayloadKind,
     },
     report::{
         BaselineReport, BoundaryReport, ChainReport, ChainStageReport, DtypeMatrixReport,
@@ -55,7 +55,10 @@ struct BinarySplitConfig {
     split_layer: u32,
     layer_end: u32,
     ctx_size: u32,
+    n_batch: Option<u32>,
+    n_ubatch: Option<u32>,
     n_gpu_layers: i32,
+    flash_attn: FlashAttentionArg,
     prompt: String,
     stage1_bind_addr: SocketAddr,
     activation_wire_dtype: String,
@@ -87,7 +90,10 @@ struct BinaryChainConfig {
     split_layer_2: u32,
     layer_end: u32,
     ctx_size: u32,
+    n_batch: Option<u32>,
+    n_ubatch: Option<u32>,
     n_gpu_layers: i32,
+    flash_attn: FlashAttentionArg,
     prompt: String,
     stage1_bind_addr: SocketAddr,
     stage2_bind_addr: SocketAddr,
@@ -120,7 +126,10 @@ struct BinaryStateHandoffConfig {
     state_stage_index: u32,
     layer_end: u32,
     ctx_size: u32,
+    n_batch: Option<u32>,
+    n_ubatch: Option<u32>,
     n_gpu_layers: i32,
+    flash_attn: FlashAttentionArg,
     prompt: String,
     source_bind_addr: SocketAddr,
     restore_bind_addr: SocketAddr,
@@ -307,7 +316,10 @@ pub fn chain(args: ChainArgs) -> Result<()> {
         split_layer_2: splits.1,
         layer_end: args.runtime.layer_end,
         ctx_size: args.runtime.ctx_size,
+        n_batch: args.runtime.n_batch,
+        n_ubatch: args.runtime.n_ubatch,
         n_gpu_layers: args.runtime.n_gpu_layers,
+        flash_attn: args.runtime.flash_attn,
         prompt: args.runtime.prompt,
         stage1_bind_addr: args.stage1_bind_addr,
         stage2_bind_addr: args.stage2_bind_addr,
@@ -464,7 +476,10 @@ pub fn state_handoff(args: StateHandoffArgs) -> Result<()> {
         state_stage_index,
         layer_end: args.runtime.layer_end,
         ctx_size: args.runtime.ctx_size,
+        n_batch: args.runtime.n_batch,
+        n_ubatch: args.runtime.n_ubatch,
         n_gpu_layers: args.runtime.n_gpu_layers,
+        flash_attn: args.runtime.flash_attn,
         prompt: args.runtime.prompt,
         source_bind_addr: args.source_bind_addr,
         restore_bind_addr: args.restore_bind_addr,
@@ -565,7 +580,10 @@ fn run_single_step_with_baseline(
         split_layer: case.split_layer,
         layer_end: runtime.layer_end,
         ctx_size: runtime.ctx_size,
+        n_batch: runtime.n_batch,
+        n_ubatch: runtime.n_ubatch,
         n_gpu_layers: runtime.n_gpu_layers,
+        flash_attn: runtime.flash_attn,
         prompt: runtime.prompt.clone(),
         stage1_bind_addr: case.stage1_bind_addr,
         activation_wire_dtype: case.activation_wire_dtype,
@@ -593,8 +611,8 @@ fn run_full_model_decode(args: &RuntimeArgs) -> Result<FullModelResult> {
         layer_end: args.layer_end,
         ctx_size: args.ctx_size,
         lane_count: 1,
-        n_batch: None,
-        n_ubatch: None,
+        n_batch: args.n_batch,
+        n_ubatch: args.n_ubatch,
         n_threads: None,
         n_threads_batch: None,
         n_gpu_layers: args.n_gpu_layers,
@@ -606,7 +624,7 @@ fn run_full_model_decode(args: &RuntimeArgs) -> Result<FullModelResult> {
         filter_tensors_on_load: false,
         cache_type_k: GGML_TYPE_F16,
         cache_type_v: GGML_TYPE_F16,
-        flash_attn_type: skippy_runtime::FlashAttentionType::Auto,
+        flash_attn_type: runtime_flash_attn(args.flash_attn),
     };
     let model = StageModel::open(&args.model, &config).context("failed to open full model")?;
     let tokens = model
@@ -669,8 +687,8 @@ fn run_binary_split(args: BinarySplitConfig) -> Result<BinarySplitResult> {
         layer_end: args.split_layer,
         ctx_size: args.ctx_size,
         lane_count: 1,
-        n_batch: None,
-        n_ubatch: None,
+        n_batch: args.n_batch,
+        n_ubatch: args.n_ubatch,
         n_threads: None,
         n_threads_batch: None,
         n_gpu_layers: args.n_gpu_layers,
@@ -682,7 +700,7 @@ fn run_binary_split(args: BinarySplitConfig) -> Result<BinarySplitResult> {
         filter_tensors_on_load: true,
         cache_type_k: GGML_TYPE_F16,
         cache_type_v: GGML_TYPE_F16,
-        flash_attn_type: skippy_runtime::FlashAttentionType::Auto,
+        flash_attn_type: runtime_flash_attn(args.flash_attn),
     };
     let stage0 = StageModel::open(&stage0_resolution.path, &stage0_config)
         .context("failed to open stage 0")?;
@@ -719,7 +737,10 @@ fn run_binary_split(args: BinarySplitConfig) -> Result<BinarySplitResult> {
         "layer_start": args.split_layer,
         "layer_end": args.layer_end,
         "ctx_size": args.ctx_size,
+        "n_batch": args.n_batch,
+        "n_ubatch": args.n_ubatch,
         "n_gpu_layers": args.n_gpu_layers,
+        "flash_attn_type": protocol_flash_attn(args.flash_attn),
         "filter_tensors_on_load": true,
         "load_mode": protocol_load_mode(args.stage_load_mode),
         "bind_addr": args.stage1_bind_addr,
@@ -860,8 +881,8 @@ fn run_binary_chain(args: BinaryChainConfig) -> Result<BinaryChainResult> {
         layer_end: args.split_layer_1,
         ctx_size: args.ctx_size,
         lane_count: 1,
-        n_batch: None,
-        n_ubatch: None,
+        n_batch: args.n_batch,
+        n_ubatch: args.n_ubatch,
         n_threads: None,
         n_threads_batch: None,
         n_gpu_layers: args.n_gpu_layers,
@@ -873,7 +894,7 @@ fn run_binary_chain(args: BinaryChainConfig) -> Result<BinaryChainResult> {
         filter_tensors_on_load: true,
         cache_type_k: GGML_TYPE_F16,
         cache_type_v: GGML_TYPE_F16,
-        flash_attn_type: skippy_runtime::FlashAttentionType::Auto,
+        flash_attn_type: runtime_flash_attn(args.flash_attn),
     };
     let stage0 = StageModel::open(&stage0_resolution.path, &stage0_config)
         .context("failed to open stage 0")?;
@@ -911,7 +932,10 @@ fn run_binary_chain(args: BinaryChainConfig) -> Result<BinaryChainResult> {
         "layer_start": args.split_layer_2,
         "layer_end": args.layer_end,
         "ctx_size": args.ctx_size,
+        "n_batch": args.n_batch,
+        "n_ubatch": args.n_ubatch,
         "n_gpu_layers": args.n_gpu_layers,
+        "flash_attn_type": protocol_flash_attn(args.flash_attn),
         "filter_tensors_on_load": true,
         "load_mode": protocol_load_mode(args.stage_load_mode),
         "bind_addr": args.stage2_bind_addr,
@@ -937,7 +961,10 @@ fn run_binary_chain(args: BinaryChainConfig) -> Result<BinaryChainResult> {
         "layer_start": args.split_layer_1,
         "layer_end": args.split_layer_2,
         "ctx_size": args.ctx_size,
+        "n_batch": args.n_batch,
+        "n_ubatch": args.n_ubatch,
         "n_gpu_layers": args.n_gpu_layers,
+        "flash_attn_type": protocol_flash_attn(args.flash_attn),
         "filter_tensors_on_load": true,
         "load_mode": protocol_load_mode(args.stage_load_mode),
         "bind_addr": args.stage1_bind_addr,
@@ -977,6 +1004,10 @@ fn run_binary_chain(args: BinaryChainConfig) -> Result<BinaryChainResult> {
     ]);
     configure_child_logs(&mut stage2_command, args.child_logs);
     let _stage2 = ChildGuard::spawn(stage2_command)?;
+    drop(
+        connect_ready(args.stage2_bind_addr, args.startup_timeout_secs)
+            .context("stage 2 binary server did not become ready")?,
+    );
 
     let mut stage1_command = Command::new(&args.stage_server_bin);
     stage1_command.args([
@@ -1158,7 +1189,10 @@ fn run_binary_state_handoff(args: BinaryStateHandoffConfig) -> Result<BinaryStat
         "layer_start": args.state_layer_start,
         "layer_end": args.state_layer_end,
         "ctx_size": args.ctx_size,
+        "n_batch": args.n_batch,
+        "n_ubatch": args.n_ubatch,
         "n_gpu_layers": args.n_gpu_layers,
+        "flash_attn_type": protocol_flash_attn(args.flash_attn),
         "filter_tensors_on_load": should_filter_state_handoff_tensors(&args),
         "load_mode": protocol_load_mode(args.stage_load_mode),
         "bind_addr": args.source_bind_addr,
@@ -1184,7 +1218,10 @@ fn run_binary_state_handoff(args: BinaryStateHandoffConfig) -> Result<BinaryStat
         "layer_start": args.state_layer_start,
         "layer_end": args.state_layer_end,
         "ctx_size": args.ctx_size,
+        "n_batch": args.n_batch,
+        "n_ubatch": args.n_ubatch,
         "n_gpu_layers": args.n_gpu_layers,
+        "flash_attn_type": protocol_flash_attn(args.flash_attn),
         "filter_tensors_on_load": should_filter_state_handoff_tensors(&args),
         "load_mode": protocol_load_mode(args.stage_load_mode),
         "bind_addr": args.restore_bind_addr,
@@ -1465,8 +1502,8 @@ fn run_local_state_handoff(
         layer_end: args.state_layer_end,
         ctx_size: args.ctx_size,
         lane_count,
-        n_batch: None,
-        n_ubatch: None,
+        n_batch: args.n_batch,
+        n_ubatch: args.n_ubatch,
         n_threads: None,
         n_threads_batch: None,
         n_gpu_layers: args.n_gpu_layers,
@@ -1478,7 +1515,7 @@ fn run_local_state_handoff(
         filter_tensors_on_load: should_filter_state_handoff_tensors(args),
         cache_type_k: GGML_TYPE_F16,
         cache_type_v: GGML_TYPE_F16,
-        flash_attn_type: skippy_runtime::FlashAttentionType::Auto,
+        flash_attn_type: runtime_flash_attn(args.flash_attn),
     };
     let model = StageModel::open(&stage_resolution.path, &runtime_config)
         .context("failed to open local state handoff stage")?;
@@ -2166,8 +2203,8 @@ fn build_state_handoff_inputs(
         layer_end: args.state_layer_start,
         ctx_size: args.ctx_size,
         lane_count: 1,
-        n_batch: None,
-        n_ubatch: None,
+        n_batch: args.n_batch,
+        n_ubatch: args.n_ubatch,
         n_threads: None,
         n_threads_batch: None,
         n_gpu_layers: args.n_gpu_layers,
@@ -2179,7 +2216,7 @@ fn build_state_handoff_inputs(
         filter_tensors_on_load: true,
         cache_type_k: GGML_TYPE_F16,
         cache_type_v: GGML_TYPE_F16,
-        flash_attn_type: skippy_runtime::FlashAttentionType::Auto,
+        flash_attn_type: runtime_flash_attn(args.flash_attn),
     };
     let input_model = StageModel::open(&input_resolution.path, &input_config)
         .context("failed to open state handoff input producer")?;
@@ -2589,8 +2626,8 @@ fn tokenizer_model_for_state_handoff(
             layer_end,
             ctx_size: args.ctx_size,
             lane_count: 1,
-            n_batch: None,
-            n_ubatch: None,
+            n_batch: args.n_batch,
+            n_ubatch: args.n_ubatch,
             n_threads: None,
             n_threads_batch: None,
             n_gpu_layers: args.n_gpu_layers,
@@ -2602,7 +2639,7 @@ fn tokenizer_model_for_state_handoff(
             filter_tensors_on_load,
             cache_type_k: GGML_TYPE_F16,
             cache_type_v: GGML_TYPE_F16,
-            flash_attn_type: skippy_runtime::FlashAttentionType::Auto,
+            flash_attn_type: runtime_flash_attn(args.flash_attn),
         },
     ))
 }
@@ -2616,6 +2653,22 @@ fn runtime_load_mode(stage_load_mode: StageLoadMode) -> RuntimeLoadMode {
         StageLoadMode::RuntimeSlice => RuntimeLoadMode::RuntimeSlice,
         StageLoadMode::ArtifactSlice => RuntimeLoadMode::ArtifactSlice,
         StageLoadMode::LayerPackage => RuntimeLoadMode::LayerPackage,
+    }
+}
+
+fn runtime_flash_attn(value: FlashAttentionArg) -> skippy_runtime::FlashAttentionType {
+    match value {
+        FlashAttentionArg::Auto => skippy_runtime::FlashAttentionType::Auto,
+        FlashAttentionArg::Disabled => skippy_runtime::FlashAttentionType::Disabled,
+        FlashAttentionArg::Enabled => skippy_runtime::FlashAttentionType::Enabled,
+    }
+}
+
+fn protocol_flash_attn(value: FlashAttentionArg) -> &'static str {
+    match value {
+        FlashAttentionArg::Auto => "auto",
+        FlashAttentionArg::Disabled => "disabled",
+        FlashAttentionArg::Enabled => "enabled",
     }
 }
 

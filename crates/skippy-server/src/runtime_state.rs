@@ -762,7 +762,7 @@ fn runtime_config_from_stage_config(config: &StageConfig) -> Result<RuntimeConfi
             LoadMode::ArtifactSlice => RuntimeLoadMode::ArtifactSlice,
         },
         projector_path: config.projector_path.clone(),
-        include_embeddings: config.stage_index == 0 || config.downstream.is_none(),
+        include_embeddings: config.layer_start == 0,
         include_output: config.downstream.is_none(),
         filter_tensors_on_load: config.filter_tensors_on_load,
     })
@@ -865,7 +865,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_config_keeps_embeddings_for_final_layer_package_stage() {
+    fn runtime_config_omits_input_embeddings_for_final_non_first_stage() {
         let config = StageConfig {
             run_id: "run-a".to_string(),
             topology_id: "topology-a".to_string(),
@@ -906,7 +906,7 @@ mod tests {
 
         let runtime_config = runtime_config_from_stage_config(&config).unwrap();
 
-        assert!(runtime_config.include_embeddings);
+        assert!(!runtime_config.include_embeddings);
         assert!(runtime_config.include_output);
     }
 }

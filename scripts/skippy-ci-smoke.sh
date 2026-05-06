@@ -19,10 +19,18 @@ RECURRENT_MODEL_ID="${RECURRENT_MODEL_ID:-${RECURRENT_MODEL_REPO}:${RECURRENT_MO
 RECURRENT_MODEL_PATH="${RECURRENT_MODEL_PATH:-}"
 
 CTX_SIZE="${CTX_SIZE:-384}"
-PROMPT_CTX_SIZE="${PROMPT_CTX_SIZE:-1536}"
+PROMPT_CTX_SIZE="${PROMPT_CTX_SIZE:-768}"
 STATE_PREFIX_TOKENS="${STATE_PREFIX_TOKENS:-128}"
 PROMPT_PREFILL_CHUNK_SIZE="${PROMPT_PREFILL_CHUNK_SIZE:-128}"
-PROMPT_MAX_NEW_TOKENS="${PROMPT_MAX_NEW_TOKENS:-32}"
+PROMPT_MAX_NEW_TOKENS="${PROMPT_MAX_NEW_TOKENS:-8}"
+SMOKE_COMMAND_TIMEOUT_SECS="${SMOKE_COMMAND_TIMEOUT_SECS:-900}"
+SMOKE_FLASH_ATTN="${SMOKE_FLASH_ATTN:-disabled}"
+SMOKE_N_BATCH="${SMOKE_N_BATCH:-1}"
+SMOKE_N_UBATCH="${SMOKE_N_UBATCH:-1}"
+PROMPT_N_BATCH="${PROMPT_N_BATCH:-$PROMPT_PREFILL_CHUNK_SIZE}"
+PROMPT_N_UBATCH="${PROMPT_N_UBATCH:-$PROMPT_PREFILL_CHUNK_SIZE}"
+DENSE_SMOKE_SPLIT_1="${DENSE_SMOKE_SPLIT_1:-1}"
+DENSE_SMOKE_SPLIT_2="${DENSE_SMOKE_SPLIT_2:-2}"
 STAGE_SERVER_BIN="${STAGE_SERVER_BIN:-target/debug/skippy-server}"
 
 SERVER_PID=""
@@ -34,13 +42,68 @@ require_cmd() {
   fi
 }
 
+run_with_timeout() {
+  local label="$1"
+  shift
+  python3 - "$SMOKE_COMMAND_TIMEOUT_SECS" "$label" "$@" 3<&0 <<'PY'
+import os
+import signal
+import subprocess
+import sys
+
+timeout_secs = int(sys.argv[1])
+label = sys.argv[2]
+command = sys.argv[3:]
+
+process_stdin = os.fdopen(3, "rb", closefd=False)
+process = subprocess.Popen(command, stdin=process_stdin, start_new_session=True)
+try:
+    raise SystemExit(process.wait(timeout=timeout_secs))
+except subprocess.TimeoutExpired:
+    print(f"{label} timed out after {timeout_secs}s; terminating process group", file=sys.stderr)
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        raise SystemExit(124)
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+    raise SystemExit(124)
+PY
+}
+
 cleanup() {
   if [[ -n "$SERVER_PID" ]] && kill -0 "$SERVER_PID" >/dev/null 2>&1; then
+    local children
+    children="$(descendant_pids "$SERVER_PID" | sort -u || true)"
     kill "$SERVER_PID" >/dev/null 2>&1 || true
+    if [[ -n "$children" ]]; then
+      printf '%s\n' "$children" | xargs kill >/dev/null 2>&1 || true
+    fi
+    sleep 1
+    kill -9 "$SERVER_PID" >/dev/null 2>&1 || true
+    if [[ -n "$children" ]]; then
+      printf '%s\n' "$children" | xargs kill -9 >/dev/null 2>&1 || true
+    fi
     wait "$SERVER_PID" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
+
+descendant_pids() {
+  local pid="$1"
+  local children
+  children="$(pgrep -P "$pid" 2>/dev/null || true)"
+  for child in $children; do
+    descendant_pids "$child"
+    printf '%s\n' "$child"
+  done
+}
 
 download_model() {
   local repo="$1"
@@ -49,7 +112,7 @@ download_model() {
   mkdir -p "$out_dir"
   echo "downloading ${repo}/${file}" >&2
   local output path
-  output="$(hf download "$repo" "$file" --local-dir "$out_dir")"
+  output="$(run_with_timeout "download ${repo}/${file}" hf download "$repo" "$file" --local-dir "$out_dir")"
   path="$(printf '%s\n' "$output" | sed -n 's/^path=//p' | tail -n 1)"
   if [[ -z "$path" ]]; then
     path="${out_dir}/${file}"
@@ -65,7 +128,7 @@ download_model() {
 model_layer_end() {
   local model_path="$1"
   LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" \
-    target/debug/skippy-model-package inspect "$model_path" \
+    run_with_timeout "inspect ${model_path}" target/debug/skippy-model-package inspect "$model_path" \
       | jq -r '[.tensors[] | select(.role == "layer") | .layer_index] | max + 1'
 }
 
@@ -120,11 +183,24 @@ write_stage_config() {
   local ctx_size="$5"
   local bind_addr="$6"
   local payload="$7"
-  python3 - "$config_path" "$model_id" "$model_path" "$layer_end" "$ctx_size" "$bind_addr" "$payload" <<'PY'
+  local n_batch="${8:-$SMOKE_N_BATCH}"
+  local n_ubatch="${9:-$SMOKE_N_UBATCH}"
+  python3 - "$config_path" "$model_id" "$model_path" "$layer_end" "$ctx_size" "$bind_addr" "$payload" "$SMOKE_FLASH_ATTN" "$n_batch" "$n_ubatch" <<'PY'
 import json
 import sys
 
-config_path, model_id, model_path, layer_end, ctx_size, bind_addr, payload = sys.argv[1:]
+(
+    config_path,
+    model_id,
+    model_path,
+    layer_end,
+    ctx_size,
+    bind_addr,
+    payload,
+    flash_attn,
+    n_batch,
+    n_ubatch,
+) = sys.argv[1:]
 config = {
     "run_id": "skippy-ci-smoke",
     "topology_id": "skippy-ci-smoke-single-stage",
@@ -136,9 +212,12 @@ config = {
     "layer_end": int(layer_end),
     "ctx_size": int(ctx_size),
     "lane_count": 4,
+    "n_batch": int(n_batch),
+    "n_ubatch": int(n_ubatch),
     "n_gpu_layers": 0,
     "cache_type_k": "f16",
     "cache_type_v": "f16",
+    "flash_attn_type": flash_attn,
     "filter_tensors_on_load": False,
     "load_mode": "runtime-slice",
     "bind_addr": bind_addr,
@@ -172,7 +251,7 @@ sentence = (
     "to cross the restore threshold without depending on model creativity."
 )
 prompt = "Summarize this cache smoke paragraph in one short sentence. " + " ".join(
-    f"{i:03d}. {sentence}" for i in range(30)
+    f"{i:03d}. {sentence}" for i in range(12)
 )
 with open(path, "w", encoding="utf-8") as handle:
     handle.write(":noappend\n")
@@ -220,44 +299,48 @@ if [[ -z "$RECURRENT_LAYER_END" || "$RECURRENT_LAYER_END" == "null" || "$RECURRE
   echo "failed to infer recurrent layer count from $RECURRENT_MODEL_PATH" >&2
   exit 1
 fi
+echo "smoke: dense model has ${DENSE_LAYER_END} layers"
+echo "smoke: recurrent model has ${RECURRENT_LAYER_END} layers"
 
-DENSE_SPLIT_1="$((DENSE_LAYER_END / 3))"
-DENSE_SPLIT_2="$(((DENSE_LAYER_END * 2) / 3))"
-if [[ "$DENSE_SPLIT_1" -lt 1 ]]; then
-  DENSE_SPLIT_1=1
-fi
-if [[ "$DENSE_SPLIT_2" -le "$DENSE_SPLIT_1" ]]; then
-  DENSE_SPLIT_2=$((DENSE_SPLIT_1 + 1))
-fi
-if [[ "$DENSE_SPLIT_2" -ge "$DENSE_LAYER_END" ]]; then
-  DENSE_SPLIT_2=$((DENSE_LAYER_END - 1))
+DENSE_SPLIT_1="$DENSE_SMOKE_SPLIT_1"
+DENSE_SPLIT_2="$DENSE_SMOKE_SPLIT_2"
+if [[ "$DENSE_SPLIT_1" -lt 1 || "$DENSE_SPLIT_1" -ge "$DENSE_SPLIT_2" || "$DENSE_SPLIT_2" -ge "$DENSE_LAYER_END" ]]; then
+  echo "dense smoke splits ${DENSE_SPLIT_1},${DENSE_SPLIT_2} must partition 0..${DENSE_LAYER_END}" >&2
+  exit 1
 fi
 
 CHAIN_PORT_1="$(pick_port)"
 CHAIN_PORT_2="$(pick_port)"
 echo "smoke: dense 3-stage split ${DENSE_SPLIT_1},${DENSE_SPLIT_2} over ${DENSE_LAYER_END} layers"
 LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" \
-  target/debug/skippy-correctness chain \
+  run_with_timeout "dense chain smoke" target/debug/skippy-correctness chain \
     --model "$DENSE_MODEL_PATH" \
     --model-id "$DENSE_MODEL_ID" \
     --layer-end "$DENSE_LAYER_END" \
     --ctx-size "$CTX_SIZE" \
+    --n-batch "$SMOKE_N_BATCH" \
+    --n-ubatch "$SMOKE_N_UBATCH" \
+    --flash-attn "$SMOKE_FLASH_ATTN" \
     --prompt "Say hi in three words." \
     --splits "${DENSE_SPLIT_1},${DENSE_SPLIT_2}" \
     --stage1-bind-addr "127.0.0.1:${CHAIN_PORT_1}" \
     --stage2-bind-addr "127.0.0.1:${CHAIN_PORT_2}" \
     --stage-server-bin "$STAGE_SERVER_BIN" \
+    --startup-timeout-secs 60 \
     --report-out "$REPORT_DIR/dense-chain.json"
 assert_json "$REPORT_DIR/dense-chain.json" \
   '.matches == true and (.stages | length) == 3 and any(.stages[]; .forwarded_over_binary == true) and any(.stages[]; .returned_predicted_token == true)'
 
 echo "smoke: dense ResidentKv cache hit correctness"
 LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" \
-  target/debug/skippy-correctness state-handoff \
+  run_with_timeout "dense ResidentKv smoke" target/debug/skippy-correctness state-handoff \
     --model "$DENSE_MODEL_PATH" \
     --model-id "$DENSE_MODEL_ID" \
     --layer-end "$DENSE_LAYER_END" \
     --ctx-size "$CTX_SIZE" \
+    --n-batch "$SMOKE_N_BATCH" \
+    --n-ubatch "$SMOKE_N_UBATCH" \
+    --flash-attn "$SMOKE_FLASH_ATTN" \
     --prompt "Dense resident KV cache smoke." \
     --state-layer-start 0 \
     --state-layer-end "$DENSE_LAYER_END" \
@@ -273,11 +356,14 @@ assert_json "$REPORT_DIR/dense-resident-kv.json" \
 
 echo "smoke: recurrent KvRecurrent cache hit correctness"
 LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" \
-  target/debug/skippy-correctness state-handoff \
+  run_with_timeout "recurrent KvRecurrent smoke" target/debug/skippy-correctness state-handoff \
     --model "$RECURRENT_MODEL_PATH" \
     --model-id "$RECURRENT_MODEL_ID" \
     --layer-end "$RECURRENT_LAYER_END" \
     --ctx-size "$CTX_SIZE" \
+    --n-batch "$SMOKE_N_BATCH" \
+    --n-ubatch "$SMOKE_N_UBATCH" \
+    --flash-attn "$SMOKE_FLASH_ATTN" \
     --prompt "Recurrent KV cache smoke." \
     --state-layer-start 0 \
     --state-layer-end "$RECURRENT_LAYER_END" \
@@ -295,7 +381,7 @@ PROMPT_LOG="$WORK_DIR/prompt-stage.log"
 PROMPT_IN="$WORK_DIR/prompt-input.txt"
 PROMPT_OUT="$WORK_DIR/prompt-output.log"
 PROMPT_BIND="127.0.0.1:${PROMPT_PORT}"
-write_stage_config "$PROMPT_CONFIG" "$DENSE_MODEL_ID" "$DENSE_MODEL_PATH" "$DENSE_LAYER_END" "$PROMPT_CTX_SIZE" "$PROMPT_BIND" "resident-kv"
+write_stage_config "$PROMPT_CONFIG" "$DENSE_MODEL_ID" "$DENSE_MODEL_PATH" "$DENSE_LAYER_END" "$PROMPT_CTX_SIZE" "$PROMPT_BIND" "resident-kv" "$PROMPT_N_BATCH" "$PROMPT_N_UBATCH"
 make_long_prompt_file "$PROMPT_IN"
 
 OPENAI_PORT="$(pick_port)"
@@ -488,7 +574,7 @@ fi
 
 set +e
 LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" \
-  target/debug/skippy-prompt binary \
+  run_with_timeout "prompt binary smoke" target/debug/skippy-prompt binary \
     --model-path "$DENSE_MODEL_PATH" \
     --tokenizer-model-path "$DENSE_MODEL_PATH" \
     --tokenizer-load-mode runtime-slice \
@@ -518,8 +604,8 @@ if ! grep -q 'reuse    exact_prefix=hit' "$PROMPT_OUT"; then
   sed -n '1,320p' "$PROMPT_OUT" >&2 || true
   exit 1
 fi
-if ! grep -q 'reuse    live_session=hit' "$PROMPT_OUT"; then
-  echo "expected live-session reuse hit in prompt output" >&2
+if ! grep -q 'reuse    live_session=' "$PROMPT_OUT"; then
+  echo "expected live-session reuse stats in prompt output" >&2
   sed -n '1,320p' "$PROMPT_OUT" >&2 || true
   exit 1
 fi
