@@ -345,6 +345,37 @@ grep -q '"object":"chat.completion.chunk"' "$openai_stream_out"
 grep -q '"usage":{"prompt_tokens":' "$openai_stream_out"
 grep -q 'data: \[DONE\]' "$openai_stream_out"
 
+openai_shared_prefix="$(python3 - <<'PY'
+print("Cache smoke shared system prefix. " * 12)
+PY
+)"
+openai_prefix_seed_request="$(jq -cn --arg model "$DENSE_MODEL_ID" --arg prefix "$openai_shared_prefix" '{
+  model: $model,
+  messages: [
+    {role: "system", content: $prefix},
+    {role: "user", content: "Answer with the word seed."}
+  ],
+  max_tokens: 1
+}')"
+openai_prefix_hit_request="$(jq -cn --arg model "$DENSE_MODEL_ID" --arg prefix "$openai_shared_prefix" '{
+  model: $model,
+  messages: [
+    {role: "system", content: $prefix},
+    {role: "user", content: "Answer with the word hit."}
+  ],
+  max_tokens: 1
+}')"
+openai_prefix_seed_response="$WORK_DIR/openai-prefix-seed.json"
+curl -fsS --max-time 30 "${OPENAI_BASE_URL}/chat/completions" \
+  -H 'content-type: application/json' \
+  -d "$openai_prefix_seed_request" >"$openai_prefix_seed_response"
+openai_prefix_hit_response="$WORK_DIR/openai-prefix-hit.json"
+curl -fsS --max-time 30 "${OPENAI_BASE_URL}/chat/completions" \
+  -H 'content-type: application/json' \
+  -d "$openai_prefix_hit_request" >"$openai_prefix_hit_response"
+assert_json "$openai_prefix_hit_response" \
+  '(.usage.prompt_tokens_details.cached_tokens // 0) > 0 and (.usage.prompt_tokens_details.cached_tokens // 0) < .usage.prompt_tokens'
+
 openai_tools_request="$(jq -cn --arg model "$DENSE_MODEL_ID" '{
   model: $model,
   messages: [{role: "user", content: "Say hi"}],

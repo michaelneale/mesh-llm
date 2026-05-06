@@ -2122,6 +2122,7 @@ fn maybe_lookup_binary_prefill(
             result.restored_tokens = restored.token_count;
             result.stats.kv_lookup_hits += 1;
             result.stats.kv_imported_tokens += restored.token_count as i64;
+            result.stats.kv_imported_pages += 1;
             result.stats.kv_hit_stage_mask |= stage_mask(config.stage_index);
             attrs.insert(
                 "skippy.kv.lookup_ms".to_string(),
@@ -2132,6 +2133,10 @@ fn maybe_lookup_binary_prefill(
             attrs.insert(
                 "skippy.kv.restored_tokens".to_string(),
                 json!(restored.token_count),
+            );
+            attrs.insert(
+                "skippy.kv.suffix_prefill_tokens".to_string(),
+                json!(token_ids.len().saturating_sub(restored.token_count)),
             );
             telemetry.emit("stage.binary_kv_lookup_decision", attrs);
             return result;
@@ -2213,50 +2218,52 @@ fn maybe_record_binary_prefill(
             let token_count_usize = usize::try_from(token_count)
                 .unwrap_or(usize::MAX)
                 .min(token_ids.len());
-            match kv.record_exact_state(&mut runtime, session_id, &identity) {
-                Ok(Some(record)) => {
-                    result.recorded_pages = result.recorded_pages.saturating_add(1);
-                    result.recorded_tokens = result
-                        .recorded_tokens
-                        .saturating_add(record.token_count as u64);
-                    result.evicted_entries = result
-                        .evicted_entries
-                        .saturating_add(record.evicted_entries);
-                    result.evicted_tokens = result
-                        .evicted_tokens
-                        .saturating_add(record.evicted_logical_bytes);
-                    attrs.insert(
-                        "skippy.exact_cache.recorded_page_id".to_string(),
-                        json!(record.page_id),
-                    );
-                    attrs.insert(
-                        "skippy.exact_cache.payload_kind".to_string(),
-                        json!(record.payload_kind.to_string()),
-                    );
-                    attrs.insert(
-                        "skippy.exact_cache.logical_bytes".to_string(),
-                        json!(record.logical_bytes),
-                    );
-                    attrs.insert(
-                        "skippy.exact_cache.physical_bytes".to_string(),
-                        json!(record.physical_bytes),
-                    );
-                    attrs.insert(
-                        "skippy.exact_cache.entries".to_string(),
-                        json!(record.entries),
-                    );
-                    attrs.insert(
-                        "skippy.exact_cache.dedupe_reused_block_count".to_string(),
-                        json!(record.dedupe.reused_block_count),
-                    );
-                    continue;
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    attrs.insert(
-                        "skippy.exact_cache.record_error".to_string(),
-                        json!(error.to_string()),
-                    );
+            if token_count_usize == token_ids.len() {
+                match kv.record_exact_state(&mut runtime, session_id, &identity) {
+                    Ok(Some(record)) => {
+                        result.recorded_pages = result.recorded_pages.saturating_add(1);
+                        result.recorded_tokens = result
+                            .recorded_tokens
+                            .saturating_add(record.token_count as u64);
+                        result.evicted_entries = result
+                            .evicted_entries
+                            .saturating_add(record.evicted_entries);
+                        result.evicted_tokens = result
+                            .evicted_tokens
+                            .saturating_add(record.evicted_logical_bytes);
+                        attrs.insert(
+                            "skippy.exact_cache.recorded_page_id".to_string(),
+                            json!(record.page_id),
+                        );
+                        attrs.insert(
+                            "skippy.exact_cache.payload_kind".to_string(),
+                            json!(record.payload_kind.to_string()),
+                        );
+                        attrs.insert(
+                            "skippy.exact_cache.logical_bytes".to_string(),
+                            json!(record.logical_bytes),
+                        );
+                        attrs.insert(
+                            "skippy.exact_cache.physical_bytes".to_string(),
+                            json!(record.physical_bytes),
+                        );
+                        attrs.insert(
+                            "skippy.exact_cache.entries".to_string(),
+                            json!(record.entries),
+                        );
+                        attrs.insert(
+                            "skippy.exact_cache.dedupe_reused_block_count".to_string(),
+                            json!(record.dedupe.reused_block_count),
+                        );
+                        continue;
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        attrs.insert(
+                            "skippy.exact_cache.record_error".to_string(),
+                            json!(error.to_string()),
+                        );
+                    }
                 }
             }
             match kv.record_resident_prefix(

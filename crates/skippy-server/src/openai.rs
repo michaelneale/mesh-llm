@@ -996,6 +996,14 @@ fn prompt_cache_retention_label(retention: openai_frontend::PromptCacheRetention
 #[derive(Clone, Copy, Default)]
 struct GenerationCacheStats {
     cached_prompt_tokens: u32,
+    matched_prefix_tokens: u32,
+    suffix_prefill_tokens: u32,
+    hit_kind: Option<&'static str>,
+}
+
+struct ChainPrefixRestore {
+    restored_tokens: usize,
+    stats: StageReplyStats,
 }
 
 struct PhaseTimer {
@@ -1677,7 +1685,7 @@ impl StageOpenAiBackend {
         session_key: &str,
         downstream: &mut TcpStream,
         prefill_tokens: &[i32],
-    ) -> OpenAiResult<Option<StageReplyStats>> {
+    ) -> OpenAiResult<Option<ChainPrefixRestore>> {
         let Some(kv) = self.kv.as_ref() else {
             return Ok(None);
         };
@@ -1685,35 +1693,39 @@ impl StageOpenAiBackend {
             return Ok(None);
         }
         let base = self.local_kv_message_base(session_key, request.ids);
-        let identity = kv.prefill_identity(request.config, &base, 0, prefill_tokens);
+        let identities = kv.lookup_identities(request.config, &base, 0, prefill_tokens);
         let mut restore_stats = StageReplyStats::default();
         let local_restore = {
             let mut runtime = self
                 .runtime
                 .lock()
                 .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
-            kv.restore_resident_prefix(
-                &mut runtime,
-                session_key,
-                std::slice::from_ref(&identity),
-                prefill_tokens,
-            )
-            .map_err(openai_backend_error)?
+            match kv
+                .restore_exact_state(&mut runtime, session_key, &identities)
+                .map_err(openai_backend_error)?
+            {
+                Some(restored) => Some(restored.token_count),
+                None => kv
+                    .restore_resident_prefix(&mut runtime, session_key, &identities, prefill_tokens)
+                    .map_err(openai_backend_error)?
+                    .map(|restored| restored.token_count),
+            }
         };
         let Some(local_restore) = local_restore else {
             return Ok(None);
         };
-        if local_restore.token_count < prefill_tokens.len() {
+        if local_restore == 0 {
             return Ok(None);
         }
+        let restored_tokens = local_restore.min(prefill_tokens.len());
         restore_stats.kv_lookup_hits += 1;
         restore_stats.kv_imported_pages += 1;
-        restore_stats.kv_imported_tokens += local_restore.token_count as i64;
+        restore_stats.kv_imported_tokens += restored_tokens as i64;
         restore_stats.kv_hit_stage_mask |= openai_stage_mask(request.config.stage_index);
         let restore = embedded_prefix_cache_message(
             WireMessageKind::TryRestorePrefill,
             request.wire_dtype,
-            prefill_tokens,
+            &prefill_tokens[..restored_tokens],
             request.ids.request_id,
             request.ids.session_id,
         )?;
@@ -1743,7 +1755,11 @@ impl StageOpenAiBackend {
         attrs.insert("skippy.kv.decision".to_string(), json!("chain_restore_hit"));
         attrs.insert(
             "skippy.kv.restored_tokens".to_string(),
-            json!(prefill_tokens.len()),
+            json!(restored_tokens),
+        );
+        attrs.insert(
+            "skippy.kv.suffix_prefill_tokens".to_string(),
+            json!(prefill_tokens.len().saturating_sub(restored_tokens)),
         );
         attrs.insert(
             "skippy.kv.lookup_hits".to_string(),
@@ -1755,7 +1771,10 @@ impl StageOpenAiBackend {
         );
         self.telemetry
             .emit("stage.openai_kv_lookup_decision", attrs);
-        Ok(Some(restore_stats))
+        Ok(Some(ChainPrefixRestore {
+            restored_tokens,
+            stats: restore_stats,
+        }))
     }
 
     fn try_restore_embedded_split_prefill_and_decode(
@@ -2398,6 +2417,21 @@ impl StageOpenAiBackend {
             "llama_stage.completion_token_count".to_string(),
             json!(output.completion_tokens),
         );
+        summary_attrs.insert(
+            "skippy.kv.cached_prompt_tokens".to_string(),
+            json!(output.cached_prompt_tokens),
+        );
+        summary_attrs.insert(
+            "skippy.kv.matched_prefix_tokens".to_string(),
+            json!(output.matched_prefix_tokens),
+        );
+        summary_attrs.insert(
+            "skippy.kv.suffix_prefill_tokens".to_string(),
+            json!(output.suffix_prefill_tokens),
+        );
+        if let Some(hit_kind) = output.cache_hit_kind {
+            summary_attrs.insert("skippy.kv.hit_kind".to_string(), json!(hit_kind));
+        }
         summary_attrs.insert(
             "llama_stage.detokenize_ms".to_string(),
             json!(output.detokenize_ms),
@@ -3222,6 +3256,7 @@ impl StageOpenAiBackend {
                     match kv.restore_exact_state(&mut runtime, &session_id, &identities) {
                         Ok(Some(restored)) => {
                             restored_prefill = true;
+                            cache_stats.hit_kind = Some("exact_prefix");
                             let mut attrs = self.openai_attrs(request.ids);
                             attrs.insert("skippy.kv.decision".to_string(), json!("exact_hit"));
                             attrs.insert(
@@ -3235,6 +3270,14 @@ impl StageOpenAiBackend {
                             attrs.insert(
                                 "skippy.exact_cache.restored_tokens".to_string(),
                                 json!(restored.token_count),
+                            );
+                            attrs.insert(
+                                "skippy.kv.matched_prefix_tokens".to_string(),
+                                json!(restored.token_count),
+                            );
+                            attrs.insert(
+                                "skippy.kv.suffix_prefill_tokens".to_string(),
+                                json!(prefill_tokens.len().saturating_sub(restored.token_count)),
                             );
                             restored_prefill_tokens = restored.token_count;
                             cache_stats.cached_prompt_tokens =
@@ -3270,6 +3313,7 @@ impl StageOpenAiBackend {
                         ) {
                             Ok(Some(restored)) => {
                                 restored_prefill = true;
+                                cache_stats.hit_kind = Some("resident_prefix");
                                 let mut attrs = self.openai_attrs(request.ids);
                                 attrs.insert(
                                     "skippy.kv.decision".to_string(),
@@ -3282,6 +3326,16 @@ impl StageOpenAiBackend {
                                 attrs.insert(
                                     "skippy.kv.restored_tokens".to_string(),
                                     json!(restored.token_count),
+                                );
+                                attrs.insert(
+                                    "skippy.kv.matched_prefix_tokens".to_string(),
+                                    json!(restored.token_count),
+                                );
+                                attrs.insert(
+                                    "skippy.kv.suffix_prefill_tokens".to_string(),
+                                    json!(prefill_tokens
+                                        .len()
+                                        .saturating_sub(restored.token_count)),
                                 );
                                 restored_prefill_tokens = restored.token_count;
                                 cache_stats.cached_prompt_tokens =
@@ -3350,6 +3404,9 @@ impl StageOpenAiBackend {
                         .prefill(&session_id, &prefill_tokens[restored_prefill_tokens..])
                         .map_err(openai_backend_error)?;
                 }
+                cache_stats.matched_prefix_tokens = saturating_u32(restored_prefill_tokens);
+                cache_stats.suffix_prefill_tokens =
+                    saturating_u32(prefill_tokens.len().saturating_sub(restored_prefill_tokens));
                 if !restored_prefill || decoded_prefill_suffix {
                     if let Some(kv) = self.kv.as_ref() {
                         let base = self.local_kv_message_base(&session_id, request.ids);
@@ -3932,6 +3989,7 @@ impl StageOpenAiBackend {
             let mut prefill_stage0_cache_misses = 0usize;
             let mut prefill_stage0_cache_errors = 0usize;
             let mut prefill_chain_cache_restored = false;
+            let mut prefill_chain_restored_tokens = 0usize;
             let mut prefill_chain_cache_stats = StageReplyStats::default();
             let mut prefill_stage0_full_recorded = false;
             let mut fused_first_decode = None;
@@ -3955,26 +4013,41 @@ impl StageOpenAiBackend {
                         wire_sampling.clone(),
                     )? {
                         prefill_chain_cache_restored = true;
+                        prefill_chain_restored_tokens = prefill_token_count;
                         prefill_chain_cache_stats = fused.reply_stats;
                         cache_stats.cached_prompt_tokens = saturating_u32(prefill_token_count);
+                        cache_stats.matched_prefix_tokens = saturating_u32(prefill_token_count);
+                        cache_stats.suffix_prefill_tokens = 0;
+                        cache_stats.hit_kind = Some("chain_fused_exact_prefix");
                         fused_first_decode = Some(fused);
                     }
                 }
                 if !prefill_chain_cache_restored {
-                    if let Some(stats) = self.try_restore_embedded_split_prefill(
+                    if let Some(restore) = self.try_restore_embedded_split_prefill(
                         &request,
                         &session_key,
                         downstream,
                         prefill_tokens,
                     )? {
-                        prefill_chain_cache_restored = true;
-                        prefill_chain_cache_stats = stats;
-                        cache_stats.cached_prompt_tokens = saturating_u32(prefill_token_count);
+                        prefill_chain_restored_tokens = restore.restored_tokens;
+                        prefill_chain_cache_restored =
+                            prefill_chain_restored_tokens >= prefill_tokens.len();
+                        prefill_chain_cache_stats = restore.stats;
+                        cache_stats.cached_prompt_tokens =
+                            saturating_u32(prefill_chain_restored_tokens);
+                        cache_stats.matched_prefix_tokens =
+                            saturating_u32(prefill_chain_restored_tokens);
+                        cache_stats.suffix_prefill_tokens = saturating_u32(
+                            prefill_tokens
+                                .len()
+                                .saturating_sub(prefill_chain_restored_tokens),
+                        );
+                        cache_stats.hit_kind = Some("chain_prefix");
                     }
                 }
-                let mut pos_start = 0usize;
+                let mut pos_start = prefill_chain_restored_tokens.min(prefill_tokens.len());
                 let mut chunk_index = 0usize;
-                while !prefill_chain_cache_restored && pos_start < prefill_tokens.len() {
+                while pos_start < prefill_tokens.len() {
                     if request
                         .cancellation
                         .is_some_and(openai_frontend::CancellationToken::is_cancelled)
@@ -4203,6 +4276,14 @@ impl StageOpenAiBackend {
             prefill_attrs.insert(
                 "skippy.kv.chain_cache_restored".to_string(),
                 json!(prefill_chain_cache_restored),
+            );
+            prefill_attrs.insert(
+                "skippy.kv.matched_prefix_tokens".to_string(),
+                json!(prefill_chain_restored_tokens),
+            );
+            prefill_attrs.insert(
+                "skippy.kv.suffix_prefill_tokens".to_string(),
+                json!(prefill_token_count.saturating_sub(prefill_chain_restored_tokens)),
             );
             prefill_attrs.insert(
                 "skippy.kv.chain_cache_hits".to_string(),
@@ -5992,6 +6073,9 @@ where
             prompt_tokens: saturating_u32(prompt_token_count),
             completion_tokens: saturating_u32(self.completion_tokens),
             cached_prompt_tokens: cache_stats.cached_prompt_tokens,
+            matched_prefix_tokens: cache_stats.matched_prefix_tokens,
+            suffix_prefill_tokens: cache_stats.suffix_prefill_tokens,
+            cache_hit_kind: cache_stats.hit_kind,
             text: self.text,
             finish_reason: self.finish_reason,
             detokenize_ms: self.metrics.detokenize_ms,
@@ -6005,6 +6089,9 @@ struct GeneratedText {
     prompt_tokens: u32,
     completion_tokens: u32,
     cached_prompt_tokens: u32,
+    matched_prefix_tokens: u32,
+    suffix_prefill_tokens: u32,
+    cache_hit_kind: Option<&'static str>,
     text: String,
     finish_reason: FinishReason,
     detokenize_ms: f64,
