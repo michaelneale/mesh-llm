@@ -35,8 +35,8 @@ pub(crate) use hooks::MeshAutoHookPolicy;
 pub(crate) use kv_cache::KvCachePolicy;
 pub(crate) use materialization::{
     configure_materialized_stage_cache, materialize_stage_config, materialize_stage_load,
-    materialized_stage_cache_dir, prune_unpinned_materialized_stages,
-    remove_materialized_stages_for_sources,
+    materialized_stage_cache_dir, materialized_stages_for_sources,
+    prune_unpinned_materialized_stages, remove_materialized_stages_for_sources,
 };
 pub(crate) use package::{synthetic_direct_gguf_package, SkippyPackageIdentity};
 pub(crate) use stage::{

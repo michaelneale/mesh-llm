@@ -134,13 +134,14 @@ impl ModelsFormatter for JsonFormatter {
                     "type": installed_model_kind_code(&row.path),
                     "size_bytes": row.size,
                     "size": row.size.map(super::formatters::format_installed_size),
+                    "layer_count": row.layer_count,
                     "mesh_managed": row.managed_by_mesh,
                     "last_used_at": row.last_used_at,
                     "capabilities": capabilities_json(row.capabilities),
                     "ref": row.model_ref,
-                    "show": format!("mesh-llm models show {}", row.model_ref),
-                    "download": format!("mesh-llm models download {}", row.model_ref),
-                    "delete": format!("mesh-llm models delete {}", row.model_ref),
+                    "show": row.show_command.as_deref(),
+                    "download": row.download_command.as_deref(),
+                    "delete": row.delete_command.as_str(),
                     "path": row.path,
                     "about": row.catalog_model.map(|m| m.description.clone()),
                     "draft": row.catalog_model.and_then(|m| m.draft.clone()),
@@ -151,7 +152,7 @@ impl ModelsFormatter for JsonFormatter {
             "cache_dir": huggingface_cache_dir(),
             "delete_example": rows
                 .first()
-                .map(|row| format!("mesh-llm models delete {}", row.model_ref)),
+                .map(|row| row.delete_command.clone()),
             "results": models,
         }))
     }
@@ -198,12 +199,18 @@ impl ModelsFormatter for JsonFormatter {
     }
 
     fn render_delete_preview(&self, resolved: &CliResolvedModel) -> Result<()> {
-        let file_size = std::fs::metadata(&resolved.path)
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let file_size = resolved
+            .paths
+            .iter()
+            .map(|path| std::fs::metadata(path).map(|m| m.len()).unwrap_or(0))
+            .sum::<u64>();
         print_json(json!({
             "display_name": resolved.display_name,
             "path": resolved.path,
+            "paths": resolved.paths,
+            "file_count": resolved.paths.len(),
+            "derived_stage_paths": resolved.derived_stage_paths,
+            "derived_stage_file_count": resolved.derived_stage_paths.len(),
             "is_exact_path": resolved.is_exact_path,
             "file_size_bytes": file_size,
             "file_size_human": format_installed_size(file_size),
