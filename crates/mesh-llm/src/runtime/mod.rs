@@ -4972,6 +4972,45 @@ mod tests {
         }
     }
 
+    fn remote_catalog_layer_entry(
+        variant_name: &str,
+        curated_name: &str,
+        source_repo: &str,
+        package_repo: &str,
+    ) -> models::remote_catalog::CatalogEntry {
+        let mut variants = std::collections::HashMap::new();
+        variants.insert(
+            variant_name.to_string(),
+            models::remote_catalog::CatalogVariant {
+                source: models::remote_catalog::CatalogSource {
+                    repo: source_repo.to_string(),
+                    revision: Some("main".to_string()),
+                    file: Some(format!("{variant_name}.gguf")),
+                },
+                curated: models::remote_catalog::CatalogCurated {
+                    name: curated_name.to_string(),
+                    size: None,
+                    description: None,
+                    draft: None,
+                    moe: None,
+                    extra_files: Vec::new(),
+                    mmproj: None,
+                },
+                packages: vec![models::remote_catalog::CatalogPackage {
+                    package_type: "layer-package".to_string(),
+                    repo: package_repo.to_string(),
+                    layer_count: Some(12),
+                    total_bytes: Some(42),
+                }],
+            },
+        );
+        models::remote_catalog::CatalogEntry {
+            schema_version: 1,
+            source_repo: source_repo.to_string(),
+            variants,
+        }
+    }
+
     fn startup_model_plan(model_ref: &str) -> StartupModelPlan {
         StartupModelPlan {
             declared_ref: model_ref.to_string(),
@@ -4987,6 +5026,28 @@ mod tests {
             n_ubatch: None,
             flash_attention: FlashAttentionType::Auto,
         }
+    }
+
+    #[test]
+    #[serial]
+    fn split_layer_package_resolution_checks_remote_catalog_for_model_name() {
+        let _catalog_guard =
+            models::remote_catalog::set_catalog_entries_for_test(vec![remote_catalog_layer_entry(
+                "RemoteSplitOnlyModel-Q4_K_M",
+                "Remote Split Only Model Q4_K_M",
+                "mesh-test/remote-split-only-model",
+                "meshllm/remote-split-only-model-layers",
+            )]);
+
+        let resolved = resolve_split_layer_package(
+            "Remote Split Only Model",
+            Path::new("Remote Split Only Model"),
+        );
+
+        assert_eq!(
+            resolved,
+            Some("hf://meshllm/remote-split-only-model-layers".to_string())
+        );
     }
 
     #[test]
