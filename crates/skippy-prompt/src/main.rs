@@ -16,15 +16,21 @@ use std::{
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use mesh_client::models::gguf::{scan_gguf_compact_meta, GgufCompactMeta};
 use openai_frontend::{normalize_reasoning_template_options, ReasoningConfig};
 use rustyline::{error::ReadlineError, DefaultEditor};
-use serde_json::{json, Value};
+use serde_json::Value;
 use skippy_protocol::binary::{
     recv_reply, state_flags, write_stage_message, StageReplyStats, StageStateHeader,
-    StageWireMessage, WireActivationDType, WireMessageKind, WireReplyKind, READY_MAGIC,
+    StageWireMessage, WireActivationDType, WireMessageKind, WireReplyKind, LLAMA_TOKEN_NULL,
+    READY_MAGIC,
+};
+use skippy_protocol::{
+    FlashAttentionType as StageFlashAttentionType, LoadMode, PeerConfig, StageConfig,
+    StageKvCacheConfig, StageKvCacheMode, StageKvCachePayload,
 };
 use skippy_runtime::{
-    package::{materialize_layer_package, PackageStageRequest},
+    package::{inspect_layer_package, materialize_layer_package, PackageStageRequest},
     restore_native_logs, suppress_native_logs, ChatTemplateMessage, ChatTemplateOptions, ModelInfo,
     RuntimeConfig, RuntimeLoadMode, StageModel, StageSession, GGML_TYPE_F16,
 };
@@ -41,6 +47,9 @@ const DEFAULT_CONFIDENCE_STEP_TOKENS: usize = usize::MAX;
 const DEFAULT_MAX_CONFIDENCE: f32 = 0.95;
 const DEFAULT_COUNT_STEP_TOKENS: usize = usize::MAX;
 const DEFAULT_MARGIN_STEP_TOKENS: usize = usize::MAX;
+const DEFAULT_MESH_CTX_SIZE: u32 = 4096;
+const DEFAULT_MESH_PROMPT_MAX_NEW_TOKENS: usize = 0;
+const PROMPT_EXACT_PREFIX_RESTORE_MIN_TOKENS: usize = 512;
 
 #[derive(Parser)]
 #[command(about = "Prompt CLI for skippy binary servers")]
@@ -85,8 +94,6 @@ pub enum NgramProposalMode {
 pub struct PromptArgs {
     #[arg(long, default_value = "target/debug/metrics-server")]
     pub metrics_server_bin: PathBuf,
-    #[arg(long, default_value = "target/debug/kv-server")]
-    pub kv_server_bin: PathBuf,
     #[arg(long, default_value = "target/debug/ngram-pool-server")]
     pub ngram_pool_server_bin: PathBuf,
     #[arg(long, default_value = "target/debug/skippy-server")]
@@ -119,7 +126,7 @@ pub struct PromptArgs {
     pub single_stage: bool,
     #[arg(long, default_value_t = 40)]
     pub layer_end: u32,
-    #[arg(long, default_value_t = 4096)]
+    #[arg(long, default_value_t = DEFAULT_MESH_CTX_SIZE)]
     pub ctx_size: u32,
     #[arg(long, default_value_t = -1, allow_hyphen_values = true)]
     pub n_gpu_layers: i32,
@@ -129,7 +136,11 @@ pub struct PromptArgs {
     pub activation_wire_dtype: String,
     #[arg(long, default_value_t = 128)]
     pub prefill_chunk_size: usize,
-    #[arg(long, default_value_t = 64)]
+    #[arg(
+        long,
+        default_value_t = DEFAULT_MESH_PROMPT_MAX_NEW_TOKENS,
+        help = "Maximum generated tokens; 0 matches mesh/OpenAI default behavior by using the remaining context budget."
+    )]
     pub max_new_tokens: usize,
     #[arg(long)]
     pub draft_model_path: Option<PathBuf>,
@@ -169,6 +180,10 @@ pub struct PromptArgs {
     pub kv_mode: String,
     #[arg(long, default_value_t = 512)]
     pub kv_page_size_tokens: u64,
+    #[arg(long, default_value = "f16")]
+    pub cache_type_k: String,
+    #[arg(long, default_value = "f16")]
+    pub cache_type_v: String,
     #[arg(long, default_value = "127.0.0.1:18080")]
     pub metrics_http_addr: SocketAddr,
     #[arg(long, default_value = "127.0.0.1:14317")]
@@ -208,8 +223,6 @@ pub struct PromptArgs {
     pub no_think: bool,
     #[arg(long)]
     pub thinking_token_budget: Option<usize>,
-    #[arg(long)]
-    pub show_thinking: bool,
 }
 
 #[derive(Parser)]
@@ -228,7 +241,7 @@ pub struct BinaryReplArgs {
     pub tokenizer_layer_start: u32,
     #[arg(long, default_value_t = 10)]
     pub tokenizer_layer_end: u32,
-    #[arg(long, default_value_t = 4096)]
+    #[arg(long, default_value_t = DEFAULT_MESH_CTX_SIZE)]
     pub ctx_size: u32,
     #[arg(long, default_value_t = -1, allow_hyphen_values = true)]
     pub n_gpu_layers: i32,
@@ -238,7 +251,11 @@ pub struct BinaryReplArgs {
     pub activation_wire_dtype: String,
     #[arg(long, default_value_t = 128)]
     pub prefill_chunk_size: usize,
-    #[arg(long, default_value_t = 64)]
+    #[arg(
+        long,
+        default_value_t = DEFAULT_MESH_PROMPT_MAX_NEW_TOKENS,
+        help = "Maximum generated tokens; 0 matches mesh/OpenAI default behavior by using the remaining context budget."
+    )]
     pub max_new_tokens: usize,
     #[arg(long)]
     pub draft_model_path: Option<PathBuf>,
@@ -295,8 +312,6 @@ pub struct BinaryReplArgs {
     pub no_think: bool,
     #[arg(long)]
     pub thinking_token_budget: Option<usize>,
-    #[arg(long)]
-    pub show_thinking: bool,
     #[arg(skip)]
     pub diagnostics_hint: Option<String>,
     #[arg(skip)]
@@ -324,6 +339,43 @@ struct PromptInterruptState {
 
 struct ActivePromptStream {
     state: Arc<PromptInterruptState>,
+}
+
+#[derive(Default)]
+struct PromptLiveSession {
+    messages: Vec<ChatTemplateMessage>,
+    resident_tokens: Vec<i32>,
+    stream: Option<TcpStream>,
+    dirty: bool,
+}
+
+#[derive(Clone, Copy)]
+struct PromptSessionReuseStats {
+    outcome: &'static str,
+    reused_tokens: usize,
+    appended_prefill_tokens: usize,
+    resident_tokens_before: usize,
+    resident_tokens_after: usize,
+}
+
+impl Default for PromptSessionReuseStats {
+    fn default() -> Self {
+        Self {
+            outcome: "disabled",
+            reused_tokens: 0,
+            appended_prefill_tokens: 0,
+            resident_tokens_before: 0,
+            resident_tokens_after: 0,
+        }
+    }
+}
+
+impl PromptLiveSession {
+    fn mark_dirty(&mut self) {
+        self.resident_tokens.clear();
+        self.stream.take();
+        self.dirty = true;
+    }
 }
 
 impl PromptInterruptState {
@@ -420,8 +472,6 @@ struct LocalStage {
     bind_addr: String,
     endpoint_addr: String,
     config_path: PathBuf,
-    kv_config_path: PathBuf,
-    kv_uds_path: PathBuf,
     model_path: PathBuf,
     remote: Option<RemoteStage>,
 }
@@ -430,14 +480,9 @@ struct RemoteStage {
     host: String,
     stage_dir: String,
     stage_server_bin: String,
-    kv_server_bin: String,
     model_path: String,
     config_path: String,
-    kv_config_path: String,
-    kv_uds_path: String,
-    kv_page_root: String,
     stage_log_path: String,
-    kv_log_path: String,
     stage_exit_path: String,
 }
 
@@ -505,10 +550,7 @@ fn prompt_repl_launch(args: PromptArgs) -> Result<()> {
             ranges.len()
         );
     }
-    let kv_mode = match args.kv_mode.as_str() {
-        "disabled" | "record" | "lookup-record" | "correctness" => args.kv_mode.as_str(),
-        other => bail!("unsupported kv mode {other}"),
-    };
+    let kv_mode = parse_stage_kv_mode(&args.kv_mode)?;
 
     let run_id = format!("prompt-{}", unix_millis());
     let run_dir = args.run_root.join(&run_id);
@@ -532,7 +574,7 @@ fn prompt_repl_launch(args: PromptArgs) -> Result<()> {
         .run_root
         .join("model-package-cache")
         .join(&model_package_cache_key);
-    let binary_cache_key = binary_cache_key(&args.stage_server_bin, &args.kv_server_bin)?;
+    let binary_cache_key = binary_cache_key(&args.stage_server_bin)?;
 
     let mut stages = Vec::with_capacity(ranges.len());
     for (index, (layer_start, layer_end)) in ranges.iter().copied().enumerate() {
@@ -562,14 +604,9 @@ fn prompt_repl_launch(args: PromptArgs) -> Result<()> {
                 Some(RemoteStage {
                     host,
                     stage_server_bin: format!("{remote_binary_cache_dir}/skippy-server"),
-                    kv_server_bin: format!("{remote_binary_cache_dir}/kv-server"),
                     model_path: remote_model_package_dir,
                     config_path: format!("{stage_dir}/stage-{index}.json"),
-                    kv_config_path: format!("{stage_dir}/kv-stage-{index}.json"),
-                    kv_uds_path: format!("{stage_dir}/kv-stage-{index}.sock"),
-                    kv_page_root: format!("{stage_dir}/kv-pages"),
                     stage_log_path: format!("{stage_dir}/stage-{index}.log"),
-                    kv_log_path: format!("{stage_dir}/kv-stage-{index}.log"),
                     stage_exit_path: format!("{stage_dir}/stage.exit"),
                     stage_dir,
                 }),
@@ -590,8 +627,6 @@ fn prompt_repl_launch(args: PromptArgs) -> Result<()> {
             bind_addr,
             endpoint_addr,
             config_path: config_dir.join(format!("stage-{index}.json")),
-            kv_config_path: config_dir.join(format!("kv-stage-{index}.json")),
-            kv_uds_path: run_dir.join(format!("kv-stage-{index}.sock")),
             model_path: model_cache_dir.join(format!("stage-{index}.gguf")),
             remote: remote_stage,
         });
@@ -685,19 +720,6 @@ fn prompt_repl_launch(args: PromptArgs) -> Result<()> {
         );
         start_remote_stages(&args, &stages, &metrics_otlp_url, &mut children)?;
     } else {
-        eprintln!("launch: starting {} local KV sidecars", stages.len());
-        for stage in &stages {
-            let mut kv = Command::new(&args.kv_server_bin);
-            kv.args(["serve", "--config", path_str(&stage.kv_config_path)?]);
-            configure_process_log(
-                &mut kv,
-                &run_dir.join(format!("kv-stage-{}.log", stage.stage_index)),
-            )?;
-            children.push(ChildGuard::spawn(kv)?);
-        }
-        eprintln!("launch: waiting for local KV sockets");
-        wait_for_kv_sockets(&stages, args.startup_timeout_secs)?;
-
         eprintln!("launch: starting {} local stage servers", stages.len());
         for stage in stages.iter().rev() {
             let mut server = Command::new(&args.stage_server_bin);
@@ -804,7 +826,6 @@ fn prompt_repl_launch(args: PromptArgs) -> Result<()> {
         raw_prompt: args.raw_prompt,
         no_think: args.no_think,
         thinking_token_budget: args.thinking_token_budget,
-        show_thinking: args.show_thinking,
         diagnostics_hint: Some(stage_diagnostics_hint(&run_dir, &stages)),
         log_context,
     });
@@ -839,6 +860,8 @@ pub fn binary_repl(args: BinaryReplArgs) -> Result<()> {
             lane_count: 1,
             n_batch: None,
             n_ubatch: None,
+            n_threads: None,
+            n_threads_batch: None,
             n_gpu_layers: args.tokenizer_n_gpu_layers,
             selected_backend_device: None,
             cache_type_k: GGML_TYPE_F16,
@@ -880,6 +903,8 @@ pub fn binary_repl(args: BinaryReplArgs) -> Result<()> {
                 lane_count: 1,
                 n_batch: None,
                 n_ubatch: None,
+                n_threads: None,
+                n_threads_batch: None,
                 n_gpu_layers: 0,
                 selected_backend_device: None,
                 cache_type_k: GGML_TYPE_F16,
@@ -914,7 +939,9 @@ pub fn binary_repl(args: BinaryReplArgs) -> Result<()> {
 
     eprintln!(
         "binary REPL connected to first stage at {}; max_new_tokens={} prefill_chunk_size={}",
-        args.first_stage_addr, args.max_new_tokens, args.prefill_chunk_size
+        args.first_stage_addr,
+        format_prompt_max_new_tokens(args.max_new_tokens),
+        args.prefill_chunk_size
     );
     if let Some(draft) = draft.as_ref() {
         eprintln!(
@@ -945,14 +972,7 @@ pub fn binary_repl(args: BinaryReplArgs) -> Result<()> {
             None => eprintln!("thinking: model template default"),
         }
     }
-    eprintln!(
-        "thinking output: {}",
-        if args.show_thinking {
-            "showing <think> blocks"
-        } else {
-            "hiding visible <think> blocks"
-        }
-    );
+    eprintln!("thinking output: raw returned tokens");
     let default_session_id = args.session_id.clone().unwrap_or_else(default_session_id);
     let default_wire_session_id = stable_wire_id(&[default_session_id.as_bytes()]);
     eprintln!("session_id={default_session_id} wire_session_id={default_wire_session_id}");
@@ -982,13 +1002,15 @@ pub fn binary_repl(args: BinaryReplArgs) -> Result<()> {
     let mut editor = prompt_editor(&history)?;
     if args.log_context.is_some() {
         eprintln!(
-            "Type a prompt, use Up/Down for history, Ctrl-C to interrupt generation, :history, :logs [name] [lines], :rerun N, or :quit."
+            "Type a prompt, use Up/Down for history, Ctrl-C to interrupt generation, :history, :logs [name] [lines], :rerun N, :noappend, :append, or :quit."
         );
     } else {
-        eprintln!("Type a prompt, use Up/Down for history, Ctrl-C to interrupt generation, :history, :rerun N, or :quit.");
+        eprintln!("Type a prompt, use Up/Down for history, Ctrl-C to interrupt generation, :history, :rerun N, :noappend, :append, or :quit.");
     }
 
     let mut prompt_index = 0usize;
+    let mut live_session = PromptLiveSession::default();
+    let mut append_transcript = true;
     loop {
         let Some(input) = read_history_prompt(&mut editor, "> ")? else {
             break;
@@ -1016,6 +1038,7 @@ pub fn binary_repl(args: BinaryReplArgs) -> Result<()> {
                 wire_session_id,
                 prompt_index,
                 prompt: &prompt,
+                live_session: None,
             })
             .or_else(|error| handle_prompt_error(error, &interrupt, prompt_index))?;
             prompt_index += 1;
@@ -1030,6 +1053,25 @@ pub fn binary_repl(args: BinaryReplArgs) -> Result<()> {
         }
         if input == ":history" {
             history.print();
+            continue;
+        }
+        if input == ":noappend" {
+            if append_transcript {
+                stop_live_prompt_session(
+                    &mut live_session,
+                    &args,
+                    wire_dtype,
+                    prompt_index,
+                    default_wire_session_id,
+                )?;
+            }
+            append_transcript = false;
+            eprintln!("prompt mode: noappend; each prompt is sent as a fresh request");
+            continue;
+        }
+        if input == ":append" {
+            append_transcript = true;
+            eprintln!("prompt mode: append; prompts continue the live chat transcript");
             continue;
         }
         if input == ":logs" || input.starts_with(":logs ") {
@@ -1061,6 +1103,7 @@ pub fn binary_repl(args: BinaryReplArgs) -> Result<()> {
                 wire_session_id: default_wire_session_id,
                 prompt_index,
                 prompt: &prompt,
+                live_session: None,
             })
             .or_else(|error| handle_prompt_error(error, &interrupt, prompt_index))?;
             prompt_index += 1;
@@ -1068,7 +1111,7 @@ pub fn binary_repl(args: BinaryReplArgs) -> Result<()> {
         }
         history.push(input)?;
         let _ = editor.add_history_entry(input);
-        run_prompt(PromptRun {
+        let prompt_result = run_prompt(PromptRun {
             args: &args,
             tokenizer: &tokenizer,
             chat_template_model: chat_template_model.as_ref(),
@@ -1080,10 +1123,22 @@ pub fn binary_repl(args: BinaryReplArgs) -> Result<()> {
             wire_session_id: default_wire_session_id,
             prompt_index,
             prompt: input,
-        })
-        .or_else(|error| handle_prompt_error(error, &interrupt, prompt_index))?;
+            live_session: append_transcript.then_some(&mut live_session),
+        });
+        if prompt_result.is_err() {
+            live_session.mark_dirty();
+        }
+        prompt_result.or_else(|error| handle_prompt_error(error, &interrupt, prompt_index))?;
         prompt_index += 1;
     }
+
+    stop_live_prompt_session(
+        &mut live_session,
+        &args,
+        wire_dtype,
+        prompt_index,
+        default_wire_session_id,
+    )?;
 
     Ok(())
 }
@@ -1149,13 +1204,6 @@ fn prompt_log_context(
     for stage in stages {
         if let Some(remote) = stage.remote.as_ref() {
             entries.push(PromptLogEntry {
-                label: format!("kv-stage-{}", stage.stage_index),
-                target: PromptLogTarget::Remote {
-                    host: remote.host.clone(),
-                    path: remote.kv_log_path.clone(),
-                },
-            });
-            entries.push(PromptLogEntry {
                 label: format!("stage-{}", stage.stage_index),
                 target: PromptLogTarget::Remote {
                     host: remote.host.clone(),
@@ -1163,12 +1211,6 @@ fn prompt_log_context(
                 },
             });
         } else {
-            entries.push(PromptLogEntry {
-                label: format!("kv-stage-{}", stage.stage_index),
-                target: PromptLogTarget::Local(
-                    run_dir.join(format!("kv-stage-{}.log", stage.stage_index)),
-                ),
-            });
             entries.push(PromptLogEntry {
                 label: format!("stage-{}", stage.stage_index),
                 target: PromptLogTarget::Local(
@@ -1287,136 +1329,6 @@ fn tail_remote_log(host: &str, path: &str, lines: usize) -> Result<Vec<String>> 
         .collect())
 }
 
-struct ThinkingOutputFilter {
-    enabled: bool,
-    hidden: bool,
-    suppress_leading_ws: bool,
-    pending: String,
-}
-
-struct FilteredOutput {
-    text: String,
-    suppressed_thinking: bool,
-}
-
-impl ThinkingOutputFilter {
-    const OPEN: &'static str = "<think>";
-    const CLOSE: &'static str = "</think>";
-    const KEEP_BYTES: usize = 7;
-
-    fn new(enabled: bool) -> Self {
-        Self {
-            enabled,
-            hidden: false,
-            suppress_leading_ws: false,
-            pending: String::new(),
-        }
-    }
-
-    fn push(&mut self, piece: &str) -> FilteredOutput {
-        if !self.enabled {
-            return FilteredOutput {
-                text: piece.to_string(),
-                suppressed_thinking: false,
-            };
-        }
-        self.pending.push_str(piece);
-        let mut output = String::new();
-        let mut suppressed_thinking = false;
-        loop {
-            if self.hidden {
-                let Some(end) = find_ascii_case_insensitive(&self.pending, Self::CLOSE) else {
-                    let keep_bytes = self.pending.len().min(Self::KEEP_BYTES);
-                    let drain_to =
-                        previous_char_boundary(&self.pending, self.pending.len() - keep_bytes);
-                    suppressed_thinking |= drain_to > 0;
-                    self.pending.drain(..drain_to);
-                    break;
-                };
-                let drain_to = end + Self::CLOSE.len();
-                suppressed_thinking |= drain_to > 0;
-                self.pending.drain(..drain_to);
-                self.hidden = false;
-                self.suppress_leading_ws = true;
-                continue;
-            }
-
-            if self.suppress_leading_ws {
-                let trimmed = self.pending.trim_start().len();
-                let trim_bytes = self.pending.len().saturating_sub(trimmed);
-                if trim_bytes > 0 {
-                    self.pending.drain(..trim_bytes);
-                }
-                self.suppress_leading_ws = false;
-            }
-
-            if let Some(start) = find_ascii_case_insensitive(&self.pending, Self::OPEN) {
-                output.push_str(&self.pending[..start]);
-                let drain_to = start + Self::OPEN.len();
-                suppressed_thinking = true;
-                self.pending.drain(..drain_to);
-                self.hidden = true;
-                continue;
-            }
-
-            let emit_bytes = self.pending.len().saturating_sub(Self::KEEP_BYTES);
-            if emit_bytes == 0 {
-                break;
-            }
-            let emit_bytes = previous_char_boundary(&self.pending, emit_bytes);
-            output.push_str(&self.pending[..emit_bytes]);
-            self.pending.drain(..emit_bytes);
-            break;
-        }
-        FilteredOutput {
-            text: output,
-            suppressed_thinking,
-        }
-    }
-
-    fn finish(&mut self) -> FilteredOutput {
-        if !self.enabled {
-            return FilteredOutput {
-                text: String::new(),
-                suppressed_thinking: false,
-            };
-        }
-        if self.hidden {
-            self.pending.clear();
-            self.hidden = false;
-            self.suppress_leading_ws = false;
-            return FilteredOutput {
-                text: String::new(),
-                suppressed_thinking: true,
-            };
-        }
-        let mut output = std::mem::take(&mut self.pending);
-        if self.suppress_leading_ws {
-            output = output.trim_start().to_string();
-            self.suppress_leading_ws = false;
-        }
-        FilteredOutput {
-            text: output,
-            suppressed_thinking: false,
-        }
-    }
-}
-
-fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
-    haystack
-        .as_bytes()
-        .windows(needle.len())
-        .position(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
-}
-
-fn previous_char_boundary(value: &str, index: usize) -> usize {
-    let mut index = index.min(value.len());
-    while index > 0 && !value.is_char_boundary(index) {
-        index -= 1;
-    }
-    index
-}
-
 fn format_prompt_for_model(
     tokenizer: &StageModel,
     chat_template_model: Option<&StageModel>,
@@ -1426,14 +1338,42 @@ fn format_prompt_for_model(
     if args.raw_prompt {
         return Ok(prompt.to_string());
     }
+
+    format_messages_for_model(
+        tokenizer,
+        chat_template_model,
+        &[ChatTemplateMessage::new("user", prompt)],
+        args,
+    )
+}
+
+fn format_messages_for_model(
+    tokenizer: &StageModel,
+    chat_template_model: Option<&StageModel>,
+    messages: &[ChatTemplateMessage],
+    args: &BinaryReplArgs,
+) -> Result<String> {
+    format_messages_for_model_with_options(tokenizer, chat_template_model, messages, args, true)
+}
+
+fn format_messages_for_model_with_options(
+    tokenizer: &StageModel,
+    chat_template_model: Option<&StageModel>,
+    messages: &[ChatTemplateMessage],
+    args: &BinaryReplArgs,
+    add_assistant: bool,
+) -> Result<String> {
+    if args.raw_prompt {
+        bail!("raw prompt mode does not support chat message formatting");
+    }
     let enable_thinking = prompt_thinking_override(args)?;
 
     chat_template_model
         .unwrap_or(tokenizer)
         .apply_chat_template_with_options(
-            &[ChatTemplateMessage::new("user", prompt)],
+            messages,
             ChatTemplateOptions {
-                add_assistant: true,
+                add_assistant,
                 enable_thinking,
             },
         )
@@ -1464,7 +1404,7 @@ fn prompt_openai_reasoning_config(
     no_think: bool,
     thinking_token_budget: Option<usize>,
 ) -> Result<Option<ReasoningConfig>> {
-    if no_think || thinking_token_budget.unwrap_or(0) == 0 {
+    if no_think || thinking_token_budget == Some(0) {
         return Ok(Some(ReasoningConfig {
             enabled: Some(false),
             max_tokens: Some(0),
@@ -1486,6 +1426,29 @@ fn prompt_openai_reasoning_config(
     }))
 }
 
+fn effective_prompt_max_new_tokens(
+    configured: usize,
+    ctx_size: u32,
+    prompt_token_count: usize,
+) -> Result<usize> {
+    if configured > 0 {
+        return Ok(configured);
+    }
+    let ctx_size = usize::try_from(ctx_size).context("ctx_size exceeds usize")?;
+    if prompt_token_count >= ctx_size {
+        bail!("prompt tokens exceed context window (n_ctx={ctx_size})");
+    }
+    Ok(ctx_size - prompt_token_count)
+}
+
+fn format_prompt_max_new_tokens(value: usize) -> String {
+    if value == DEFAULT_MESH_PROMPT_MAX_NEW_TOKENS {
+        "context-budget".to_string()
+    } else {
+        value.to_string()
+    }
+}
+
 struct PromptRun<'a> {
     args: &'a BinaryReplArgs,
     tokenizer: &'a StageModel,
@@ -1498,6 +1461,7 @@ struct PromptRun<'a> {
     wire_session_id: u64,
     prompt_index: usize,
     prompt: &'a str,
+    live_session: Option<&'a mut PromptLiveSession>,
 }
 
 fn run_prompt(run: PromptRun<'_>) -> Result<()> {
@@ -1513,6 +1477,7 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
         wire_session_id,
         prompt_index,
         prompt,
+        mut live_session,
     } = run;
 
     if args.prefill_chunk_size == 0 {
@@ -1521,7 +1486,15 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
     interrupt.begin_request();
     let wall_started = Instant::now();
     let tokenize_started = Instant::now();
-    let prompt_for_model = format_prompt_for_model(tokenizer, chat_template_model, prompt, args)?;
+    let live_enabled = live_session.is_some() && !args.raw_prompt;
+    let mut live_messages = Vec::new();
+    let prompt_for_model = if let Some(live) = live_session.as_ref().filter(|_| !args.raw_prompt) {
+        live_messages = live.messages.clone();
+        live_messages.push(ChatTemplateMessage::new("user", prompt));
+        format_messages_for_model(tokenizer, chat_template_model, &live_messages, args)?
+    } else {
+        format_prompt_for_model(tokenizer, chat_template_model, prompt, args)?
+    };
     let token_ids = tokenizer
         .tokenize(&prompt_for_model, true)
         .with_context(|| format!("tokenize prompt {prompt_for_model:?}"))?;
@@ -1529,6 +1502,8 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
     if token_ids.is_empty() {
         bail!("prompt produced no tokens");
     }
+    let max_new_tokens =
+        effective_prompt_max_new_tokens(args.max_new_tokens, args.ctx_size, token_ids.len())?;
 
     let prefill_token_count = if token_ids.len() == 1 {
         1
@@ -1539,45 +1514,192 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
         "request {prompt_index}: prompt_tokens={} prefill_tokens={} max_new_tokens={}",
         token_ids.len(),
         prefill_token_count,
-        args.max_new_tokens
+        max_new_tokens
     );
     let prompt_index_bytes = prompt_index.to_le_bytes();
     let request_id = stable_wire_id(&[session_id.as_bytes(), &prompt_index_bytes]);
 
-    eprintln!(
-        "request {prompt_index}: connecting to {}",
-        args.first_stage_addr
-    );
-    let mut stream = connect_ready(&args.first_stage_addr, args.startup_timeout_secs)
-        .context("first binary stage did not become ready")?;
-    let _interrupt_guard = interrupt.activate(&stream)?;
+    let mut session_reuse = PromptSessionReuseStats::default();
+    let mut one_shot_stream = None;
+    if let Some(live) = live_session.as_deref_mut() {
+        let resident_before = live.resident_tokens.len();
+        session_reuse.resident_tokens_before = resident_before;
+        if live.dirty {
+            eprintln!("request {prompt_index}: resetting dirty live session");
+            reset_live_prompt_runtime(
+                live,
+                args,
+                wire_dtype,
+                prompt_index,
+                request_id,
+                wire_session_id,
+            )?;
+            session_reuse.outcome = "reset";
+        }
+        let prefix_match =
+            live_resident_prefix_matches(&live.resident_tokens, &token_ids, prefill_token_count);
+        if !live.resident_tokens.is_empty() && !prefix_match {
+            let common_prefix = common_token_prefix_len(&live.resident_tokens, &token_ids);
+            eprintln!(
+                "request {prompt_index}: live session prefix mismatch common_prefix={} resident_len={} prompt_len={} resident_tail={:?} prompt_tail={:?}",
+                common_prefix,
+                live.resident_tokens.len(),
+                token_ids.len(),
+                token_window(&live.resident_tokens, common_prefix),
+                token_window(&token_ids, common_prefix)
+            );
+            if common_prefix > 0 {
+                let stream = live
+                    .stream
+                    .as_mut()
+                    .context("live prompt stream was not connected")?;
+                send_trim_session(
+                    stream,
+                    wire_dtype,
+                    prompt_index,
+                    request_id,
+                    wire_session_id,
+                    common_prefix,
+                )
+                .with_context(|| stage_chain_error_context(args))?;
+                live.resident_tokens.truncate(common_prefix);
+                session_reuse.outcome = "partial";
+            } else {
+                eprintln!(
+                    "request {prompt_index}: live session prefix mismatch; resetting runtime lane"
+                );
+                reset_live_prompt_runtime(
+                    live,
+                    args,
+                    wire_dtype,
+                    prompt_index,
+                    request_id,
+                    wire_session_id,
+                )?;
+                session_reuse.outcome = "mismatch";
+            }
+        }
+        if live.stream.is_none() {
+            eprintln!(
+                "request {prompt_index}: connecting to {}",
+                args.first_stage_addr
+            );
+            live.stream = Some(
+                connect_ready(&args.first_stage_addr, args.startup_timeout_secs)
+                    .context("first binary stage did not become ready")?,
+            );
+            eprintln!("request {prompt_index}: connected");
+            if session_reuse.outcome == "disabled" {
+                session_reuse.outcome = "miss";
+            }
+        } else if prefix_match {
+            session_reuse.outcome = "hit";
+        } else if session_reuse.outcome == "disabled" {
+            session_reuse.outcome = "miss";
+        }
+        session_reuse.reused_tokens = if prefix_match {
+            live.resident_tokens.len()
+        } else if session_reuse.outcome == "partial" {
+            live.resident_tokens.len()
+        } else {
+            0
+        };
+    } else {
+        eprintln!(
+            "request {prompt_index}: connecting to {}",
+            args.first_stage_addr
+        );
+        one_shot_stream = Some(
+            connect_ready(&args.first_stage_addr, args.startup_timeout_secs)
+                .context("first binary stage did not become ready")?,
+        );
+        eprintln!("request {prompt_index}: connected");
+    }
+    let mut prefill_start = session_reuse.reused_tokens.min(prefill_token_count);
+    let stream = if let Some(live) = live_session.as_deref_mut() {
+        live.stream
+            .as_mut()
+            .context("live prompt stream was not connected")?
+    } else {
+        one_shot_stream
+            .as_mut()
+            .context("one-shot prompt stream was not connected")?
+    };
+    let _interrupt_guard = interrupt.activate(stream)?;
     let io_timeout = Duration::from_secs(args.decode_timeout_secs.max(1));
     stream.set_read_timeout(Some(io_timeout)).ok();
     stream.set_write_timeout(Some(io_timeout)).ok();
-    eprintln!("request {prompt_index}: connected");
+    let mut reply_stats = StageReplyStats::default();
+    if should_try_exact_prefix_restore(live_enabled, prefill_start, prefill_token_count) {
+        let restore_tokens = &token_ids[..prefill_token_count];
+        eprintln!(
+            "request {prompt_index}: checking exact-prefix cache tokens={}",
+            restore_tokens.len()
+        );
+        let restore = send_try_restore_prefill(
+            stream,
+            wire_dtype,
+            prompt_index,
+            request_id,
+            wire_session_id,
+            restore_tokens,
+        )
+        .with_context(|| stage_chain_error_context(args))?;
+        let hit_stage_count = stage_mask_count(restore.stats.kv_hit_stage_mask);
+        let cached_prompt_tokens_est = if hit_stage_count > 0 {
+            restore.stats.kv_imported_tokens.max(0) as u64 / hit_stage_count
+        } else {
+            0
+        };
+        let restored_full_prefix = restore.stats.kv_lookup_hits > 0
+            && restore.stats.kv_lookup_misses == 0
+            && restore.stats.kv_lookup_errors == 0
+            && cached_prompt_tokens_est >= prefill_token_count as u64;
+        if restored_full_prefix {
+            prefill_start = prefill_token_count;
+            eprintln!(
+                "request {prompt_index}: exact-prefix cache hit stages={} imported_tokens={} elapsed_ms={:.2}",
+                format_stage_mask(restore.stats.kv_hit_stage_mask),
+                restore.stats.kv_imported_tokens.max(0),
+                restore.elapsed_ms
+            );
+        } else {
+            eprintln!(
+                "request {prompt_index}: exact-prefix cache miss hit={} miss={} error={} stages={} elapsed_ms={:.2}",
+                restore.stats.kv_lookup_hits,
+                restore.stats.kv_lookup_misses,
+                restore.stats.kv_lookup_errors,
+                format_stage_mask(restore.stats.kv_hit_stage_mask),
+                restore.elapsed_ms
+            );
+        }
+        reply_stats.merge(restore.stats);
+    }
     let prefill_started = Instant::now();
     let mut prefill_chunk_count = 0usize;
-    let prefill_tokens = &token_ids[..prefill_token_count];
+    let prefill_tokens = &token_ids[prefill_start..prefill_token_count];
+    session_reuse.appended_prefill_tokens = prefill_tokens.len();
     if !prefill_tokens.is_empty() {
         for (chunk_index, chunk) in prefill_tokens.chunks(args.prefill_chunk_size).enumerate() {
             if interrupt.interrupt_requested() {
                 bail!("prompt interrupted");
             }
             prefill_chunk_count += 1;
+            let pos_start = prefill_start + chunk_index * args.prefill_chunk_size;
             eprintln!(
                 "request {prompt_index}: prefill chunk {} tokens={} pos={}",
-                chunk_index,
+                prefill_chunk_count - 1,
                 chunk.len(),
-                chunk_index * args.prefill_chunk_size
+                pos_start
             );
             send_prefill_chunk(
-                &mut stream,
+                stream,
                 wire_dtype,
                 ReplPrefillChunk {
                     prompt_index,
                     request_id,
                     session_id: wire_session_id,
-                    pos_start: chunk_index * args.prefill_chunk_size,
+                    pos_start,
                     prefill_token_count,
                     tokens: chunk,
                 },
@@ -1592,15 +1714,14 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
     );
 
     let mut current = *token_ids.last().expect("checked non-empty tokens");
-    let mut generated = Vec::with_capacity(args.max_new_tokens);
+    let mut generated = Vec::with_capacity(max_new_tokens);
     let mut decode_ms = 0.0;
     let mut first_decode_ms = None;
     let mut first_time_to_token_ms = None;
     let mut saw_visible_output = false;
-    let mut suppressed_thinking_tokens = 0usize;
-    let mut reply_stats = StageReplyStats::default();
     let mut speculative_stats = SpeculativeStats::default();
-    let mut output_filter = ThinkingOutputFilter::new(!args.show_thinking);
+    let mut assistant_raw_text = String::new();
+    let mut generation_reached_eog = false;
     let mut context_tokens = token_ids.clone();
     if let Some(draft) = draft.as_deref_mut() {
         draft.reset_to_context(&context_tokens)?;
@@ -1620,7 +1741,7 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
         speculative_stats.adaptive_window_enabled = args.adaptive_speculative_window;
     }
 
-    while generated.len() < args.max_new_tokens {
+    while generated.len() < max_new_tokens {
         if interrupt.interrupt_requested() {
             bail!("prompt interrupted");
         }
@@ -1628,7 +1749,7 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
             eprintln!("request {prompt_index}: waiting for first decode token");
         }
 
-        let remaining = args.max_new_tokens - generated.len();
+        let remaining = max_new_tokens - generated.len();
         let proposal_limit = remaining.min(adaptive_window);
         let draft_tokens = match ngram.as_deref_mut() {
             Some(ngram) => ngram.propose(session_id, &context_tokens, proposal_limit)?,
@@ -1648,7 +1769,7 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
         if draft_tokens.is_empty() {
             let decode_index = generated.len();
             let reply = send_decode_step(
-                &mut stream,
+                stream,
                 wire_dtype,
                 prompt_index,
                 request_id,
@@ -1670,17 +1791,15 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
             }
             first_time_to_token_ms.get_or_insert_with(|| elapsed_ms(wall_started));
             if tokenizer.token_is_eog(current)? {
+                generation_reached_eog = true;
                 break;
             }
             let piece = tokenizer.detokenize(&[current])?;
-            let filtered = output_filter.push(&piece);
-            if filtered.suppressed_thinking {
-                suppressed_thinking_tokens += 1;
-            }
-            if filtered.text.chars().any(|ch| !ch.is_whitespace()) {
+            assistant_raw_text.push_str(&piece);
+            if piece.chars().any(|ch| !ch.is_whitespace()) {
                 saw_visible_output = true;
             }
-            print!("{}", filtered.text);
+            print!("{piece}");
             io::stdout().flush().ok();
             continue;
         }
@@ -1696,7 +1815,7 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
         let decode_index = generated.len();
         let verify_inputs = verify_inputs_for_proposals(current, &draft_tokens);
         let reply = send_verify_span(
-            &mut stream,
+            stream,
             wire_dtype,
             prompt_index,
             request_id,
@@ -1717,7 +1836,7 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
             &draft_tokens,
             &reply.predicted_tokens,
             generated.len(),
-            args.max_new_tokens,
+            max_new_tokens,
             |token| tokenizer.token_is_eog(token),
         )?;
         speculative_stats.observe_verify_decision(
@@ -1735,7 +1854,7 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
                 .context("missing rejected span index")?;
             speculative_stats.recovery_restores += 1;
             let restore = send_session_control(
-                &mut stream,
+                stream,
                 wire_dtype,
                 prompt_index,
                 request_id,
@@ -1750,7 +1869,7 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
 
             if repair_input_count == 1 {
                 let repair = send_decode_step(
-                    &mut stream,
+                    stream,
                     wire_dtype,
                     prompt_index,
                     request_id,
@@ -1770,7 +1889,7 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
             } else {
                 let repair_inputs = &verify_inputs[..repair_input_count];
                 let repair = send_verify_span(
-                    &mut stream,
+                    stream,
                     wire_dtype,
                     prompt_index,
                     request_id,
@@ -1815,18 +1934,16 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
             }
             if tokenizer.token_is_eog(current)? {
                 reached_eog = true;
+                generation_reached_eog = true;
             }
             let piece = tokenizer.detokenize(&[current])?;
-            let filtered = output_filter.push(&piece);
-            if filtered.suppressed_thinking {
-                suppressed_thinking_tokens += 1;
-            }
-            if filtered.text.chars().any(|ch| !ch.is_whitespace()) {
+            assistant_raw_text.push_str(&piece);
+            if piece.chars().any(|ch| !ch.is_whitespace()) {
                 saw_visible_output = true;
             }
-            print!("{}", filtered.text);
+            print!("{piece}");
             io::stdout().flush().ok();
-            if reached_eog || generated.len() >= args.max_new_tokens {
+            if reached_eog || generated.len() >= max_new_tokens {
                 break;
             }
         }
@@ -1840,14 +1957,6 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
             break;
         }
     }
-    let tail = output_filter.finish();
-    if tail.suppressed_thinking {
-        suppressed_thinking_tokens += 1;
-    }
-    if tail.text.chars().any(|ch| !ch.is_whitespace()) {
-        saw_visible_output = true;
-    }
-    print!("{}", tail.text);
     println!();
 
     if !saw_visible_output {
@@ -1856,21 +1965,26 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
             generated.iter().take(16).collect::<Vec<_>>()
         );
     }
-    if suppressed_thinking_tokens > 0 {
-        eprintln!(
-            "warning: suppressed {suppressed_thinking_tokens} generated tokens inside <think> blocks"
-        );
+    if live_enabled {
+        rematerialize_live_transcript(
+            stream,
+            tokenizer,
+            chat_template_model,
+            args,
+            wire_dtype,
+            prompt_index,
+            request_id,
+            wire_session_id,
+            &live_messages,
+            &token_ids,
+            &generated,
+            &assistant_raw_text,
+            generation_reached_eog,
+        )?;
     }
 
-    write_stage_message(
-        &mut stream,
-        &StageWireMessage::stop_with_identity(wire_dtype, request_id, wire_session_id),
-        wire_dtype,
-    )
-    .with_context(|| stage_chain_error_context(args))?;
-    let stop_reply = recv_reply(&mut stream).with_context(|| stage_chain_error_context(args))?;
-    if stop_reply.kind != WireReplyKind::Ack {
-        bail!("expected stop ACK, got {:?}", stop_reply.kind);
+    if !live_enabled {
+        stop_prompt_stream(stream, wire_dtype, request_id, wire_session_id, args)?;
     }
 
     let wallblock_ms = elapsed_ms(wall_started);
@@ -1885,12 +1999,26 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
     } else {
         (decode_ms - first_decode_ms.unwrap_or(0.0)) / (generated_tokens - 1) as f64
     };
+    let mut resident_tokens_after = 0usize;
+    if let Some(live) = live_session.as_deref_mut() {
+        live.messages = live_messages;
+        if let Some(last) = live.messages.last_mut() {
+            if last.role == "user" {
+                live.messages
+                    .push(ChatTemplateMessage::new("assistant", &assistant_raw_text));
+            }
+        }
+        live.resident_tokens =
+            live_transcript_tokens(tokenizer, chat_template_model, args, &live.messages)?;
+        live.dirty = !generation_reached_eog;
+        resident_tokens_after = live.resident_tokens.len();
+    }
+    session_reuse.resident_tokens_after = resident_tokens_after;
     print_stats(Stats {
         prompt_tokens: token_ids.len(),
         prefill_tokens: prefill_token_count,
         prefill_chunks: prefill_chunk_count,
         generated_tokens,
-        suppressed_thinking_tokens,
         tokenize_ms,
         prefill_ms,
         decode_ms,
@@ -1900,9 +2028,32 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
         tpot_after_first_ms,
         reply_stats,
         speculative_stats,
+        session_reuse,
     });
 
     Ok(())
+}
+
+fn live_resident_prefix_matches(
+    resident_tokens: &[i32],
+    token_ids: &[i32],
+    prefill_token_count: usize,
+) -> bool {
+    !resident_tokens.is_empty()
+        && resident_tokens.len() <= prefill_token_count
+        && token_ids
+            .get(..resident_tokens.len())
+            .is_some_and(|prefix| prefix == resident_tokens)
+}
+
+fn should_try_exact_prefix_restore(
+    live_enabled: bool,
+    prefill_start: usize,
+    prefill_token_count: usize,
+) -> bool {
+    !live_enabled
+        && prefill_start == 0
+        && prefill_token_count >= PROMPT_EXACT_PREFIX_RESTORE_MIN_TOKENS
 }
 
 struct Stats {
@@ -1910,7 +2061,6 @@ struct Stats {
     prefill_tokens: usize,
     prefill_chunks: usize,
     generated_tokens: usize,
-    suppressed_thinking_tokens: usize,
     tokenize_ms: f64,
     prefill_ms: f64,
     decode_ms: f64,
@@ -1920,6 +2070,7 @@ struct Stats {
     tpot_after_first_ms: f64,
     reply_stats: StageReplyStats,
     speculative_stats: SpeculativeStats,
+    session_reuse: PromptSessionReuseStats,
 }
 
 fn stage_chain_error_context(args: &BinaryReplArgs) -> String {
@@ -1932,6 +2083,216 @@ fn stage_chain_error_context(args: &BinaryReplArgs) -> String {
         message.push_str(hint);
     }
     message
+}
+
+fn reset_live_prompt_runtime(
+    live: &mut PromptLiveSession,
+    args: &BinaryReplArgs,
+    wire_dtype: WireActivationDType,
+    prompt_index: usize,
+    request_id: u64,
+    wire_session_id: u64,
+) -> Result<()> {
+    if live.stream.is_none() {
+        live.stream = Some(
+            connect_ready(&args.first_stage_addr, args.startup_timeout_secs)
+                .context("first binary stage did not become ready")?,
+        );
+    }
+    if let Some(stream) = live.stream.as_mut() {
+        let io_timeout = Duration::from_secs(args.decode_timeout_secs.max(1));
+        stream.set_read_timeout(Some(io_timeout)).ok();
+        stream.set_write_timeout(Some(io_timeout)).ok();
+        stop_prompt_stream(stream, wire_dtype, request_id, wire_session_id, args)
+            .context("reset live prompt runtime session")?;
+    }
+    live.resident_tokens.clear();
+    live.dirty = false;
+    eprintln!("request {prompt_index}: live session runtime reset");
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rematerialize_live_transcript(
+    stream: &mut TcpStream,
+    tokenizer: &StageModel,
+    chat_template_model: Option<&StageModel>,
+    args: &BinaryReplArgs,
+    wire_dtype: WireActivationDType,
+    prompt_index: usize,
+    request_id: u64,
+    wire_session_id: u64,
+    live_messages: &[ChatTemplateMessage],
+    token_ids: &[i32],
+    generated: &[i32],
+    assistant_raw_text: &str,
+    generation_reached_eog: bool,
+) -> Result<()> {
+    if !generation_reached_eog {
+        return Ok(());
+    }
+    let mut closed_messages = live_messages.to_vec();
+    closed_messages.push(ChatTemplateMessage::new("assistant", assistant_raw_text));
+    let transcript_tokens =
+        live_transcript_tokens(tokenizer, chat_template_model, args, &closed_messages)?;
+    let mut runtime_tokens = token_ids.to_vec();
+    runtime_tokens.extend_from_slice(generated);
+    let common_prefix = common_token_prefix_len(&runtime_tokens, &transcript_tokens);
+    if common_prefix < runtime_tokens.len() {
+        send_trim_session(
+            stream,
+            wire_dtype,
+            prompt_index,
+            request_id,
+            wire_session_id,
+            common_prefix,
+        )
+        .with_context(|| stage_chain_error_context(args))?;
+    }
+    let suffix = &transcript_tokens[common_prefix..];
+    for (chunk_index, chunk) in suffix.chunks(args.prefill_chunk_size).enumerate() {
+        if chunk.is_empty() {
+            continue;
+        }
+        let pos_start = common_prefix + chunk_index * args.prefill_chunk_size;
+        send_prefill_chunk(
+            stream,
+            wire_dtype,
+            ReplPrefillChunk {
+                prompt_index,
+                request_id,
+                session_id: wire_session_id,
+                pos_start,
+                prefill_token_count: transcript_tokens.len(),
+                tokens: chunk,
+            },
+        )
+        .with_context(|| stage_chain_error_context(args))?;
+    }
+    Ok(())
+}
+
+fn live_transcript_tokens(
+    tokenizer: &StageModel,
+    chat_template_model: Option<&StageModel>,
+    args: &BinaryReplArgs,
+    messages: &[ChatTemplateMessage],
+) -> Result<Vec<i32>> {
+    let left = live_transcript_probe_tokens(tokenizer, chat_template_model, args, messages, "A")?;
+    let right = live_transcript_probe_tokens(tokenizer, chat_template_model, args, messages, "B")?;
+    let prefix_len = common_token_prefix_len(&left, &right);
+    Ok(left[..prefix_len].to_vec())
+}
+
+fn live_transcript_probe_tokens(
+    tokenizer: &StageModel,
+    chat_template_model: Option<&StageModel>,
+    args: &BinaryReplArgs,
+    messages: &[ChatTemplateMessage],
+    probe_user: &str,
+) -> Result<Vec<i32>> {
+    let mut probed_messages = messages.to_vec();
+    probed_messages.push(ChatTemplateMessage::new("user", probe_user));
+    let probed_prompt = format_messages_for_model_with_options(
+        tokenizer,
+        chat_template_model,
+        &probed_messages,
+        args,
+        true,
+    )?;
+    tokenizer
+        .tokenize(&probed_prompt, true)
+        .with_context(|| format!("tokenize probed live prompt {probed_prompt:?}"))
+}
+
+fn stop_live_prompt_session(
+    live: &mut PromptLiveSession,
+    args: &BinaryReplArgs,
+    wire_dtype: WireActivationDType,
+    prompt_index: usize,
+    wire_session_id: u64,
+) -> Result<()> {
+    let Some(stream) = live.stream.as_mut() else {
+        return Ok(());
+    };
+    let prompt_index_bytes = prompt_index.to_le_bytes();
+    let request_id = stable_wire_id(&[b"prompt-live-stop".as_slice(), &prompt_index_bytes]);
+    stop_prompt_stream(stream, wire_dtype, request_id, wire_session_id, args)
+        .context("stop live prompt session")?;
+    live.resident_tokens.clear();
+    live.stream.take();
+    Ok(())
+}
+
+fn stop_prompt_stream(
+    stream: &mut TcpStream,
+    wire_dtype: WireActivationDType,
+    request_id: u64,
+    wire_session_id: u64,
+    args: &BinaryReplArgs,
+) -> Result<()> {
+    write_stage_message(
+        &mut *stream,
+        &StageWireMessage::stop_with_identity(wire_dtype, request_id, wire_session_id),
+        wire_dtype,
+    )
+    .with_context(|| stage_chain_error_context(args))?;
+    let stop_reply = recv_reply(stream).with_context(|| stage_chain_error_context(args))?;
+    if stop_reply.kind != WireReplyKind::Ack {
+        bail!("expected stop ACK, got {:?}", stop_reply.kind);
+    }
+    Ok(())
+}
+
+fn send_trim_session(
+    stream: &mut TcpStream,
+    wire_dtype: WireActivationDType,
+    prompt_index: usize,
+    request_id: u64,
+    session_id: u64,
+    token_count: usize,
+) -> Result<SessionControlReply> {
+    let started = Instant::now();
+    let mut state = StageStateHeader::new(WireMessageKind::TrimSession, wire_dtype);
+    state.seq_id = i32::try_from(prompt_index).context("prompt index exceeds i32")?;
+    state.source_stage_index = -1;
+    let message = StageWireMessage {
+        kind: WireMessageKind::TrimSession,
+        pos_start: 0,
+        token_count: i32::try_from(token_count).context("trim token count exceeds i32")?,
+        state,
+        request_id,
+        session_id,
+        sampling: None,
+        chat_sampling_metadata: None,
+        tokens: Vec::new(),
+        activation: Vec::new(),
+        raw_bytes: Vec::new(),
+    };
+    write_stage_message(&mut *stream, &message, wire_dtype)
+        .with_context(|| format!("send trim session to {token_count} token(s)"))?;
+    let reply = recv_reply(&mut *stream)
+        .with_context(|| format!("receive trim session ACK for {token_count} token(s)"))?;
+    if reply.kind != WireReplyKind::Ack {
+        bail!("expected trim-session ACK, got {:?}", reply.kind);
+    }
+    Ok(SessionControlReply {
+        stats: reply.stats,
+        elapsed_ms: elapsed_ms(started),
+    })
+}
+
+fn common_token_prefix_len(left: &[i32], right: &[i32]) -> usize {
+    left.iter()
+        .zip(right)
+        .take_while(|(left, right)| left == right)
+        .count()
+}
+
+fn token_window(tokens: &[i32], center: usize) -> Vec<i32> {
+    let start = center.saturating_sub(4);
+    let end = (center + 8).min(tokens.len());
+    tokens[start..end].to_vec()
 }
 
 #[derive(Default)]
@@ -2233,13 +2594,12 @@ fn print_stats(stats: Stats) {
     };
     eprintln!("stats:");
     eprintln!(
-        "  tokens   prompt={} prefill={} ({} {}) generated={} hidden_think={}",
+        "  tokens   prompt={} prefill={} ({} {}) generated={}",
         stats.prompt_tokens,
         stats.prefill_tokens,
         stats.prefill_chunks,
         chunk_label,
-        stats.generated_tokens,
-        stats.suppressed_thinking_tokens
+        stats.generated_tokens
     );
     eprintln!(
         "  time     tokenize={:.2}ms prefill={:.2}ms decode={:.2}ms wallblock={:.2}ms",
@@ -2250,11 +2610,55 @@ fn print_stats(stats: Stats) {
         prompt_tps, decode_tps, stats.tpot_ms, stats.tpot_after_first_ms
     );
     eprintln!("  latency  ttft={:.2}ms", stats.first_time_to_token_ms);
-    if !stats.reply_stats.is_empty() {
+    if stats.session_reuse.outcome != "disabled" {
         eprintln!(
-            "  kv       lookup hit={} miss={} error={} imported_pages={} imported_tokens={}",
+            "  reuse    live_session={} reused_tokens={} appended_prefill_tokens={} resident_tokens={}->{}",
+            stats.session_reuse.outcome,
+            stats.session_reuse.reused_tokens,
+            stats.session_reuse.appended_prefill_tokens,
+            stats.session_reuse.resident_tokens_before,
+            stats.session_reuse.resident_tokens_after
+        );
+    }
+    if !stats.reply_stats.is_empty() {
+        let lookups = stats.reply_stats.kv_lookup_hits + stats.reply_stats.kv_lookup_misses;
+        let hit_rate = if lookups > 0 {
+            100.0 * stats.reply_stats.kv_lookup_hits as f64 / lookups as f64
+        } else {
+            0.0
+        };
+        let hit_stage_count = stage_mask_count(stats.reply_stats.kv_hit_stage_mask);
+        let cached_prompt_tokens_est = if hit_stage_count > 0 {
+            stats.reply_stats.kv_imported_tokens.max(0) as u64 / hit_stage_count
+        } else {
+            0
+        };
+        let exact_prefix_reuse = if stats.reply_stats.kv_lookup_hits > 0 {
+            "hit"
+        } else if stats.reply_stats.kv_lookup_misses > 0 {
+            "miss"
+        } else if stats.reply_stats.kv_lookup_errors > 0 {
+            "error"
+        } else {
+            "not_checked"
+        };
+        let record_status = if stats.reply_stats.kv_recorded_pages > 0 {
+            "recorded"
+        } else {
+            "not_recorded"
+        };
+        eprintln!(
+            "  reuse    exact_prefix={} cached_prompt_tokens_est={} stage_imported_tokens={} record={}",
+            exact_prefix_reuse,
+            cached_prompt_tokens_est,
+            stats.reply_stats.kv_imported_tokens.max(0),
+            record_status
+        );
+        eprintln!(
+            "  kv       lookup hit={} miss={} hit_rate={:.1}% error={} imported_pages={} imported_tokens={}",
             stats.reply_stats.kv_lookup_hits,
             stats.reply_stats.kv_lookup_misses,
+            hit_rate,
             stats.reply_stats.kv_lookup_errors,
             stats.reply_stats.kv_imported_pages,
             stats.reply_stats.kv_imported_tokens
@@ -2266,7 +2670,32 @@ fn print_stats(stats: Stats) {
             format_stage_mask(stats.reply_stats.kv_hit_stage_mask),
             format_stage_mask(stats.reply_stats.kv_record_stage_mask)
         );
+        if stats.reply_stats.restore_total_us > 0 {
+            eprintln!(
+                "  kv       restore_ms total={:.2} flush={:.2} prefill_drain={:.2} local={:.2} downstream_write={:.2} downstream_wait={:.2} drained_replies={}",
+                us_to_ms(stats.reply_stats.restore_total_us),
+                us_to_ms(stats.reply_stats.restore_flush_us),
+                us_to_ms(stats.reply_stats.restore_prefill_drain_us),
+                us_to_ms(stats.reply_stats.restore_local_us),
+                us_to_ms(stats.reply_stats.restore_downstream_write_us),
+                us_to_ms(stats.reply_stats.restore_downstream_wait_us),
+                stats.reply_stats.restore_prefill_drained_replies
+            );
+        }
+        if stats.reply_stats.checkpoint_total_us > 0 {
+            eprintln!(
+                "  kv       checkpoint_ms total={:.2} flush={:.2} prefill_drain={:.2} local={:.2} downstream_write={:.2} downstream_wait={:.2} drained_replies={}",
+                us_to_ms(stats.reply_stats.checkpoint_total_us),
+                us_to_ms(stats.reply_stats.checkpoint_flush_us),
+                us_to_ms(stats.reply_stats.checkpoint_prefill_drain_us),
+                us_to_ms(stats.reply_stats.checkpoint_local_us),
+                us_to_ms(stats.reply_stats.checkpoint_downstream_write_us),
+                us_to_ms(stats.reply_stats.checkpoint_downstream_wait_us),
+                stats.reply_stats.checkpoint_prefill_drained_replies
+            );
+        }
     } else {
+        eprintln!("  reuse    exact_prefix=not_reported record=not_reported");
         eprintln!("  kv       no lookup/record events reported");
     }
     if stats.speculative_stats.windows > 0 {
@@ -2630,6 +3059,49 @@ fn send_session_control(
     })
 }
 
+fn send_try_restore_prefill(
+    stream: &mut TcpStream,
+    wire_dtype: WireActivationDType,
+    prompt_index: usize,
+    request_id: u64,
+    session_id: u64,
+    tokens: &[i32],
+) -> Result<SessionControlReply> {
+    if tokens.is_empty() {
+        bail!("exact-prefix restore requires at least one token");
+    }
+    let started = Instant::now();
+    let mut state = StageStateHeader::new(WireMessageKind::TryRestorePrefill, wire_dtype);
+    state.seq_id = i32::try_from(prompt_index).context("prompt index exceeds i32")?;
+    state.prompt_token_count =
+        i32::try_from(tokens.len()).context("prefix token count exceeds i32")?;
+    state.current_token = tokens.last().copied().unwrap_or(LLAMA_TOKEN_NULL);
+    state.source_stage_index = -1;
+    let message = StageWireMessage {
+        kind: WireMessageKind::TryRestorePrefill,
+        pos_start: 0,
+        token_count: i32::try_from(tokens.len()).context("prefix token count exceeds i32")?,
+        state,
+        request_id,
+        session_id,
+        sampling: None,
+        chat_sampling_metadata: None,
+        tokens: tokens.to_vec(),
+        activation: Vec::new(),
+        raw_bytes: Vec::new(),
+    };
+    write_stage_message(&mut *stream, &message, wire_dtype)
+        .context("send exact-prefix restore request")?;
+    let reply = recv_reply(&mut *stream).context("receive exact-prefix restore ACK")?;
+    if reply.kind != WireReplyKind::Ack {
+        bail!("expected exact-prefix restore ACK, got {:?}", reply.kind);
+    }
+    Ok(SessionControlReply {
+        stats: reply.stats,
+        elapsed_ms: elapsed_ms(started),
+    })
+}
+
 struct ReplPrefillChunk<'a> {
     prompt_index: usize,
     request_id: u64,
@@ -2770,6 +3242,8 @@ impl DraftRunner {
                 lane_count: 1,
                 n_batch: None,
                 n_ubatch: None,
+                n_threads: None,
+                n_threads_batch: None,
                 n_gpu_layers,
                 selected_backend_device: None,
                 cache_type_k: GGML_TYPE_F16,
@@ -2945,118 +3419,343 @@ mod prompt_json_tests {
         assert!(parse_prompt_json_command("plain prompt")?.is_none());
         Ok(())
     }
+
+    #[test]
+    fn default_max_new_tokens_uses_remaining_context_budget() -> Result<()> {
+        assert_eq!(effective_prompt_max_new_tokens(0, 4096, 1024)?, 3072);
+        assert_eq!(format_prompt_max_new_tokens(0), "context-budget");
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_max_new_tokens_is_preserved() -> Result<()> {
+        assert_eq!(effective_prompt_max_new_tokens(128, 4096, 1024)?, 128);
+        assert_eq!(format_prompt_max_new_tokens(128), "128");
+        Ok(())
+    }
+
+    #[test]
+    fn exact_prefix_restore_only_runs_for_one_shot_large_prefixes() {
+        assert!(!should_try_exact_prefix_restore(false, 0, 511));
+        assert!(should_try_exact_prefix_restore(false, 0, 512));
+        assert!(!should_try_exact_prefix_restore(true, 0, 512));
+        assert!(!should_try_exact_prefix_restore(false, 1, 512));
+    }
+
+    #[test]
+    fn live_resident_prefix_match_requires_nonempty_full_resident_prefix() {
+        assert!(!live_resident_prefix_matches(&[], &[1, 2, 3], 2));
+        assert!(live_resident_prefix_matches(&[1, 2], &[1, 2, 3, 4], 3));
+        assert!(!live_resident_prefix_matches(&[1, 9], &[1, 2, 3, 4], 3));
+        assert!(!live_resident_prefix_matches(&[1, 2, 3], &[1, 2, 3, 4], 2));
+    }
 }
 
 fn write_local_configs(
     args: &PromptArgs,
     run_id: &str,
-    run_dir: &Path,
-    kv_mode: &str,
+    _run_dir: &Path,
+    kv_mode: StageKvCacheMode,
     stages: &[LocalStage],
-    metrics_otlp_url: &str,
+    _metrics_otlp_url: &str,
     hf_package_ref: bool,
 ) -> Result<()> {
     for stage in stages {
-        let local_kv_page_root = run_dir.join(format!("kv-pages-stage-{}", stage.stage_index));
-        let kv_page_root = stage
-            .remote
-            .as_ref()
-            .map(|remote| json!(remote.kv_page_root.clone()))
-            .unwrap_or_else(|| json!(local_kv_page_root));
-        let kv_uds_path = stage
-            .remote
-            .as_ref()
-            .map(|remote| json!(remote.kv_uds_path.clone()))
-            .unwrap_or_else(|| json!(stage.kv_uds_path));
-        if stage.remote.is_none() {
-            fs::create_dir_all(&local_kv_page_root)
-                .with_context(|| format!("create {}", local_kv_page_root.display()))?;
-        }
-        let kv_config = json!({
-            "node_id": format!("local-stage-{}", stage.stage_index),
-            "cluster_id": "local-binary-repl",
-            "run_id": run_id,
-            "page_root": kv_page_root,
-            "uds_path": kv_uds_path,
-            "quic_bind_addr": format!("127.0.0.1:{}", 19443 + stage.stage_index),
-            "peers": {},
-            "cache": { "max_local_bytes": null },
-            "metrics": {
-                "otlp_grpc_endpoint": metrics_otlp_url,
-                "export_interval_ms": 5000
-            },
-            "compression": {
-                "warm_tier_codec": "lz4-block",
-                "compress_remote_only_pages": false
-            },
-            "security": { "mtls_enabled": false }
-        });
-        write_json(&stage.kv_config_path, &kv_config)?;
-
         let upstream = if stage.stage_index == 0 {
-            json!({
-                "stage_id": "driver",
-                "stage_index": 0,
-                "endpoint": "driver"
+            Some(PeerConfig {
+                stage_id: "driver".to_string(),
+                stage_index: 0,
+                endpoint: "driver".to_string(),
             })
         } else {
             let previous = &stages[stage.stage_index - 1];
-            json!({
-                "stage_id": previous.stage_id,
-                "stage_index": previous.stage_index,
-                "endpoint": format!("tcp://{}", previous.endpoint_addr)
+            Some(PeerConfig {
+                stage_id: previous.stage_id.clone(),
+                stage_index: previous.stage_index as u32,
+                endpoint: format!("tcp://{}", previous.endpoint_addr),
             })
         };
-        let downstream = stages
-            .get(stage.stage_index + 1)
-            .map(|next| {
-                json!({
-                    "stage_id": next.stage_id,
-                    "stage_index": next.stage_index,
-                    "endpoint": format!("tcp://{}", next.endpoint_addr)
-                })
-            })
-            .unwrap_or_else(|| json!(null));
+        let downstream = stages.get(stage.stage_index + 1).map(|next| PeerConfig {
+            stage_id: next.stage_id.clone(),
+            stage_index: next.stage_index as u32,
+            endpoint: format!("tcp://{}", next.endpoint_addr),
+        });
         let stage_model_path = if hf_package_ref {
-            json!(args.model_path.to_str().unwrap_or(""))
+            args.model_path.to_string_lossy().to_string()
         } else {
             stage
                 .remote
                 .as_ref()
-                .map(|remote| json!(remote.model_path.clone()))
-                .unwrap_or_else(|| json!(stage.model_path))
+                .map(|remote| remote.model_path.clone())
+                .unwrap_or_else(|| stage.model_path.to_string_lossy().to_string())
         };
-        let stage_kv_uds_path = stage
-            .remote
-            .as_ref()
-            .map(|remote| json!(remote.kv_uds_path.clone()))
-            .unwrap_or_else(|| json!(stage.kv_uds_path));
-        let stage_config = json!({
-            "run_id": run_id,
-            "topology_id": "local-binary-kv-repl",
-            "model_id": args.model_id,
-            "model_path": stage_model_path,
-            "stage_id": stage.stage_id,
-            "stage_index": stage.stage_index,
-            "layer_start": stage.layer_start,
-            "layer_end": stage.layer_end,
-            "ctx_size": args.ctx_size,
-            "n_gpu_layers": args.n_gpu_layers,
-            "filter_tensors_on_load": true,
-            "load_mode": if hf_package_ref || stage.remote.is_some() { "layer-package" } else { "artifact-slice" },
-            "bind_addr": stage.bind_addr,
-            "upstream": upstream,
-            "downstream": downstream,
-            "kv_server": {
-                "uds_path": stage_kv_uds_path,
-                "mode": kv_mode,
-                "page_size_tokens": args.kv_page_size_tokens,
-                "correctness_mode": kv_mode == "correctness"
-            }
-        });
-        write_json(&stage.config_path, &stage_config)?;
+        let load_mode = if hf_package_ref || stage.remote.is_some() {
+            LoadMode::LayerPackage
+        } else {
+            LoadMode::ArtifactSlice
+        };
+        let kv_cache = prompt_stage_kv_cache_config(args, stage, kv_mode.clone(), hf_package_ref)?;
+        let stage_config = StageConfig {
+            run_id: run_id.to_string(),
+            topology_id: "local-binary-kv-repl".to_string(),
+            model_id: args.model_id.clone(),
+            package_ref: None,
+            manifest_sha256: None,
+            source_model_path: prompt_source_model_path(args, hf_package_ref)?,
+            source_model_sha256: None,
+            source_model_bytes: None,
+            materialized_path: None,
+            materialized_pinned: false,
+            model_path: Some(stage_model_path),
+            projector_path: None,
+            stage_id: stage.stage_id.clone(),
+            stage_index: stage.stage_index as u32,
+            layer_start: stage.layer_start,
+            layer_end: stage.layer_end,
+            ctx_size: args.ctx_size,
+            lane_count: args.stage_max_inflight.max(1) as u32,
+            n_batch: None,
+            n_ubatch: None,
+            n_gpu_layers: args.n_gpu_layers,
+            cache_type_k: args.cache_type_k.clone(),
+            cache_type_v: args.cache_type_v.clone(),
+            flash_attn_type: StageFlashAttentionType::Auto,
+            filter_tensors_on_load: true,
+            selected_device: None,
+            kv_cache,
+            load_mode,
+            bind_addr: stage.bind_addr.clone(),
+            upstream,
+            downstream,
+        };
+        write_json(&stage.config_path, &serde_json::to_value(stage_config)?)?;
     }
     Ok(())
+}
+
+fn parse_stage_kv_mode(value: &str) -> Result<StageKvCacheMode> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "disabled" | "disable" | "off" | "false" => Ok(StageKvCacheMode::Disabled),
+        "record" => Ok(StageKvCacheMode::Record),
+        "lookup-record" | "lookup_record" | "lookuprecord" | "lookup" | "on" | "true" => {
+            Ok(StageKvCacheMode::LookupRecord)
+        }
+        "correctness" => Ok(StageKvCacheMode::LookupRecord),
+        other => bail!("unsupported kv mode {other}"),
+    }
+}
+
+fn prompt_stage_kv_cache_config(
+    args: &PromptArgs,
+    stage: &LocalStage,
+    mode: StageKvCacheMode,
+    hf_package_ref: bool,
+) -> Result<Option<StageKvCacheConfig>> {
+    if mode == StageKvCacheMode::Disabled {
+        return Ok(Some(StageKvCacheConfig {
+            mode,
+            payload: StageKvCachePayload::Auto,
+            max_entries: 1,
+            max_bytes: 0,
+            min_tokens: args.kv_page_size_tokens.max(1),
+            shared_prefix_stride_tokens: 128,
+            shared_prefix_record_limit: 2,
+        }));
+    }
+
+    let max_bytes = prompt_stage_cache_max_bytes(args, stage, hf_package_ref)?;
+    let payload = prompt_stage_cache_payload(args, stage);
+    Ok(Some(StageKvCacheConfig {
+        mode,
+        payload,
+        max_entries: 128,
+        max_bytes,
+        min_tokens: args.kv_page_size_tokens.max(1),
+        shared_prefix_stride_tokens: 128,
+        shared_prefix_record_limit: 2,
+    }))
+}
+
+fn prompt_stage_cache_payload(args: &PromptArgs, stage: &LocalStage) -> StageKvCachePayload {
+    let identity = format!("{} {}", args.model_id, args.model_path.display());
+    let activation_width = u32::try_from(args.activation_width).unwrap_or_default();
+    match infer_family_capability(&identity, stage.layer_end, activation_width)
+        .map(|capability| capability.family_id)
+        .as_deref()
+    {
+        Some("qwen3next" | "falcon_h1") => StageKvCachePayload::KvRecurrent,
+        Some(
+            "qwen3_dense" | "llama" | "deepseek2" | "deepseek3" | "glm4" | "olmo" | "gemma2"
+            | "gemma3" | "gemma4_a4b" | "gemma4_e4b" | "glm47_flash" | "minimax_m27",
+        ) => StageKvCachePayload::ResidentKv,
+        _ => StageKvCachePayload::Auto,
+    }
+}
+
+fn prompt_stage_cache_max_bytes(
+    args: &PromptArgs,
+    stage: &LocalStage,
+    hf_package_ref: bool,
+) -> Result<u64> {
+    if let Some(meta) = prompt_cache_meta(args, stage, hf_package_ref)? {
+        if let Some(bytes) = estimate_prompt_stage_cache_max_bytes(
+            stage.layer_start,
+            stage.layer_end,
+            args.ctx_size,
+            args.stage_max_inflight.max(1) as u32,
+            &args.cache_type_k,
+            &args.cache_type_v,
+            &meta,
+        ) {
+            return Ok(bytes);
+        }
+    }
+
+    estimate_prompt_stage_cache_max_bytes_from_width(
+        stage.layer_start,
+        stage.layer_end,
+        args.ctx_size,
+        args.stage_max_inflight.max(1) as u32,
+        &args.cache_type_k,
+        &args.cache_type_v,
+        u32::try_from(args.activation_width).context("activation_width must be non-negative")?,
+    )
+    .context("derive prompt stage cache max bytes")
+}
+
+fn prompt_cache_meta(
+    args: &PromptArgs,
+    stage: &LocalStage,
+    hf_package_ref: bool,
+) -> Result<Option<GgufCompactMeta>> {
+    if args.model_path.is_file() {
+        return Ok(scan_gguf_compact_meta(&args.model_path));
+    }
+    if args.model_path.join("model-package.json").is_file() {
+        let info = inspect_layer_package(path_str(&args.model_path)?)
+            .with_context(|| format!("inspect package {}", args.model_path.display()))?;
+        return Ok(scan_gguf_compact_meta(Path::new(&info.source_model_path)));
+    }
+    if !hf_package_ref && stage.remote.is_none() {
+        return Ok(scan_gguf_compact_meta(&stage.model_path));
+    }
+    Ok(None)
+}
+
+fn prompt_source_model_path(args: &PromptArgs, _hf_package_ref: bool) -> Result<Option<String>> {
+    if args.model_path.is_file() {
+        return Ok(Some(args.model_path.to_string_lossy().to_string()));
+    }
+    if args.model_path.join("model-package.json").is_file() {
+        let info = inspect_layer_package(path_str(&args.model_path)?)
+            .with_context(|| format!("inspect package {}", args.model_path.display()))?;
+        return Ok(Some(info.source_model_path));
+    }
+    Ok(None)
+}
+
+fn estimate_prompt_stage_cache_max_bytes(
+    layer_start: u32,
+    layer_end: u32,
+    ctx_size: u32,
+    lane_count: u32,
+    cache_type_k: &str,
+    cache_type_v: &str,
+    meta: &GgufCompactMeta,
+) -> Option<u64> {
+    let kv_heads = if meta.kv_head_count > 0 {
+        meta.kv_head_count
+    } else {
+        meta.head_count
+    };
+    let key_width = if meta.key_length > 0 {
+        meta.key_length
+    } else if meta.embedding_size > 0 && kv_heads > 0 {
+        meta.embedding_size.checked_div(kv_heads)?
+    } else {
+        return None;
+    };
+    let value_width = if meta.value_length > 0 {
+        meta.value_length
+    } else if meta.embedding_size > 0 && kv_heads > 0 {
+        meta.embedding_size.checked_div(kv_heads)?
+    } else {
+        return None;
+    };
+    let key_elems = u64::from(key_width).checked_mul(u64::from(kv_heads))?;
+    let value_elems = u64::from(value_width).checked_mul(u64::from(kv_heads))?;
+    estimate_prompt_stage_cache_max_bytes_for_elements(
+        layer_start,
+        layer_end,
+        ctx_size,
+        lane_count,
+        cache_type_k,
+        cache_type_v,
+        key_elems,
+        value_elems,
+    )
+}
+
+fn estimate_prompt_stage_cache_max_bytes_from_width(
+    layer_start: u32,
+    layer_end: u32,
+    ctx_size: u32,
+    lane_count: u32,
+    cache_type_k: &str,
+    cache_type_v: &str,
+    activation_width: u32,
+) -> Option<u64> {
+    let elements = u64::from(activation_width);
+    estimate_prompt_stage_cache_max_bytes_for_elements(
+        layer_start,
+        layer_end,
+        ctx_size,
+        lane_count,
+        cache_type_k,
+        cache_type_v,
+        elements,
+        elements,
+    )
+}
+
+fn estimate_prompt_stage_cache_max_bytes_for_elements(
+    layer_start: u32,
+    layer_end: u32,
+    ctx_size: u32,
+    lane_count: u32,
+    cache_type_k: &str,
+    cache_type_v: &str,
+    key_elems_per_token: u64,
+    value_elems_per_token: u64,
+) -> Option<u64> {
+    let stage_layers = layer_end.checked_sub(layer_start)?;
+    if stage_layers == 0 {
+        return None;
+    }
+    let key_bytes = prompt_dtype_bytes(key_elems_per_token, cache_type_k)?;
+    let value_bytes = prompt_dtype_bytes(value_elems_per_token, cache_type_v)?;
+    key_bytes
+        .checked_add(value_bytes)?
+        .checked_mul(u64::from(stage_layers))?
+        .checked_mul(u64::from(ctx_size.max(1)))?
+        .checked_mul(u64::from(lane_count.max(1)))
+        .filter(|bytes| *bytes > 0)
+}
+
+fn prompt_dtype_bytes(elements: u64, dtype: &str) -> Option<u64> {
+    match dtype.trim().to_ascii_lowercase().as_str() {
+        "f32" => elements.checked_mul(4),
+        "f16" | "bf16" => elements.checked_mul(2),
+        "q8" | "q8_0" => prompt_ggml_block_bytes(elements, 32, 34),
+        "q8_1" => prompt_ggml_block_bytes(elements, 32, 36),
+        "q4" | "q4_0" | "iq4_nl" => prompt_ggml_block_bytes(elements, 32, 18),
+        "q4_1" => prompt_ggml_block_bytes(elements, 32, 20),
+        _ => None,
+    }
+}
+
+fn prompt_ggml_block_bytes(elements: u64, block_size: u64, type_size: u64) -> Option<u64> {
+    elements.div_ceil(block_size).checked_mul(type_size)
 }
 
 fn materialize_stage_artifacts(args: &PromptArgs, stages: &[LocalStage]) -> Result<()> {
@@ -3448,13 +4147,6 @@ fn sync_remote_host_inputs(
         &args.remote_root,
         tx,
     )?;
-    rsync_to_host_cached(
-        &args.kv_server_bin,
-        host,
-        &first_remote.kv_server_bin,
-        &args.remote_root,
-        tx,
-    )?;
     if !hf_package_ref {
         rsync_dir_to_host_cached(model_package_dir, host, &first_remote.model_path, tx)?;
     }
@@ -3469,13 +4161,6 @@ fn sync_remote_host_inputs(
             host,
             &remote.config_path,
             &format!("{} config", stage.stage_id),
-            tx,
-        )?;
-        rsync_to_host_with_progress(
-            &stage.kv_config_path,
-            host,
-            &remote.kv_config_path,
-            &format!("kv-stage-{} config", stage.stage_index),
             tx,
         )?;
     }
@@ -3615,7 +4300,6 @@ fn remote_stage_command(
     remote: &RemoteStage,
     metrics_otlp_url: &str,
 ) -> Result<String> {
-    let wait_attempts = args.startup_timeout_secs.saturating_mul(5).max(1);
     let mut stage_args = vec![
         shell_quote(&remote.stage_server_bin),
         "serve-binary".to_string(),
@@ -3644,31 +4328,21 @@ fn remote_stage_command(
         concat!(
             "set -e; ",
             "cd {stage_dir}; ",
-            "chmod +x {kv_bin} {stage_bin}; ",
-            "rm -f {kv_sock} kv.pid stage.pid {stage_exit}; ",
-            "{kv_bin} serve --config {kv_config} > {kv_log} 2>&1 & ",
-            "kv_pid=$!; echo $kv_pid > kv.pid; ",
-            "i=0; while [ ! -S {kv_sock} ] && [ $i -lt {wait_attempts} ]; do sleep 0.2; i=$((i + 1)); done; ",
-            "[ -S {kv_sock} ]; ",
+            "chmod +x {stage_bin}; ",
+            "rm -f stage.pid {stage_exit}; ",
             "{stage_command} > {stage_log} 2>&1 & ",
             "stage_pid=$!; echo $stage_pid > stage.pid; ",
-            "trap 'kill $stage_pid $kv_pid 2>/dev/null || true; wait $stage_pid 2>/dev/null || true; wait $kv_pid 2>/dev/null || true' INT TERM HUP EXIT; ",
+            "trap 'kill $stage_pid 2>/dev/null || true; wait $stage_pid 2>/dev/null || true' INT TERM HUP EXIT; ",
             "set +e; ",
             "wait $stage_pid; stage_status=$?; ",
             "echo $stage_status > {stage_exit}; ",
-            "kill $kv_pid 2>/dev/null || true; wait $kv_pid 2>/dev/null || true; ",
             "exit $stage_status"
         ),
         stage_dir = shell_quote(&remote.stage_dir),
-        kv_bin = shell_quote(&remote.kv_server_bin),
         stage_bin = shell_quote(&remote.stage_server_bin),
-        kv_sock = shell_quote(&remote.kv_uds_path),
-        kv_config = shell_quote(&remote.kv_config_path),
-        kv_log = shell_quote(&remote.kv_log_path),
         stage_command = stage_args.join(" "),
         stage_log = shell_quote(&remote.stage_log_path),
         stage_exit = shell_quote(&remote.stage_exit_path),
-        wait_attempts = wait_attempts,
     ))
 }
 
@@ -4121,6 +4795,13 @@ fn format_stage_mask(mask: i64) -> String {
     }
 }
 
+fn stage_mask_count(mask: i64) -> u64 {
+    if mask <= 0 {
+        return 0;
+    }
+    (mask as u64).count_ones() as u64
+}
+
 fn run_status(command: &mut Command, description: &str) -> Result<()> {
     let status = command
         .status()
@@ -4244,10 +4925,9 @@ fn model_package_cache_key(model_path: &Path) -> Result<String> {
     Ok(format!("{stem}-package-{:016x}", hasher.finish()))
 }
 
-fn binary_cache_key(stage_server_bin: &Path, kv_server_bin: &Path) -> Result<String> {
+fn binary_cache_key(stage_server_bin: &Path) -> Result<String> {
     let mut hasher = DefaultHasher::new();
     hash_file_identity(stage_server_bin, &mut hasher)?;
-    hash_file_identity(kv_server_bin, &mut hasher)?;
     Ok(format!("{:016x}", hasher.finish()))
 }
 
@@ -4443,25 +5123,6 @@ fn even_stage_ranges(stage_count: usize, layer_end: u32) -> Result<Vec<(u32, u32
     Ok(ranges)
 }
 
-fn wait_for_kv_sockets(stages: &[LocalStage], timeout_secs: u64) -> Result<()> {
-    let deadline = Instant::now() + std::time::Duration::from_secs(timeout_secs);
-    loop {
-        if stages.iter().all(|stage| stage.kv_uds_path.exists()) {
-            return Ok(());
-        }
-        if Instant::now() >= deadline {
-            let missing = stages
-                .iter()
-                .filter(|stage| !stage.kv_uds_path.exists())
-                .map(|stage| stage.kv_uds_path.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ");
-            bail!("timed out waiting for kv-server sockets: {missing}");
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-}
-
 fn wait_for_socket(socket_path: &Path, timeout_secs: u64) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(timeout_secs.max(1));
     loop {
@@ -4513,29 +5174,8 @@ mod speculative_tests {
     }
 
     #[test]
-    fn thinking_filter_strips_complete_block() {
-        let mut filter = ThinkingOutputFilter::new(true);
-        let mut output = String::new();
-        output.push_str(&filter.push("hello <think>private").text);
-        output.push_str(&filter.push(" trace</think>\n\nworld").text);
-        output.push_str(&filter.finish().text);
-        assert_eq!(output, "hello world");
-    }
-
-    #[test]
-    fn thinking_filter_handles_split_tags() {
-        let mut filter = ThinkingOutputFilter::new(true);
-        let mut output = String::new();
-        for piece in ["a <", "thi", "nk>x</th", "ink> b"] {
-            output.push_str(&filter.push(piece).text);
-        }
-        output.push_str(&filter.finish().text);
-        assert_eq!(output, "a b");
-    }
-
-    #[test]
     fn thinking_override_respects_no_think_and_budget_zero() {
-        assert_eq!(normalized_prompt_thinking(false, None), Some(false));
+        assert_eq!(normalized_prompt_thinking(false, None), None);
         assert_eq!(normalized_prompt_thinking(true, None), Some(false));
         assert_eq!(normalized_prompt_thinking(false, Some(0)), Some(false));
         assert_eq!(normalized_prompt_thinking(false, Some(128)), Some(true));
@@ -4886,7 +5526,7 @@ mod package_tests {
             unix_millis()
         ));
         fs::create_dir_all(&package_dir)?;
-        let manifest = json!({
+        let manifest = serde_json::json!({
             "shared": {
                 "metadata": {"path": "shared/metadata.gguf", "artifact_bytes": 11},
                 "embeddings": {"path": "shared/embeddings.gguf", "artifact_bytes": 22},
@@ -4921,7 +5561,7 @@ mod package_tests {
             unix_millis()
         ));
         fs::create_dir_all(&package_dir)?;
-        let manifest = json!({
+        let manifest = serde_json::json!({
             "shared": {
                 "metadata": {"path": "../metadata.gguf", "artifact_bytes": 11},
                 "embeddings": {"path": "shared/embeddings.gguf", "artifact_bytes": 22},

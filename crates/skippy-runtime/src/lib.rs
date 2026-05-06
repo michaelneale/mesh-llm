@@ -12,10 +12,11 @@ use anyhow::{anyhow, Context, Result};
 use skippy_ffi::{
     ActivationDType, ActivationDesc as RawActivationDesc, ActivationLayout,
     ChatMessage as RawChatMessage, Error as RawError,
-    GenerationSignalWindow as RawGenerationSignalWindow, LoadMode, LogitBias as RawLogitBias,
-    Model as RawModel, ModelInfo as RawModelInfo, RuntimeConfig as RawRuntimeConfig,
-    SamplingConfig as RawSamplingConfig, Session as RawSession, SlicePlan as RawSlicePlan, Status,
-    TensorInfo as RawTensorInfo, TensorRole, TokenSignal as RawTokenSignal,
+    GenerationSignalWindow as RawGenerationSignalWindow, KvPageDesc as RawKvPageDesc, LoadMode,
+    LogitBias as RawLogitBias, Model as RawModel, ModelInfo as RawModelInfo,
+    RuntimeConfig as RawRuntimeConfig, SamplingConfig as RawSamplingConfig, Session as RawSession,
+    SlicePlan as RawSlicePlan, Status, TensorInfo as RawTensorInfo, TensorRole,
+    TokenSignal as RawTokenSignal,
 };
 
 pub mod package;
@@ -24,6 +25,8 @@ pub const MAX_LOGIT_BIAS: usize = 256;
 pub const GGML_TYPE_F16: u32 = 1;
 pub const GGML_TYPE_Q4_0: u32 = 2;
 pub const GGML_TYPE_Q8_0: u32 = 8;
+pub const LLAMA_SERVER_DEFAULT_N_BATCH: u32 = 2048;
+pub const LLAMA_SERVER_DEFAULT_N_UBATCH: u32 = 512;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[repr(i32)]
@@ -126,6 +129,8 @@ pub struct RuntimeConfig {
     pub lane_count: u32,
     pub n_batch: Option<u32>,
     pub n_ubatch: Option<u32>,
+    pub n_threads: Option<u32>,
+    pub n_threads_batch: Option<u32>,
     pub n_gpu_layers: i32,
     pub selected_backend_device: Option<String>,
     pub cache_type_k: u32,
@@ -159,6 +164,12 @@ impl RuntimeConfig {
         if self.n_ubatch == Some(0) {
             return Err("n_ubatch must be greater than zero when provided");
         }
+        if self.n_threads == Some(0) {
+            return Err("n_threads must be greater than zero when provided");
+        }
+        if self.n_threads_batch == Some(0) {
+            return Err("n_threads_batch must be greater than zero when provided");
+        }
         Ok(())
     }
 
@@ -185,15 +196,30 @@ impl RuntimeConfig {
                 lane_count: i32::try_from(self.lane_count).context("lane_count exceeds i32")?,
                 n_batch: self
                     .n_batch
+                    .or(Some(LLAMA_SERVER_DEFAULT_N_BATCH))
                     .map(i32::try_from)
                     .transpose()
                     .context("n_batch exceeds i32")?
                     .unwrap_or(0),
                 n_ubatch: self
                     .n_ubatch
+                    .or(Some(LLAMA_SERVER_DEFAULT_N_UBATCH))
                     .map(i32::try_from)
                     .transpose()
                     .context("n_ubatch exceeds i32")?
+                    .unwrap_or(0),
+                n_threads: self
+                    .n_threads
+                    .map(i32::try_from)
+                    .transpose()
+                    .context("n_threads exceeds i32")?
+                    .unwrap_or(0),
+                n_threads_batch: self
+                    .n_threads_batch
+                    .or(self.n_threads)
+                    .map(i32::try_from)
+                    .transpose()
+                    .context("n_threads_batch exceeds i32")?
                     .unwrap_or(0),
                 n_gpu_layers: self.n_gpu_layers,
                 cache_type_k: i32::try_from(self.cache_type_k)
@@ -226,8 +252,10 @@ impl Default for RuntimeConfig {
             layer_end: 1,
             ctx_size: 512,
             lane_count: 1,
-            n_batch: None,
-            n_ubatch: None,
+            n_batch: Some(LLAMA_SERVER_DEFAULT_N_BATCH),
+            n_ubatch: Some(LLAMA_SERVER_DEFAULT_N_UBATCH),
+            n_threads: None,
+            n_threads_batch: None,
             n_gpu_layers: 0,
             selected_backend_device: None,
             cache_type_k: GGML_TYPE_F16,
@@ -313,6 +341,69 @@ impl From<RawActivationDesc> for ActivationDesc {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivationFrame {
     pub desc: ActivationDesc,
+    pub payload: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeKvPageDesc {
+    pub version: u32,
+    pub layer_start: i32,
+    pub layer_end: i32,
+    pub token_start: u64,
+    pub token_count: u64,
+    pub layer_count: u32,
+    pub k_type: u32,
+    pub v_type: u32,
+    pub k_row_bytes: u32,
+    pub v_row_bytes: u32,
+    pub v_element_bytes: u32,
+    pub payload_bytes: u64,
+    pub flags: u64,
+}
+
+impl RuntimeKvPageDesc {
+    fn as_raw(&self) -> RawKvPageDesc {
+        RawKvPageDesc {
+            version: self.version,
+            layer_start: self.layer_start,
+            layer_end: self.layer_end,
+            token_start: self.token_start,
+            token_count: self.token_count,
+            layer_count: self.layer_count,
+            k_type: self.k_type,
+            v_type: self.v_type,
+            k_row_bytes: self.k_row_bytes,
+            v_row_bytes: self.v_row_bytes,
+            v_element_bytes: self.v_element_bytes,
+            payload_bytes: self.payload_bytes,
+            flags: self.flags,
+        }
+    }
+}
+
+impl From<RawKvPageDesc> for RuntimeKvPageDesc {
+    fn from(raw: RawKvPageDesc) -> Self {
+        Self {
+            version: raw.version,
+            layer_start: raw.layer_start,
+            layer_end: raw.layer_end,
+            token_start: raw.token_start,
+            token_count: raw.token_count,
+            layer_count: raw.layer_count,
+            k_type: raw.k_type,
+            v_type: raw.v_type,
+            k_row_bytes: raw.k_row_bytes,
+            v_row_bytes: raw.v_row_bytes,
+            v_element_bytes: raw.v_element_bytes,
+            payload_bytes: raw.payload_bytes,
+            flags: raw.flags,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeKvPage {
+    pub desc: RuntimeKvPageDesc,
     pub payload: Vec<u8>,
 }
 
@@ -655,6 +746,35 @@ impl StageModel {
         Ok(StageSession {
             raw,
             token_count: 0,
+        })
+    }
+
+    pub fn create_session_from_resident_prefix(
+        &self,
+        cache_seq_id: i32,
+        token_ids: &[i32],
+    ) -> Result<StageSession> {
+        let mut raw = ptr::null_mut();
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_session_create_from_resident_prefix(
+                self.raw,
+                cache_seq_id,
+                token_ids.as_ptr(),
+                token_ids.len(),
+                &mut raw,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        if raw.is_null() {
+            return Err(anyhow!(
+                "skippy_session_create_from_resident_prefix returned a null handle"
+            ));
+        }
+        Ok(StageSession {
+            raw,
+            token_count: u64::try_from(token_ids.len()).context("token count exceeds u64")?,
         })
     }
 
@@ -1166,6 +1286,14 @@ impl StageSession {
         self.token_count
     }
 
+    pub fn batch_size(&self) -> Result<usize> {
+        let n_batch = unsafe { skippy_ffi::skippy_session_batch_size(self.raw) };
+        if n_batch <= 0 {
+            return Err(anyhow!("skippy session has no valid batch size"));
+        }
+        usize::try_from(n_batch).context("session batch size exceeds usize")
+    }
+
     /// Captures the current position and asks the native runtime to keep an
     /// in-session recurrent checkpoint. Attention KV is restored by trimming
     /// the speculative suffix back to this position.
@@ -1235,6 +1363,37 @@ impl StageSession {
         Ok(())
     }
 
+    pub fn save_prefix(&mut self, cache_seq_id: i32, token_count: u64) -> Result<()> {
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_session_save_prefix(self.raw, cache_seq_id, token_count, &mut error)
+        };
+        ensure_ok(status, error)
+    }
+
+    pub fn restore_prefix(&mut self, cache_seq_id: i32, token_ids: &[i32]) -> Result<()> {
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_session_restore_prefix(
+                self.raw,
+                cache_seq_id,
+                token_ids.as_ptr(),
+                token_ids.len(),
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        self.token_count = u64::try_from(token_ids.len()).context("token count exceeds u64")?;
+        Ok(())
+    }
+
+    pub fn drop_sequence(&mut self, seq_id: i32) -> Result<()> {
+        let mut error = ptr::null_mut();
+        let status =
+            unsafe { skippy_ffi::skippy_session_drop_sequence(self.raw, seq_id, &mut error) };
+        ensure_ok(status, error)
+    }
+
     pub fn prefill_chunk(&mut self, token_ids: &[i32]) -> Result<()> {
         let mut output_bytes = 0usize;
         let mut error = ptr::null_mut();
@@ -1256,6 +1415,17 @@ impl StageSession {
             .token_count
             .checked_add(u64::try_from(token_ids.len()).context("token count exceeds u64")?)
             .context("session token count overflow")?;
+        Ok(())
+    }
+
+    pub fn prefill_chunked(&mut self, token_ids: &[i32]) -> Result<()> {
+        if token_ids.is_empty() {
+            return Ok(());
+        }
+        let batch_size = self.batch_size()?.max(1);
+        for chunk in token_ids.chunks(batch_size) {
+            self.prefill_chunk(chunk)?;
+        }
         Ok(())
     }
 
@@ -1676,6 +1846,310 @@ impl StageSession {
         ensure_ok(status, error)?;
         Ok(predicted)
     }
+
+    pub fn export_state(&mut self, layer_start: i32, layer_end: i32) -> Result<Vec<u8>> {
+        let mut bytes = 0usize;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_export_state(
+                self.raw,
+                layer_start,
+                layer_end,
+                ptr::null_mut(),
+                0,
+                &mut bytes,
+                &mut error,
+            )
+        };
+        if status != Status::BufferTooSmall && status != Status::Ok {
+            ensure_ok(status, error)?;
+        } else {
+            free_error(error);
+        }
+
+        let mut payload = vec![0_u8; bytes];
+        let mut written = 0usize;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_export_state(
+                self.raw,
+                layer_start,
+                layer_end,
+                payload.as_mut_ptr().cast(),
+                payload.len(),
+                &mut written,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        payload.truncate(written);
+        Ok(payload)
+    }
+
+    pub fn import_state(&mut self, layer_start: i32, layer_end: i32, input: &[u8]) -> Result<()> {
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_import_state(
+                self.raw,
+                layer_start,
+                layer_end,
+                input.as_ptr().cast(),
+                input.len(),
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)
+    }
+
+    pub fn import_state_for_token_count(
+        &mut self,
+        layer_start: i32,
+        layer_end: i32,
+        input: &[u8],
+        token_count: u64,
+    ) -> Result<()> {
+        self.import_state(layer_start, layer_end, input)?;
+        self.token_count = self.token_count.max(token_count);
+        Ok(())
+    }
+
+    pub fn export_full_state(&mut self, layer_start: i32, layer_end: i32) -> Result<Vec<u8>> {
+        let mut bytes = 0usize;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_export_full_state(
+                self.raw,
+                layer_start,
+                layer_end,
+                ptr::null_mut(),
+                0,
+                &mut bytes,
+                &mut error,
+            )
+        };
+        if status != Status::BufferTooSmall && status != Status::Ok {
+            ensure_ok(status, error)?;
+        } else {
+            free_error(error);
+        }
+
+        let mut payload = vec![0_u8; bytes];
+        let mut written = 0usize;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_export_full_state(
+                self.raw,
+                layer_start,
+                layer_end,
+                payload.as_mut_ptr().cast(),
+                payload.len(),
+                &mut written,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        payload.truncate(written);
+        Ok(payload)
+    }
+
+    pub fn import_full_state(
+        &mut self,
+        layer_start: i32,
+        layer_end: i32,
+        input: &[u8],
+    ) -> Result<()> {
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_import_full_state(
+                self.raw,
+                layer_start,
+                layer_end,
+                input.as_ptr().cast(),
+                input.len(),
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)
+    }
+
+    pub fn import_full_state_for_token_count(
+        &mut self,
+        layer_start: i32,
+        layer_end: i32,
+        input: &[u8],
+        token_count: u64,
+    ) -> Result<()> {
+        self.import_full_state(layer_start, layer_end, input)?;
+        self.token_count = self.token_count.max(token_count);
+        Ok(())
+    }
+
+    pub fn export_kv_page(
+        &mut self,
+        layer_start: i32,
+        layer_end: i32,
+        token_start: u64,
+        token_count: u64,
+    ) -> Result<RuntimeKvPage> {
+        let mut desc = RawKvPageDesc::default();
+        let mut bytes = 0usize;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_export_kv_page(
+                self.raw,
+                layer_start,
+                layer_end,
+                token_start,
+                token_count,
+                &mut desc,
+                ptr::null_mut(),
+                0,
+                &mut bytes,
+                &mut error,
+            )
+        };
+        if status != Status::BufferTooSmall && status != Status::Ok {
+            ensure_ok(status, error)?;
+        } else {
+            free_error(error);
+        }
+
+        let mut payload = vec![0_u8; bytes];
+        let mut written = 0usize;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_export_kv_page(
+                self.raw,
+                layer_start,
+                layer_end,
+                token_start,
+                token_count,
+                &mut desc,
+                payload.as_mut_ptr().cast(),
+                payload.len(),
+                &mut written,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        payload.truncate(written);
+        Ok(RuntimeKvPage {
+            desc: desc.into(),
+            payload,
+        })
+    }
+
+    pub fn export_kv_page_into(
+        &mut self,
+        layer_start: i32,
+        layer_end: i32,
+        token_start: u64,
+        token_count: u64,
+        output: &mut [u8],
+    ) -> Result<RuntimeKvPageDesc> {
+        let mut desc = RawKvPageDesc::default();
+        let mut written = 0usize;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_export_kv_page(
+                self.raw,
+                layer_start,
+                layer_end,
+                token_start,
+                token_count,
+                &mut desc,
+                output.as_mut_ptr().cast(),
+                output.len(),
+                &mut written,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        if written != output.len() {
+            anyhow::bail!(
+                "KV page export wrote {written} bytes into {} byte output buffer",
+                output.len()
+            );
+        }
+        Ok(desc.into())
+    }
+
+    pub fn import_kv_page(&mut self, desc: &RuntimeKvPageDesc, payload: &[u8]) -> Result<()> {
+        let raw = desc.as_raw();
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_import_kv_page(
+                self.raw,
+                &raw,
+                payload.as_ptr().cast(),
+                payload.len(),
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        self.token_count = self
+            .token_count
+            .max(desc.token_start.saturating_add(desc.token_count));
+        Ok(())
+    }
+
+    pub fn export_recurrent_state(&mut self) -> Result<Vec<u8>> {
+        let mut bytes = 0usize;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_export_recurrent_state(
+                self.raw,
+                ptr::null_mut(),
+                0,
+                &mut bytes,
+                &mut error,
+            )
+        };
+        if status != Status::BufferTooSmall && status != Status::Ok {
+            ensure_ok(status, error)?;
+        } else {
+            free_error(error);
+        }
+
+        let mut payload = vec![0_u8; bytes];
+        let mut written = 0usize;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_export_recurrent_state(
+                self.raw,
+                payload.as_mut_ptr().cast(),
+                payload.len(),
+                &mut written,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        payload.truncate(written);
+        Ok(payload)
+    }
+
+    pub fn import_recurrent_state(&mut self, input: &[u8]) -> Result<()> {
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_import_recurrent_state(
+                self.raw,
+                input.as_ptr().cast(),
+                input.len(),
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)
+    }
+
+    pub fn import_recurrent_state_for_token_count(
+        &mut self,
+        input: &[u8],
+        token_count: u64,
+    ) -> Result<()> {
+        self.import_recurrent_state(input)?;
+        self.token_count = self.token_count.max(token_count);
+        Ok(())
+    }
 }
 
 impl Drop for StageSession {
@@ -2089,6 +2563,8 @@ mod tests {
             lane_count: 1,
             n_batch: None,
             n_ubatch: None,
+            n_threads: None,
+            n_threads_batch: None,
             n_gpu_layers: 0,
             selected_backend_device: None,
             cache_type_k: GGML_TYPE_F16,

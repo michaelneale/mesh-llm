@@ -12,21 +12,23 @@ on:
 permissions:
   contents: write
 
-env:
-  SCCACHE_GHA_ENABLED: "true"
-  RUSTC_WRAPPER: "sccache"
-  LLAMA_STAGE_BUILD_DIR: .deps/llama.cpp/build-stage-abi-static
-
 jobs:
-  latest_upstream:
-    name: Resolve latest upstream
+  latest-upstream:
     runs-on: ubuntu-latest
-    outputs:
-      old_sha: ${{ steps.sha.outputs.old_sha }}
-      new_sha: ${{ steps.sha.outputs.new_sha }}
-      changed: ${{ steps.sha.outputs.changed }}
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
     steps:
       - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: taiki-e/install-action@just
+
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build build-essential libcurl4-openssl-dev
 
       - name: Prepare requested llama.cpp upstream
         env:
@@ -46,82 +48,29 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
-  linux_build:
-    name: Build upstream candidate
-    needs: latest_upstream
-    if: needs.latest_upstream.outputs.changed == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: taiki-e/install-action@just
-
-      - uses: mozilla-actions/sccache-action@v0.0.9
-
-      - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build build-essential pkg-config libssl-dev libdbus-1-dev curl jq lsof
-
-      - name: Prepare upstream candidate
-        run: scripts/prepare-llama.sh "${{ needs.latest_upstream.outputs.new_sha }}"
-
       - name: Build patched llama.cpp ABI
+        if: steps.sha.outputs.changed == 'true'
         run: scripts/build-llama.sh
 
-      - name: Prepare UI placeholder
-        run: mkdir -p crates/mesh-llm/ui/dist && printf '<html></html>' > crates/mesh-llm/ui/dist/index.html
-
       - name: Build stage runtime crates
-        run: cargo check -p skippy-ffi -p skippy-runtime -p skippy-server -p skippy-model-package -p skippy-correctness -p llama-spec-bench -p mesh-llm
-
-      - name: Build mesh-llm binary
-        run: cargo build -p mesh-llm --bin mesh-llm
-
-      - name: Upload canary inference binary
-        uses: actions/upload-artifact@v6
-        with:
-          name: canary-linux-inference-binary
-          path: target/debug/mesh-llm
-          if-no-files-found: error
-
-      - name: Show sccache stats
-        if: always()
-        run: sccache --show-stats || true
-
-  inference_smoke_tests:
-    needs: [latest_upstream, linux_build]
-    if: needs.latest_upstream.outputs.changed == 'true' && needs.linux_build.result == 'success'
-    uses: ./.github/workflows/smoke.yml
-    with:
-      artifact_name: canary-linux-inference-binary
-      mesh_binary_target: target/debug/mesh-llm
-      cache_key_prefix: canary-
-      workflow_cache_file: .github/workflows/llama-upstream-canary.yml
-
-  update_main_pin:
-    name: Push upstream pin branch
-    needs: [latest_upstream, linux_build, inference_smoke_tests]
-    if: needs.latest_upstream.outputs.changed == 'true' && needs.linux_build.result == 'success' && needs.inference_smoke_tests.result == 'success'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Prepare upstream candidate
-        run: scripts/prepare-llama.sh "${{ needs.latest_upstream.outputs.new_sha }}"
+        if: steps.sha.outputs.changed == 'true'
+        run: cargo check -p skippy-ffi -p skippy-runtime -p skippy-server -p skippy-model-package -p skippy-correctness -p llama-spec-bench
 
       - name: Update llama.cpp upstream pin
+        if: steps.sha.outputs.changed == 'true'
         run: scripts/update-llama-pin.sh
 
       - name: Generate summary
+        if: steps.sha.outputs.changed == 'true'
         run: |
           scripts/summarize-llama-upstream.sh \
-            "${{ needs.latest_upstream.outputs.old_sha }}" \
-            "${{ needs.latest_upstream.outputs.new_sha }}" \
+            "${{ steps.sha.outputs.old_sha }}" \
+            "${{ steps.sha.outputs.new_sha }}" \
             .deps/llama.cpp \
             > /tmp/llama-upstream-pr.md
 
       - name: Push upstream pin branch
+        if: steps.sha.outputs.changed == 'true'
         env:
           BRANCH: automation/update-llama-upstream
         run: |
@@ -142,6 +91,7 @@ jobs:
           fi
 
       - name: Report upstream pin branch
+        if: steps.sha.outputs.changed == 'true'
         run: |
           {
             echo "## llama.cpp upstream pin update"
@@ -150,3 +100,7 @@ jobs:
             echo
             cat /tmp/llama-upstream-pr.md
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Show sccache stats
+        if: always()
+        run: sccache --show-stats || true

@@ -87,3 +87,26 @@ Rows use family `coding_edit_loop`, preserve the original trajectory
 `session_group`, and carry `metadata.benchmark_shape = "repeated_edit_loop"`.
 This gives n-gram pooling repeated software-engineering context instead of the
 cold one-pass prompts in the broader `long` corpus.
+
+## Cache Use-Case Matrix Corpus
+
+The cache benchmark use-case matrix uses a small checked-in HF-derived corpus at:
+
+```text
+evals/skippy-usecase-corpus.json
+```
+
+It keeps the source dataset/config/split/row metadata beside each prompt so the
+README benchmark matrix can be reproduced and audited without guessing which
+prompt shape was used.
+
+| Use case | Source dataset | Config | Split | Row |
+| --- | --- | --- | --- | ---: |
+| Tool calling | `glaiveai/glaive-function-calling-v2` | `default` | `train` | 1 |
+| Text-to-SQL | `gretelai/synthetic_text_to_sql` | `default` | `test` | 0 |
+| Coding agent loop | `SWE-bench/SWE-smith-trajectories` | `default` | `tool` | 0 |
+| Issue fixing | `SWE-bench/SWE-bench` | `default` | `dev` | 0 |
+| Code refinement | `google/code_x_glue_cc_code_refinement` | `small` | `test` | 0 |
+| Few-shot reasoning | `openai/gsm8k` | `main` | `test` | 0 |
+| Open chat | `HuggingFaceH4/mt_bench_prompts` | `default` | `train` | 0 |
+| Summarization/RAG | `nvidia/ChatRAG-Bench` | `doc2dial` | `test` | 0 |

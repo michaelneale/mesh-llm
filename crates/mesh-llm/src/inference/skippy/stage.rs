@@ -143,7 +143,8 @@ pub(crate) struct StageStatusSnapshot {
 struct RunningStage {
     load: StageLoadRequest,
     server: EmbeddedServerHandle,
-    package_info: Option<super::materialization::StagePackageInfo>,
+    materialized: Option<super::materialization::MaterializedStageArtifact>,
+    _materialized_pin: Option<super::materialization::MaterializedStagePin>,
 }
 
 #[derive(Default)]
@@ -192,12 +193,12 @@ impl StageControlState {
         let bind_addr = materialize_stage_bind_addr(parse_bind_addr(&load.bind_addr)?)?;
         let mut effective_load = load;
         effective_load.bind_addr = bind_addr.to_string();
-        let package_info = if effective_load.load_mode == LoadMode::LayerPackage {
-            Some(super::inspect_stage_package(&effective_load.package_ref)?)
-        } else {
-            None
-        };
-        let config = stage_config(&effective_load)?;
+        super::configure_materialized_stage_cache();
+        let materialized = super::materialize_stage_load(&effective_load)?;
+        let config = stage_config(
+            &effective_load,
+            materialized.as_ref().map(|(artifact, _)| artifact),
+        )?;
         let server = skippy_server::start_binary_stage(BinaryStageOptions {
             config,
             topology: None,
@@ -224,7 +225,8 @@ impl StageControlState {
             RunningStage {
                 load: effective_load.clone(),
                 server,
-                package_info,
+                materialized: materialized.as_ref().map(|(artifact, _)| artifact.clone()),
+                _materialized_pin: materialized.map(|(_, pin)| pin),
             },
         );
         let status = self
@@ -353,7 +355,10 @@ fn probe_binary_stage_ready(bind_addr: SocketAddr, timeout: Duration) -> Result<
         .unwrap_or_else(|| anyhow!("timed out waiting for binary stage ready at {bind_addr}")))
 }
 
-fn stage_config(load: &StageLoadRequest) -> Result<StageConfig> {
+fn stage_config(
+    load: &StageLoadRequest,
+    materialized: Option<&super::materialization::MaterializedStageArtifact>,
+) -> Result<StageConfig> {
     anyhow::ensure!(!load.topology_id.is_empty(), "topology_id is required");
     anyhow::ensure!(!load.run_id.is_empty(), "run_id is required");
     anyhow::ensure!(!load.model_id.is_empty(), "model_id is required");
@@ -370,17 +375,19 @@ fn stage_config(load: &StageLoadRequest) -> Result<StageConfig> {
             "selected backend device must not be empty"
         );
     }
-    Ok(StageConfig {
+    let mut config = StageConfig {
         run_id: load.run_id.clone(),
         topology_id: load.topology_id.clone(),
         model_id: load.model_id.clone(),
         package_ref: Some(load.package_ref.clone()),
         manifest_sha256: Some(load.manifest_sha256.clone()),
-        source_model_path: load.model_path.clone(),
-        source_model_sha256: None,
-        source_model_bytes: None,
-        materialized_path: None,
-        materialized_pinned: false,
+        source_model_path: materialized
+            .map(|artifact| artifact.source_model_path.clone())
+            .or_else(|| load.model_path.clone()),
+        source_model_sha256: materialized.map(|artifact| artifact.source_model_sha256.clone()),
+        source_model_bytes: materialized.and_then(|artifact| artifact.source_model_bytes),
+        materialized_path: materialized.map(|artifact| artifact.path.to_string_lossy().to_string()),
+        materialized_pinned: materialized.is_some(),
         model_path: load.model_path.clone(),
         projector_path: load.projector_path.clone(),
         stage_id: load.stage_id.clone(),
@@ -400,11 +407,15 @@ fn stage_config(load: &StageLoadRequest) -> Result<StageConfig> {
             LoadMode::RuntimeSlice | LoadMode::LayerPackage
         ),
         selected_device: load.selected_device.clone(),
+        kv_cache: None,
         load_mode: load.load_mode.clone(),
         bind_addr: load.bind_addr.clone(),
         upstream: load.upstream.as_ref().map(peer_config),
         downstream: load.downstream.as_ref().map(peer_config),
-    })
+    };
+    let family_policy = super::family_policy_for_stage_config(&config);
+    config.kv_cache = family_policy.stage_kv_cache_config_for_stage(&config);
+    Ok(config)
 }
 
 fn peer_config(peer: &StagePeerDescriptor) -> PeerConfig {
@@ -440,20 +451,23 @@ fn status_from_running(stage: &RunningStage) -> StageStatusSnapshot {
         package_ref: Some(stage.load.package_ref.clone()),
         manifest_sha256: Some(stage.load.manifest_sha256.clone()),
         source_model_path: stage
-            .package_info
+            .materialized
             .as_ref()
-            .map(|package| package.source_model_path.clone())
+            .map(|artifact| artifact.source_model_path.clone())
             .or_else(|| stage.load.model_path.clone()),
         source_model_sha256: stage
-            .package_info
+            .materialized
             .as_ref()
-            .map(|package| package.source_model_sha256.clone()),
+            .map(|artifact| artifact.source_model_sha256.clone()),
         source_model_bytes: stage
-            .package_info
+            .materialized
             .as_ref()
-            .and_then(|package| package.source_model_bytes),
-        materialized_path: None,
-        materialized_pinned: false,
+            .and_then(|artifact| artifact.source_model_bytes),
+        materialized_path: stage
+            .materialized
+            .as_ref()
+            .map(|artifact| artifact.path.to_string_lossy().to_string()),
+        materialized_pinned: stage.materialized.is_some(),
         projector_path: stage.load.projector_path.clone(),
         stage_id: stage.load.stage_id.clone(),
         stage_index: stage.load.stage_index,
@@ -568,7 +582,7 @@ mod tests {
     #[test]
     fn stage_config_preserves_backend_neutral_load_fields() {
         let request = load_request();
-        let config = stage_config(&request).unwrap();
+        let config = stage_config(&request, None).unwrap();
 
         assert_eq!(config.topology_id, "topology-a");
         assert_eq!(config.run_id, "run-a");
@@ -618,7 +632,7 @@ mod tests {
             vram_bytes: Some(24_000_000_000),
         });
 
-        let err = stage_config(&request).unwrap_err().to_string();
+        let err = stage_config(&request, None).unwrap_err().to_string();
 
         assert!(err.contains("selected backend device"));
     }

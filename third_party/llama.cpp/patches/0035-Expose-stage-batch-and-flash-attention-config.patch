@@ -1,7 +1,7 @@
-From 96334b6ef3073cc209d288d32edf562d5a796bd4 Mon Sep 17 00:00:00 2001
+From e4fd187052e8cdc74eb465388c690b89faa0e5ea Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 4 May 2026 11:39:01 -0400
-Subject: [PATCH 35/37] Expose stage batch and flash attention config
+Subject: [PATCH 35/45] Expose stage batch and flash attention config
 
 ---
  include/skippy.h | 5 ++++-

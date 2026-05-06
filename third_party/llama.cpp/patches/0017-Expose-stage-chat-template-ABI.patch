@@ -1,7 +1,7 @@
-From cfcb30500feabf245eaa184581bd713b373fbfc5 Mon Sep 17 00:00:00 2001
+From 3cffe5cedc591b659bce9043dee16613caab5b2f Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 19:14:50 +1000
-Subject: [PATCH 17/37] Expose stage chat template ABI
+Subject: [PATCH 17/45] Expose stage chat template ABI
 
 ---
  common/CMakeLists.txt |   1 +

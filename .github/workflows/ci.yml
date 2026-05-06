@@ -121,6 +121,9 @@ jobs:
       - name: Install Python SDKs
         run: python -m pip install --upgrade pip -r ci/requirements-ci-python.txt
 
+      - name: Install Hugging Face CLI
+        run: python -m pip install --upgrade "huggingface_hub[cli]"
+
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev curl jq lsof
 
@@ -152,11 +155,28 @@ jobs:
             exit 1
           fi
 
+      - name: SDK and API crate tests
+        run: |
+          cargo test -p mesh-llm-client
+          cargo test -p mesh-api
+          cargo test -p mesh-api-ffi
+
       - name: Prepare patched llama.cpp ABI checkout
         run: scripts/prepare-llama.sh pinned
 
       - name: Build patched llama.cpp ABI libraries
         run: scripts/build-llama.sh
+
+      - name: Skippy crate tests
+        run: |
+          cargo test -p skippy-protocol --lib
+          cargo test -p skippy-server --lib
+          cargo test -p openai-frontend --lib
+          cargo test -p skippy-runtime
+          cargo test -p skippy-topology
+          cargo test -p skippy-model-package
+          cargo test -p skippy-prompt
+          cargo test -p metrics-server
 
       - name: Build mesh-llm binary (debug)
         run: cargo build -p mesh-llm --bin mesh-llm
@@ -164,11 +184,10 @@ jobs:
       - name: Unit tests
         run: cargo test -p mesh-llm --lib
 
-      - name: Skippy runtime crate tests
-        run: |
-          cargo test -p skippy-protocol --lib
-          cargo test -p skippy-server --lib
-          cargo test -p openai-frontend --lib
+      - name: Skippy smoke tests
+        env:
+          WORK_DIR: ${{ runner.temp }}/skippy-ci-smoke
+        run: scripts/skippy-ci-smoke.sh
 
       - name: Protocol compatibility matrix
         run: |

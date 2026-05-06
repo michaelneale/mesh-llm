@@ -2,11 +2,11 @@ use std::collections::HashMap;
 
 use skippy_protocol::{FlashAttentionType, LoadMode, PeerConfig, StageConfig, StageDevice};
 
+use super::family_policy::FamilyPolicy;
 use super::materialization::StagePackageInfo;
 use super::topology::MeshStagePlan;
 use super::{
     KvCachePolicy, StageLoadRequest, StagePeerDescriptor, StageStatusSnapshot, StageStopRequest,
-    StageWireDType,
 };
 use crate::mesh;
 
@@ -15,6 +15,7 @@ pub(crate) struct StageDeploymentContext<'a> {
     pub(crate) run_id: &'a str,
     pub(crate) model_id: &'a str,
     pub(crate) package: &'a StagePackageInfo,
+    pub(crate) family_policy: &'a FamilyPolicy,
     pub(crate) activation_width: i32,
     pub(crate) ctx_size: u32,
     pub(crate) lane_count: u32,
@@ -46,7 +47,7 @@ pub(crate) fn remote_stage_load_request(
         selected_device: None,
         bind_addr: "127.0.0.1:0".to_string(),
         activation_width: context.activation_width,
-        wire_dtype: StageWireDType::F16,
+        wire_dtype: context.family_policy.activation_wire_dtype,
         ctx_size: context.ctx_size,
         lane_count: context.lane_count,
         n_batch: context.n_batch,
@@ -69,7 +70,7 @@ pub(crate) fn stage0_config(
     downstream_endpoint: String,
     selected_device: Option<StageDevice>,
 ) -> StageConfig {
-    StageConfig {
+    let mut config = StageConfig {
         run_id: context.run_id.to_string(),
         topology_id: context.topology_id.to_string(),
         model_id: context.model_id.to_string(),
@@ -96,6 +97,7 @@ pub(crate) fn stage0_config(
         flash_attn_type: context.flash_attn_type,
         filter_tensors_on_load: true,
         selected_device,
+        kv_cache: None,
         load_mode: LoadMode::LayerPackage,
         bind_addr: "127.0.0.1:0".to_string(),
         upstream: None,
@@ -104,7 +106,11 @@ pub(crate) fn stage0_config(
             stage_index: downstream_stage.stage_index,
             endpoint: downstream_endpoint,
         }),
-    }
+    };
+    config.kv_cache = context
+        .family_policy
+        .stage_kv_cache_config_for_stage(&config);
+    config
 }
 
 pub(crate) fn stage_stop_request(
@@ -203,6 +209,10 @@ mod tests {
             run_id: "run-a",
             model_id: "model-a",
             package: &package,
+            family_policy: &crate::inference::skippy::family_policy::family_policy_for_model_path(
+                "model.gguf",
+                Some("Qwen/Qwen3-0.6B:Q8_0"),
+            ),
             activation_width: 1024,
             ctx_size: 8192,
             lane_count: 2,

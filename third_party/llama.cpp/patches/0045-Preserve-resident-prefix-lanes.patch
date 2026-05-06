@@ -1,0 +1,138 @@
+From f4132e9af752c80ceb4fb215e3b5b0a55f60c1e5 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Tue, 5 May 2026 22:05:49 +1000
+Subject: [PATCH 45/45] Preserve resident prefix lanes
+
+---
+ src/skippy.cpp | 65 ++++++++++++++++++++++++++++++++++++++++++++------
+ 1 file changed, 58 insertions(+), 7 deletions(-)
+
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index 4c65dbc4..4486ad78 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -16,6 +16,7 @@
+ #include <algorithm>
+ #include <cerrno>
+ #include <cmath>
++#include <cstddef>
+ #include <cstdint>
+ #include <cstdlib>
+ #include <cstring>
+@@ -46,6 +47,7 @@ struct skippy_model {
+     bool executable = true;
+     uint32_t lane_count = 1;
+     std::vector<bool> lane_in_use;
++    std::vector<std::vector<llama_token>> lane_resident_prefix_tokens;
+ };
+ 
+ struct skippy_session {
+@@ -56,6 +58,8 @@ struct skippy_session {
+     int32_t n_past = 0;
+     bool borrowed_sequence = false;
+     int32_t borrowed_prefix_tokens = 0;
++    bool preserve_prefix_on_free = false;
++    int32_t preserve_prefix_tokens = 0;
+     bool checkpoint_valid = false;
+     int32_t checkpoint_n_past = 0;
+     size_t checkpoint_token_history_size = 0;
+@@ -1533,6 +1537,7 @@ static enum skippy_status skippy_finish_model_open(
+         return SKIPPY_STATUS_RUNTIME_ERROR;
+     }
+     stage_model->lane_in_use.assign(stage_model->lane_count, false);
++    stage_model->lane_resident_prefix_tokens.resize(stage_model->lane_count);
+ 
+     *out_model = stage_model;
+     return skippy_success(out_error);
+@@ -1695,6 +1700,12 @@ enum skippy_status skippy_session_create(
+     session->checkpoint_valid = false;
+     session->checkpoint_n_past = 0;
+     *out_session = session;
++    if (static_cast<size_t>(seq_id) < model->lane_resident_prefix_tokens.size()) {
++        model->lane_resident_prefix_tokens[static_cast<size_t>(seq_id)].clear();
++    }
++    if (llama_memory_t memory = model->ctx->get_memory()) {
++        llama_memory_seq_rm(memory, seq_id, -1, -1);
++    }
+     return skippy_success(out_error);
+ }
+ 
+@@ -1837,7 +1848,26 @@ enum skippy_status skippy_session_free(
+         struct skippy_error ** out_error) {
+     if (session != nullptr) {
+         if (session->ctx != nullptr) {
+-            skippy_session_reset(session, nullptr);
++            if (session->preserve_prefix_on_free && !session->borrowed_sequence && session->stage_model != nullptr) {
++                session->ctx->synchronize();
++                if (llama_memory_t memory = session->ctx->get_memory()) {
++                    llama_memory_seq_rm(
++                            memory,
++                            session->seq_id,
++                            static_cast<llama_pos>(session->preserve_prefix_tokens),
++                            -1);
++                    llama_memory_seq_rm(memory, session->checkpoint_seq_id, -1, -1);
++                }
++                session->ctx->synchronize();
++            } else {
++                skippy_session_reset(session, nullptr);
++                if (!session->borrowed_sequence && session->stage_model != nullptr && session->seq_id >= 0) {
++                    const size_t lane = static_cast<size_t>(session->seq_id);
++                    if (lane < session->stage_model->lane_resident_prefix_tokens.size()) {
++                        session->stage_model->lane_resident_prefix_tokens[lane].clear();
++                    }
++                }
++            }
+         }
+         if (!session->borrowed_sequence && session->stage_model != nullptr && session->seq_id >= 0) {
+             const size_t lane = static_cast<size_t>(session->seq_id);
+@@ -2865,6 +2895,18 @@ enum skippy_status skippy_session_save_prefix(
+     if (token_count > 0) {
+         llama_memory_seq_cp(memory, session->seq_id, cache_seq_id, 0, static_cast<llama_pos>(token_count));
+     }
++    if (!session->borrowed_sequence && session->stage_model != nullptr && session->seq_id >= 0) {
++        const size_t lane = static_cast<size_t>(session->seq_id);
++        if (lane < session->stage_model->lane_resident_prefix_tokens.size()
++                && session->token_history.size() >= static_cast<size_t>(token_count)) {
++            auto & lane_tokens = session->stage_model->lane_resident_prefix_tokens[lane];
++            lane_tokens.assign(
++                    session->token_history.begin(),
++                    session->token_history.begin() + static_cast<ptrdiff_t>(token_count));
++            session->preserve_prefix_on_free = true;
++            session->preserve_prefix_tokens = static_cast<int32_t>(token_count);
++        }
++    }
+     session->ctx->synchronize();
+     return skippy_success(out_error);
+ }
+@@ -2982,13 +3024,22 @@ enum skippy_status skippy_session_create_from_resident_prefix(
+             return SKIPPY_STATUS_INVALID_ARGUMENT;
+         }
+     }
+-    if (!llama_memory_seq_rm(memory, seq_id, -1, -1)) {
+-        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to clear borrowed execution lane");
+-        model->lane_in_use[static_cast<size_t>(seq_id)] = false;
+-        return SKIPPY_STATUS_RUNTIME_ERROR;
++    bool lane_prefix_hit = false;
++    const size_t lane = static_cast<size_t>(seq_id);
++    if (lane < model->lane_resident_prefix_tokens.size()) {
++        const auto & lane_tokens = model->lane_resident_prefix_tokens[lane];
++        lane_prefix_hit = lane_tokens.size() == token_count
++                && (token_count == 0 || std::equal(lane_tokens.begin(), lane_tokens.end(), token_ids));
+     }
+-    if (token_count > 0) {
+-        llama_memory_seq_cp(memory, cache_seq_id, seq_id, 0, static_cast<llama_pos>(token_count));
++    if (!lane_prefix_hit) {
++        if (!llama_memory_seq_rm(memory, seq_id, -1, -1)) {
++            skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to clear borrowed execution lane");
++            model->lane_in_use[static_cast<size_t>(seq_id)] = false;
++            return SKIPPY_STATUS_RUNTIME_ERROR;
++        }
++        if (token_count > 0) {
++            llama_memory_seq_cp(memory, cache_seq_id, seq_id, 0, static_cast<llama_pos>(token_count));
++        }
+     }
+     if (!llama_memory_seq_rm(memory, seq_id, static_cast<llama_pos>(token_count), -1)) {
+         skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to trim borrowed execution lane");
+-- 
+2.50.1 (Apple Git-155)
+

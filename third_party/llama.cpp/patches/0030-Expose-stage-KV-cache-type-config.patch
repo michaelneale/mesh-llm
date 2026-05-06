@@ -1,7 +1,7 @@
-From f86bbc8e1beb8d2c604226aa191b1bca3396c09f Mon Sep 17 00:00:00 2001
+From 770003612485ee3d78e1e06c2837da2b30b101b7 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Sat, 2 May 2026 08:41:07 +1000
-Subject: [PATCH 30/37] Expose stage KV cache type config
+Subject: [PATCH 30/45] Expose stage KV cache type config
 
 ---
  include/skippy.h | 4 +++-

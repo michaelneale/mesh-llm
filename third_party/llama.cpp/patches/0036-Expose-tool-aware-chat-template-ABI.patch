@@ -1,7 +1,7 @@
-From 64b624caf5f2380acbc949629aee610f2029bc21 Mon Sep 17 00:00:00 2001
+From 7fd9c2c6d26efaf4c5559e91fd7873bf1d35454c Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Tue, 5 May 2026 06:10:28 +1000
-Subject: [PATCH 36/37] Expose tool-aware chat template ABI
+Subject: [PATCH 36/45] Expose tool-aware chat template ABI
 
 ---
  common/stage-chat.cpp | 222 ++++++++++++++++++++++++++++++++++++++++++

@@ -184,6 +184,8 @@ pub struct StageConfig {
     pub filter_tensors_on_load: bool,
     #[serde(default)]
     pub selected_device: Option<StageDevice>,
+    #[serde(default)]
+    pub kv_cache: Option<StageKvCacheConfig>,
     pub load_mode: LoadMode,
     pub bind_addr: String,
     #[serde(default)]
@@ -201,6 +203,66 @@ pub struct StageDevice {
     pub index: Option<usize>,
     #[serde(default)]
     pub vram_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StageKvCacheMode {
+    Disabled,
+    Auto,
+    Record,
+    LookupRecord,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StageKvCachePayload {
+    Auto,
+    ResidentKv,
+    KvRecurrent,
+    FullState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct StageKvCacheConfig {
+    #[serde(default = "default_kv_cache_mode")]
+    pub mode: StageKvCacheMode,
+    #[serde(default = "default_kv_cache_payload")]
+    pub payload: StageKvCachePayload,
+    #[serde(default = "default_kv_cache_max_entries")]
+    pub max_entries: usize,
+    #[serde(default)]
+    pub max_bytes: u64,
+    #[serde(default = "default_kv_cache_min_tokens")]
+    pub min_tokens: u64,
+    #[serde(default = "default_kv_cache_shared_stride_tokens")]
+    pub shared_prefix_stride_tokens: u64,
+    #[serde(default = "default_kv_cache_shared_record_limit")]
+    pub shared_prefix_record_limit: u64,
+}
+
+fn default_kv_cache_mode() -> StageKvCacheMode {
+    StageKvCacheMode::Auto
+}
+
+fn default_kv_cache_payload() -> StageKvCachePayload {
+    StageKvCachePayload::Auto
+}
+
+fn default_kv_cache_max_entries() -> usize {
+    64
+}
+
+fn default_kv_cache_min_tokens() -> u64 {
+    64
+}
+
+fn default_kv_cache_shared_stride_tokens() -> u64 {
+    128
+}
+
+fn default_kv_cache_shared_record_limit() -> u64 {
+    2
 }
 
 fn default_ctx_size() -> u32 {

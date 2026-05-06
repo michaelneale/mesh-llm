@@ -1,0 +1,195 @@
+From 82cb23f3e71b900e50f673aa4e573c029bd5ab33 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Tue, 5 May 2026 19:20:00 +1000
+Subject: [PATCH 40/45] Add borrowed resident prefix session ABI
+
+---
+ include/skippy.h |  10 ++++-
+ src/skippy.cpp   | 103 ++++++++++++++++++++++++++++++++++++++++++++---
+ 2 files changed, 107 insertions(+), 6 deletions(-)
+
+diff --git a/include/skippy.h b/include/skippy.h
+index b051b66c..fe166e3d 100644
+--- a/include/skippy.h
++++ b/include/skippy.h
+@@ -26,7 +26,7 @@ extern "C" {
+ 
+ #define SKIPPY_ABI_VERSION_MAJOR 0
+ #define SKIPPY_ABI_VERSION_MINOR 1
+-#define SKIPPY_ABI_VERSION_PATCH 20
++#define SKIPPY_ABI_VERSION_PATCH 21
+ 
+ #define SKIPPY_MAX_LOGIT_BIAS 256
+ 
+@@ -228,6 +228,14 @@ LLAMA_API enum skippy_status skippy_session_create(
+         struct skippy_session ** out_session,
+         struct skippy_error ** out_error);
+ 
++LLAMA_API enum skippy_status skippy_session_create_from_resident_prefix(
++        struct skippy_model * model,
++        int32_t cache_seq_id,
++        const llama_token * token_ids,
++        size_t token_count,
++        struct skippy_session ** out_session,
++        struct skippy_error ** out_error);
++
+ LLAMA_API struct llama_context * skippy_session_llama_context(
+         struct skippy_session * session);
+ 
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index 56ab40d7..b979cbb2 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -45,6 +45,8 @@ struct skippy_session {
+     int32_t seq_id = 0;
+     int32_t checkpoint_seq_id = 1;
+     int32_t n_past = 0;
++    bool borrowed_sequence = false;
++    int32_t borrowed_prefix_tokens = 0;
+     bool checkpoint_valid = false;
+     int32_t checkpoint_n_past = 0;
+     size_t checkpoint_token_history_size = 0;
+@@ -1625,6 +1627,8 @@ enum skippy_status skippy_session_create(
+     session->ctx = model->ctx;
+     session->seq_id = seq_id;
+     session->checkpoint_seq_id = seq_id + static_cast<int32_t>(model->lane_count);
++    session->borrowed_sequence = false;
++    session->borrowed_prefix_tokens = 0;
+     session->n_past = 0;
+     session->checkpoint_valid = false;
+     session->checkpoint_n_past = 0;
+@@ -1740,15 +1744,26 @@ enum skippy_status skippy_session_reset(
+         return SKIPPY_STATUS_RUNTIME_ERROR;
+     }
+ 
+-    if (!llama_memory_seq_rm(memory, session->seq_id, -1, -1)) {
++    const llama_pos reset_from = session->borrowed_sequence
++        ? static_cast<llama_pos>(session->borrowed_prefix_tokens)
++        : -1;
++    if (!llama_memory_seq_rm(memory, session->seq_id, reset_from, -1)) {
+         skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to reset execution lane");
+         return SKIPPY_STATUS_RUNTIME_ERROR;
+     }
+-    llama_memory_seq_rm(memory, session->checkpoint_seq_id, -1, -1);
+-    session->n_past = 0;
++    if (!session->borrowed_sequence) {
++        llama_memory_seq_rm(memory, session->checkpoint_seq_id, -1, -1);
++    }
++    session->n_past = session->borrowed_sequence ? session->borrowed_prefix_tokens : 0;
+     session->checkpoint_valid = false;
+     session->checkpoint_n_past = 0;
+-    session->token_history.clear();
++    if (session->borrowed_sequence) {
++        if (session->token_history.size() > static_cast<size_t>(session->borrowed_prefix_tokens)) {
++            session->token_history.resize(static_cast<size_t>(session->borrowed_prefix_tokens));
++        }
++    } else {
++        session->token_history.clear();
++    }
+     session->signal_history.clear();
+     skippy_clear_chat_sampling(session);
+     session->ctx->synchronize();
+@@ -1762,7 +1777,7 @@ enum skippy_status skippy_session_free(
+         if (session->ctx != nullptr) {
+             skippy_session_reset(session, nullptr);
+         }
+-        if (session->stage_model != nullptr && session->seq_id >= 0) {
++        if (!session->borrowed_sequence && session->stage_model != nullptr && session->seq_id >= 0) {
+             const size_t lane = static_cast<size_t>(session->seq_id);
+             if (lane < session->stage_model->lane_in_use.size()) {
+                 session->stage_model->lane_in_use[lane] = false;
+@@ -2712,6 +2727,16 @@ static bool skippy_is_reserved_sequence_id(
+     return seq_id < reserved;
+ }
+ 
++static bool skippy_is_reserved_sequence_id_for_model(
++        const skippy_model * model,
++        int32_t seq_id) {
++    if (model == nullptr || seq_id < 0) {
++        return true;
++    }
++    const int32_t reserved = static_cast<int32_t>(model->lane_count) * 2;
++    return seq_id < reserved;
++}
++
+ static enum skippy_status skippy_get_resident_prefix_memory(
+         skippy_session * session,
+         llama_memory_t * out_memory,
+@@ -2834,6 +2859,74 @@ enum skippy_status skippy_session_restore_prefix(
+     return skippy_success(out_error);
+ }
+ 
++enum skippy_status skippy_session_create_from_resident_prefix(
++        struct skippy_model * model,
++        int32_t cache_seq_id,
++        const llama_token * token_ids,
++        size_t token_count,
++        struct skippy_session ** out_session,
++        struct skippy_error ** out_error) {
++    if (model == nullptr || model->model == nullptr || model->ctx == nullptr || out_session == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "model and out_session are required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    *out_session = nullptr;
++    if (token_count > static_cast<size_t>(std::numeric_limits<llama_pos>::max())
++            || token_count > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "token_count exceeds supported position range");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if (token_count > 0 && token_ids == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "token_ids are required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if (skippy_is_reserved_sequence_id_for_model(model, cache_seq_id)) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "cache sequence id overlaps execution lanes");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if (static_cast<uint32_t>(cache_seq_id) >= llama_n_seq_max(model->ctx)) {
++        skippy_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, "resident sequence id cannot be decoded by this context");
++        return SKIPPY_STATUS_UNSUPPORTED;
++    }
++
++    skippy_session temp{};
++    temp.stage_model = model;
++    temp.ctx = model->ctx;
++    llama_memory_t memory = nullptr;
++    enum skippy_status status = skippy_get_resident_prefix_memory(&temp, &memory, out_error);
++    if (status != SKIPPY_STATUS_OK) {
++        return status;
++    }
++
++    model->ctx->synchronize();
++    if (token_count > 0) {
++        const llama_pos max_pos = llama_memory_seq_pos_max(memory, cache_seq_id);
++        if (max_pos < static_cast<llama_pos>(token_count - 1)) {
++            skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "resident prefix sequence is incomplete");
++            return SKIPPY_STATUS_INVALID_ARGUMENT;
++        }
++    }
++    if (!llama_memory_seq_rm(memory, cache_seq_id, static_cast<llama_pos>(token_count), -1)) {
++        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to trim borrowed resident sequence");
++        return SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++
++    skippy_session * session = new skippy_session{};
++    session->stage_model = model;
++    session->ctx = model->ctx;
++    session->seq_id = cache_seq_id;
++    session->checkpoint_seq_id = -1;
++    session->n_past = static_cast<int32_t>(token_count);
++    session->borrowed_sequence = true;
++    session->borrowed_prefix_tokens = static_cast<int32_t>(token_count);
++    if (token_count > 0) {
++        session->token_history.assign(token_ids, token_ids + token_count);
++    }
++    model->ctx->synchronize();
++    *out_session = session;
++    return skippy_success(out_error);
++}
++
+ enum skippy_status skippy_session_drop_sequence(
+         struct skippy_session * session,
+         int32_t seq_id,
+-- 
+2.50.1 (Apple Git-155)
+
