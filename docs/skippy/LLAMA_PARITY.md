@@ -165,34 +165,34 @@ or a blocker is discovered.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `qwen2` | `qwen2` | selected | yes | pass | pass | `ResidentKv` | pass | ready for reviewed promotion |
 | `deepseek` | `deepseek` | selected | yes | pass | pass | `ResidentKv` | pass | promoted |
-| `mistral` | `mistral3` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
+| `mistral` | `mistral3` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `lfm2` | `lfm2` | selected | yes | pass | pass | `KvRecurrent` | pass | recurrent cache restore ready; keep normal decode ownership sticky |
-| `gpt2` | `gpt2` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
-| `gemma` | `gemma` | selected | yes | pass with `f32` wire | pass | `ResidentKv` target | pending cache smoke | text split ready with `f32`; `f16`/`q8` rejected |
-| `mpt` | `mpt` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
-| `olmo2` | `olmo2` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
-| `olmoe` | `olmoe` | selected | yes | pass | pass | `ResidentKv` target; MoE smoke required | pending cache smoke | text split ready |
+| `gpt2` | `gpt2` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
+| `gemma` | `gemma` | selected | yes | pass with `f32` wire | pass | `ResidentKv` | pass | cache restore ready with `f32`; `f16`/`q8` rejected |
+| `mpt` | `mpt` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
+| `olmo2` | `olmo2` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
+| `olmoe` | `olmoe` | selected | yes | pass | pass | `ResidentKv`; MoE smoke required | pass | generic cache restore ready; MoE route/expert smoke still required |
 | `qwen3vl` | `qwen3vl` | selected | yes | pass | pass | multimodal policy pending | pending projector/media lane | text split ready; multimodal pending |
-| `phi` | `phi3` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
-| `granite` | `granite` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
-| `bloom` | `bloom` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
-| `gptneox` | `gptneox` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
-| `baichuan` | `baichuan` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
-| `exaone` | `exaone` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
-| `exaone4` | `exaone4` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
-| `command_r` | `command-r` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
-| `cohere2` | `cohere2` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
+| `phi` | `phi3` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
+| `granite` | `granite` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
+| `bloom` | `bloom` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
+| `gptneox` | `gptneox` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
+| `baichuan` | `baichuan` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
+| `exaone` | `exaone` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
+| `exaone4` | `exaone4` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
+| `command_r` | `command-r` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
+| `cohere2` | `cohere2` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `jamba` | `jamba` | selected | yes | pass | pass | `KvRecurrent` | pass | recurrent cache restore ready; middle stage can be recurrent-only |
-| `falcon` | `falcon` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
-| `internlm2` | `internlm2` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
-| `stablelm` | `stablelm` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
-| `starcoder2` | `starcoder2` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
+| `falcon` | `falcon` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
+| `internlm2` | `internlm2` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
+| `stablelm` | `stablelm` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
+| `starcoder2` | `starcoder2` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `mamba` | `mamba` | selected | yes | pass | pass | `KvRecurrent` | pass | recurrent-only cache restore ready; keep normal decode ownership sticky |
 | `mamba2` | `mamba2` | selected | yes | pass | pass | `KvRecurrent` | pass | recurrent-only cache restore ready; keep normal decode ownership sticky |
 | `rwkv6` | `rwkv6` | replacement selected | yes | pass | pass | `KvRecurrent` | pass | recurrent-only cache restore ready; keep normal decode ownership sticky |
 | `qwen2vl` | `qwen2vl` | selected | yes | pass | pass | multimodal policy pending | pending projector/media lane | text split ready; multimodal pending |
-| `qwen2moe` | `qwen2moe` | selected | yes | pass | pass | `ResidentKv` target; MoE smoke required | pending cache smoke | text split ready |
-| `qwen3moe` | `qwen3moe` | selected | yes | pass | pass | `ResidentKv` target; MoE smoke required | pending cache smoke | text split ready |
+| `qwen2moe` | `qwen2moe` | selected | yes | pass | pass | `ResidentKv`; MoE smoke required | pass | generic cache restore ready; MoE route/expert smoke still required |
+| `qwen3moe` | `qwen3moe` | selected | yes | pass | pass | `ResidentKv`; MoE smoke required | pass | generic cache restore ready; MoE route/expert smoke still required |
 | `llama4` | `llama4` | package/remote only | no | package/remote pending | package/remote pending | package-local `ResidentKv` target | pending | no cheap artifact; local glogwa68 sample reports `llama`, not `llama4` |
 
 Broader coverage lives in `docs/skippy/llama-parity-candidates.json`. The board
@@ -218,16 +218,16 @@ themselves until the reviewed topology records are updated.
 | `qwen2` | `meshllm/qwen2.5-0.5b-instruct-parity-q8_0-gguf` | `single-step`, `chain`, and dtype matrix passed | rejected | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 10.82x cache-hit speedup |
 | `deepseek` | `Morgen0052/deepseek-llm-7b-chat-Q4_K_M-GGUF` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 1.58x cache-hit speedup |
 | `mistral3` | `meshllm/mistral-7b-instruct-v0.3-parity-f16-gguf` | invalid for this row: GGUF reports architecture `llama` | invalid | invalid | invalid; replaced by `lmstudio-community/Ministral-3-3B-Instruct-2512-GGUF` candidate |
-| `baichuan`, `bloom`, `gptneox`, `phi`, `stablelm` | see `target/family-certify/llama-parity-dense-tranche-1` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke pending |
-| `command_r`, `cohere2`, `exaone`, `exaone4`, `falcon`, `internlm2`, `mistral3` | see `target/family-certify/llama-parity-dense-tranche-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke pending |
-| `granite` | see `target/family-certify/llama-parity-dense-tranche-2-granite-fix2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke pending; fixed staged activation rescaling |
-| `starcoder2` | see `target/family-certify/llama-parity-dense-tranche-2-external` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke pending |
-| `gpt2` | see `target/family-certify/llama-parity-decoder-tranche-3e` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke pending; fixed mid-stage position input registration |
-| `gemma` | see `target/family-certify/llama-parity-gemma-f32-wire-1` | `single-step`, `chain`, and dtype matrix passed with `f32` only | rejected | accepted | `ResidentKv` cache smoke pending; `f16` predicted token `0`, `q8` predicted token `107` |
-| `mpt`, `olmo2`, `olmoe` | see `target/family-certify/llama-parity-decoder-tranche-3c` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke pending |
+| `baichuan`, `bloom`, `gptneox`, `phi`, `stablelm` | see `target/family-certify/llama-parity-dense-tranche-1` and `/tmp/skippy-cache-correctness-dense-*` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke passed |
+| `command_r`, `cohere2`, `exaone`, `exaone4`, `falcon`, `internlm2`, `mistral3` | see `target/family-certify/llama-parity-dense-tranche-2` and `/tmp/skippy-cache-correctness-dense-*` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke passed |
+| `granite` | see `target/family-certify/llama-parity-dense-tranche-2-granite-fix2` and `/tmp/skippy-cache-correctness-dense-medium` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke passed; fixed staged activation rescaling |
+| `starcoder2` | see `target/family-certify/llama-parity-dense-tranche-2-external` and `/tmp/skippy-cache-correctness-dense-medium` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke passed |
+| `gpt2` | see `target/family-certify/llama-parity-decoder-tranche-3e` and `/tmp/skippy-cache-correctness-dense-small` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke passed; fixed mid-stage position input registration |
+| `gemma` | see `target/family-certify/llama-parity-gemma-f32-wire-1` and `/tmp/skippy-cache-correctness-dense-gemma` | `single-step`, `chain`, and dtype matrix passed with `f32` only | rejected | accepted | `ResidentKv` cache smoke passed with `f32`; `f16` predicted token `0`, `q8` predicted token `107` |
+| `mpt`, `olmo2`, `olmoe` | see `target/family-certify/llama-parity-decoder-tranche-3c` and `/tmp/skippy-cache-correctness-dense-*` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke passed; `olmoe` still needs MoE route/expert smoke before promotion |
 | `qwen2vl`, `qwen3vl` | see `target/family-certify/llama-parity-decoder-tranche-3c` | text `single-step`, `chain`, and dtype matrix passed | validated | accepted | text lane only; projector/media-token lane still required |
-| `qwen2moe` | see `target/family-certify/llama-parity-qwen2moe-runtime-slice-3` | `single-step`, `chain`, and dtype matrix passed | rejected | accepted | `ResidentKv` cache smoke pending; MoE smoke required before promotion |
-| `qwen3moe` | see `target/family-certify/llama-parity-qwen3moe-runtime-slice-1` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke pending; MoE smoke required before promotion |
+| `qwen2moe` | see `target/family-certify/llama-parity-qwen2moe-runtime-slice-3` and `/tmp/skippy-cache-correctness-dense-medium` | `single-step`, `chain`, and dtype matrix passed | rejected | accepted | generic `ResidentKv` cache smoke passed; MoE route/expert smoke required before promotion |
+| `qwen3moe` | see `target/family-certify/llama-parity-qwen3moe-runtime-slice-1` and `/tmp/skippy-cache-correctness-dense-medium` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | generic `ResidentKv` cache smoke passed; MoE route/expert smoke required before promotion |
 | `lfm2` | see `target/family-certify/llama-parity-lfm2-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `KvRecurrent` cache smoke passed; keep recurrent ownership sticky for normal decode |
 | `jamba` | see `target/family-certify/llama-parity-jamba-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `KvRecurrent` cache smoke passed; middle-stage recurrent-only slices are valid |
 | `mamba` | see `target/family-certify/llama-parity-mamba-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `KvRecurrent` cache smoke passed with zero native KV bytes |
@@ -263,6 +263,12 @@ Raw run directories:
 - `target/family-certify/rwkv7-sideband-single-step.json`
 - `target/family-certify/rwkv7-sideband-chain.json`
 - `target/family-certify/rwkv7-sideband-dtype-matrix.json`
+- `/tmp/skippy-cache-correctness-dense-small`
+- `/tmp/skippy-cache-correctness-dense-medium`
+- `/tmp/skippy-cache-correctness-dense-large`
+- `/tmp/skippy-cache-correctness-dense-mistral3`
+- `/tmp/skippy-cache-correctness-dense-gemma`
+- `/Volumes/External/tmp/skippy-smoke-qwen3-coder-480b/state-handoff.json`
 
 ## Cache Correctness Evidence
 
@@ -283,11 +289,19 @@ LLAMA_STAGE_BUILD_DIR=$PWD/.deps/llama-build/build-stage-abi-metal \
     --n-gpu-layers 999
 ```
 
-Latest local result: `39/39` rows passed. Every row restored into a different
-native sequence (`0 -> 1`), suffix-prefill-then-decode matched normal prefill,
-and repeated hits stayed stable. `KvRecurrent` rows carried non-zero recurrent
-payloads. Pure recurrent families and recurrent-only stage ranges correctly
-recorded zero native KV bytes plus recurrent state.
+Latest local result: `102/102` rows passed across tranche runs. Every row
+restored into a different native sequence (`0 -> 1`), suffix-prefill-then-decode
+matched normal prefill, and repeated hits stayed stable. `KvRecurrent` rows
+carried non-zero recurrent payloads. Pure recurrent families and recurrent-only
+stage ranges correctly recorded zero native KV bytes plus recurrent state.
+Dense and MoE-text `ResidentKv` additions passed in:
+`/tmp/skippy-cache-correctness-dense-small`,
+`/tmp/skippy-cache-correctness-dense-medium`,
+`/tmp/skippy-cache-correctness-dense-large`,
+`/tmp/skippy-cache-correctness-dense-mistral3`, and
+`/tmp/skippy-cache-correctness-dense-gemma`. An attempted unified all-in-one
+rerun exited early during process startup before writing a report; the completed
+tranche reports are the current evidence.
 
 Negative policy regression tests now assert that Falcon-H1, Qwen3Next, Jamba,
 LFM2, Mamba, Mamba2, RWKV6, and RWKV7 select `KvRecurrent`, never `ResidentKv`,
@@ -339,13 +353,12 @@ through mesh family policy and server-side auto-payload inference.
 
 ## Current Blockers
 
-- Runtime-slice expansion now passes for `baichuan`, `bloom`, `command_r`,
-  `cohere2`, `exaone`, `exaone4`, `falcon`, `gemma` with `f32` wire, `gpt2`,
-  `gptneox`, `granite`, `internlm2`, `mistral3`, `mpt`, `olmo2`, `olmoe`,
-  `phi3`, `qwen2vl` text, `qwen3vl` text, `qwen2moe`, `qwen3moe`,
-  `stablelm`, and `starcoder2`.
-  These rows still need serving cache smoke before cache-on-by-default
-  promotion.
+- Runtime-slice expansion and cache restore now pass for `baichuan`, `bloom`,
+  `command_r`, `cohere2`, `exaone`, `exaone4`, `falcon`, `gemma` with `f32`
+  wire, `gpt2`, `gptneox`, `granite`, `internlm2`, `mistral3`, `mpt`, `olmo2`,
+  `phi3`, `stablelm`, and `starcoder2`.
+- `olmoe`, `qwen2moe`, and `qwen3moe` pass generic `ResidentKv` cache restore,
+  but still need MoE route/expert smoke before support promotion.
 - `jamba`, `lfm2`, `mamba`, `mamba2`, `rwkv6`, and `rwkv7` now pass
   `KvRecurrent` cache smoke for one-stage, split-middle, and split-final
   restore into a different native sequence. Keep recurrent ownership sticky for

@@ -21,16 +21,22 @@
   `0..1`, real-upstream expert layer `3..4`, and synthetic-upstream late-layer
   package stages `30..31` and `60..61`.
 - Source/target native-sequence cache correctness is now covered by
-  `evals/skippy-cache-correctness-gate.py`. The latest local Metal run passed
-  `39/39` rows across Qwen3 dense, Llama, GLM4, Gemma3, OLMo, Falcon-H1,
-  Jamba, LFM2, Mamba, Mamba2, RWKV6, RWKV7, and Qwen3Next for one-stage,
-  split-middle, and split-final topologies. All rows restored `0 -> 1`,
-  suffix-prefill matched, repeated hits were stable, and recurrent payload
-  bytes were non-zero for `KvRecurrent` families.
+  `evals/skippy-cache-correctness-gate.py`. The latest local Metal tranche
+  evidence passed `102/102` rows across Qwen3 dense, Llama, GLM4, Gemma3, OLMo,
+  Falcon-H1, Jamba, LFM2, Mamba, Mamba2, RWKV6, RWKV7, Qwen3Next, and the
+  expanded dense/MoE-text families for one-stage, split-middle, and split-final
+  topologies. All rows restored `0 -> 1`, suffix-prefill matched, repeated hits
+  were stable, and recurrent payload bytes were non-zero for `KvRecurrent`
+  families.
 - Negative policy coverage now keeps certified recurrent families off
   `ResidentKv`: mesh family policy, topology inference, and server-side
   auto-payload inference all map Falcon-H1, Qwen3Next, Jamba, LFM2, Mamba,
   Mamba2, RWKV6, and RWKV7 to `KvRecurrent`.
+- Qwen3 active-parameter coder refs such as
+  `unsloth/Qwen3-Coder-480B-A35B-Instruct-GGUF:UD-Q4_K_XL` now map to
+  `qwen3moe` instead of the dense Qwen3 fallback. The locally cached 480B layer
+  package has `activation_width = 6144` in its manifest, and a package-backed
+  `ResidentKv` smoke passed for layer `3..4` with native sequence remap.
 
 ## DeepSeek3 Exact-State Certification
 
@@ -58,6 +64,10 @@ with q8 activation wire.
   outside the current `.ssm`, `ssm_`, `time_mix`, `recurrent`, and `rwkv`
   guard set. Do not enable cache reuse for that family until detection is
   explicit.
+- Keep the dense/MoE-text correctness gate runnable in smaller tranches or add
+  resume support before treating a single all-in-one gate as the only required
+  artifact. The completed tranche evidence is passing; one unified rerun exited
+  early during process startup before writing a report.
 - DeepSeek3 remains package-only for benchmark evidence. If a machine with
   enough memory can run the monolithic full GGUF under llama-server, add that as
   a separate baseline, but do not block package-backed serving or cache strategy

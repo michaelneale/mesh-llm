@@ -339,11 +339,12 @@ deterministic synthetic upstream activations so only the owned stage range had
 to be materialized.
 
 The expanded source/target native-sequence correctness gate now covers both
-production cache shapes. The latest local Metal run passed `39/39` rows across
-Qwen3 dense, Llama, GLM4, Gemma3, OLMo, Falcon-H1, Jamba, LFM2, Mamba, Mamba2,
-RWKV6, RWKV7, and Qwen3Next for one-stage, split-middle, and split-final
-topologies. Every row restored from native sequence `0` into native sequence
-`1`, suffix-prefill-then-decode matched, repeated hits stayed stable, and
+production cache shapes. The latest local Metal tranche evidence passed
+`102/102` rows across Qwen3 dense, Llama, GLM4, Gemma3, OLMo, Falcon-H1, Jamba,
+LFM2, Mamba, Mamba2, RWKV6, RWKV7, Qwen3Next, and the expanded dense/MoE-text
+families for one-stage, split-middle, and split-final topologies. Every row
+restored from native sequence `0` into native sequence `1`,
+suffix-prefill-then-decode matched, repeated hits stayed stable, and
 recurrent-only ranges correctly recorded zero native KV bytes plus recurrent
 state.
 
