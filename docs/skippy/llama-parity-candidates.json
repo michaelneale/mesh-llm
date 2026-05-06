@@ -45,7 +45,7 @@
       "status": "candidate_multimodal",
       "repo": "bartowski/Qwen2-VL-2B-Instruct-GGUF",
       "include": "*Q4_K_M.gguf",
-      "notes": "text lane passed in llama-parity-decoder-tranche-3c; full-model local multimodal smoke passed with mmproj-Qwen2-VL-2B-Instruct-f16.gguf; split multimodal blocked by filtered stage-0 media prefill SIGSEGV before activation forwarding"
+      "notes": "text lane passed in llama-parity-qwen2vl-tied-embd-fix-20260506 after allowing tied output embeddings in final runtime slices; f16 wire passed, q8 rejected; one-stage ResidentKv cache smoke passed; full-model local multimodal smoke passed with mmproj-Qwen2-VL-2B-Instruct-f16.gguf; split multimodal blocked by filtered stage-0 media prefill SIGSEGV before activation forwarding"
     },
     {
       "llama_model": "qwen3vl",
@@ -53,7 +53,7 @@
       "status": "candidate_multimodal",
       "repo": "Qwen/Qwen3-VL-2B-Instruct-GGUF",
       "include": "*Q4_K_M.gguf",
-      "notes": "text lane passed in llama-parity-decoder-tranche-3c; full-model local multimodal smoke passed with mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf; split multimodal blocked by filtered stage-0 media prefill SIGSEGV before activation forwarding"
+      "notes": "text lane passed in llama-parity-qwen3vl-tied-embd-fix-20260506 after allowing tied output embeddings in final runtime slices; f16 and q8 wire passed; one-stage ResidentKv cache smoke passed; full-model local multimodal smoke passed with mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf; split multimodal blocked by filtered stage-0 media prefill SIGSEGV before activation forwarding"
     },
     {
       "llama_model": "qwen2moe",
@@ -413,7 +413,7 @@
       "status": "non_causal_aux",
       "repo": "nomic-ai/nomic-embed-text-v1.5-GGUF",
       "include": "*Q4_K_M.gguf",
-      "notes": "embedding/encoder support is not stage-split causal decode certification"
+      "notes": "downloaded and inspected: GGUF reports general.architecture nomic-bert, 12 blocks, width 768; embedding/encoder support is not stage-split causal decode certification"
     },
     {
       "llama_model": "t5",
@@ -421,7 +421,7 @@
       "status": "non_causal_aux",
       "repo": "cyanic-selkie/flan-t5-small-Q4_K_M-GGUF",
       "include": "*.gguf",
-      "notes": "encoder-decoder support needs its own lane"
+      "notes": "downloaded and inspected: GGUF reports general.architecture t5, 8 blocks, width 512; encoder-decoder support needs its own lane"
     },
     {
       "llama_model": "starcoder2",

@@ -543,6 +543,16 @@ fn infers_known_family_capabilities_from_model_identity() {
         infer_family_capability("unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q4_K_M", 48, 2048)
             .expect("qwen3 coder 30b");
     assert_eq!(qwen3_coder_30b.family_id, "qwen3moe");
+    let qwen2vl = infer_family_capability("bartowski/Qwen2-VL-2B-Instruct-GGUF:Q4_K_M", 28, 1536)
+        .expect("qwen2vl");
+    assert_eq!(qwen2vl.family_id, "qwen2vl");
+    assert_eq!(qwen2vl.q8_wire_validation, WireValidation::Rejected);
+    assert_eq!(qwen2vl.exact_state_mobility, ExactStateMobility::Untested);
+    let qwen3vl = infer_family_capability("Qwen/Qwen3-VL-2B-Instruct-GGUF:Q4_K_M", 28, 2048)
+        .expect("qwen3vl");
+    assert_eq!(qwen3vl.family_id, "qwen3vl");
+    assert_eq!(qwen3vl.q8_wire_validation, WireValidation::Validated);
+    assert_eq!(qwen3vl.exact_state_mobility, ExactStateMobility::Untested);
     assert_eq!(
         infer_family_capability("meta/Llama-3.2-1B-Instruct", 16, 2048)
             .expect("llama")

@@ -16,6 +16,8 @@ Last updated: 2026-05-06.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Qwen3 dense | Supported | `Qwen/Qwen3-0.6B:Q8_0` | `layer_end=28`, `splits=9,18`, activation width `1024` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; this is the state-size baseline. |
 | Qwen2 | Supported | `meshllm/qwen2.5-0.5b-instruct-parity-q8_0-gguf:Q8_0` | `layer_end=24`, `splits=8,16`, activation width `896` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. `ResidentKv` cache smoke passed. |
+| Qwen2-VL text | Supported for text split; split multimodal pending | `bartowski/Qwen2-VL-2B-Instruct-GGUF:Q4_K_M` | `layer_end=28`, `splits=9,18`, activation width `1536` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None for text | Final runtime slices may load tied token embeddings as output weights. FullState restore is blocked by M-RoPE native-position rules; use `ResidentKv` for exact-prefix text cache. |
+| Qwen3-VL text | Supported for text split; split multimodal pending | `Qwen/Qwen3-VL-2B-Instruct-GGUF:Q4_K_M` | `layer_end=28`, `splits=9,18`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None for text | Final runtime slices may load tied token embeddings as output weights. FullState restore is blocked by M-RoPE native-position rules; use `ResidentKv` for exact-prefix text cache. |
 | Llama | Supported | `hugging-quants/Llama-3.2-1B-Instruct-Q4_K_M-GGUF:Q4_K_M` | `layer_end=16`, `splits=5,10`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. |
 | DeepSeek2 | Supported | `bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF:Q4_K_M` | `layer_end=27`, `splits=7,14`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. |
 | DeepSeek LLM | Supported | `Morgen0052/deepseek-llm-7b-chat-Q4_K_M-GGUF:Q4_K_M` | `layer_end=30`, `splits=10,20`, activation width `4096` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. `ResidentKv` cache smoke passed. |
@@ -71,8 +73,7 @@ topology records, and family-specific policy notes are updated.
 
 ```text
 Command-R, Gemma text,
-Granite,
-Qwen2-VL text, Qwen3-VL text
+Granite
 ```
 
 ## Exceptions
@@ -89,8 +90,8 @@ Qwen2-VL text, Qwen3-VL text
 | OLMoE | Text lane, serving cache smoke, and MoE expert-stage smoke passed for one-stage, split-middle, and split-final ranges. `ResidentKv` is the selected cache policy. |
 | Qwen2-MoE | Text lane, serving cache smoke, and MoE expert-stage smoke passed for one-stage, split-middle, and split-final ranges. `ResidentKv` is the selected cache policy. |
 | Qwen3-MoE | Text lane, q8 activation wire, serving cache smoke, and MoE expert-stage smoke passed for one-stage, split-middle, and split-final ranges. `ResidentKv` is the selected cache policy. |
-| Qwen2-VL | Text split and full-model local multimodal OpenAI smoke passed with real mmproj/image fixtures. Do not promote split multimodal yet: filtered stage-0 media prefill currently SIGSEGVs before activation forwarding. |
-| Qwen3-VL | Text split and full-model local multimodal OpenAI smoke passed with real mmproj/image fixtures. Do not promote split multimodal yet: filtered stage-0 media prefill currently SIGSEGVs before activation forwarding. |
+| Qwen2-VL | Text split, f16 wire, and one-stage `ResidentKv` exact-prefix cache smoke passed after the tied-output-embedding stage ABI fix. q8 is rejected. FullState restore is blocked by M-RoPE native-position rules. Do not promote split multimodal yet: filtered stage-0 media prefill currently SIGSEGVs before activation forwarding. |
+| Qwen3-VL | Text split, q8 wire, and one-stage `ResidentKv` exact-prefix cache smoke passed after the tied-output-embedding stage ABI fix. FullState restore is blocked by M-RoPE native-position rules. Do not promote split multimodal yet: filtered stage-0 media prefill currently SIGSEGVs before activation forwarding. |
 | RWKV6 | Recurrent text lane and `KvRecurrent` cache smoke passed with zero native KV bytes. Keep ownership sticky for normal decode. |
 | RWKV7 | Text lane passed after adding the layer-0 `v_first` activation sideband, and `KvRecurrent` cache smoke passed with zero native KV bytes. Payloads are hidden state plus `v_first`, so budget RWKV7 activation handoffs at 2x hidden width and keep recurrent ownership sticky for normal decode. |
 | Qwen3Next | Same normal-decode policy as Falcon-H1 for now: keep recurrent range `0..48` sticky until exact recurrent layer metadata exists. Exact prefix cache restore uses `KvRecurrent`. |
@@ -128,6 +129,7 @@ Falcon
 Gemma2
 Falcon-H1
 Qwen3-MoE
+Qwen3-VL
 ```
 
 All other supported families should ship with `f16` activation wire until q8 is
@@ -142,6 +144,8 @@ activation handoff sizes for the recommended split.
 | --- | ---: | --- |
 | Qwen3 dense | 2,048 | Accepted, 115,388 bytes baseline |
 | Qwen2 | 1,792 | Accepted, 0.11x Qwen; `ResidentKv` 64-token smoke passed |
+| Qwen2-VL text | 3,072 | FullState blocked by M-RoPE native-position rules; `ResidentKv` 8-token smoke passed, 229,376 resident bytes, 2.43x cache-hit speedup |
+| Qwen3-VL text | 4,096 | FullState blocked by M-RoPE native-position rules; `ResidentKv` 8-token smoke passed, 917,504 resident bytes, 1.83x cache-hit speedup |
 | Llama | 4,096 | Accepted, 0.29x Qwen |
 | DeepSeek2 | 4,096 | Accepted, 2.40x Qwen |
 | DeepSeek LLM | 8,192 | Accepted; `ResidentKv` 64-token smoke passed, 1.58x cache-hit speedup |

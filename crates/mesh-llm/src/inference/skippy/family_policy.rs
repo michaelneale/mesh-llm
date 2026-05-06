@@ -156,9 +156,8 @@ fn family_policy_for_normalized_family_id(
         | "gemma4_a4b" | "gemma4_e4b" | "glm47_flash" | "minimax_m27" | "qwen2moe" | "qwen3moe"
         | "granite" | "granite_moe" | "hunyuan_dense" | "hunyuan_moe" | "gptneox" | "bloom"
         | "stablelm" | "starcoder2" | "mpt" | "phi" | "phi2" | "phimoe" | "gpt2" | "mistral"
-        | "internlm2" | "baichuan" | "exaone" | "exaone4" | "cohere2" | "falcon" => {
-            resident_kv_policy(activation_wire_dtype)
-        }
+        | "internlm2" | "baichuan" | "exaone" | "exaone4" | "cohere2" | "falcon" | "qwen2vl"
+        | "qwen3vl" => resident_kv_policy(activation_wire_dtype),
         "qwen3next" | "falcon_h1" | "jamba" | "lfm2" | "mamba" | "mamba2" | "rwkv6" | "rwkv7"
         | "granite_hybrid" => kv_recurrent_policy(activation_wire_dtype),
         _ => unknown_family_policy_with_wire_dtype(activation_wire_dtype),
@@ -460,7 +459,7 @@ mod tests {
                 | "qwen2moe" | "qwen3moe" | "granite" | "granite_moe" | "hunyuan_dense"
                 | "hunyuan_moe" | "gptneox" | "bloom" | "stablelm" | "starcoder2" | "mpt"
                 | "phi" | "phi2" | "phimoe" | "gpt2" | "mistral" | "internlm2" | "baichuan"
-                | "exaone" | "exaone4" | "cohere2" | "falcon" => {
+                | "exaone" | "exaone4" | "cohere2" | "falcon" | "qwen2vl" | "qwen3vl" => {
                     assert_eq!(
                         policy.prefix_cache,
                         FamilyPrefixCachePolicy::Auto {

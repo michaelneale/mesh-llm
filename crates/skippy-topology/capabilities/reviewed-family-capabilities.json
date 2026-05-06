@@ -52,6 +52,46 @@
     }
   },
   {
+    "model_id": "bartowski/Qwen2-VL-2B-Instruct-GGUF:Q4_K_M",
+    "source_repo": "bartowski/Qwen2-VL-2B-Instruct-GGUF",
+    "source_revision": "2160e265f926e84e84dbb1c73e623b5324b23707",
+    "source_file": "Qwen2-VL-2B-Instruct-Q4_K_M.gguf",
+    "canonical_ref": "bartowski/Qwen2-VL-2B-Instruct-GGUF@2160e265f926e84e84dbb1c73e623b5324b23707/Qwen2-VL-2B-Instruct-Q4_K_M.gguf",
+    "distribution_id": "Qwen2-VL-2B-Instruct-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "qwen2vl",
+      "layer_count": 28,
+      "activation_width": 1536,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "untested",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "Qwen/Qwen3-VL-2B-Instruct-GGUF:Q4_K_M",
+    "source_repo": "Qwen/Qwen3-VL-2B-Instruct-GGUF",
+    "source_revision": "52d6c8ffea26cc873ac5ad116f8631268d7eb503",
+    "source_file": "Qwen3VL-2B-Instruct-Q4_K_M.gguf",
+    "canonical_ref": "Qwen/Qwen3-VL-2B-Instruct-GGUF@52d6c8ffea26cc873ac5ad116f8631268d7eb503/Qwen3VL-2B-Instruct-Q4_K_M.gguf",
+    "distribution_id": "Qwen3VL-2B-Instruct-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "qwen3vl",
+      "layer_count": 28,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "untested",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
     "model_id": "bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF:Q4_K_M",
     "source_repo": "bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF",
     "source_revision": "8f248fa2072348f77a8bc37754e470de1f61866e",

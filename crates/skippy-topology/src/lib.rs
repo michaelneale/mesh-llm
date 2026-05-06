@@ -1172,6 +1172,24 @@ pub fn infer_family_capability(
     if compact.contains("qwen3moe") || is_qwen3_active_parameter_moe(&compact) {
         return Some(qwen3moe_capability(layer_count, activation_width));
     }
+    if compact.contains("qwen2vl") {
+        return Some(dense_family_capability(
+            "qwen2vl",
+            layer_count,
+            activation_width,
+            WireValidation::Rejected,
+            ExactStateMobility::Untested,
+        ));
+    }
+    if compact.contains("qwen3vl") {
+        return Some(dense_family_capability(
+            "qwen3vl",
+            layer_count,
+            activation_width,
+            WireValidation::Validated,
+            ExactStateMobility::Untested,
+        ));
+    }
     if compact.contains("qwen3") {
         return Some(qwen3_dense_capability(layer_count, activation_width));
     }
