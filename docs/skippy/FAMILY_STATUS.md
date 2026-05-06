@@ -22,6 +22,9 @@ Last updated: 2026-05-06.
 | DeepSeek3 | Supported for package-backed stages | `unsloth/DeepSeek-V3.2-GGUF:UD-Q4_K_XL` via `meshllm/DeepSeek-V3.2-UD-Q4_K_XL-layers` | `layer_end=61`, activation width `7168`; materialize only the owned stage range | `f16`; q8 untested | `baseline,ngram,ngram-adaptive` | None | Use layer-package materialization and `ResidentKv`; do not require the full 406.8 GB layer set to be resident or merged. |
 | GLM-4.7 Flash | Supported | `unsloth/GLM-4.7-Flash-GGUF:Q4_K_M` | `layer_end=47`, `splits=15,31`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | GGUF uses the DeepSeek2/MLA runtime path. |
 | GLM4 9B | Supported | `meshllm/glm-4-9b-0414-parity-q4_k_m-gguf:Q4_K_M` | `layer_end=40`, `splits=13,27`, activation width `4096` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. |
+| Bloom | Supported | `QuantFactory/bloomz-560m-GGUF:Q4_K_M` | `layer_end=24`, `splits=8,16`, activation width `1024` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` native sequence remap cache smoke passed. |
+| GPT2 | Supported | `QuantFactory/gpt2-GGUF:Q4_K_M` | `layer_end=12`, `splits=4,8`, activation width `768` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` native sequence remap cache smoke passed. |
+| GPT-NeoX | Supported | `warriorknight3/pythia-70m-Q4_K_M-GGUF:Q4_K_M` | `layer_end=6`, `splits=2,4`, activation width `512` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` native sequence remap cache smoke passed. |
 | Gemma4 A4B | Supported | `batiai/Gemma-4-26B-A4B-it-GGUF:Q6_K` | `layer_end=30`, `splits=8,15`, activation width `2816` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. |
 | Gemma4 E4B | Supported | `unsloth/gemma-4-E4B-it-GGUF:Q4_K_M` | `layer_end=42`, `split=21`, activation width `2560` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | Use boundary `21`; do not cut at `12`, `14`, `24`, or `28`. | Token-id sideband required. |
 | Gemma3 | Supported | `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M` | `layer_end=26`, `splits=9,18`, activation width `1152` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. |
@@ -31,9 +34,11 @@ Last updated: 2026-05-06.
 | Granite-MoE | Supported for layout parity | `mradermacher/tiny-random-granite-moe-GGUF:Q4_K_M` | `layer_end=6`, `splits=2,4`, activation width `64` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Tiny random GGUF certifies graph/tensor layout and cache mechanics; replace with a real small artifact when available. |
 | Hunyuan-Dense | Supported | `Edge-Quant/Hunyuan-1.8B-Instruct-Q4_K_M-GGUF:Q4_K_M` | `layer_end=32`, `splits=10,21`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` cache smoke passed. |
 | Falcon-H1 | Supported | `tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M` | `layer_end=24`, `splits=8,16`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | Keep recurrent range `0..24` sticky for normal decode. | Use `KvRecurrent` for exact prefix cache restore; native sequence remap cache smoke passed. |
+| Phi3 | Supported | `bartowski/Phi-3.5-mini-instruct-GGUF:Q4_K_M` | `layer_end=32`, `splits=10,21`, activation width `3072` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` native sequence remap cache smoke passed. |
 | OLMo | Supported | `meshllm/olmo-7b-instruct-hf-parity-f16-gguf:F16` | `layer_end=32`, `splits=10,21`, activation width `4096` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. |
 | MiniMax M2.7 | Supported; neural draft pending | `unsloth/MiniMax-M2.7-GGUF:UD-Q2_K_XL` | `layer_end=62`, `splits=20,41`, activation width `3072` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Sharded GGUF supported. Materialize stage artifacts first; tokenizer uses `stage-0.gguf` CPU-only during staged prompt/spec. |
 | Qwen3Next | Supported | `bartowski/Qwen_Qwen3-Coder-Next-GGUF:IQ2_XS` | `layer_end=48`, `splits=16,32`, activation width `2048` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | Keep recurrent range `0..48` sticky for normal decode until exact recurrent layer metadata is available. | Use `KvRecurrent` for exact prefix cache restore; native sequence remap cache smoke passed. |
+| StableLM | Supported | `TheBloke/stablelm-zephyr-3b-GGUF:Q4_K_M` | `layer_end=32`, `splits=10,21`, activation width `2560` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` native sequence remap cache smoke passed. |
 
 ## Text-Split Candidates
 
@@ -42,10 +47,10 @@ to the customer support matrix until the remaining cache smoke, reviewed
 topology records, and family-specific policy notes are updated.
 
 ```text
-Baichuan, Bloom, Cohere2, Command-R, EXAONE, EXAONE4, Falcon, Gemma text,
-GPT-NeoX, GPT2, Granite, InternLM2, Jamba, LFM2, Mamba, Mamba2, Mistral3, MPT,
-OLMo2, OLMoE, Phi3, Qwen2-MoE, Qwen3-MoE, Qwen2-VL text, Qwen3-VL text,
-RWKV6, RWKV7, StableLM, StarCoder2
+Baichuan, Cohere2, Command-R, EXAONE, EXAONE4, Falcon, Gemma text,
+Granite, InternLM2, Jamba, LFM2, Mamba, Mamba2, Mistral3, MPT,
+OLMo2, OLMoE, Qwen2-MoE, Qwen3-MoE, Qwen2-VL text, Qwen3-VL text,
+RWKV6, RWKV7, StarCoder2
 ```
 
 ## Exceptions
@@ -79,6 +84,8 @@ q8 is currently validated for:
 Llama
 DeepSeek2
 GLM-4.7 Flash
+Bloom
+GPT-NeoX
 Gemma2
 Falcon-H1
 Qwen3-MoE
@@ -103,18 +110,23 @@ activation handoff sizes for the recommended split.
 | DeepSeek3 | 14,336 | Accepted for package-backed `ResidentKv`; full-GGUF llama-server baseline not required |
 | GLM-4.7 Flash | 4,096 | Accepted, 0.47x Qwen |
 | GLM4 9B | 8,192 | Accepted, 0.36x Qwen |
+| Bloom | 2,048 | Accepted; `ResidentKv` 64-token smoke passed, 328.66x cache-hit speedup |
+| GPT2 | 1,536 | Accepted; `ResidentKv` 64-token smoke passed, 1535.17x cache-hit speedup |
+| GPT-NeoX | 1,024 | Accepted; `ResidentKv` 64-token smoke passed, 282.70x cache-hit speedup |
 | Gemma4 A4B | 5,632 | Accepted, 1.96x Qwen |
 | Gemma4 E4B | 5,120 | Accepted, 0.50x Qwen |
 | Gemma3 | 2,304 | Accepted, 0.24x Qwen |
 | Gemma2 | 4,608 | Accepted, 0.93x Qwen |
 | Phi2 | 5,120 | Full-state rejected as too large; `ResidentKv` cache restore accepted |
 | Falcon-H1 | 4,096 | Accepted for `KvRecurrent` cache restore, 663.5x Qwen recurrent state |
+| Phi3 | 6,144 | Accepted; `ResidentKv` 64-token smoke passed, 2645.30x cache-hit speedup |
 | Qwen2-MoE | 3,072 | Accepted, 0.25x Qwen |
 | Qwen3-MoE | 2,048 | Accepted, 1.00x Qwen |
 | RWKV6 | 4,096 | Accepted for `KvRecurrent` cache restore, 112.5x Qwen recurrent state |
 | OLMo | 8,192 | Accepted, 4.55x Qwen |
 | MiniMax M2.7 | 6,144 | Accepted, 2.21x Qwen |
 | Qwen3Next | 4,096 | Accepted for `KvRecurrent` cache restore, 685.2x Qwen recurrent state |
+| StableLM | 5,120 | Accepted; `ResidentKv` 64-token smoke passed, 211.80x cache-hit speedup |
 
 ## Neural Draft Status
 

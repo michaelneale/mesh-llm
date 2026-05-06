@@ -512,5 +512,105 @@
       "split_constraints": [],
       "sidebands": []
     }
+  },
+  {
+    "model_id": "warriorknight3/pythia-70m-Q4_K_M-GGUF:Q4_K_M",
+    "source_repo": "warriorknight3/pythia-70m-Q4_K_M-GGUF",
+    "source_revision": "ba4a120b4593c70f38bb7a0b788d564266f9a4f1",
+    "source_file": "pythia-70m-q4_k_m.gguf",
+    "canonical_ref": "warriorknight3/pythia-70m-Q4_K_M-GGUF@ba4a120b4593c70f38bb7a0b788d564266f9a4f1/pythia-70m-q4_k_m.gguf",
+    "distribution_id": "pythia-70m-q4_k_m",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "gptneox",
+      "layer_count": 6,
+      "activation_width": 512,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "QuantFactory/bloomz-560m-GGUF:Q4_K_M",
+    "source_repo": "QuantFactory/bloomz-560m-GGUF",
+    "source_revision": "e6bb9d1223649e37470868933633c7be8b802b0d",
+    "source_file": "bloomz-560m.Q4_K_M.gguf",
+    "canonical_ref": "QuantFactory/bloomz-560m-GGUF@e6bb9d1223649e37470868933633c7be8b802b0d/bloomz-560m.Q4_K_M.gguf",
+    "distribution_id": "bloomz-560m.Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "bloom",
+      "layer_count": 24,
+      "activation_width": 1024,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "TheBloke/stablelm-zephyr-3b-GGUF:Q4_K_M",
+    "source_repo": "TheBloke/stablelm-zephyr-3b-GGUF",
+    "source_revision": "465310e5eb914190e89f531cc1c348812e27dcea",
+    "source_file": "stablelm-zephyr-3b.Q4_K_M.gguf",
+    "canonical_ref": "TheBloke/stablelm-zephyr-3b-GGUF@465310e5eb914190e89f531cc1c348812e27dcea/stablelm-zephyr-3b.Q4_K_M.gguf",
+    "distribution_id": "stablelm-zephyr-3b.Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "stablelm",
+      "layer_count": 32,
+      "activation_width": 2560,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "bartowski/Phi-3.5-mini-instruct-GGUF:Q4_K_M",
+    "source_repo": "bartowski/Phi-3.5-mini-instruct-GGUF",
+    "source_revision": "6d70da17e749a471ccb62ade694486011a75cda3",
+    "source_file": "Phi-3.5-mini-instruct-Q4_K_M.gguf",
+    "canonical_ref": "bartowski/Phi-3.5-mini-instruct-GGUF@6d70da17e749a471ccb62ade694486011a75cda3/Phi-3.5-mini-instruct-Q4_K_M.gguf",
+    "distribution_id": "Phi-3.5-mini-instruct-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "phi",
+      "layer_count": 32,
+      "activation_width": 3072,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "QuantFactory/gpt2-GGUF:Q4_K_M",
+    "source_repo": "QuantFactory/gpt2-GGUF",
+    "source_revision": "7eae6f079f0164bff66b86eea5159f7a368f9381",
+    "source_file": "gpt2.Q4_K_M.gguf",
+    "canonical_ref": "QuantFactory/gpt2-GGUF@7eae6f079f0164bff66b86eea5159f7a368f9381/gpt2.Q4_K_M.gguf",
+    "distribution_id": "gpt2.Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "gpt2",
+      "layer_count": 12,
+      "activation_width": 768,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
   }
 ]

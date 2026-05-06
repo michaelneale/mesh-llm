@@ -88,9 +88,10 @@
     {
       "llama_model": "phi3",
       "family": "phi",
-      "status": "candidate",
+      "status": "certified",
       "repo": "bartowski/Phi-3.5-mini-instruct-GGUF",
-      "include": "*Q4_K_M.gguf"
+      "include": "*Q4_K_M.gguf",
+      "notes": "text lane passed in llama-parity-phi-runtime-slice-1; f16 activation wire validated; q8 activation wire rejected; ResidentKv native-sequence remap cache smoke passed"
     },
     {
       "llama_model": "phi2",
@@ -220,17 +221,18 @@
     {
       "llama_model": "gptneox",
       "family": "gptneox",
-      "status": "candidate",
+      "status": "certified",
       "repo": "warriorknight3/pythia-70m-Q4_K_M-GGUF",
       "include": "*.gguf",
-      "notes": "replaces stale QuantFactory/pythia-70m-GGUF; dry-run shows pythia-70m-q4_k_m.gguf at 49.3MB"
+      "notes": "text lane passed in llama-parity-gptneox-runtime-slice-1; q8 activation wire validated; ResidentKv native-sequence remap cache smoke passed"
     },
     {
       "llama_model": "bloom",
       "family": "bloom",
-      "status": "candidate",
+      "status": "certified",
       "repo": "QuantFactory/bloomz-560m-GGUF",
-      "include": "*Q4_K_M.gguf"
+      "include": "*Q4_K_M.gguf",
+      "notes": "text lane passed in llama-parity-bloom-runtime-slice-1; q8 activation wire validated; ResidentKv native-sequence remap cache smoke passed"
     },
     {
       "llama_model": "baichuan",
@@ -366,8 +368,10 @@
     {
       "llama_model": "hunyuan-moe",
       "family": "hunyuan_moe",
-      "status": "needs_candidate",
-      "search": "Hunyuan MoE GGUF small Q4_K_M"
+      "status": "candidate",
+      "repo": "unsloth/Hunyuan-A13B-Instruct-GGUF",
+      "include": "Hunyuan-A13B-Instruct-UD-IQ2_XXS.gguf",
+      "notes": "real public Hunyuan-MoE GGUF; smallest visible artifact is about 27.6GB"
     },
   {
     "llama_model": "hunyuan-vl",
@@ -423,17 +427,18 @@
     {
       "llama_model": "stablelm",
       "family": "stablelm",
-      "status": "candidate",
+      "status": "certified",
       "repo": "TheBloke/stablelm-zephyr-3b-GGUF",
-      "include": "*Q4_K_M.gguf"
+      "include": "*Q4_K_M.gguf",
+      "notes": "text lane passed in llama-parity-stablelm-runtime-slice-1; f16 activation wire validated; q8 activation wire rejected; ResidentKv native-sequence remap cache smoke passed"
     },
     {
       "llama_model": "gpt2",
       "family": "gpt2",
-      "status": "candidate",
+      "status": "certified",
       "repo": "QuantFactory/gpt2-GGUF",
       "include": "*Q4_K_M.gguf",
-      "notes": "text lane passed in llama-parity-decoder-tranche-3e"
+      "notes": "text lane passed in llama-parity-gpt2-runtime-slice-1; f16 activation wire validated; q8 activation wire rejected; ResidentKv native-sequence remap cache smoke passed"
     },
     {
       "llama_model": "mpt",
