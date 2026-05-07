@@ -69,7 +69,7 @@ describe('MeshViz helpers', () => {
         latencyAgeMs: 4_500,
         latencyObserverId: 'observer-node'
       })
-    ).toBe('44.0 ms · Estimated')
+    ).toBe('44.0 ms est.')
     expect(
       latencyLabel(servingNode, {
         ...hostPeer,
@@ -78,7 +78,7 @@ describe('MeshViz helpers', () => {
         latencyAgeMs: 120_000,
         latencyObserverId: 'observer-node'
       })
-    ).toBe('23.0 ms · Stale')
+    ).toBe('23.0 ms stale')
   })
 
   it('keeps status and visual tokens aligned for debug and non-debug nodes', () => {

@@ -144,7 +144,7 @@ function LatencyValue({ peer }: { peer: Peer | undefined }) {
   return (
     <>
       <span>{state.latencyMs.toFixed(1)} ms</span>
-      {hint && <span className="text-fg-faint">{hint}</span>}
+      {hint && <span className="ml-1 text-fg-faint">{hint}</span>}
     </>
   )
 }

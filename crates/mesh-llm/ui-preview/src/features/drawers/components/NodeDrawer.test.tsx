@@ -397,7 +397,7 @@ describe('NodeDrawer latency states', () => {
       />
     )
 
-    expect(screen.getByText('44.0 ms')).toBeInTheDocument()
+    expect(screen.getByText('44.0 ms').nextElementSibling).toHaveClass('ml-1')
     expect(screen.getByText('Estimated')).toBeInTheDocument()
 
     rerender(
@@ -415,7 +415,7 @@ describe('NodeDrawer latency states', () => {
       />
     )
 
-    expect(screen.getByText('23.0 ms')).toBeInTheDocument()
+    expect(screen.getByText('23.0 ms').nextElementSibling).toHaveClass('ml-1')
     expect(screen.getByText('Stale')).toBeInTheDocument()
   })
 })

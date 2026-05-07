@@ -653,10 +653,11 @@ describe("App routing and status", () => {
     setPath("/dashboard");
     render(<App />);
 
+    expect(await screen.findByRole("cell", { name: "44 ms" })).toBeInTheDocument();
     fireEvent.click(await screen.findByRole("button", { name: "peer-estimated" }));
 
     await screen.findByRole("heading", { name: "peer-estimated.mesh" });
-    expect(screen.getByText(/44 ms/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/44 ms/i).length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText((content) => content === "Estimated")).toBeInTheDocument();
   });
 

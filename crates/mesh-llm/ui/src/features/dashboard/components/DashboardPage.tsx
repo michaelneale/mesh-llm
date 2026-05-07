@@ -207,7 +207,13 @@ export function DashboardPage({
       const primaryModel = peerPrimaryModel(peer);
       const modelLabel =
         primaryModel && primaryModel !== "(idle)" ? modelRefLabel(primaryModel) : "idle";
-      const latencyLabel = formatPeerLatency({ rttMs: peer.rtt_ms });
+      const latencyLabel = formatPeerLatency({
+        rttMs: peer.rtt_ms,
+        latencyMs: peer.latency_ms,
+        latencySource: peer.latency_source,
+        latencyAgeMs: peer.latency_age_ms,
+        latencyObserverId: peer.latency_observer_id,
+      });
       const peerDisplayVramGb = displayVramGb(peer.state === "client", peer.vram_gb, peer.gpus);
       const sharePct =
         peer.state !== "client" && totalMeshVramGb > 0

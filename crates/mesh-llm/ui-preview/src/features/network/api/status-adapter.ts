@@ -112,7 +112,7 @@ function resolveOwner(owner: PeerInfo['owner']): string | undefined {
 
 function resolveLatencySource(peer: PeerInfo): 'direct' | 'estimated' | 'unknown' {
   if (peer.latency_source) return peer.latency_source
-  if (peer.latency_ms == null) return 'unknown'
+  if (peer.latency_ms == null && peer.rtt_ms == null) return 'unknown'
   return 'direct'
 }
 
@@ -162,7 +162,7 @@ function adaptPeer(peer: PeerInfo, fallbackIndex: number): Peer {
     status: mapNodeState(resolvePeerState(peer)),
     hostedModels: resolveHostedModels(peer),
     sharePct: normalizeSharePct(peer.share_pct),
-    latencyMs: peer.latency_ms ?? null,
+    latencyMs: peer.latency_ms ?? peer.rtt_ms ?? null,
     latencySource: resolveLatencySource(peer),
     latencyAgeMs: peer.latency_age_ms ?? null,
     latencyObserverId: peer.latency_observer_id ?? null,

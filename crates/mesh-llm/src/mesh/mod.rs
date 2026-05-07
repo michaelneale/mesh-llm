@@ -2803,7 +2803,7 @@ impl Node {
                 // "fast enough for split", so keeping the best-seen value is
                 // correct — if the path truly degrades the peer will be
                 // unreachable and removed via the normal liveness path.
-                if !prev.is_some_and(|p| rtt_ms > p) {
+                if prev.is_none_or(|p| rtt_ms <= p) {
                     peer.rtt_ms = Some(rtt_ms);
                 }
                 (Some(peer.clone()), prev)

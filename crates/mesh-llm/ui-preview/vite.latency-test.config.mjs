@@ -1,7 +1,12 @@
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const dirname = path.dirname(fileURLToPath(import.meta.url))
+
 export default {
   resolve: {
     alias: {
-      '@': '/Users/ndizazzo/dev/mesh/mesh-llm/ui-preview/src',
+      '@': path.resolve(dirname, './src'),
     },
   },
   test: {

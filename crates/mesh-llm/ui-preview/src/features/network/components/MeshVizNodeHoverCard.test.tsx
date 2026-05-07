@@ -85,7 +85,7 @@ describe('MeshVizNodeHoverCard', () => {
     expect(screen.getByText('node-1')).toBeInTheDocument()
     expect(screen.getByText('Local node')).toBeInTheDocument()
     expect(screen.getByText('Local')).toBeInTheDocument()
-    expect(screen.getByText('<1 ms')).toBeInTheDocument()
+    expect(screen.getByText('0.6 ms')).toBeInTheDocument()
     expect(screen.getByText('16.0 GB')).toBeInTheDocument()
   })
 

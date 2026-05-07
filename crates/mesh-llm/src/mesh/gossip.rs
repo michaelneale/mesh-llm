@@ -256,12 +256,12 @@ impl Node {
                         };
                         let path_type = if path_info.is_ip() { "direct" } else { "relay" };
                         if path_rtt_ms > 0 {
-                            super::emit_mesh_info(format!(
-                                "📡 Peer {} RTT: {}ms ({}) [path info]",
+                            tracing::debug!(
+                                "Peer {} RTT: {}ms ({}) [path info]",
                                 remote.fmt_short(),
                                 path_rtt_ms,
                                 path_type
-                            ));
+                            );
                             self.update_peer_rtt(remote, path_rtt_ms).await;
                         }
                         break;
@@ -356,12 +356,12 @@ impl Node {
                         };
                         let path_type = if path_info.is_ip() { "direct" } else { "relay" };
                         if rtt_ms > 0 {
-                            super::emit_mesh_info(format!(
-                                "📡 Peer {} RTT: {}ms ({})",
+                            tracing::debug!(
+                                "Peer {} RTT: {}ms ({})",
                                 remote.fmt_short(),
                                 rtt_ms,
                                 path_type
-                            ));
+                            );
                             self.update_peer_rtt(remote, rtt_ms).await;
                         }
                         break;

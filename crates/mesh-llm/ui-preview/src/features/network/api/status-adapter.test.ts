@@ -426,6 +426,24 @@ describe('adaptStatusToDashboard latency semantics', () => {
     expect(dashboard.peers[1]?.latencyMs).toBe(17)
   })
 
+  it('falls back to legacy rtt_ms as direct latency for older backends', () => {
+    const dashboard = adaptStatusToDashboard({
+      ...baseStatusPayload,
+      peers: [
+        {
+          node_id: 'peer-legacy-rtt',
+          hostname: 'peer-legacy-rtt.mesh',
+          node_state: 'serving',
+          serving_models: ['Qwen'],
+          rtt_ms: 31
+        }
+      ]
+    })
+
+    expect(dashboard.peers[1]?.latencyMs).toBe(31)
+    expect(dashboard.peers[1]?.latencySource).toBe('direct')
+  })
+
   it('preserves unknown peer latency as null instead of coercing it to 0 ms', () => {
     const dashboard = adaptStatusToDashboard({
       ...baseStatusPayload,
@@ -441,9 +459,9 @@ describe('adaptStatusToDashboard latency semantics', () => {
 
     expect(dashboard.peers[1]?.latencyMs).toBeNull()
     expect(dashboard.peers[1]?.latencyMs).not.toBe(0)
-    expect((dashboard.peers[1] as any)?.latencySource).toBe('unknown')
-    expect((dashboard.peers[1] as any)?.latencyAgeMs).toBeNull()
-    expect((dashboard.peers[1] as any)?.latencyObserverId).toBeNull()
+    expect(dashboard.peers[1]?.latencySource).toBe('unknown')
+    expect(dashboard.peers[1]?.latencyAgeMs).toBeNull()
+    expect(dashboard.peers[1]?.latencyObserverId).toBeNull()
   })
 
   it('preserves estimated latency metadata so preview renderers can label it distinctly from direct measurements', () => {
@@ -467,7 +485,7 @@ describe('adaptStatusToDashboard latency semantics', () => {
       peers: [peerWithEstimatedLatency]
     })
 
-    const adaptedPeer = dashboard.peers[1] as any
+    const adaptedPeer = dashboard.peers[1]
 
     expect(adaptedPeer?.latencyMs).toBe(44)
     expect(adaptedPeer?.latencySource).toBe('estimated')
@@ -496,7 +514,7 @@ describe('adaptStatusToDashboard latency semantics', () => {
       peers: [peerWithStaleDirectLatency]
     })
 
-    const adaptedPeer = dashboard.peers[1] as any
+    const adaptedPeer = dashboard.peers[1]
 
     expect(adaptedPeer?.latencyMs).toBe(23)
     expect(adaptedPeer?.latencySource).toBe('direct')
