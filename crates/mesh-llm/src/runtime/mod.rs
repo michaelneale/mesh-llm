@@ -1895,8 +1895,14 @@ pub(crate) async fn run() -> Result<()> {
     // Publication intent is now explicit only: --publish gates Nostr discovery.
     // --mesh-name alone never implies publication (Issue #240).
 
-    // Warn users who used to rely on --mesh-name auto-publishing
-    if let Some(mesh_name) = cli.mesh_name.as_ref().filter(|_| !cli.publish) {
+    // Warn users who set --mesh-name without --publish — but only when they
+    // are creating a new mesh, not when they are joining one via --discover
+    // or --auto (where --mesh-name is just a filter for which mesh to join).
+    if let Some(mesh_name) = cli
+        .mesh_name
+        .as_ref()
+        .filter(|_| !cli.publish && !cli.auto && cli.discover.is_none())
+    {
         let _ = emit_event(OutputEvent::Info {
             message: format!(
                 "Mesh named '{}' — private by default. Add --publish to make it publicly discoverable.",
@@ -1910,7 +1916,7 @@ pub(crate) async fn run() -> Result<()> {
     // If the previous run was public (--auto or --publish) but this run is
     // private, clear the stored identity so the private mesh gets a fresh key
     // that isn't associated with the old public listing.
-    let is_public = cli.auto || cli.publish;
+    let is_public = cli.auto || cli.publish || cli.discover.is_some();
     if is_public {
         mesh::mark_was_public();
     } else if mesh::was_previously_public() {
@@ -1924,18 +1930,26 @@ pub(crate) async fn run() -> Result<()> {
     let mut auto_join_candidates: Vec<(String, Option<String>)> = Vec::new();
 
     // --- Auto-discover ---
-    if cli.auto && cli.join.is_empty() {
+    // --auto: join the community mesh (unnamed / "mesh-llm"), optionally
+    //         scoped to --mesh-name.
+    // --discover [name]: discover a mesh by name on Nostr and join it.
+    //         Without a name, behaves like --auto.
+    let discover_active = cli.auto || cli.discover.is_some();
+    if discover_active && cli.join.is_empty() {
+        // When --discover provides a name, use it as the target mesh name
+        // so smart_auto filters by that name on Nostr.
+        if let Some(ref name) = cli.discover {
+            if !name.is_empty() && cli.mesh_name.is_none() {
+                cli.mesh_name = Some(name.clone());
+            }
+        }
         cli.nostr_discovery = true;
         let _ = emit_event(OutputEvent::DiscoveryStarting {
             source: "Nostr auto-discovery".to_string(),
         });
 
         let relays = nostr_relays(&cli.nostr_relay);
-        let filter = nostr::MeshFilter {
-            model: None,
-            min_vram_gb: None,
-            region: None,
-        };
+        let filter = nostr::MeshFilter::default();
         let meshes = match nostr::discover(&relays, &filter, None).await {
             Ok(meshes) => meshes,
             Err(err) => {
@@ -3546,7 +3560,7 @@ fn node_display_name(cli: &Cli, node: &mesh::Node) -> String {
 async fn join_mesh_for_mcp(cli: &Cli, node: &mesh::Node) -> Result<()> {
     if !cli.join.is_empty() {
         for token in &cli.join {
-            match node.join(token).await {
+            match node.join_with_retry(token).await {
                 Ok(()) => {
                     if node.mesh_id().await.is_some() {
                         record_first_joined_mesh_ts(node).await;
@@ -3566,11 +3580,16 @@ async fn join_mesh_for_mcp(cli: &Cli, node: &mesh::Node) -> Result<()> {
     if cli.auto || cli.discover.is_some() {
         let relays = nostr_relays(&cli.nostr_relay);
         let filter = nostr::MeshFilter {
-            model: None,
-            min_vram_gb: None,
             region: cli.region.clone(),
+            ..Default::default()
         };
-        let target_name = cli.discover.as_deref().or(cli.mesh_name.as_deref());
+        // Bare --discover (no name) parses as Some(""); treat that as None
+        // so smart_auto uses the normal --auto eligibility path.
+        let target_name = cli
+            .discover
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .or(cli.mesh_name.as_deref());
         let _ = emit_event(OutputEvent::DiscoveryStarting {
             source: "Nostr discovery".to_string(),
         });
@@ -3598,7 +3617,7 @@ async fn join_mesh_for_mcp(cli: &Cli, node: &mesh::Node) -> Result<()> {
                         peers: mesh.listing.node_count,
                         region: mesh.listing.region.clone(),
                     });
-                    match node.join(token).await {
+                    match node.join_with_retry(token).await {
                         Ok(()) => {
                             if node.mesh_id().await.is_some() {
                                 record_first_joined_mesh_ts(node).await;
@@ -3927,7 +3946,7 @@ async fn run_auto(
         let mut successful_join: Option<(String, Option<String>)> = None;
 
         for (t, mesh_name) in &join_attempts {
-            match node.join(t).await {
+            match node.join_with_retry(t).await {
                 Ok(()) => {
                     if node.mesh_id().await.is_some() {
                         record_first_joined_mesh_ts(&node).await;
@@ -4003,10 +4022,10 @@ async fn run_auto(
             }
         });
 
-        // Nostr re-discovery: if we joined via --auto (Nostr discovery) and lose
+        // Nostr re-discovery: if we joined via --auto or --discover and lose
         // all peers, re-discover and join a new mesh. This handles the case where
         // the original mesh publisher restarts with a new identity.
-        if cli.auto {
+        if cli.auto || cli.discover.is_some() {
             let rediscover_node = node.clone();
             let rediscover_relays = nostr_relays(&cli.nostr_relay);
             let rediscover_relay_urls = cli.relay.clone();
@@ -4044,7 +4063,7 @@ async fn run_auto(
 
         // Originator also re-discovers: if we started solo and a matching mesh
         // already exists on Nostr, we should join it instead of staying alone.
-        if cli.auto {
+        if cli.auto || cli.discover.is_some() {
             let rediscover_node = node.clone();
             let rediscover_relays = nostr_relays(&cli.nostr_relay);
             let rediscover_relay_urls = cli.relay.clone();
@@ -4096,16 +4115,17 @@ async fn run_auto(
 
         let assignment = pick_model_assignment(&node, &local_models).await;
         // If no demand-based assignment but we have VRAM, use auto pack's primary model
-        let assignment = if assignment.is_none() && cli.auto && !is_client {
-            let pack = nostr::auto_model_pack(node.vram_bytes() as f64 / 1e9);
-            if !pack.is_empty() {
-                Some(pack[0].clone())
+        let assignment =
+            if assignment.is_none() && (cli.auto || cli.discover.is_some()) && !is_client {
+                let pack = nostr::auto_model_pack(node.vram_bytes() as f64 / 1e9);
+                if !pack.is_empty() {
+                    Some(pack[0].clone())
+                } else {
+                    assignment
+                }
             } else {
                 assignment
-            }
-        } else {
-            assignment
-        };
+            };
         if let Some(model_name) = assignment {
             let _ = emit_event(OutputEvent::HostElected {
                 model: model_name.clone(),
@@ -4663,8 +4683,8 @@ async fn run_auto(
                 None
             }
         }
-    } else if cli.auto {
-        // Watchdog: if we joined via --auto, watch for the publisher to die and take over
+    } else if cli.auto || cli.discover.is_some() {
+        // Watchdog: if we joined via --auto/--discover, watch for the publisher to die and take over
         let relays = nostr_relays(&cli.nostr_relay);
         let wd_node = node.clone();
         let wd_name = cli.mesh_name.clone();
@@ -5222,7 +5242,7 @@ async fn run_passive(
                 passive_publication_state = Some(api::PublicationState::PublishFailed);
             }
         }
-    } else if cli.auto && !is_client {
+    } else if (cli.auto || cli.discover.is_some()) && !is_client {
         // Watchdog: take over publishing if the original publisher dies
         let relays = nostr_relays(&cli.nostr_relay);
         let wd_node = node.clone();

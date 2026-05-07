@@ -658,6 +658,8 @@ pub async fn publish_watchdog(
 /// Criteria for filtering discovered meshes.
 #[derive(Debug, Clone, Default)]
 pub struct MeshFilter {
+    /// Match meshes by name (case-insensitive exact match)
+    pub name: Option<String>,
     /// Match meshes serving (or wanting) this model name (substring match)
     pub model: Option<String>,
     /// Minimum total VRAM in GB
@@ -668,6 +670,12 @@ pub struct MeshFilter {
 
 impl MeshFilter {
     pub fn matches(&self, mesh: &DiscoveredMesh) -> bool {
+        if let Some(ref name) = self.name {
+            match &mesh.listing.name {
+                Some(n) if n.eq_ignore_ascii_case(name) => {}
+                _ => return false,
+            }
+        }
         if let Some(ref model) = self.model {
             let model_lower = model.to_lowercase();
             let has_model = mesh
@@ -1469,6 +1477,17 @@ mod filter_tests {
         vram: u64,
         region: Option<&str>,
     ) -> DiscoveredMesh {
+        make_mesh_for_filter_named(serving, wanted, on_disk, vram, region, None)
+    }
+
+    fn make_mesh_for_filter_named(
+        serving: &[&str],
+        wanted: &[&str],
+        on_disk: &[&str],
+        vram: u64,
+        region: Option<&str>,
+        name: Option<&str>,
+    ) -> DiscoveredMesh {
         DiscoveredMesh {
             listing: MeshListing {
                 invite_token: "tok".into(),
@@ -1479,7 +1498,7 @@ mod filter_tests {
                 node_count: 1,
                 client_count: 0,
                 max_clients: 0,
-                name: None,
+                name: name.map(|s| s.to_string()),
                 region: region.map(|s| s.to_string()),
                 mesh_id: None,
             },
@@ -1588,14 +1607,68 @@ mod filter_tests {
             model: Some("qwen3".into()),
             min_vram_gb: Some(10.0),
             region: Some("us-east".into()),
+            ..Default::default()
         };
         let fail_model = MeshFilter {
             model: Some("llama".into()),
             min_vram_gb: Some(10.0),
             region: Some("us-east".into()),
+            ..Default::default()
         };
         assert!(pass.matches(&m));
         assert!(!fail_model.matches(&m));
+    }
+
+    #[test]
+    fn filter_name_exact() {
+        let m = make_mesh_for_filter_named(&[], &[], &[], 8_000_000_000, None, Some("poker-night"));
+        let f = MeshFilter {
+            name: Some("poker-night".into()),
+            ..Default::default()
+        };
+        assert!(f.matches(&m));
+    }
+
+    #[test]
+    fn filter_name_case_insensitive() {
+        let m = make_mesh_for_filter_named(&[], &[], &[], 8_000_000_000, None, Some("Poker-Night"));
+        let f = MeshFilter {
+            name: Some("poker-night".into()),
+            ..Default::default()
+        };
+        assert!(f.matches(&m));
+    }
+
+    #[test]
+    fn filter_name_no_match() {
+        let m = make_mesh_for_filter_named(&[], &[], &[], 8_000_000_000, None, Some("other-mesh"));
+        let f = MeshFilter {
+            name: Some("poker-night".into()),
+            ..Default::default()
+        };
+        assert!(!f.matches(&m));
+    }
+
+    #[test]
+    fn filter_name_mesh_unnamed() {
+        // Mesh has no name — filter by name should not match.
+        let m = make_mesh_for_filter_named(&[], &[], &[], 8_000_000_000, None, None);
+        let f = MeshFilter {
+            name: Some("poker-night".into()),
+            ..Default::default()
+        };
+        assert!(!f.matches(&m));
+    }
+
+    #[test]
+    fn filter_name_none_matches_all() {
+        // No name filter — matches meshes with and without names.
+        let named =
+            make_mesh_for_filter_named(&[], &[], &[], 8_000_000_000, None, Some("poker-night"));
+        let unnamed = make_mesh_for_filter_named(&[], &[], &[], 8_000_000_000, None, None);
+        let f = MeshFilter::default();
+        assert!(f.matches(&named));
+        assert!(f.matches(&unnamed));
     }
 }
 
