@@ -315,6 +315,12 @@ impl SkippyModelHandle {
                     config.layer_start == 0,
                     config.downstream.is_none(),
                 )?;
+                if let Some(expected_manifest_sha) = config.manifest_sha256.as_deref() {
+                    materialization::ensure_package_manifest_sha(
+                        &local_ref,
+                        expected_manifest_sha,
+                    )?;
+                }
                 config.model_path = Some(local_ref);
             }
             None

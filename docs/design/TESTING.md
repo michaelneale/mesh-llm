@@ -417,7 +417,7 @@ curl localhost:3131/api/discover # Nostr meshes (current mesh marked by mesh_id)
 
 ## Control-Plane Protocol (Protobuf v1)
 
-The control plane uses QUIC ALPN `mesh-llm/1` with the `meshllm.node.v1` protobuf schema. All five scoped control-plane streams use 4-byte LE framing followed by protobuf bytes.
+The control plane uses QUIC ALPN `mesh-llm/1` with the `meshllm.node.v1` protobuf schema. Scoped control-plane streams use 4-byte LE framing followed by protobuf bytes, except artifact transfer payload bytes, which stream after protobuf request/response headers.
 
 | Stream | Type | Format |
 |--------|------|--------|
@@ -426,6 +426,9 @@ The control plane uses QUIC ALPN `mesh-llm/1` with the `meshllm.node.v1` protobu
 | 0x05 | ROUTE_REQUEST | protobuf `RouteTableRequest` / `RouteTable` |
 | 0x06 | PEER_DOWN | protobuf `PeerDown` |
 | 0x07 | PEER_LEAVING | protobuf `PeerLeaving` |
+| 0x0b | CONFIG_SUBSCRIBE | protobuf `ConfigSubscribe` / `ConfigSnapshotResponse` |
+| 0x0c | CONFIG_PUSH | protobuf `ConfigPush` / `ConfigPushResponse` |
+| 0x0d | ARTIFACT_TRANSFER | protobuf headers plus raw artifact bytes |
 
 Raw TCP relay streams (0x02 RPC, 0x04 HTTP) are unchanged.
 
@@ -440,6 +443,24 @@ DEBUG mesh: admitted peer <peer_id>
 ```
 
 Absence of JSON-related log lines for streams 0x01/0x03/0x05/0x06/0x07 confirms the protobuf path is active.
+
+### Verifying Skippy peer artifact transfer
+
+For a layer-package split where the coordinator already has the HF package
+cached and a worker does not:
+
+- Current/current mesh: the worker may use stream 0x0d to fetch only its assigned
+  package files before the normal HF fallback path.
+- Current/released mixed mesh: a released coordinator without
+  `artifact_transfer_supported` must not be dialed on stream 0x0d; the worker
+  must fall back to local/HF package resolution.
+- Opt-out: with `MESH_LLM_ARTIFACT_TRANSFER=off`, the node must advertise
+  `artifact_transfer_supported=false` and reject inbound artifact transfer
+  requests.
+- Privacy check: gossip/status output must not include local package inventory,
+  cache roots, or artifact file lists; only the boolean capability is advertised.
+- Integrity check: corrupt or same-sized cached artifacts must be refetched or
+  rejected by SHA-256 verification before stage load.
 
 ## Single-machine testing with ephemeral keys
 

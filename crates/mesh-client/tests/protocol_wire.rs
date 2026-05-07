@@ -2,13 +2,14 @@
 // These tests verify the portable protocol layer that is safe to use on mobile targets.
 
 use mesh_client::proto::node::{
-    GossipFrame, NodeRole, PeerAnnouncement, PeerDown, PeerLeaving, RouteTable, RouteTableRequest,
+    ArtifactTransferRequest, ArtifactTransferResponse, GossipFrame, NodeRole, PeerAnnouncement,
+    PeerDown, PeerLeaving, RouteTable, RouteTableRequest,
 };
 use mesh_client::protocol::{
     decode_control_frame, decode_legacy_tunnel_map_frame, encode_control_frame, ControlFrameError,
     ControlProtocol, ALPN_V0, ALPN_V1, MAX_CONTROL_FRAME_BYTES, NODE_PROTOCOL_GENERATION,
-    STREAM_CONFIG_PUSH, STREAM_CONFIG_SUBSCRIBE, STREAM_GOSSIP, STREAM_PEER_DOWN,
-    STREAM_PEER_LEAVING, STREAM_ROUTE_REQUEST, STREAM_TUNNEL_MAP,
+    STREAM_ARTIFACT_TRANSFER, STREAM_CONFIG_PUSH, STREAM_CONFIG_SUBSCRIBE, STREAM_GOSSIP,
+    STREAM_PEER_DOWN, STREAM_PEER_LEAVING, STREAM_ROUTE_REQUEST, STREAM_TUNNEL_MAP,
 };
 
 // ── ALPN constants ──────────────────────────────────────────────────────────
@@ -58,6 +59,7 @@ fn stream_type_constants_are_distinct() {
         STREAM_PEER_LEAVING,
         STREAM_CONFIG_SUBSCRIBE,
         STREAM_CONFIG_PUSH,
+        STREAM_ARTIFACT_TRANSFER,
     ];
     let mut seen = std::collections::HashSet::new();
     for t in &types {
@@ -100,6 +102,39 @@ fn gossip_frame_roundtrip() {
     assert_eq!(decoded.peers.len(), 1);
     assert_eq!(decoded.peers[0].endpoint_id, vec![0u8; 32]);
     assert_eq!(decoded.peers[0].role, NodeRole::Worker as i32);
+}
+
+#[test]
+fn artifact_transfer_frame_roundtrip() {
+    let request = ArtifactTransferRequest {
+        gen: NODE_PROTOCOL_GENERATION,
+        requester_id: vec![0x42; 32],
+        package_ref: "hf://meshllm/demo-layers@abc123".to_string(),
+        manifest_sha256: "a".repeat(64),
+        relative_path: "layers/layer-000.gguf".to_string(),
+        offset: 0,
+        expected_size: Some(8),
+        expected_sha256: Some("b".repeat(64)),
+    };
+    let encoded = encode_control_frame(STREAM_ARTIFACT_TRANSFER, &request);
+    let decoded: ArtifactTransferRequest = decode_control_frame(STREAM_ARTIFACT_TRANSFER, &encoded)
+        .expect("valid artifact transfer request must decode");
+    assert_eq!(decoded.requester_id, vec![0x42; 32]);
+    assert_eq!(decoded.expected_size, Some(8));
+
+    let response = ArtifactTransferResponse {
+        gen: NODE_PROTOCOL_GENERATION,
+        accepted: true,
+        total_size: 8,
+        sha256: Some("b".repeat(64)),
+        error: None,
+    };
+    let encoded = encode_control_frame(STREAM_ARTIFACT_TRANSFER, &response);
+    let decoded: ArtifactTransferResponse =
+        decode_control_frame(STREAM_ARTIFACT_TRANSFER, &encoded)
+            .expect("valid artifact transfer response must decode");
+    assert!(decoded.accepted);
+    assert_eq!(decoded.total_size, 8);
 }
 
 #[test]

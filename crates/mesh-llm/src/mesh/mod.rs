@@ -108,6 +108,106 @@ fn pinned_gpu_config_peer_error(peer_version: Option<&str>) -> String {
     )
 }
 
+fn partial_artifact_path(destination: &std::path::Path) -> std::path::PathBuf {
+    let file_name = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("artifact");
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    destination.with_file_name(format!(
+        ".{file_name}.{}.{}.part",
+        std::process::id(),
+        unique
+    ))
+}
+
+async fn write_artifact_transfer_response(
+    send: &mut iroh::endpoint::SendStream,
+    accepted: bool,
+    total_size: u64,
+    sha256: Option<&str>,
+    error: Option<&str>,
+) -> Result<()> {
+    let response = crate::proto::node::ArtifactTransferResponse {
+        gen: NODE_PROTOCOL_GENERATION,
+        accepted,
+        total_size,
+        sha256: sha256.map(str::to_string),
+        error: error.map(str::to_string),
+    };
+    response
+        .validate_frame()
+        .map_err(|error| anyhow::anyhow!("invalid artifact transfer response: {error}"))?;
+    write_len_prefixed(send, &response.encode_to_vec()).await?;
+    if !accepted {
+        let _ = send.finish();
+    }
+    Ok(())
+}
+
+fn artifact_transfer_allowed_by_topology(
+    topologies: &[StageTopologyInstance],
+    remote: EndpointId,
+    package_dir: &std::path::Path,
+    request: &crate::proto::node::ArtifactTransferRequest,
+) -> Result<bool> {
+    let relative_path =
+        crate::models::artifact_transfer::safe_relative_artifact_path(&request.relative_path)?;
+    let manifest_path =
+        std::path::PathBuf::from(crate::models::artifact_transfer::PACKAGE_MANIFEST_FILE);
+    for topology in topologies {
+        if topology.package_ref != request.package_ref
+            || !topology
+                .manifest_sha256
+                .eq_ignore_ascii_case(&request.manifest_sha256)
+        {
+            continue;
+        }
+        let final_stage_index = topology.stages.iter().map(|stage| stage.stage_index).max();
+        for assignment in topology
+            .stages
+            .iter()
+            .filter(|stage| stage.node_id == remote)
+        {
+            if relative_path == manifest_path {
+                return Ok(true);
+            }
+            let include_output = final_stage_index == Some(assignment.stage_index);
+            let allowed = crate::models::artifact_transfer::required_stage_package_artifacts(
+                package_dir,
+                &topology.package_ref,
+                &topology.manifest_sha256,
+                assignment.layer_start,
+                assignment.layer_end,
+                assignment.layer_start == 0,
+                include_output,
+                assignment.layer_start == 0,
+            )?;
+            if allowed.iter().any(|artifact| {
+                artifact.relative_path == relative_path
+                    && request
+                        .expected_size
+                        .is_none_or(|expected_size| Some(expected_size) == artifact.expected_size)
+                    && request
+                        .expected_sha256
+                        .as_deref()
+                        .is_none_or(|expected_sha| {
+                            artifact
+                                .expected_sha256
+                                .as_deref()
+                                .is_some_and(|sha| sha.eq_ignore_ascii_case(expected_sha))
+                        })
+            }) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 fn preflight_pushed_config_for_current_node(config: &crate::plugin::MeshConfig) -> Result<()> {
     let survey = crate::system::hardware::query(&[
         crate::system::hardware::Metric::GpuName,
@@ -603,6 +703,7 @@ pub(crate) struct PeerAnnouncement {
     pub(crate) served_model_descriptors: Vec<ServedModelDescriptor>,
     pub(crate) served_model_runtime: Vec<ModelRuntimeDescriptor>,
     pub(crate) owner_attestation: Option<SignedNodeOwnership>,
+    pub(crate) artifact_transfer_supported: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -655,6 +756,7 @@ pub struct PeerInfo {
     pub served_model_descriptors: Vec<ServedModelDescriptor>,
     pub served_model_runtime: Vec<ModelRuntimeDescriptor>,
     pub owner_attestation: Option<SignedNodeOwnership>,
+    pub artifact_transfer_supported: bool,
     pub owner_summary: OwnershipSummary,
 }
 
@@ -710,6 +812,7 @@ impl PeerInfo {
             served_model_descriptors: ann.served_model_descriptors.clone(),
             served_model_runtime: ann.served_model_runtime.clone(),
             owner_attestation: ann.owner_attestation.clone(),
+            artifact_transfer_supported: ann.artifact_transfer_supported,
             owner_summary,
         }
     }
@@ -4095,6 +4198,20 @@ impl Node {
                         }
                     });
                 }
+                STREAM_ARTIFACT_TRANSFER => {
+                    let node = self.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = node
+                            .handle_artifact_transfer_stream(remote, send, recv)
+                            .await
+                        {
+                            tracing::debug!(
+                                "artifact transfer stream error from {}: {e}",
+                                remote.fmt_short()
+                            );
+                        }
+                    });
+                }
                 STREAM_CONFIG_SUBSCRIBE => {
                     let node = self.clone();
                     tokio::spawn(async move {
@@ -4226,16 +4343,424 @@ impl Node {
                     .await?;
                 downstream.endpoint = bridge_addr;
             }
+            crate::inference::skippy::StageControlRequest::Prepare(prepare) => {
+                let node = self.clone();
+                let prepare = prepare.clone();
+                tokio::spawn(async move {
+                    node.prefetch_stage_package_from_coordinator(&prepare).await;
+                });
+            }
             crate::inference::skippy::StageControlRequest::Stop(stop) => {
                 self.stop_stage_transport_bridge(&stop.topology_id, &stop.run_id, &stop.stage_id)
                     .await;
             }
             crate::inference::skippy::StageControlRequest::Status(_)
             | crate::inference::skippy::StageControlRequest::Inventory(_)
-            | crate::inference::skippy::StageControlRequest::Prepare(_)
             | crate::inference::skippy::StageControlRequest::CancelPrepare(_)
             | crate::inference::skippy::StageControlRequest::StatusUpdate(_) => {}
         }
+        Ok(())
+    }
+
+    async fn prefetch_stage_package_from_coordinator(
+        &self,
+        prepare: &crate::inference::skippy::StagePrepareRequest,
+    ) {
+        let load = &prepare.load;
+        if load.load_mode != skippy_protocol::LoadMode::LayerPackage {
+            return;
+        }
+        if !crate::models::artifact_transfer::artifact_transfer_enabled() {
+            return;
+        }
+        let Some(coordinator_id) = prepare.coordinator_id else {
+            return;
+        };
+        if coordinator_id == self.endpoint.id() {
+            return;
+        }
+        let supported = {
+            let state = self.state.lock().await;
+            state
+                .peers
+                .get(&coordinator_id)
+                .is_some_and(|peer| peer.artifact_transfer_supported)
+        };
+        if !supported {
+            return;
+        }
+        if let Err(error) = self
+            .fetch_stage_package_artifacts_from_peer(coordinator_id, load)
+            .await
+        {
+            tracing::debug!(
+                peer = %coordinator_id.fmt_short(),
+                stage_id = %load.stage_id,
+                "peer artifact prefetch failed, falling back to local/HF resolver: {error}"
+            );
+        }
+    }
+
+    async fn fetch_stage_package_artifacts_from_peer(
+        &self,
+        peer_id: EndpointId,
+        load: &crate::inference::skippy::StageLoadRequest,
+    ) -> Result<()> {
+        let package_dir =
+            crate::models::artifact_transfer::package_cache_dir_for_ref(&load.package_ref)?;
+        let manifest_request = crate::models::artifact_transfer::manifest_artifact_request(
+            &load.package_ref,
+            &load.manifest_sha256,
+        )?;
+        let manifest_path =
+            crate::models::artifact_transfer::local_artifact_path(&package_dir, &manifest_request);
+        if !crate::models::artifact_transfer::local_artifact_satisfies(
+            &package_dir,
+            &manifest_request,
+            true,
+        )? {
+            self.fetch_artifact_from_peer(peer_id, &manifest_request, &manifest_path)
+                .await
+                .context("fetch package manifest from peer")?;
+        }
+
+        let artifacts = crate::models::artifact_transfer::required_stage_package_artifacts(
+            &package_dir,
+            &load.package_ref,
+            &load.manifest_sha256,
+            load.layer_start,
+            load.layer_end,
+            load.layer_start == 0,
+            load.downstream.is_none(),
+            load.layer_start == 0,
+        )?;
+        for artifact in artifacts {
+            if crate::models::artifact_transfer::local_artifact_satisfies(
+                &package_dir,
+                &artifact,
+                true,
+            )? {
+                continue;
+            }
+            let destination =
+                crate::models::artifact_transfer::local_artifact_path(&package_dir, &artifact);
+            self.fetch_artifact_from_peer(peer_id, &artifact, &destination)
+                .await
+                .with_context(|| {
+                    format!(
+                        "fetch package artifact {} from peer",
+                        artifact.relative_path.display()
+                    )
+                })?;
+        }
+        Ok(())
+    }
+
+    async fn fetch_artifact_from_peer(
+        &self,
+        peer_id: EndpointId,
+        artifact: &crate::models::artifact_transfer::PackageArtifactRequest,
+        destination: &std::path::Path,
+    ) -> Result<()> {
+        use tokio::io::AsyncWriteExt;
+
+        if let Some(parent) = destination.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .context("create package artifact directory")?;
+        }
+        crate::models::artifact_transfer::ensure_local_artifact_install_parent(
+            &artifact.package_ref,
+            destination,
+        )?;
+        let temp_path = partial_artifact_path(destination);
+        let offset = 0;
+
+        let frame = crate::proto::node::ArtifactTransferRequest {
+            gen: NODE_PROTOCOL_GENERATION,
+            requester_id: self.endpoint.id().as_bytes().to_vec(),
+            package_ref: artifact.package_ref.clone(),
+            manifest_sha256: artifact.manifest_sha256.clone(),
+            relative_path: artifact.relative_path.to_string_lossy().to_string(),
+            offset,
+            expected_size: artifact.expected_size,
+            expected_sha256: artifact.expected_sha256.clone(),
+        };
+        frame
+            .validate_frame()
+            .map_err(|error| anyhow::anyhow!("invalid artifact transfer request: {error}"))?;
+
+        let conn = self.connection_to_peer(peer_id).await?;
+        let response = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            let (mut send, mut recv) = conn.open_bi().await?;
+            send.write_all(&[STREAM_ARTIFACT_TRANSFER]).await?;
+            write_len_prefixed(&mut send, &frame.encode_to_vec()).await?;
+            let response_buf = read_len_prefixed(&mut recv).await?;
+            let response =
+                crate::proto::node::ArtifactTransferResponse::decode(response_buf.as_slice())
+                    .map_err(|error| {
+                        anyhow::anyhow!("ArtifactTransferResponse decode error: {error}")
+                    })?;
+            response.validate_frame().map_err(|error| {
+                anyhow::anyhow!("ArtifactTransferResponse validation error: {error}")
+            })?;
+            Ok::<_, anyhow::Error>((send, recv, response))
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("timeout opening artifact transfer stream"))??;
+        let (mut send, mut recv, response) = response;
+        if !response.accepted {
+            anyhow::bail!(
+                "peer artifact transfer rejected: {}",
+                response
+                    .error
+                    .unwrap_or_else(|| "artifact unavailable".to_string())
+            );
+        }
+        if let Some(expected_size) = artifact.expected_size {
+            anyhow::ensure!(
+                response.total_size == expected_size,
+                "peer artifact size mismatch"
+            );
+        } else if artifact.relative_path
+            == std::path::PathBuf::from(crate::models::artifact_transfer::PACKAGE_MANIFEST_FILE)
+        {
+            anyhow::ensure!(
+                response.total_size <= crate::models::artifact_transfer::MAX_PACKAGE_MANIFEST_BYTES,
+                "peer package manifest exceeds transfer limit"
+            );
+        } else {
+            anyhow::bail!("peer artifact response missing expected size");
+        }
+        if let Some(expected_sha) = artifact.expected_sha256.as_deref() {
+            anyhow::ensure!(
+                response
+                    .sha256
+                    .as_deref()
+                    .is_some_and(|sha| sha.eq_ignore_ascii_case(expected_sha)),
+                "peer artifact sha256 mismatch"
+            );
+        }
+        anyhow::ensure!(
+            offset <= response.total_size,
+            "peer artifact response is smaller than resume offset"
+        );
+
+        let transfer_result = async {
+            let mut file = tokio::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&temp_path)
+                .await
+                .context("open partial artifact")?;
+            let mut remaining = response.total_size.saturating_sub(offset);
+            let mut buffer = vec![0u8; 1024 * 1024];
+            while remaining > 0 {
+                let limit = buffer.len().min(remaining as usize);
+                let read = recv
+                    .read(&mut buffer[..limit])
+                    .await
+                    .context("read artifact transfer bytes")?
+                    .context("artifact transfer ended before expected byte count")?;
+                anyhow::ensure!(
+                    read > 0,
+                    "artifact transfer ended before expected byte count"
+                );
+                file.write_all(&buffer[..read])
+                    .await
+                    .context("write partial artifact")?;
+                remaining -= read as u64;
+            }
+            file.flush().await.context("flush partial artifact")?;
+            drop(file);
+
+            let actual_size = tokio::fs::metadata(&temp_path)
+                .await
+                .context("stat partial artifact")?
+                .len();
+            anyhow::ensure!(
+                actual_size == response.total_size,
+                "partial artifact size mismatch after transfer"
+            );
+            let temp_for_hash = temp_path.clone();
+            let actual_sha = tokio::task::spawn_blocking(move || {
+                crate::models::artifact_transfer::file_sha256_hex(&temp_for_hash)
+            })
+            .await
+            .context("join artifact sha256 task")??;
+            let expected_sha = artifact
+                .expected_sha256
+                .as_deref()
+                .or(response.sha256.as_deref())
+                .context("peer artifact response missing sha256")?;
+            anyhow::ensure!(
+                actual_sha.eq_ignore_ascii_case(expected_sha),
+                "transferred artifact sha256 mismatch"
+            );
+            if destination.exists() {
+                let _ = tokio::fs::remove_file(destination).await;
+            }
+            tokio::fs::rename(&temp_path, destination)
+                .await
+                .context("install transferred artifact")?;
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        if let Err(error) = transfer_result {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return Err(error);
+        }
+        let _ = send.finish();
+        Ok(())
+    }
+
+    async fn handle_artifact_transfer_stream(
+        &self,
+        remote: EndpointId,
+        mut send: iroh::endpoint::SendStream,
+        mut recv: iroh::endpoint::RecvStream,
+    ) -> anyhow::Result<()> {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+        let buf = read_len_prefixed(&mut recv).await?;
+        let request = crate::proto::node::ArtifactTransferRequest::decode(buf.as_slice())
+            .map_err(|error| anyhow::anyhow!("ArtifactTransferRequest decode error: {error}"))?;
+        request.validate_frame().map_err(|error| {
+            anyhow::anyhow!("ArtifactTransferRequest validation error: {error}")
+        })?;
+        if request.requester_id.as_slice() != remote.as_bytes() {
+            anyhow::bail!("artifact transfer requester_id does not match QUIC peer identity");
+        }
+        if !crate::models::artifact_transfer::artifact_transfer_enabled() {
+            return write_artifact_transfer_response(
+                &mut send,
+                false,
+                0,
+                None,
+                Some("artifact transfer disabled"),
+            )
+            .await;
+        }
+        let package_dir =
+            match crate::models::artifact_transfer::package_cache_dir_for_ref(&request.package_ref)
+            {
+                Ok(path) => path,
+                Err(error) => {
+                    tracing::debug!(
+                        peer = %remote.fmt_short(),
+                        "artifact transfer request has unsupported package ref: {error}"
+                    );
+                    return write_artifact_transfer_response(
+                        &mut send,
+                        false,
+                        0,
+                        None,
+                        Some("artifact unavailable"),
+                    )
+                    .await;
+                }
+            };
+        let topologies = self
+            .stage_topologies
+            .lock()
+            .await
+            .topologies
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        match artifact_transfer_allowed_by_topology(&topologies, remote, &package_dir, &request) {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::debug!(
+                    peer = %remote.fmt_short(),
+                    path = %request.relative_path,
+                    "artifact transfer request is not authorized for this stage assignment"
+                );
+                return write_artifact_transfer_response(
+                    &mut send,
+                    false,
+                    0,
+                    None,
+                    Some("artifact unavailable"),
+                )
+                .await;
+            }
+            Err(error) => {
+                tracing::debug!(
+                    peer = %remote.fmt_short(),
+                    path = %request.relative_path,
+                    "artifact transfer authorization failed: {error}"
+                );
+                return write_artifact_transfer_response(
+                    &mut send,
+                    false,
+                    0,
+                    None,
+                    Some("artifact unavailable"),
+                )
+                .await;
+            }
+        }
+
+        let artifact =
+            match crate::models::artifact_transfer::servable_artifact_from_request(&request) {
+                Ok(artifact) => artifact,
+                Err(error) => {
+                    tracing::debug!(
+                        peer = %remote.fmt_short(),
+                        path = %request.relative_path,
+                        "artifact transfer request cannot be served: {error}"
+                    );
+                    return write_artifact_transfer_response(
+                        &mut send,
+                        false,
+                        0,
+                        None,
+                        Some("artifact unavailable"),
+                    )
+                    .await;
+                }
+            };
+        if request.offset > artifact.size {
+            return write_artifact_transfer_response(
+                &mut send,
+                false,
+                artifact.size,
+                Some(&artifact.sha256),
+                Some("invalid transfer offset"),
+            )
+            .await;
+        }
+
+        write_artifact_transfer_response(
+            &mut send,
+            true,
+            artifact.size,
+            Some(&artifact.sha256),
+            None,
+        )
+        .await?;
+        let mut file = tokio::fs::File::open(&artifact.path)
+            .await
+            .context("open artifact for transfer")?;
+        file.seek(std::io::SeekFrom::Start(request.offset))
+            .await
+            .context("seek artifact for transfer")?;
+        let mut buffer = vec![0u8; 1024 * 1024];
+        let mut remaining = artifact.size.saturating_sub(request.offset);
+        while remaining > 0 {
+            let limit = buffer.len().min(remaining as usize);
+            let read = file
+                .read(&mut buffer[..limit])
+                .await
+                .context("read artifact for transfer")?;
+            anyhow::ensure!(read > 0, "artifact file ended before expected byte count");
+            send.write_all(&buffer[..read])
+                .await
+                .context("write artifact transfer bytes")?;
+            remaining -= read as u64;
+        }
+        let _ = send.finish();
         Ok(())
     }
 

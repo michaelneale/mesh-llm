@@ -5,6 +5,7 @@ use super::heartbeat::{
 };
 use super::*;
 use crate::proto::node::{GossipFrame, NodeRole, PeerAnnouncement, RouteTableRequest};
+use serial_test::serial;
 use std::collections::HashSet;
 use tokio::sync::watch;
 
@@ -811,6 +812,7 @@ fn make_test_peer_info(peer_id: EndpointId) -> PeerInfo {
         served_model_descriptors: vec![],
         served_model_runtime: vec![],
         owner_attestation: None,
+        artifact_transfer_supported: false,
         owner_summary: OwnershipSummary::default(),
     }
 }
@@ -819,6 +821,257 @@ fn make_test_endpoint_id(seed: u8) -> EndpointId {
     let mut bytes = [0u8; 32];
     bytes[0] = seed;
     EndpointId::from(SecretKey::from_bytes(&bytes).public())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+
+    hex::encode(Sha256::digest(bytes))
+}
+
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: &std::path::Path) -> Self {
+        let previous = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        if let Some(value) = self.previous.take() {
+            std::env::set_var(self.key, value);
+        } else {
+            std::env::remove_var(self.key);
+        }
+    }
+}
+
+fn write_artifact_authorization_package(root: &std::path::Path) -> (String, String) {
+    std::fs::create_dir_all(root.join("shared")).unwrap();
+    std::fs::create_dir_all(root.join("layers")).unwrap();
+    std::fs::create_dir_all(root.join("projectors")).unwrap();
+    std::fs::write(root.join("shared/metadata.gguf"), b"metadata").unwrap();
+    std::fs::write(root.join("shared/embeddings.gguf"), b"embed").unwrap();
+    std::fs::write(root.join("shared/output.gguf"), b"output").unwrap();
+    std::fs::write(root.join("layers/layer-000.gguf"), b"layer000").unwrap();
+    std::fs::write(root.join("layers/layer-001.gguf"), b"layer001").unwrap();
+    std::fs::write(root.join("projectors/mmproj.gguf"), b"projector").unwrap();
+    let manifest = serde_json::json!({
+        "shared": {
+            "metadata": { "path": "shared/metadata.gguf", "sha256": sha256_hex(b"metadata"), "artifact_bytes": 8 },
+            "embeddings": { "path": "shared/embeddings.gguf", "sha256": sha256_hex(b"embed"), "artifact_bytes": 5 },
+            "output": { "path": "shared/output.gguf", "sha256": sha256_hex(b"output"), "artifact_bytes": 6 }
+        },
+        "layers": [
+            { "layer_index": 0, "path": "layers/layer-000.gguf", "sha256": sha256_hex(b"layer000"), "artifact_bytes": 8 },
+            { "layer_index": 1, "path": "layers/layer-001.gguf", "sha256": sha256_hex(b"layer001"), "artifact_bytes": 8 }
+        ],
+        "projectors": [
+            { "kind": "mmproj", "path": "projectors/mmproj.gguf", "sha256": sha256_hex(b"projector"), "artifact_bytes": 9 }
+        ]
+    });
+    let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+    let manifest_sha = sha256_hex(&manifest_bytes);
+    std::fs::write(root.join("model-package.json"), manifest_bytes).unwrap();
+    ("hf://meshllm/auth-package@abc123".to_string(), manifest_sha)
+}
+
+fn write_hf_artifact_stream_package(
+    root: &std::path::Path,
+) -> (std::path::PathBuf, String, String) {
+    let package_dir = root
+        .join("models--meshllm--stream-package")
+        .join("snapshots")
+        .join("abc123");
+    let (_package_ref, manifest_sha) = write_artifact_authorization_package(&package_dir);
+    (
+        package_dir,
+        "hf://meshllm/stream-package@abc123".to_string(),
+        manifest_sha,
+    )
+}
+
+#[test]
+fn artifact_transfer_authorization_is_limited_to_stage_assignment() {
+    let package = tempfile::tempdir().unwrap();
+    let (package_ref, manifest_sha256) = write_artifact_authorization_package(package.path());
+    let stage0 = make_test_endpoint_id(0x91);
+    let stage1 = make_test_endpoint_id(0x92);
+    let topology = StageTopologyInstance {
+        topology_id: "topology-a".to_string(),
+        run_id: "run-a".to_string(),
+        model_id: "model-a".to_string(),
+        package_ref: package_ref.clone(),
+        manifest_sha256: manifest_sha256.clone(),
+        stages: vec![
+            StageAssignment {
+                stage_id: "stage-0".to_string(),
+                stage_index: 0,
+                node_id: stage0,
+                layer_start: 0,
+                layer_end: 1,
+                endpoint: StageEndpoint {
+                    bind_addr: String::new(),
+                },
+            },
+            StageAssignment {
+                stage_id: "stage-1".to_string(),
+                stage_index: 1,
+                node_id: stage1,
+                layer_start: 1,
+                layer_end: 2,
+                endpoint: StageEndpoint {
+                    bind_addr: String::new(),
+                },
+            },
+        ],
+    };
+    let request = |relative_path: &str, expected_size: u64, expected_sha256: String| {
+        crate::proto::node::ArtifactTransferRequest {
+            gen: NODE_PROTOCOL_GENERATION,
+            requester_id: stage0.as_bytes().to_vec(),
+            package_ref: package_ref.clone(),
+            manifest_sha256: manifest_sha256.clone(),
+            relative_path: relative_path.to_string(),
+            offset: 0,
+            expected_size: Some(expected_size),
+            expected_sha256: Some(expected_sha256),
+        }
+    };
+
+    let layer0 = request("layers/layer-000.gguf", 8, sha256_hex(b"layer000"));
+    assert!(artifact_transfer_allowed_by_topology(
+        std::slice::from_ref(&topology),
+        stage0,
+        package.path(),
+        &layer0,
+    )
+    .unwrap());
+
+    let layer1 = request("layers/layer-001.gguf", 8, sha256_hex(b"layer001"));
+    assert!(!artifact_transfer_allowed_by_topology(
+        std::slice::from_ref(&topology),
+        stage0,
+        package.path(),
+        &layer1,
+    )
+    .unwrap());
+
+    let projector = request("projectors/mmproj.gguf", 9, sha256_hex(b"projector"));
+    assert!(artifact_transfer_allowed_by_topology(
+        std::slice::from_ref(&topology),
+        stage0,
+        package.path(),
+        &projector,
+    )
+    .unwrap());
+
+    let manifest = crate::proto::node::ArtifactTransferRequest {
+        gen: NODE_PROTOCOL_GENERATION,
+        requester_id: stage1.as_bytes().to_vec(),
+        package_ref,
+        manifest_sha256,
+        relative_path: "model-package.json".to_string(),
+        offset: 0,
+        expected_size: None,
+        expected_sha256: None,
+    };
+    assert!(
+        artifact_transfer_allowed_by_topology(&[topology], stage1, package.path(), &manifest)
+            .unwrap()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
+async fn artifact_transfer_stream_serves_authorized_stage_artifact() -> Result<()> {
+    use crate::protocol::{read_len_prefixed, write_len_prefixed};
+    use base64::Engine as _;
+    use prost::Message as _;
+
+    let cache = tempfile::tempdir().unwrap();
+    let _cache_guard = EnvVarGuard::set("HF_HUB_CACHE", cache.path());
+    let (package_dir, package_ref, manifest_sha256) =
+        write_hf_artifact_stream_package(cache.path());
+    let server = make_test_node(super::NodeRole::Host { http_port: 9337 }).await?;
+    let client = make_test_node(super::NodeRole::Worker).await?;
+    server
+        .set_mesh_id("artifact-transfer-stream-mesh".to_string())
+        .await;
+    client
+        .set_mesh_id("artifact-transfer-stream-mesh".to_string())
+        .await;
+    server.start_accepting();
+    client.start_accepting();
+
+    let server_id = server.id();
+    let client_id = client.id();
+    let invite = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(&server.endpoint.addr())?);
+    client.join(&invite).await?;
+    wait_for_peer(&client, server_id).await;
+    wait_for_peer(&server, client_id).await;
+    server
+        .record_stage_topology(StageTopologyInstance {
+            topology_id: "topology-artifact".to_string(),
+            run_id: "run-artifact".to_string(),
+            model_id: "model-artifact".to_string(),
+            package_ref: package_ref.clone(),
+            manifest_sha256: manifest_sha256.clone(),
+            stages: vec![StageAssignment {
+                stage_id: "stage-0".to_string(),
+                stage_index: 0,
+                node_id: client_id,
+                layer_start: 0,
+                layer_end: 1,
+                endpoint: StageEndpoint {
+                    bind_addr: String::new(),
+                },
+            }],
+        })
+        .await;
+
+    let conn = {
+        let state = client.state.lock().await;
+        state
+            .connections
+            .get(&server_id)
+            .cloned()
+            .expect("connection to server must exist after join")
+    };
+    let request = crate::proto::node::ArtifactTransferRequest {
+        gen: NODE_PROTOCOL_GENERATION,
+        requester_id: client_id.as_bytes().to_vec(),
+        package_ref,
+        manifest_sha256,
+        relative_path: "layers/layer-000.gguf".to_string(),
+        offset: 0,
+        expected_size: Some(8),
+        expected_sha256: Some(sha256_hex(b"layer000")),
+    };
+
+    let (mut send, mut recv) = conn.open_bi().await?;
+    send.write_all(&[STREAM_ARTIFACT_TRANSFER]).await?;
+    write_len_prefixed(&mut send, &request.encode_to_vec()).await?;
+    send.finish()?;
+    let response_buf = read_len_prefixed(&mut recv).await?;
+    let response = crate::proto::node::ArtifactTransferResponse::decode(response_buf.as_slice())?;
+    assert!(response.accepted, "artifact response: {:?}", response.error);
+    assert_eq!(response.total_size, 8);
+    let expected_sha = sha256_hex(b"layer000");
+    assert_eq!(response.sha256.as_deref(), Some(expected_sha.as_str()));
+    let mut bytes = vec![0u8; response.total_size as usize];
+    recv.read_exact(&mut bytes).await?;
+    assert_eq!(bytes, b"layer000");
+    assert!(package_dir.join("model-package.json").is_file());
+
+    Ok(())
 }
 
 #[test]
@@ -1087,6 +1340,7 @@ fn incoming_peer_rejected_on_legacy_or_malformed_gossip() {
         STREAM_PEER_LEAVING,
         STREAM_PLUGIN_CHANNEL,
         STREAM_PLUGIN_BULK_TRANSFER,
+        STREAM_ARTIFACT_TRANSFER,
     ] {
         assert!(
             !stream_allowed_before_admission(stream_type),
@@ -1135,6 +1389,7 @@ fn passive_route_table_request_does_not_admit_peer() {
         STREAM_PEER_LEAVING,
         STREAM_PLUGIN_CHANNEL,
         STREAM_PLUGIN_BULK_TRANSFER,
+        STREAM_ARTIFACT_TRANSFER,
     ] {
         assert!(
             !stream_allowed_before_admission(gated),
@@ -1332,6 +1587,7 @@ fn gossip_frame_roundtrip_preserves_scanned_model_metadata() {
             ready: true,
         }],
         owner_attestation: None,
+        artifact_transfer_supported: true,
     };
 
     let proto_pa = local_ann_to_proto_ann(&local_ann);
@@ -1554,6 +1810,7 @@ fn transitive_peer_update_refreshes_metadata_fields() {
         served_model_descriptors: vec![],
         served_model_runtime: vec![],
         owner_attestation: None,
+        artifact_transfer_supported: true,
     };
 
     apply_transitive_ann(&mut existing, &addr, &ann);
@@ -1632,6 +1889,7 @@ fn transitive_peer_merge_preserves_richer_direct_address() {
         served_model_descriptors: vec![],
         served_model_runtime: vec![],
         owner_attestation: None,
+        artifact_transfer_supported: true,
     };
 
     apply_transitive_ann(&mut existing, &weak_addr, &ann);
@@ -1684,6 +1942,7 @@ fn transitive_peer_merge_preserves_richer_direct_address() {
         served_model_descriptors: vec![],
         served_model_runtime: vec![],
         owner_attestation: None,
+        artifact_transfer_supported: true,
     };
     apply_transitive_ann(&mut existing, &richer_addr, &ann2);
 
@@ -2254,6 +2513,7 @@ fn transitive_peer_update_refreshes_last_mentioned() {
         served_model_descriptors: vec![],
         served_model_runtime: vec![],
         owner_attestation: None,
+        artifact_transfer_supported: true,
     };
 
     apply_transitive_ann(&mut peer, &addr, &ann);
@@ -2998,6 +3258,7 @@ fn make_test_peer(id: EndpointId, rtt_ms: Option<u32>, vram_gb: u64) -> PeerInfo
         served_model_descriptors: vec![],
         served_model_runtime: vec![],
         owner_attestation: None,
+        artifact_transfer_supported: false,
         owner_summary: OwnershipSummary::default(),
     }
 }

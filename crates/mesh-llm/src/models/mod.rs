@@ -1,3 +1,4 @@
+pub(crate) mod artifact_transfer;
 pub mod capabilities;
 pub mod catalog;
 pub mod delete;

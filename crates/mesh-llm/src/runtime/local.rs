@@ -642,6 +642,19 @@ async fn load_split_runtime_generation(
     let activation_width =
         skippy_stage_activation_width(spec.package.activation_width, spec.model_ref)?;
 
+    if use_layer_package {
+        spec.node
+            .record_stage_topology(split_stage_topology_instance(
+                &spec.generation.topology_id,
+                &spec.generation.run_id,
+                spec.model_ref,
+                spec.package,
+                &spec.generation.stages,
+                &ready_by_stage,
+            ))
+            .await;
+    }
+
     for stage in spec.generation.stages.iter().skip(1).rev() {
         let load = skippy::StageLoadRequest {
             topology_id: spec.generation.topology_id.clone(),

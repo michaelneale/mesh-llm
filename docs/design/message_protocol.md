@@ -20,21 +20,25 @@ Each QUIC connection carries multiple logical streams, distinguished by a 1-byte
 | 0x05 | ROUTE_REQUEST | bidirectional | protobuf `RouteTableRequest` / `RouteTable` |
 | 0x06 | PEER_DOWN | send | protobuf `PeerDown` |
 | 0x07 | PEER_LEAVING | send | protobuf `PeerLeaving` |
-| 0x08 | BLACKBOARD | bidirectional | admission-gated auxiliary channel |
-| 0x09 | PLUGIN_CHANNEL | bidirectional | plugin protocol (see Out-of-Scope) |
-| 0x0a | PLUGIN_BULK_TRANSFER | send | plugin protocol bulk data (see Out-of-Scope) |
+| 0x08 | PLUGIN_CHANNEL | bidirectional | plugin protocol |
+| 0x09 | PLUGIN_BULK_TRANSFER | send | plugin protocol bulk data |
+| 0x0b | CONFIG_SUBSCRIBE | bidirectional | protobuf `ConfigSubscribe` / `ConfigSnapshotResponse` |
+| 0x0c | CONFIG_PUSH | bidirectional | protobuf `ConfigPush` / `ConfigPushResponse` |
+| 0x0d | ARTIFACT_TRANSFER | bidirectional | protobuf request/response header plus raw artifact bytes |
 
 Streams 0x02 and 0x04 are raw TCP relay tunnels. They carry llama.cpp RPC and HTTP traffic respectively and are not subject to protobuf framing or generation validation.
 
 ## Framing
 
-All protobuf control-plane streams (0x01, 0x03, 0x05, 0x06, 0x07) use the same framing:
+All protobuf control-plane streams except artifact byte payloads use the same framing:
 
 ```
 [1 byte stream type][4 bytes LE length][N bytes protobuf body]
 ```
 
 Maximum frame size: 8 MiB (`MAX_CONTROL_FRAME_BYTES`). Frames exceeding this limit are rejected.
+
+`ARTIFACT_TRANSFER` opens with the same 1-byte stream type and then uses length-prefixed protobuf `ArtifactTransferRequest` and `ArtifactTransferResponse` headers. If the response is accepted, the remaining bytes on the QUIC stream are raw artifact bytes starting at the requested offset. This keeps large model artifacts outside the 8 MiB control-frame limit while preserving protobuf validation for the transfer metadata.
 
 ## Protocol Generation
 
@@ -47,13 +51,19 @@ Every protobuf message that carries a `gen` field must have `gen == 1`. Frames w
 - `RouteTable.gen`
 - `PeerDown.gen`
 - `PeerLeaving.gen`
+- `ConfigSubscribe.gen`
+- `ConfigSnapshotResponse.gen`
+- `ConfigPush.gen`
+- `ConfigPushResponse.gen`
+- `ArtifactTransferRequest.gen`
+- `ArtifactTransferResponse.gen`
 
 ## Admission (Quarantine-Until-Gossip)
 
 A newly connected peer is quarantined until it sends a valid `GossipFrame` with `gen = 1`. Until admission:
 
 - Only stream 0x01 (GOSSIP) and 0x05 (ROUTE_REQUEST) are accepted.
-- All other streams (0x02, 0x03, 0x04, 0x06, 0x07, 0x08, 0x09, 0x0a) are rejected and the stream is closed.
+- All other streams are rejected and the stream is closed.
 - The QUIC connection itself stays open so gossip can complete.
 
 A peer is admitted when its `GossipFrame` decodes successfully and passes validation checks.
@@ -235,13 +245,52 @@ message PeerLeaving {
 
 `peer_id` must match the QUIC connection identity. Forged `PeerLeaving` frames (where `peer_id` names a different node) are rejected without any state change.
 
+## Stream 0x0d — Artifact Transfer (`ArtifactTransferRequest` / `ArtifactTransferResponse`)
+
+Used by a Skippy worker to fetch missing Hugging Face layer-package artifacts from the coordinating node before falling back to normal local/HF package resolution.
+
+**Request:**
+```proto
+message ArtifactTransferRequest {
+  uint32 gen = 1;
+  bytes requester_id = 2;
+  string package_ref = 3;
+  string manifest_sha256 = 4;
+  string relative_path = 5;
+  uint64 offset = 6;
+  optional uint64 expected_size = 7;
+  optional string expected_sha256 = 8;
+}
+```
+
+**Response:**
+```proto
+message ArtifactTransferResponse {
+  uint32 gen = 1;
+  bool accepted = 2;
+  uint64 total_size = 3;
+  optional string sha256 = 4;
+  optional string error = 5;
+}
+```
+
+Privacy and safety properties:
+
+- The capability is advertised as a boolean only; nodes do not gossip package inventories, file names, local paths, or cache contents.
+- Requests are admitted-peer only and the `requester_id` must match the QUIC peer identity.
+- Only `hf://namespace/repo@revision` package refs are served.
+- Non-manifest artifact paths must be declared by the cached `model-package.json`, with matching manifest SHA, artifact size, and artifact SHA.
+- Absolute paths, parent-directory traversal, and symlink escapes outside the managed Hugging Face repo cache are rejected.
+- Transfers are streamed in bounded chunks; the protocol carries an offset, and
+  the current client installs only freshly verified complete artifacts.
+
 ## Out-of-Scope Streams
 
 The following are explicitly NOT protobuf and are not described here:
 
 - **0x02 / 0x04** — raw TCP relay for llama.cpp RPC and HTTP. No framing changes.
 - **Nostr discovery payloads** — remain JSON (NIP-89 kind 31990).
-- **Plugin streams (0x09 / 0x0a)** — PLUGIN_CHANNEL and PLUGIN_BULK_TRANSFER; separate protocol, unchanged.
+- **Plugin streams (0x08 / 0x09)** — PLUGIN_CHANNEL and PLUGIN_BULK_TRANSFER; separate protocol, unchanged.
 - **Invite/join token encoding** — unchanged.
 
 ## Compatibility
@@ -249,4 +298,4 @@ The following are explicitly NOT protobuf and are not described here:
 `mesh-llm/1` is the only supported control-plane protocol.
 
 - Nodes advertise `mesh-llm/1` on accept.
-- All five scoped control-plane streams (0x01, 0x03, 0x05, 0x06, 0x07) use protobuf framing.
+- Scoped control-plane streams (0x01, 0x03, 0x05, 0x06, 0x07, 0x0b, 0x0c) use protobuf framing. Artifact transfer (0x0d) uses protobuf metadata followed by raw bytes.
