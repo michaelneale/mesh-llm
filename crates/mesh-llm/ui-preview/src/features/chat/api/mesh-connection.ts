@@ -31,6 +31,45 @@ function parseChatSSEEvent(data: string) {
   }
 }
 
+function messageFromStreamError(data: string): string {
+  try {
+    const json = JSON.parse(data) as unknown
+    if (json && typeof json === 'object') {
+      const obj = json as Record<string, unknown>
+      if (obj['error'] && typeof obj['error'] === 'object') {
+        const error = obj['error'] as Record<string, unknown>
+        if (typeof error['message'] === 'string') return error['message']
+      }
+      if (typeof obj['error'] === 'string') return obj['error']
+      if (typeof obj['message'] === 'string') return obj['message']
+    }
+  } catch {
+    // Not JSON; surface the raw stream payload below.
+  }
+
+  return data || 'Chat stream failed'
+}
+
+function statusFromStreamError(data: string): number {
+  try {
+    const json = JSON.parse(data) as unknown
+    if (json && typeof json === 'object') {
+      const obj = json as Record<string, unknown>
+      if (typeof obj['status'] === 'number') return obj['status']
+      if (typeof obj['status_code'] === 'number') return obj['status_code']
+      if (obj['error'] && typeof obj['error'] === 'object') {
+        const error = obj['error'] as Record<string, unknown>
+        if (typeof error['status'] === 'number') return error['status']
+        if (typeof error['status_code'] === 'number') return error['status_code']
+      }
+    }
+  } catch {
+    // Not JSON; stream errors do not always carry HTTP status metadata.
+  }
+
+  return 500
+}
+
 function isAbortError(error: unknown) {
   return error instanceof Error && error.name === 'AbortError'
 }
@@ -43,6 +82,32 @@ async function* parseSSEStream(
   const decoder = new TextDecoder()
   let buffer = ''
   let streamFinished = false
+  let eventName = 'message'
+
+  function parseLine(line: string): ChatSSEEvent | undefined {
+    const trimmed = line.trim()
+    if (trimmed === '') {
+      eventName = 'message'
+      return undefined
+    }
+    if (trimmed.startsWith('event:')) {
+      eventName = trimmed.slice(6).trim() || 'message'
+      return undefined
+    }
+    if (!trimmed.startsWith('data:')) return undefined
+
+    const data = trimmed.slice(5).trimStart()
+    if (data === '[DONE]') {
+      streamFinished = true
+      return undefined
+    }
+    if (eventName === 'error') {
+      const message = messageFromStreamError(data)
+      throw new ApiError(statusFromStreamError(data), message, `Chat stream failed: ${message}`)
+    }
+
+    return parseChatSSEEvent(data)
+  }
 
   try {
     while (true) {
@@ -69,24 +134,17 @@ async function* parseSSEStream(
       buffer = lines.pop() ?? ''
 
       for (const line of lines) {
-        const trimmed = line.trim()
-        if (!trimmed.startsWith('data: ')) continue
-        const data = trimmed.slice(6)
-        if (data === '[DONE]') {
-          streamFinished = true
+        const event = parseLine(line)
+        if (streamFinished) {
           return
         }
-        const event = parseChatSSEEvent(data)
         if (event) yield event
       }
     }
 
-    if (buffer.trim().startsWith('data: ')) {
-      const data = buffer.trim().slice(6)
-      if (data !== '[DONE]') {
-        const event = parseChatSSEEvent(data)
-        if (event) yield event
-      }
+    if (buffer.trim()) {
+      const event = parseLine(buffer)
+      if (event) yield event
     }
   } finally {
     if (!streamFinished) {

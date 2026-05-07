@@ -188,16 +188,13 @@ export function PeerRow({ peer, active, isLast, onSelect, onHoverPeerIdChange }:
       <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-2 lg:contents">
         <div className="flex min-w-0 items-center gap-2 lg:contents">
           <PeerValueTooltip content={peerTooltip}>
-            <div className="flex min-w-0 items-center gap-1.5">
-              <span className="min-w-0 truncate font-mono text-[length:var(--density-type-control)]">{primaryId}</span>
-              {hostname && (
-                <>
-                  <span className="text-[length:var(--density-type-caption)] text-fg-faint">·</span>
-                  <span className="min-w-0 truncate font-mono text-[length:var(--density-type-caption)] text-fg-dim">
-                    {hostname}
-                  </span>
-                </>
-              )}
+            <div className="flex min-w-0 flex-col gap-0.5">
+              <span className="min-w-0 truncate font-mono text-[length:var(--density-type-control)] leading-tight">
+                {primaryId}
+              </span>
+              <span className="min-w-0 truncate font-mono text-[length:var(--density-type-caption)] leading-tight text-fg-dim">
+                {hostname ?? '—'}
+              </span>
             </div>
           </PeerValueTooltip>
           <PeerValueTooltip content={hostedModelsTooltip}>

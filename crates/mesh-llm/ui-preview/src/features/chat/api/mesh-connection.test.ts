@@ -265,6 +265,33 @@ describe('createMeshConnectionAdapter', () => {
     await expect(iterator.next()).rejects.toThrow('stream exploded')
   })
 
+  it('throws ApiError for backend SSE error events before DONE', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(
+          createSSEStream([
+            'event: error\n',
+            'data: {"error":{"message":"Router failed while streaming"}}\n',
+            'data: [DONE]\n'
+          ]),
+          { status: 200 }
+        )
+      )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const adapter = createMeshConnectionAdapter('model-a')
+    const iterator = adapter.connect(createMessages(), undefined, undefined)[Symbol.asyncIterator]()
+
+    expect((await iterator.next()).value).toMatchObject({ type: EventType.RUN_STARTED })
+    await expect(iterator.next()).rejects.toMatchObject({
+      name: 'ApiError',
+      status: 500,
+      body: 'Router failed while streaming',
+      message: 'Chat stream failed: Router failed while streaming'
+    })
+  })
+
   it('cancels the response reader and stops cleanly when aborted during a pending stream read', async () => {
     const abortController = new AbortController()
     const { reader, stream } = createPendingAbortReaderStream(abortController.signal)

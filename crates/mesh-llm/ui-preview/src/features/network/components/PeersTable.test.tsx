@@ -232,6 +232,7 @@ describe('PeersTable', () => {
     render(<PeersTable peers={peers} summary={{ total: peers.length, online: peers.length, capacity: '12 GB' }} />)
 
     expect(screen.getByText('006c9b7a')).toBeInTheDocument()
+    expect(screen.getByText('—')).toBeInTheDocument()
     expect(screen.queryByText(fullPeerId)).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'View peer 006c9b7a, peer ID 006c9b7a70' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /006c9b7a70 node/ })).not.toBeInTheDocument()
@@ -241,7 +242,7 @@ describe('PeersTable', () => {
     expect(await screen.findByRole('tooltip')).toHaveTextContent(fullPeerId)
   })
 
-  it('keeps real hostnames visible beside the short ID', () => {
+  it('keeps real hostnames visible under the short ID', () => {
     const peers = [{ ...buildPeer(1), id: '02ad2a5100', shortId: '02ad2a51', hostname: 'Mac' }]
 
     render(<PeersTable peers={peers} summary={{ total: peers.length, online: peers.length, capacity: '12 GB' }} />)
