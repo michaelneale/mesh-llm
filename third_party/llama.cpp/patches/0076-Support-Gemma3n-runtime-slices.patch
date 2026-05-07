@@ -1,0 +1,506 @@
+From b13fb45ff0b0b74b0ac932aff7b859364b614422 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Thu, 7 May 2026 20:29:25 +1000
+Subject: [PATCH] Support Gemma3n runtime slices
+
+---
+ include/skippy.h           |   3 +-
+ src/llama-graph.cpp        |  31 +++++++++++
+ src/llama-graph.h          |  28 ++++++++++
+ src/llama-model-loader.cpp |   9 +++-
+ src/models/gemma3n.cpp     |  57 ++++++++++++++++----
+ src/skippy.cpp             | 103 +++++++++++++++++++++++++++++++++++--
+ 6 files changed, 216 insertions(+), 15 deletions(-)
+
+diff --git a/include/skippy.h b/include/skippy.h
+index eb6da73e..f1ff7852 100644
+--- a/include/skippy.h
++++ b/include/skippy.h
+@@ -99,7 +99,8 @@ enum skippy_activation_layout {
+     SKIPPY_ACTIVATION_LAYOUT_TOKEN_MAJOR  = 1,
+ };
+ 
+-#define SKIPPY_ACTIVATION_FLAG_RWKV7_V_FIRST (UINT64_C(1) << 0)
++#define SKIPPY_ACTIVATION_FLAG_RWKV7_V_FIRST   (UINT64_C(1) << 0)
++#define SKIPPY_ACTIVATION_FLAG_GEMMA3N_ALTUP   (UINT64_C(1) << 1)
+ 
+ struct skippy_model;
+ struct skippy_session;
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index 3d0a86b9..da88c629 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -21,6 +21,7 @@
+ static thread_local skippy_graph_filter g_skippy_graph_filter;
+ static thread_local skippy_activation_tokens g_skippy_activation_tokens;
+ static thread_local skippy_activation_rwkv7_v_first g_skippy_rwkv7_v_first;
++static thread_local skippy_activation_gemma3n_altup g_skippy_gemma3n_altup;
+ 
+ void skippy_graph_set_filter(const skippy_graph_filter & filter) {
+     g_skippy_graph_filter = filter;
+@@ -58,6 +59,18 @@ const skippy_activation_rwkv7_v_first & skippy_graph_get_rwkv7_v_first() {
+     return g_skippy_rwkv7_v_first;
+ }
+ 
++void skippy_graph_set_gemma3n_altup(const skippy_activation_gemma3n_altup & values) {
++    g_skippy_gemma3n_altup = values;
++}
++
++void skippy_graph_clear_gemma3n_altup() {
++    g_skippy_gemma3n_altup = {};
++}
++
++const skippy_activation_gemma3n_altup & skippy_graph_get_gemma3n_altup() {
++    return g_skippy_gemma3n_altup;
++}
++
+ // dedup helpers
+ 
+ static ggml_tensor * build_attn_inp_kq_mask(
+@@ -167,6 +180,20 @@ bool llm_graph_input_rwkv7_v_first::can_reuse(const llm_graph_params & params) {
+     return values && values->ne[0] == n_embd && values->ne[1] == params.ubatch.n_tokens;
+ }
+ 
++void llm_graph_input_gemma3n_altup::set_input(const llama_ubatch * ubatch) {
++    const skippy_activation_gemma3n_altup & sideband = skippy_graph_get_gemma3n_altup();
++    GGML_ASSERT(sideband.values != nullptr);
++    GGML_ASSERT(sideband.token_count == ubatch->n_tokens);
++    GGML_ASSERT(sideband.n_embd == n_embd);
++    GGML_ASSERT(sideband.n_altup == n_altup);
++
++    ggml_backend_tensor_set(values, sideband.values, 0, sideband.token_count*n_embd*n_altup*ggml_element_size(values));
++}
++
++bool llm_graph_input_gemma3n_altup::can_reuse(const llm_graph_params & params) {
++    return values && values->ne[0] == n_embd && values->ne[1] == params.ubatch.n_tokens && values->ne[2] == n_altup;
++}
++
+ void llm_graph_input_pos::set_input(const llama_ubatch * ubatch) {
+     if (ubatch->pos && pos) {
+         const int64_t n_tokens = ubatch->n_tokens;
+@@ -886,6 +913,7 @@ void llm_graph_result::reset() {
+     t_embd        = nullptr;
+     t_embd_pooled = nullptr;
+     t_skippy_rwkv7_v_first = nullptr;
++    t_skippy_gemma3n_altup = nullptr;
+     t_sampled.clear();
+     t_sampled_probs.clear();
+     t_sampled_logits.clear();
+@@ -927,6 +955,9 @@ void llm_graph_result::set_outputs() {
+     if (t_skippy_rwkv7_v_first != nullptr) {
+         ggml_set_output(t_skippy_rwkv7_v_first);
+     }
++    if (t_skippy_gemma3n_altup != nullptr) {
++        ggml_set_output(t_skippy_gemma3n_altup);
++    }
+     for (auto & [seq_id, t] : t_sampled) {
+         if (t != nullptr) {
+             ggml_set_output(t);
+diff --git a/src/llama-graph.h b/src/llama-graph.h
+index 5673a2a8..df2f039a 100644
+--- a/src/llama-graph.h
++++ b/src/llama-graph.h
+@@ -46,6 +46,13 @@ struct skippy_activation_rwkv7_v_first {
+     uint32_t n_embd = 0;
+ };
+ 
++struct skippy_activation_gemma3n_altup {
++    const float * values = nullptr;
++    uint32_t token_count = 0;
++    uint32_t n_embd = 0;
++    uint32_t n_altup = 0;
++};
++
+ void skippy_graph_set_filter(const skippy_graph_filter & filter);
+ void skippy_graph_clear_filter();
+ const skippy_graph_filter & skippy_graph_get_filter();
+@@ -55,6 +62,9 @@ const skippy_activation_tokens & skippy_graph_get_activation_tokens();
+ void skippy_graph_set_rwkv7_v_first(const skippy_activation_rwkv7_v_first & values);
+ void skippy_graph_clear_rwkv7_v_first();
+ const skippy_activation_rwkv7_v_first & skippy_graph_get_rwkv7_v_first();
++void skippy_graph_set_gemma3n_altup(const skippy_activation_gemma3n_altup & values);
++void skippy_graph_clear_gemma3n_altup();
++const skippy_activation_gemma3n_altup & skippy_graph_get_gemma3n_altup();
+ 
+ // certain models (typically multi-modal) can produce different types of graphs
+ enum llm_graph_type {
+@@ -176,6 +186,22 @@ private:
+     int64_t n_embd;
+ };
+ 
++class llm_graph_input_gemma3n_altup : public llm_graph_input_i {
++public:
++    llm_graph_input_gemma3n_altup(int64_t n_embd, int64_t n_altup) : n_embd(n_embd), n_altup(n_altup) {}
++    virtual ~llm_graph_input_gemma3n_altup() = default;
++
++    void set_input(const llama_ubatch * ubatch) override;
++
++    bool can_reuse(const llm_graph_params & params) override;
++
++    ggml_tensor * values = nullptr; // F32 [n_embd, n_batch, n_altup]
++
++private:
++    int64_t n_embd;
++    int64_t n_altup;
++};
++
+ class llm_graph_input_pos : public llm_graph_input_i {
+ public:
+     llm_graph_input_pos(uint32_t n_pos_per_embd) : n_pos_per_embd(n_pos_per_embd) {}
+@@ -701,6 +727,7 @@ public:
+     ggml_tensor * get_embd()        const { return t_embd; }
+     ggml_tensor * get_embd_pooled() const { return t_embd_pooled; }
+     ggml_tensor * get_skippy_rwkv7_v_first() const { return t_skippy_rwkv7_v_first; }
++    ggml_tensor * get_skippy_gemma3n_altup() const { return t_skippy_gemma3n_altup; }
+ 
+     ggml_cgraph  * get_gf()  const { return gf; }
+     ggml_context * get_ctx() const { return ctx_compute.get(); }
+@@ -730,6 +757,7 @@ public:
+     ggml_tensor * t_embd        = nullptr;
+     ggml_tensor * t_embd_pooled = nullptr;
+     ggml_tensor * t_skippy_rwkv7_v_first = nullptr;
++    ggml_tensor * t_skippy_gemma3n_altup = nullptr;
+ 
+     std::map<llama_seq_id, ggml_tensor*> t_sampled_logits;
+     std::map<llama_seq_id, ggml_tensor*> t_candidates;
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index 0510a646..206f1438 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -1183,6 +1183,13 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+                        tn.tensor == LLM_TENSOR_PER_LAYER_MODEL_PROJ ||
+                        tn.tensor == LLM_TENSOR_PER_LAYER_PROJ_NORM;
+             }
++            if (!keep && llm_kv.arch == LLM_ARCH_GEMMA3N) {
++                keep = tn.tensor == LLM_TENSOR_PER_LAYER_TOKEN_EMBD ||
++                       tn.tensor == LLM_TENSOR_PER_LAYER_MODEL_PROJ ||
++                       tn.tensor == LLM_TENSOR_PER_LAYER_PROJ_NORM ||
++                       (tn.tensor == LLM_TENSOR_ALTUP_PROJ && g_skippy_filter.include_embeddings) ||
++                       (tn.tensor == LLM_TENSOR_ALTUP_UNEMBD_PROJ && g_skippy_filter.include_output);
++            }
+ 
+             if (!keep) {
+                 if (t_meta) {
+@@ -1190,7 +1197,7 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+                             !(flags & TENSOR_NOT_REQUIRED) || requested_shape_matches(t_meta);
+                     const std::string tensor_name = tn.str();
+                     bool first_filtered_request = true;
+-                    if (requested_tensor_exists) {
++                    if (requested_tensor_exists && !(flags & TENSOR_DUPLICATED)) {
+                         first_filtered_request = skippy_counted_filtered_tensors.insert(tensor_name).second;
+                     }
+                     const size_t nbytes = ggml_nbytes(t_meta);
+diff --git a/src/models/gemma3n.cpp b/src/models/gemma3n.cpp
+index 881499b0..4260a608 100644
+--- a/src/models/gemma3n.cpp
++++ b/src/models/gemma3n.cpp
+@@ -98,11 +98,28 @@ llama_model_gemma3n::graph::graph(const llama_model & model, const llm_graph_par
+     ggml_tensor * cur;
+     ggml_tensor * inpL;
+ 
+-    inpL = build_inp_embd(model.tok_embd);
++    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
++    const bool stage_filtered = stage_filter.enabled;
++    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
++    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
++
++    ggml_tensor * inp_per_layer_proj = nullptr;
++    if (stage_filtered && il_start > 0) {
++        auto inp = std::make_unique<llm_graph_input_gemma3n_altup>(n_embd, n_altup);
++        inp->values = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, n_embd, ubatch.n_tokens, n_altup);
++        cb(inp->values, "inp_gemma3n_altup", -1);
++        ggml_set_input(inp->values);
++        inpL = inp->values;
++        res->add_input(std::move(inp));
++
++    } else {
++        inpL = build_inp_embd(model.tok_embd);
+ 
+-    // important: do not normalize weights for raw embeddings input (i.e. encoded image embeddings)
+-    inpL = ggml_scale(ctx0, inpL, ubatch.token ? sqrtf(n_embd) : 1.0f);
+-    cb(inpL, "inp_scaled", -1);
++        // important: do not normalize weights for raw embeddings input (i.e. encoded image embeddings)
++        inpL = ggml_scale(ctx0, inpL, ubatch.token ? sqrtf(n_embd) : 1.0f);
++        cb(inpL, "inp_scaled", -1);
++        inp_per_layer_proj = inpL;
++    }
+ 
+     // inp_pos - contains the positions
+     ggml_tensor * inp_pos = build_inp_pos();
+@@ -114,11 +131,11 @@ llama_model_gemma3n::graph::graph(const llama_model & model, const llm_graph_par
+     ggml_build_forward_expand(gf, inp_per_layer);
+ 
+     // inp_per_layer now has shape: [n_embd_altup, n_tokens, n_layer]
+-    inp_per_layer = project_per_layer_inputs(inpL, inp_per_layer);
++    inp_per_layer = project_per_layer_inputs(inp_per_layer_proj ? inp_per_layer_proj : ggml_view_2d_slice(ctx0, inpL, i_altup_act), inp_per_layer);
+ 
+     // inpL now has only 1 altup, project it to the rest of the altups
+     // these "added" altups will be concat to the last dim of inpL
+-    {
++    if (!stage_filtered || il_start == 0) {
+         ggml_tensor * target_magnitude = calc_magnitude(inpL);
+         ggml_tensor * inp_repeated     = ggml_repeat_4d(ctx0, inpL, n_embd, n_tokens, n_altup - 1, 1);
+         ggml_tensor * altup_added =
+@@ -130,7 +147,7 @@ llama_model_gemma3n::graph::graph(const llama_model & model, const llm_graph_par
+     }
+     // inpL now has shape: [n_embd, n_tokens, n_altup]
+ 
+-    for (int il = 0; il < n_layer; ++il) {
++    for (int il = il_start; il < il_end; ++il) {
+         // this block is made to be closely resemble Gemma3p5DecoderLayer on python code
+         const float freq_base_l  = model.get_rope_freq_base(cparams, il);
+         const float freq_scale_l = model.get_rope_freq_scale(cparams, il);
+@@ -262,6 +279,16 @@ llama_model_gemma3n::graph::graph(const llama_model & model, const llm_graph_par
+     }
+     cur = inpL;  // [n_embd, n_tokens, n_altup]
+ 
++    if (stage_filtered && !stage_filter.include_output) {
++        cb(cur, "stage_boundary", il_end - 1);
++        cur = ggml_cont(ctx0, cur);
++        cb(cur, "stage_boundary_cont", il_end - 1);
++        res->t_skippy_gemma3n_altup = cur;
++        res->t_embd = ggml_view_2d_slice(ctx0, cur, i_altup_act);
++        ggml_build_forward_expand(gf, cur);
++        return;
++    }
++
+     // cur now has multiple altup(s), we want to merge them back to 1 altup
+     {
+         ggml_tensor * target_magnitude = calc_magnitude(ggml_view_2d_slice(ctx0, cur, i_altup_act));  // [n_embd, n_tokens]
+@@ -320,7 +347,12 @@ ggml_tensor * llama_model_gemma3n::graph::build_inp_per_layer() {
+     auto inp = std::make_unique<llm_graph_input_embd>(n_embd);
+     ggml_tensor * inp_per_layer;
+     float tok_embd_scale = sqrtf((float) n_embd_altup);
+-    if (ubatch.token) {
++    const skippy_activation_tokens & activation_tokens = skippy_graph_get_activation_tokens();
++    const bool use_activation_token_sideband =
++        activation_tokens.tokens != nullptr &&
++        activation_tokens.token_count == ubatch.n_tokens;
++
++    if (ubatch.token || use_activation_token_sideband) {
+         inp->tokens = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, ubatch.n_tokens);
+         ggml_set_input(inp->tokens);
+         res->t_inp_tokens = inp->tokens;
+@@ -328,7 +360,14 @@ ggml_tensor * llama_model_gemma3n::graph::build_inp_per_layer() {
+         inp_per_layer = ggml_reshape_3d(ctx0, inp_per_layer, n_embd_altup, n_layer, n_tokens);
+         inp_per_layer = ggml_scale     (ctx0, inp_per_layer, tok_embd_scale);
+         cb(inp_per_layer, "inp_per_layer_selected", -1);
+-        res->add_input(std::move(inp));
++
++        if (ubatch.token) {
++            res->add_input(std::move(inp));
++        } else {
++            auto stage_inp = std::make_unique<llm_graph_input_stage_tokens>();
++            stage_inp->tokens = inp->tokens;
++            res->add_input(std::move(stage_inp));
++        }
+     } else {
+         // Multimodal embedding path: use padding token (ID=0) embedding
+         // TODO: verify if this is the correct behavior in transformers implementation
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index 558666e5..b7dd3791 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -670,6 +670,34 @@ struct skippy_rwkv7_v_first_scope {
+     bool enabled = false;
+ };
+ 
++struct skippy_gemma3n_altup_scope {
++    skippy_gemma3n_altup_scope(
++            const skippy_activation_desc * desc,
++            const void * payload,
++            int32_t n_embd,
++            int32_t n_altup) {
++        if (desc != nullptr &&
++            payload != nullptr &&
++            (desc->flags & SKIPPY_ACTIVATION_FLAG_GEMMA3N_ALTUP) != 0) {
++            skippy_activation_gemma3n_altup sideband;
++            sideband.values = reinterpret_cast<const float *>(payload);
++            sideband.token_count = desc->token_count;
++            sideband.n_embd = static_cast<uint32_t>(n_embd);
++            sideband.n_altup = static_cast<uint32_t>(n_altup);
++            skippy_graph_set_gemma3n_altup(sideband);
++            enabled = true;
++        }
++    }
++
++    ~skippy_gemma3n_altup_scope() {
++        if (enabled) {
++            skippy_graph_clear_gemma3n_altup();
++        }
++    }
++
++    bool enabled = false;
++};
++
+ static bool skippy_is_filtered(const skippy_session * session) {
+     return session != nullptr &&
+            session->stage_model != nullptr &&
+@@ -688,6 +716,13 @@ static bool skippy_is_rwkv7_activation_model(const skippy_session * session) {
+     return arch == LLM_ARCH_RWKV7 || arch == LLM_ARCH_ARWKV7;
+ }
+ 
++static bool skippy_is_gemma3n_activation_model(const skippy_session * session) {
++    if (session == nullptr || session->stage_model == nullptr || session->stage_model->model == nullptr) {
++        return false;
++    }
++    return session->stage_model->model->arch == LLM_ARCH_GEMMA3N;
++}
++
+ static size_t skippy_activation_hidden_bytes(const skippy_session * session, size_t token_count) {
+     if (session == nullptr || session->stage_model == nullptr || session->stage_model->model == nullptr) {
+         return 0;
+@@ -698,9 +733,23 @@ static size_t skippy_activation_hidden_bytes(const skippy_session * session, siz
+            sizeof(float);
+ }
+ 
++static size_t skippy_gemma3n_altup_bytes(const skippy_session * session, size_t token_count) {
++    if (session == nullptr || session->stage_model == nullptr || session->stage_model->model == nullptr) {
++        return 0;
++    }
++    const llama_hparams & hparams = session->stage_model->model->hparams;
++    return token_count *
++           static_cast<size_t>(hparams.n_embd) *
++           static_cast<size_t>(hparams.n_altup) *
++           sizeof(float);
++}
++
+ static uint64_t skippy_output_activation_flags(
+         const skippy_session * session,
+         const skippy_activation_desc * input_desc) {
++    if (skippy_emits_activation_frame(session) && skippy_is_gemma3n_activation_model(session)) {
++        return SKIPPY_ACTIVATION_FLAG_GEMMA3N_ALTUP;
++    }
+     if (!skippy_emits_activation_frame(session) || !skippy_is_rwkv7_activation_model(session)) {
+         return 0;
+     }
+@@ -720,6 +769,9 @@ static size_t skippy_activation_payload_bytes(
+         size_t token_count,
+         uint64_t flags) {
+     const size_t hidden_bytes = skippy_activation_hidden_bytes(session, token_count);
++    if ((flags & SKIPPY_ACTIVATION_FLAG_GEMMA3N_ALTUP) != 0) {
++        return skippy_gemma3n_altup_bytes(session, token_count);
++    }
+     size_t payload_bytes = hidden_bytes;
+     if ((flags & SKIPPY_ACTIVATION_FLAG_RWKV7_V_FIRST) != 0) {
+         payload_bytes += hidden_bytes;
+@@ -770,11 +822,24 @@ static enum skippy_status skippy_validate_frame_input(
+         return SKIPPY_STATUS_INVALID_ARGUMENT;
+     }
+ 
+-    const uint64_t supported_flags = SKIPPY_ACTIVATION_FLAG_RWKV7_V_FIRST;
++    const uint64_t supported_flags = SKIPPY_ACTIVATION_FLAG_RWKV7_V_FIRST | SKIPPY_ACTIVATION_FLAG_GEMMA3N_ALTUP;
+     if ((input_desc->flags & ~supported_flags) != 0) {
+         skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "activation frame has unsupported sideband flags");
+         return SKIPPY_STATUS_INVALID_ARGUMENT;
+     }
++    if ((input_desc->flags & SKIPPY_ACTIVATION_FLAG_GEMMA3N_ALTUP) != 0 && !skippy_is_gemma3n_activation_model(session)) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "Gemma3n AltUp activation payload is only valid for Gemma3n stages");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if (skippy_is_gemma3n_activation_model(session) && (input_desc->flags & SKIPPY_ACTIVATION_FLAG_GEMMA3N_ALTUP) == 0) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "non-first Gemma3n runtime slices require AltUp activation payload");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if ((input_desc->flags & SKIPPY_ACTIVATION_FLAG_GEMMA3N_ALTUP) != 0 &&
++        (input_desc->flags & SKIPPY_ACTIVATION_FLAG_RWKV7_V_FIRST) != 0) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "Gemma3n AltUp and RWKV7 v_first activation flags cannot be combined");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
+     if ((input_desc->flags & SKIPPY_ACTIVATION_FLAG_RWKV7_V_FIRST) != 0 && !skippy_is_rwkv7_activation_model(session)) {
+         skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "RWKV7 v_first sideband is only valid for RWKV7 stages");
+         return SKIPPY_STATUS_INVALID_ARGUMENT;
+@@ -1411,14 +1476,30 @@ static enum skippy_status skippy_copy_output_activation_frame(
+         return skippy_success(out_error);
+     }
+ 
++    const uint64_t output_flags = skippy_output_activation_flags(session, input_desc);
++    const size_t hidden_bytes = skippy_activation_hidden_bytes(session, token_count);
++    if ((output_flags & SKIPPY_ACTIVATION_FLAG_GEMMA3N_ALTUP) != 0) {
++        llm_graph_result * res = session->ctx->get_gf_res_prev();
++        ggml_tensor * altup = res != nullptr ? res->get_skippy_gemma3n_altup() : nullptr;
++        const size_t altup_bytes = skippy_gemma3n_altup_bytes(session, token_count);
++        if (altup == nullptr) {
++            skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "Gemma3n AltUp activation output was not available");
++            return SKIPPY_STATUS_RUNTIME_ERROR;
++        }
++        if (ggml_nbytes(altup) < altup_bytes) {
++            skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "Gemma3n AltUp activation tensor is smaller than expected payload");
++            return SKIPPY_STATUS_RUNTIME_ERROR;
++        }
++        ggml_backend_tensor_get(altup, output_payload, 0, altup_bytes);
++        return skippy_success(out_error);
++    }
++
+     float * embeddings = llama_get_embeddings(session->ctx);
+     if (embeddings == nullptr) {
+         skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "llama embeddings output was not available");
+         return SKIPPY_STATUS_RUNTIME_ERROR;
+     }
+ 
+-    const uint64_t output_flags = skippy_output_activation_flags(session, input_desc);
+-    const size_t hidden_bytes = skippy_activation_hidden_bytes(session, token_count);
+     std::memcpy(output_payload, embeddings, hidden_bytes);
+ 
+     if ((output_flags & SKIPPY_ACTIVATION_FLAG_RWKV7_V_FIRST) != 0) {
+@@ -1472,6 +1553,7 @@ static enum skippy_status skippy_decode_activation_frame(
+     const int32_t n_tokens = static_cast<int32_t>(token_count);
+     const int32_t n_embd = llama_model_n_embd(session->stage_model->model);
+     const int32_t n_embd_inp = llama_model_n_embd_inp(session->stage_model->model);
++    const int32_t n_altup = static_cast<int32_t>(session->stage_model->model->hparams.n_altup);
+     const int32_t n_pos_per_embd = session->stage_model->model->hparams.n_pos_per_embd();
+     const size_t expected_position_count = static_cast<size_t>(n_tokens)*n_pos_per_embd;
+ 
+@@ -1483,7 +1565,16 @@ static enum skippy_status skippy_decode_activation_frame(
+     std::vector<int8_t> logits_storage(n_tokens);
+ 
+     const size_t hidden_bytes = skippy_activation_hidden_bytes(session, token_count);
+-    if (n_embd_inp == n_embd) {
++    if ((input_desc->flags & SKIPPY_ACTIVATION_FLAG_GEMMA3N_ALTUP) != 0) {
++        const float * input = static_cast<const float *>(input_payload);
++        for (int32_t i = 0; i < n_tokens; ++i) {
++            float * dst = embd_storage.data() + static_cast<size_t>(i)*n_embd_inp;
++            std::memcpy(dst, input + static_cast<size_t>(i)*n_embd, static_cast<size_t>(n_embd)*sizeof(float));
++            if (n_embd_inp > n_embd) {
++                std::memset(dst + n_embd, 0, static_cast<size_t>(n_embd_inp - n_embd)*sizeof(float));
++            }
++        }
++    } else if (n_embd_inp == n_embd) {
+         std::memcpy(embd_storage.data(), input_payload, hidden_bytes);
+     } else {
+         const float * input = static_cast<const float *>(input_payload);
+@@ -1527,6 +1618,7 @@ static enum skippy_status skippy_decode_activation_frame(
+ 
+     skippy_activation_tokens_scope activation_tokens_scope(token_ids, token_count);
+     skippy_rwkv7_v_first_scope rwkv7_v_first_scope(input_desc, input_payload, hidden_bytes, n_embd);
++    skippy_gemma3n_altup_scope gemma3n_altup_scope(input_desc, input_payload, n_embd, n_altup);
+     enum skippy_status status = skippy_decode_batch(session, batch, token_count, out_error);
+     return status;
+ }
+@@ -1548,6 +1640,7 @@ static enum skippy_status skippy_verify_activation_frame(
+ 
+     const int32_t n_tokens = static_cast<int32_t>(token_count);
+     const int32_t n_embd = llama_model_n_embd(session->stage_model->model);
++    const int32_t n_altup = static_cast<int32_t>(session->stage_model->model->hparams.n_altup);
+     llama_batch batch = llama_batch_init(n_tokens, n_embd, 1);
+     batch.n_tokens = n_tokens;
+     const size_t hidden_bytes = skippy_activation_hidden_bytes(session, token_count);
+@@ -1561,6 +1654,7 @@ static enum skippy_status skippy_verify_activation_frame(
+     }
+ 
+     skippy_rwkv7_v_first_scope rwkv7_v_first_scope(input_desc, input_payload, hidden_bytes, n_embd);
++    skippy_gemma3n_altup_scope gemma3n_altup_scope(input_desc, input_payload, n_embd, n_altup);
+     enum skippy_status status = skippy_decode_batch(session, batch, token_count, out_error);
+     llama_batch_free(batch);
+     return status;
+@@ -1708,6 +1802,7 @@ static enum skippy_status skippy_finish_model_open(
+             model->arch != LLM_ARCH_GEMMA &&
+             model->arch != LLM_ARCH_GEMMA2 &&
+             model->arch != LLM_ARCH_GEMMA3 &&
++            model->arch != LLM_ARCH_GEMMA3N &&
+             model->arch != LLM_ARCH_GEMMA4 &&
+             model->arch != LLM_ARCH_GLM_DSA &&
+             model->arch != LLM_ARCH_GLM4 &&
+-- 
+2.50.1 (Apple Git-155)
+

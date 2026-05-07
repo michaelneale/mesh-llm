@@ -132,7 +132,7 @@ fn build_catalog_target_index(catalog: &[mesh::MeshCatalogEntry]) -> CatalogTarg
     let mut index = CatalogTargetIndex::default();
     for entry in catalog {
         let model_ref = model_ref_for_catalog_entry(entry);
-        let display_name = crate::models::installed_model_display_name(&entry.model_name);
+        let display_name = loaded_catalog_display_name(&entry.model_name);
         index
             .canonical_ref_by_model_name
             .insert(entry.model_name.clone(), model_ref.clone());
@@ -368,6 +368,12 @@ fn model_ref_for_catalog_entry(entry: &mesh::MeshCatalogEntry) -> String {
         .as_ref()
         .and_then(|descriptor| descriptor.identity.canonical_ref.clone())
         .unwrap_or_else(|| entry.model_name.clone())
+}
+
+fn loaded_catalog_display_name(model_name: &str) -> String {
+    crate::models::remote_catalog::find_loaded_model_exact(model_name)
+        .map(|model| model.name)
+        .unwrap_or_else(|| model_name.to_string())
 }
 
 fn display_name_for_model_ref(model_ref: &str, index: &CatalogTargetIndex) -> String {

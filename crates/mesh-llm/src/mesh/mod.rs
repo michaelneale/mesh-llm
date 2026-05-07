@@ -400,10 +400,9 @@ fn descriptor_from_identity(
 ) -> ServedModelDescriptor {
     identity.model_name = model_name.to_string();
     let path = crate::models::find_model_path(model_name);
-    let catalog = crate::models::find_catalog_model_exact(model_name);
-    let topology = crate::models::infer_local_model_topology(&path, catalog);
+    let topology = crate::models::infer_local_model_topology(&path);
     let mut capabilities =
-        crate::models::capabilities::infer_local_model_capabilities(model_name, &path, catalog);
+        crate::models::capabilities::infer_local_model_capabilities(model_name, &path);
     capabilities.moe = false;
     ServedModelDescriptor {
         identity,
@@ -811,8 +810,8 @@ fn canonical_demand_model_ref(model: &str) -> String {
     if let Ok(model_ref) = model_ref::ModelRef::parse(model) {
         return model_ref.display_id();
     }
-    crate::models::find_catalog_model_exact(model)
-        .map(crate::models::catalog_model_ref)
+    crate::models::find_loaded_remote_catalog_model_exact(model)
+        .map(|remote_model| crate::models::remote_catalog_model_ref(&remote_model))
         .unwrap_or_else(|| model.to_string())
 }
 
@@ -1716,8 +1715,8 @@ impl Node {
         request: &crate::inference::skippy::StageControlRequest,
     ) -> std::time::Duration {
         match request {
-            crate::inference::skippy::StageControlRequest::Load(_) => {
-                std::time::Duration::from_secs(180)
+            crate::inference::skippy::StageControlRequest::Load(load) => {
+                crate::inference::skippy::stage_load_timeout(load)
             }
             crate::inference::skippy::StageControlRequest::Stop(_)
             | crate::inference::skippy::StageControlRequest::Status(_)
@@ -2401,6 +2400,28 @@ impl Node {
         // Clear dead status — explicit join should always attempt connection
         self.state.lock().await.dead_peers.remove(&addr.id);
         self.connect_to_peer(addr).await
+    }
+
+    /// Like [`join`], but retries once after a delay on transient (connect/timeout)
+    /// errors.  Decode errors (invalid base64/JSON) fail immediately.
+    pub async fn join_with_retry(&self, invite_token: &str) -> Result<()> {
+        // Decode first — bail immediately on bad tokens.
+        let json = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(invite_token)
+            .context("invalid invite token encoding")?;
+        let addr: EndpointAddr =
+            serde_json::from_slice(&json).context("invalid invite token JSON")?;
+
+        self.state.lock().await.dead_peers.remove(&addr.id);
+        match self.connect_to_peer(addr.clone()).await {
+            Ok(()) => Ok(()),
+            Err(first_err) => {
+                tracing::info!("First join attempt failed ({first_err:#}), retrying in 5s...");
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                self.state.lock().await.dead_peers.remove(&addr.id);
+                self.connect_to_peer(addr).await
+            }
+        }
     }
 
     /// Connect to a peer without gossip exchange — for passive nodes (clients/standby).
@@ -5041,6 +5062,7 @@ fn stage_load_to_proto(
         layer_start: load.layer_start,
         layer_end: load.layer_end,
         model_path: load.model_path,
+        source_model_bytes: load.source_model_bytes,
         projector_path: load.projector_path,
         selected_device: load.selected_device.map(stage_device_to_proto),
         bind_addr: load.bind_addr,
@@ -5180,6 +5202,7 @@ fn stage_load_from_proto(
         layer_start: load.layer_start,
         layer_end: load.layer_end,
         model_path: load.model_path,
+        source_model_bytes: load.source_model_bytes,
         projector_path: load.projector_path,
         selected_device: load
             .selected_device
@@ -5382,7 +5405,7 @@ fn stage_status_from_load(
         manifest_sha256: Some(load.manifest_sha256.clone()),
         source_model_path: load.model_path.clone(),
         source_model_sha256: None,
-        source_model_bytes: None,
+        source_model_bytes: load.source_model_bytes,
         materialized_path: None,
         materialized_pinned: false,
         projector_path: load.projector_path.clone(),

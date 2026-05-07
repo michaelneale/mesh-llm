@@ -1,0 +1,26 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: mesh-llm <mesh-llm@example.com>
+Date: Wed, 6 May 2026 00:00:00 +1000
+Subject: [PATCH] Support PhiMoE runtime-slice execution
+
+PhiMoE shares the Phi3 graph implementation, which already supports
+runtime-slice execution after the stage-filter work. Opt PhiMoE into the
+stage ABI architecture allowlist so family certification can exercise it.
+---
+ src/skippy.cpp | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index 74743748..69e6fc8e 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -1621,6 +1621,7 @@ static enum skippy_status skippy_finish_model_open(
+             model->arch != LLM_ARCH_OLMO &&
+             model->arch != LLM_ARCH_PHI2 &&
+             model->arch != LLM_ARCH_PHI3 &&
++            model->arch != LLM_ARCH_PHIMOE &&
+             model->arch != LLM_ARCH_STARCODER2 &&
+             model->arch != LLM_ARCH_STABLELM) {
+             llama_model_free(model);
+-- 
+2.50.1 (Apple Git-155)

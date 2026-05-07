@@ -1,25 +1,29 @@
-From 527bb48e51d93c51079fda2b1acfd50af99214d5 Mon Sep 17 00:00:00 2001
+From 539ce2b9462a09a513cac60ace678a2579a4ad94 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
-Date: Wed, 6 May 2026 11:36:50 +1000
-Subject: [PATCH 46/46] Remap recurrent state imports to active session
+Date: Wed, 6 May 2026 21:03:48 +1000
+Subject: [PATCH] Remap recurrent state imports to active session
 
 ---
- src/skippy.cpp | 10 ++++++++--
- 1 file changed, 8 insertions(+), 2 deletions(-)
+ src/skippy.cpp | 16 +++++++++++++---
+ 1 file changed, 13 insertions(+), 3 deletions(-)
 
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 4486ad78..e17b59e4 100644
+index 4486ad78..1f6fe94a 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
-@@ -2635,11 +2635,17 @@ enum skippy_status skippy_import_recurrent_state(
+@@ -2635,14 +2635,24 @@ enum skippy_status skippy_import_recurrent_state(
          return SKIPPY_STATUS_UNSUPPORTED;
      }
  
-+    std::vector<uint8_t> remapped(input_bytes);
-+    std::memcpy(remapped.data(), input, input_bytes);
-+    if (input_bytes >= sizeof(uint32_t) + sizeof(session->seq_id)) {
-+        std::memcpy(remapped.data() + sizeof(uint32_t), &session->seq_id, sizeof(session->seq_id));
++    std::vector<uint8_t> remapped(
++            static_cast<const uint8_t *>(input),
++            static_cast<const uint8_t *>(input) + input_bytes);
++    constexpr size_t seq_id_offset = sizeof(uint32_t);
++    if (remapped.size() < seq_id_offset + sizeof(llama_seq_id)) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "recurrent state input is too small");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
 +    }
++    std::memcpy(remapped.data() + seq_id_offset, &session->seq_id, sizeof(session->seq_id));
 +
      session->ctx->synchronize();
      const size_t read = llama_state_seq_set_data_ext(
@@ -30,6 +34,10 @@ index 4486ad78..e17b59e4 100644
 +            remapped.size(),
              session->seq_id,
              LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
-     if (read != input_bytes) {
+-    if (read != input_bytes) {
++    if (read != remapped.size()) {
+         skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to import recurrent state");
+         return SKIPPY_STATUS_RUNTIME_ERROR;
+     }
 -- 
 2.50.1 (Apple Git-155)

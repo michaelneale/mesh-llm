@@ -168,8 +168,18 @@ impl RuntimeState {
         token_ids: &[i32],
         input: Option<&ActivationFrame>,
     ) -> Result<ActivationFrame> {
+        self.prefill_frame_with_positions(session_id, token_ids, &[], input)
+    }
+
+    pub fn prefill_frame_with_positions(
+        &mut self,
+        session_id: &str,
+        token_ids: &[i32],
+        positions: &[i32],
+        input: Option<&ActivationFrame>,
+    ) -> Result<ActivationFrame> {
         let session = self.session(session_id)?;
-        let frame = session.prefill_chunk_frame(token_ids, input, 0)?;
+        let frame = session.prefill_chunk_frame_with_positions(token_ids, positions, input, 0)?;
         self.add_session_tokens(session_id, token_ids.len() as u64);
         Ok(frame)
     }
@@ -178,12 +188,13 @@ impl RuntimeState {
         &mut self,
         session_id: &str,
         token_ids: &[i32],
+        positions: &[i32],
         sampling: Option<&SamplingConfig>,
         input: Option<&ActivationFrame>,
     ) -> Result<(i32, ActivationFrame)> {
         let session = self.session(session_id)?;
-        let frame = session.prefill_chunk_frame(token_ids, input, 0)?;
-        let predicted = session.sample_current(sampling)?;
+        let (predicted, frame) = session
+            .prefill_chunk_frame_sampled_with_positions(token_ids, positions, sampling, input, 0)?;
         self.add_session_tokens(session_id, token_ids.len() as u64);
         Ok((predicted, frame))
     }
@@ -699,12 +710,18 @@ impl Drop for RuntimeState {
 }
 
 pub fn load_runtime(config: &StageConfig) -> Result<Option<Arc<Mutex<RuntimeState>>>> {
-    let runtime_config = runtime_config_from_stage_config(config)?;
+    let mut runtime_config = runtime_config_from_stage_config(config)?;
 
     let model = match config.load_mode {
         LoadMode::LayerPackage => {
             let selected =
                 select_package_parts(config).context("select layer package parts for stage")?;
+            if runtime_config.projector_path.is_none() && should_attach_package_projector(config) {
+                runtime_config.projector_path = selected
+                    .projector_paths
+                    .first()
+                    .map(|path| path.to_string_lossy().to_string());
+            }
             open_stage_model_from_parts(&selected.absolute_paths, &runtime_config)?
         }
         _ => {
@@ -727,6 +744,10 @@ pub fn load_runtime(config: &StageConfig) -> Result<Option<Arc<Mutex<RuntimeStat
         session_checkpoints: BTreeMap::new(),
         session_resident_prefixes: BTreeMap::new(),
     }))))
+}
+
+fn should_attach_package_projector(config: &StageConfig) -> bool {
+    config.stage_index == 0 && config.layer_start == 0
 }
 
 fn runtime_config_from_stage_config(config: &StageConfig) -> Result<RuntimeConfig> {
@@ -785,7 +806,10 @@ mod tests {
     use skippy_protocol::{FlashAttentionType, LoadMode, PeerConfig, StageConfig, StageDevice};
     use skippy_runtime::FlashAttentionType as RuntimeFlashAttentionType;
 
-    use super::{create_indexed_lane_resource, runtime_config_from_stage_config};
+    use super::{
+        create_indexed_lane_resource, runtime_config_from_stage_config,
+        should_attach_package_projector,
+    };
 
     #[test]
     fn create_indexed_lane_resource_keeps_index_available_when_creation_fails() {
@@ -908,5 +932,61 @@ mod tests {
 
         assert!(!runtime_config.include_embeddings);
         assert!(runtime_config.include_output);
+    }
+
+    #[test]
+    fn package_projector_fallback_is_stage_zero_only() {
+        let mut config = StageConfig {
+            run_id: "run-a".to_string(),
+            topology_id: "topology-a".to_string(),
+            model_id: "model-a".to_string(),
+            package_ref: Some("/tmp/package".to_string()),
+            manifest_sha256: Some("manifest".to_string()),
+            source_model_path: None,
+            source_model_sha256: None,
+            source_model_bytes: None,
+            materialized_path: None,
+            materialized_pinned: false,
+            model_path: Some("/tmp/package".to_string()),
+            projector_path: None,
+            stage_id: "stage-0".to_string(),
+            stage_index: 0,
+            layer_start: 0,
+            layer_end: 10,
+            ctx_size: 512,
+            lane_count: 1,
+            n_batch: None,
+            n_ubatch: None,
+            n_gpu_layers: -1,
+            cache_type_k: "f16".to_string(),
+            cache_type_v: "f16".to_string(),
+            flash_attn_type: FlashAttentionType::Auto,
+            filter_tensors_on_load: true,
+            selected_device: None,
+            kv_cache: None,
+            load_mode: LoadMode::LayerPackage,
+            bind_addr: "127.0.0.1:0".to_string(),
+            upstream: None,
+            downstream: Some(PeerConfig {
+                stage_id: "stage-1".to_string(),
+                stage_index: 1,
+                endpoint: "tcp://127.0.0.1:19001".to_string(),
+            }),
+        };
+
+        assert!(should_attach_package_projector(&config));
+
+        config.stage_id = "stage-1".to_string();
+        config.stage_index = 1;
+        config.layer_start = 10;
+        config.layer_end = 20;
+        config.upstream = Some(PeerConfig {
+            stage_id: "stage-0".to_string(),
+            stage_index: 0,
+            endpoint: "tcp://127.0.0.1:19000".to_string(),
+        });
+        config.downstream = None;
+
+        assert!(!should_attach_package_projector(&config));
     }
 }

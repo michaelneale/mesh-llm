@@ -43,6 +43,7 @@ skippy-model-package plan model.gguf --stages 4
 skippy-model-package write model.gguf --layers 0..12 --out stage-0.gguf --manifest stage-0.json
 skippy-model-package write-stages model.gguf --stages 4 --out-dir slices/
 skippy-model-package write-package org/repo:Q4_K_M --out-dir model-package/
+skippy-model-package write-package org/repo:Q4_K_M --projector mmproj-model-f16.gguf --out-dir model-package/
 skippy-model-package validate model.gguf slices/stage-*.gguf
 skippy-model-package validate-package model.gguf model-package/
 ```
@@ -65,6 +66,13 @@ artifact file set in `model-package.json`.
 Layer packages store input-boundary tensors in `shared/embeddings.gguf` and
 final-boundary tensors in `shared/output.gguf`; owned tensors should appear in
 exactly one package artifact.
+
+Multimodal projectors are explicit package artifacts. Pass one or more
+`--projector path/to/mmproj*.gguf` arguments to `write-package`; the CLI copies
+them into `projectors/`, fingerprints them, records them as `kind: "mmproj"` in
+`model-package.json`, and `validate-package` checks the declared projector
+checksums and sizes. Package-backed serving uses the first declared projector
+when no explicit `projector_path` is supplied by the caller.
 
 Local paths are only accepted for package creation when the caller supplies
 explicit provenance:

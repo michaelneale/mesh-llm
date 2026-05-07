@@ -10,6 +10,7 @@ const MM_ACTIVATION_WIDTH_ENV: &str = "SKIPPY_MM_ACTIVATION_WIDTH";
 const MM_SPLIT_LAYER_ENV: &str = "SKIPPY_MM_SPLIT_LAYER";
 const MM_CTX_SIZE_ENV: &str = "SKIPPY_MM_CTX_SIZE";
 const MM_MAX_TOKENS_ENV: &str = "SKIPPY_MM_MAX_TOKENS";
+const MM_N_GPU_LAYERS_ENV: &str = "SKIPPY_MM_N_GPU_LAYERS";
 
 struct MultimodalSmokeFixture {
     model_path: PathBuf,
@@ -19,6 +20,7 @@ struct MultimodalSmokeFixture {
     activation_width: i32,
     ctx_size: u32,
     max_tokens: u32,
+    n_gpu_layers: i32,
 }
 
 fn multimodal_smoke_fixture() -> Result<Option<MultimodalSmokeFixture>> {
@@ -69,6 +71,7 @@ fn multimodal_smoke_fixture() -> Result<Option<MultimodalSmokeFixture>> {
         .unwrap_or_else(|| infer_activation_width(&model_path))?;
     let ctx_size = env_u32(MM_CTX_SIZE_ENV)?.unwrap_or(2048);
     let max_tokens = env_u32(MM_MAX_TOKENS_ENV)?.unwrap_or(16);
+    let n_gpu_layers = env_i32(MM_N_GPU_LAYERS_ENV)?.unwrap_or(0);
     Ok(Some(MultimodalSmokeFixture {
         model_path,
         projector_path,
@@ -77,6 +80,7 @@ fn multimodal_smoke_fixture() -> Result<Option<MultimodalSmokeFixture>> {
         activation_width,
         ctx_size,
         max_tokens,
+        n_gpu_layers,
     }))
 }
 
@@ -399,11 +403,11 @@ fn multimodal_stage_config(
         lane_count: 1,
         n_batch: None,
         n_ubatch: None,
-        n_gpu_layers: 999,
+        n_gpu_layers: fixture.n_gpu_layers,
         cache_type_k: "f16".to_string(),
         cache_type_v: "f16".to_string(),
         flash_attn_type: skippy_protocol::FlashAttentionType::Auto,
-        filter_tensors_on_load: false,
+        filter_tensors_on_load: layer_start != 0 || layer_end != fixture.layer_end,
         selected_device: None,
         kv_cache: None,
         load_mode: skippy_protocol::LoadMode::RuntimeSlice,
@@ -572,10 +576,14 @@ async fn real_multimodal_split_smoke_when_fixture_is_set() -> Result<()> {
             downstream_connect_timeout_secs: 5,
             openai: None,
         });
-    let ready = connect_endpoint_ready(&stage1_addr.to_string(), 10);
+    let ready = connect_endpoint_ready(&stage1_addr.to_string(), 120);
     if let Err(error) = ready {
+        let status = stage1_handle.status();
         stage1_handle.abort();
-        return Err(error.context("wait for stage-1 binary server"));
+        return Err(error.context(format!(
+            "wait for stage-1 binary server; status={:?} last_error={:?}",
+            status.state, status.last_error
+        )));
     }
 
     let telemetry = Telemetry::new(
@@ -675,13 +683,17 @@ fn multimodal_final_prefill_message_requests_downstream_prediction() {
         ..WireSamplingConfig::default()
     };
 
-    let message = multimodal_final_prefill_message(
+    let message = multimodal_prefill_message(
         WireActivationDType::F16,
-        MultimodalFinalPrefillArgs {
+        MultimodalPrefillArgs {
             request_id: 11,
             session_id: 13,
             prompt_token_count: 17,
+            pos_start: 0,
+            token_count: 17,
+            positions: Vec::new(),
             sampling: Some(sampling.clone()),
+            final_chunk: true,
         },
     )
     .unwrap();

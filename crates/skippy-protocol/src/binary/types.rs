@@ -1,18 +1,18 @@
 use std::io;
 
 use super::{
-    activation::{decode_f16_to_f32_bytes, decode_q8_to_f32_bytes},
+    activation::{decode_f16_to_f32_bytes, decode_q8_to_f32_bytes_with_state_flags},
     invalid_data,
 };
 
-pub const STAGE_STATE_VERSION: i32 = 4;
+pub const STAGE_STATE_VERSION: i32 = 6;
 pub const MAX_STAGE_LOGIT_BIAS: usize = 256;
 pub const READY_MAGIC: i32 = 0x5352_4459; // "SRDY"
 pub const LLAMA_TOKEN_NULL: i32 = -1;
 pub const STAGE_STATE_HEADER_BYTES: usize = 10 * 4;
 pub const STAGE_SAMPLING_CONFIG_BASE_BYTES: usize = 10 * 4;
 pub const STAGE_LOGIT_BIAS_WIRE_BYTES: usize = 4 + 4;
-pub const STAGE_WIRE_FIXED_HEADER_BYTES: usize = 4 * 4 + STAGE_STATE_HEADER_BYTES + 2 * 8;
+pub const STAGE_WIRE_FIXED_HEADER_BYTES: usize = 5 * 4 + STAGE_STATE_HEADER_BYTES + 2 * 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
@@ -179,6 +179,33 @@ pub mod state_flags {
     pub const SAMPLING: i32 = 1 << 3;
     pub const FULL_STATE: i32 = 1 << 4;
     pub const CHAT_SAMPLING_METADATA: i32 = 1 << 5;
+    pub const RWKV7_V_FIRST_SIDEBAND: i32 = 1 << 6;
+    pub const GEMMA3N_ALTUP_SIDEBAND: i32 = 1 << 7;
+}
+
+pub const ACTIVATION_FLAG_RWKV7_V_FIRST: u64 = 1 << 0;
+pub const ACTIVATION_FLAG_GEMMA3N_ALTUP: u64 = 1 << 1;
+
+pub fn activation_frame_flags_from_state_flags(flags: i32) -> u64 {
+    let mut frame_flags = 0;
+    if (flags & state_flags::RWKV7_V_FIRST_SIDEBAND) != 0 {
+        frame_flags |= ACTIVATION_FLAG_RWKV7_V_FIRST;
+    }
+    if (flags & state_flags::GEMMA3N_ALTUP_SIDEBAND) != 0 {
+        frame_flags |= ACTIVATION_FLAG_GEMMA3N_ALTUP;
+    }
+    frame_flags
+}
+
+pub fn activation_state_flags_from_frame_flags(flags: u64) -> i32 {
+    let mut state = 0;
+    if (flags & ACTIVATION_FLAG_RWKV7_V_FIRST) != 0 {
+        state |= state_flags::RWKV7_V_FIRST_SIDEBAND;
+    }
+    if (flags & ACTIVATION_FLAG_GEMMA3N_ALTUP) != 0 {
+        state |= state_flags::GEMMA3N_ALTUP_SIDEBAND;
+    }
+    state
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -317,6 +344,7 @@ pub struct StageWireMessage {
     pub sampling: Option<StageSamplingConfig>,
     pub chat_sampling_metadata: Option<String>,
     pub tokens: Vec<i32>,
+    pub positions: Vec<i32>,
     pub activation: Vec<u8>,
     pub raw_bytes: Vec<u8>,
 }
@@ -341,6 +369,7 @@ impl StageWireMessage {
             sampling: None,
             chat_sampling_metadata: None,
             tokens: Vec::new(),
+            positions: Vec::new(),
             activation: Vec::new(),
             raw_bytes: Vec::new(),
         }
@@ -366,6 +395,7 @@ impl StageWireMessage {
             sampling,
             chat_sampling_metadata,
             tokens: Vec::new(),
+            positions: Vec::new(),
             activation: Vec::new(),
             raw_bytes: Vec::new(),
         }
@@ -378,9 +408,12 @@ impl StageWireMessage {
         match self.state.dtype()? {
             WireActivationDType::F32 => Ok(self.activation.clone()),
             WireActivationDType::F16 => decode_f16_to_f32_bytes(&self.activation),
-            WireActivationDType::Q8 => {
-                decode_q8_to_f32_bytes(&self.activation, self.token_count, n_embd)
-            }
+            WireActivationDType::Q8 => decode_q8_to_f32_bytes_with_state_flags(
+                &self.activation,
+                self.token_count,
+                n_embd,
+                self.state.flags,
+            ),
         }
     }
 }

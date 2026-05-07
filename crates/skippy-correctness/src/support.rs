@@ -7,7 +7,10 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Context, Result};
-use skippy_protocol::binary::{recv_ready, WireActivationDType};
+use skippy_protocol::binary::{
+    activation_payload_multiplier_from_state_flags, activation_state_flags_from_frame_flags,
+    recv_ready, WireActivationDType,
+};
 
 pub struct ChildGuard {
     child: Child,
@@ -36,6 +39,12 @@ pub fn connect_ready(addr: SocketAddr, timeout_secs: u64) -> Result<TcpStream> {
         match TcpStream::connect(addr) {
             Ok(mut stream) => {
                 stream.set_nodelay(true).ok();
+                stream
+                    .set_read_timeout(Some(Duration::from_millis(500)))
+                    .ok();
+                stream
+                    .set_write_timeout(Some(Duration::from_millis(500)))
+                    .ok();
                 match recv_ready(&mut stream) {
                     Ok(()) => return Ok(stream),
                     Err(error) => {
@@ -59,10 +68,18 @@ pub fn activation_width(frame: &skippy_runtime::ActivationFrame) -> Result<i32> 
         .len()
         .checked_div(frame.desc.token_count as usize)
         .context("activation token_count overflow")?;
-    if !bytes_per_token.is_multiple_of(4) {
+    let payload_multiplier = activation_payload_multiplier_from_state_flags(
+        activation_state_flags_from_frame_flags(frame.desc.flags),
+    );
+    let bytes_per_hidden_token = bytes_per_token
+        .checked_div(payload_multiplier)
+        .context("activation sideband multiplier overflow")?;
+    if !bytes_per_token.is_multiple_of(payload_multiplier)
+        || !bytes_per_hidden_token.is_multiple_of(4)
+    {
         bail!("activation payload is not F32 aligned");
     }
-    i32::try_from(bytes_per_token / 4).context("activation width exceeds i32")
+    i32::try_from(bytes_per_hidden_token / 4).context("activation width exceeds i32")
 }
 
 pub fn parse_wire_dtype(value: &str) -> Result<WireActivationDType> {

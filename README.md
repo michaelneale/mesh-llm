@@ -63,6 +63,18 @@ curl http://localhost:9337/v1/chat/completions \
   -d '{"model":"GLM-4.7-Flash-Q4_K_M","messages":[{"role":"user","content":"hello"}]}'
 ```
 
+## Supported model families
+
+Mesh LLM's stage runtime tracks llama.cpp family parity with reviewed GGUF representatives per family. The current reviewed support set covers 72 P0/P1 family rows, with 89 certified rows in the full llama.cpp parity inventory:
+
+```text
+Arcee, Baichuan, Bloom, ChatGLM, CodeShell, Cohere2, Deci, DeepSeek, DeepSeek2, DeepSeek3, DeepSeek-OCR, EXAONE, EXAONE4, EXAONE-MoE, Falcon, Falcon-H1, Gemma, Gemma2, Gemma3, Gemma3n, Gemma4, GLM4, GLM-4.7 Flash, GLM4-MoE, GPT2, GPT-NeoX, Granite, Granite-Hybrid, Granite-MoE, Hunyuan-Dense, Hunyuan-MoE, Hunyuan-VL/HunyuanOCR, InternLM2, Jamba, Kimi Linear, LFM2, Llama, Maincoder, Mamba, Mamba2, MiniCPM, MiniCPM3, MiniMax M2.7, Mistral, MPT, OLMo, OLMo2, OLMoE, OpenELM, Phi, Phi2, PhiMoE, Plamo3, PLM, Qwen2, Qwen2-MoE, Qwen2-VL, Qwen3 dense, Qwen3-MoE, Qwen3.5 recurrent, Qwen3Next, Qwen3-VL, Qwen3-VL-MoE, Refact, RWKV6, RWKV7, SmallThinker, SmolLM3, StableLM, StarCoder2, XVerse
+```
+
+Split multimodal serving is certified for Qwen2-VL, Qwen3-VL, Qwen3-VL-MoE, HunyuanOCR/Hunyuan-VL, and DeepSeek-OCR using real GGUF plus projector fixtures. Granite-MoE is layout-parity support from a tiny random GGUF and should be replaced with a real small artifact when one is available. DeepSeek3 and EXAONE-MoE are supported through package-backed stages because the full GGUFs are too large for the cheap local baseline.
+
+See [docs/skippy/FAMILY_STATUS.md](docs/skippy/FAMILY_STATUS.md) for the full artifact, split, wire dtype, cache policy, and exception matrix. See [docs/skippy/LLAMA_PARITY.md](docs/skippy/LLAMA_PARITY.md) for the remaining llama.cpp parity queue.
+
 ## Common workflows
 
 ### 1. Try the public mesh
@@ -195,11 +207,19 @@ mesh-llm serve --auto --model GLM-4.7-Flash-Q4_K_M --mesh-name "poker-night" --p
 ```
 Everyone runs the same command. First person creates it, everyone else discovers "poker-night" and joins automatically. Use `--publish` to make your named mesh discoverable on Nostr; without it the mesh is private but still joinable via invite token.
 
+You can also join a named mesh explicitly:
+```bash
+mesh-llm serve --discover "poker-night"    # discover by name, join, and serve
+mesh-llm client --discover "poker-night"   # discover by name, join as client
+```
+
 ### Auto-discover
 ```bash
 mesh-llm serve --auto                      # discover, join, and serve a model
 mesh-llm client --auto                     # join as API-only client (no GPU)
+mesh-llm serve --discover "my-mesh"        # discover a named mesh and join it
 mesh-llm discover                          # browse available meshes
+mesh-llm discover --name "poker-night"     # search for a specific mesh by name
 mesh-llm gpus                              # inspect local GPUs and stable IDs
 ```
 
@@ -354,8 +374,11 @@ The console supports image, audio, and file attachments. Large attachments use r
 
 | Family / model type | Vision | Audio | Notes |
 |---|---|---|---|
-| `Qwen3-VL`, `Qwen3VL` | yes | no | Example: `Qwen3VL-2B-Instruct-Q4_K_M` |
-| `Qwen2-VL`, `Qwen2.5-VL` | yes | no | Vision-capable Qwen VL families |
+| `Qwen3-VL`, `Qwen3VL` | yes | no | Split multimodal certified with `Qwen3VL-2B-Instruct-Q4_K_M` plus `mmproj-Qwen3VL-2B-Instruct-Q8_0` |
+| `Qwen2-VL`, `Qwen2.5-VL` | yes | no | Split multimodal certified with `Qwen2-VL-2B-Instruct-Q4_K_M` plus `mmproj-Qwen2-VL-2B-Instruct-f16` |
+| `Qwen3-VL-MoE`, `Qwen3VLMoE` | yes | no | Split multimodal certified with the Qwen3-VL 30B A3B MXFP4 MoE GGUF plus projector |
+| `HunyuanOCR`, `Hunyuan-VL` | yes | no | Split multimodal certified with `HunyuanOCR-Q8_0` plus `mmproj-HunyuanOCR-Q8_0` |
+| `DeepSeek-OCR`, `deepseek2ocr` | yes | no | Split multimodal certified with `DeepSeek-OCR-Q8_0` plus `mmproj-DeepSeek-OCR-Q8_0` |
 | `LLaVA`, `mllama`, `PaliGemma`, `Idefics`, `Molmo`, `InternVL`, `GLM-4V`, `Ovis`, `Florence` | yes | no | Detected as vision-capable families |
 | `Qwen2-Audio` | no | yes | Audio-capable family |
 | `SeaLLM-Audio` | no | yes | Audio-capable family |
@@ -518,7 +541,7 @@ mesh-llm client --join <token>
 mesh-llm serve --auto --model GLM-4.7-Flash-Q4_K_M --mesh-name "poker-night" --publish
 ```
 
-Everyone runs the same command. The first node creates the mesh, the rest discover and join it automatically. Use `--publish` so your named mesh appears in Nostr discovery; without it you must share the invite token manually.
+Everyone runs the same command. The first node creates the mesh, the rest discover and join it automatically. Others can also join with `mesh-llm serve --discover "poker-night"` or `mesh-llm client --discover "poker-night"`. Use `--publish` so your named mesh appears in Nostr discovery; without it you must share the invite token manually.
 
 ### 5. Serve more than one model
 

@@ -15,7 +15,7 @@ pub enum ModelSearchSort {
 
 #[derive(Subcommand, Debug)]
 pub enum ModelsCommand {
-    /// List built-in recommended models.
+    /// List recommended models from the remote meshllm/catalog.
     Recommended {
         /// Emit JSON output.
         #[arg(long)]
@@ -49,7 +49,7 @@ pub enum ModelsCommand {
         json: bool,
     },
     // Delete variant defined with explicit clap args later in file (existing block).
-    /// List built-in catalog models.
+    /// List remote catalog models.
     #[command(hide = true)]
     List {
         /// Emit JSON output.
@@ -67,7 +67,7 @@ pub enum ModelsCommand {
         /// Filter search results to MLX artifacts.
         #[arg(long, conflicts_with = "gguf")]
         mlx: bool,
-        /// Search only the built-in catalog.
+        /// Search only the remote meshllm/catalog.
         #[arg(long)]
         catalog: bool,
         /// Maximum number of results to show.
@@ -82,7 +82,7 @@ pub enum ModelsCommand {
     },
     /// Show details for one exact model reference.
     Show {
-        /// Exact catalog id, Hugging Face ref, or direct URL.
+        /// Exact remote catalog id or Hugging Face ref.
         model: String,
         /// Emit JSON output.
         #[arg(long)]
@@ -90,7 +90,7 @@ pub enum ModelsCommand {
     },
     /// Download one exact model reference.
     Download {
-        /// Exact catalog id, Hugging Face ref, or direct URL.
+        /// Exact remote catalog id or Hugging Face ref.
         model: String,
         /// Also download the recommended draft model for speculative decoding.
         #[arg(long)]

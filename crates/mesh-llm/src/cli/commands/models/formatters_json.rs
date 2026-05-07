@@ -5,8 +5,9 @@ use super::formatters::{
     JsonFormatter, ModelsFormatter, SearchFormatter,
 };
 use crate::models::{
-    catalog, catalog_model_draft_ref, catalog_model_ref, search_catalog_json_payload,
-    search_huggingface_json_payload, ModelDetails, SearchArtifactFilter, SearchHit, SearchSort,
+    remote_catalog, remote_catalog_model_draft_ref, remote_catalog_model_ref,
+    search_catalog_json_payload, search_huggingface_json_payload, ModelDetails,
+    SearchArtifactFilter, SearchHit, SearchSort,
 };
 use crate::models::{DeleteResult as CliDeleteResult, ResolvedModel as CliResolvedModel};
 use anyhow::Result;
@@ -68,7 +69,7 @@ impl SearchFormatter for JsonFormatter {
         &self,
         query: &str,
         filter: SearchArtifactFilter,
-        results: &[&'static catalog::CatalogModel],
+        results: &[remote_catalog::RemoteCatalogModel],
         limit: usize,
         sort: SearchSort,
     ) -> Result<()> {
@@ -100,17 +101,17 @@ impl SearchFormatter for JsonFormatter {
 }
 
 impl ModelsFormatter for JsonFormatter {
-    fn render_recommended(&self, models: &[&'static catalog::CatalogModel]) -> Result<()> {
+    fn render_recommended(&self, models: &[remote_catalog::RemoteCatalogModel]) -> Result<()> {
         let results: Vec<Value> = models
             .iter()
             .map(|model| {
                 let model_capabilities = catalog_model_capabilities(model);
-                let model_ref = catalog_model_ref(model);
+                let model_ref = remote_catalog_model_ref(model);
                 json!({
                     "name": model.name,
                     "size": model.size,
                     "description": model.description,
-                    "draft": catalog_model_draft_ref(model),
+                    "draft": remote_catalog_model_draft_ref(model),
                     "type": catalog_model_kind_code(model),
                     "ref": model_ref,
                     "show": format!("mesh-llm models show {model_ref}"),
@@ -143,8 +144,8 @@ impl ModelsFormatter for JsonFormatter {
                     "download": row.download_command.as_deref(),
                     "delete": row.delete_command.as_str(),
                     "path": row.path,
-                    "about": row.catalog_model.map(|m| m.description.clone()),
-                    "draft": row.catalog_model.and_then(|m| m.draft.clone()),
+                    "about": row.catalog_model.as_ref().and_then(|m| m.description.clone()),
+                    "draft": row.catalog_model.as_ref().and_then(|m| m.draft.clone()),
                 })
             })
             .collect();

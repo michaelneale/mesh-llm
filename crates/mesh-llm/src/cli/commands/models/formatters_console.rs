@@ -5,8 +5,9 @@ use super::formatters::{
     variant_selector_label, ConsoleFormatter, InstalledRow, ModelsFormatter, SearchFormatter,
 };
 use crate::models::{
-    catalog, catalog_model_draft_ref, catalog_model_ref, DeleteResult as CliDeleteResult,
-    ModelDetails, ResolvedModel as CliResolvedModel, SearchArtifactFilter, SearchHit, SearchSort,
+    remote_catalog, remote_catalog_model_draft_ref, remote_catalog_model_ref,
+    DeleteResult as CliDeleteResult, ModelDetails, ResolvedModel as CliResolvedModel,
+    SearchArtifactFilter, SearchHit, SearchSort,
 };
 use anyhow::Result;
 use std::fmt::Write as FmtWrite;
@@ -37,7 +38,7 @@ impl SearchFormatter for ConsoleFormatter {
         &self,
         query: &str,
         filter: SearchArtifactFilter,
-        results: &[&'static catalog::CatalogModel],
+        results: &[remote_catalog::RemoteCatalogModel],
         limit: usize,
         sort: SearchSort,
     ) -> Result<()> {
@@ -54,12 +55,17 @@ impl SearchFormatter for ConsoleFormatter {
         }
         writeln!(&mut output)?;
         for model in results.iter().take(limit) {
-            let model_ref = catalog_model_ref(model);
-            writeln!(&mut output, "• {}  {}", model.name, model.size)?;
+            let model_ref = remote_catalog_model_ref(model);
+            let size = model.size.as_deref().unwrap_or("unknown size");
+            writeln!(&mut output, "• {}  {}", model.name, size)?;
             writeln!(&mut output, "  ref: {}", model_ref)?;
-            writeln!(&mut output, "  {}", model.description)?;
-            if let Some(fit) = fit_hint_for_size_label(&model.size) {
-                writeln!(&mut output, "  {}", fit)?;
+            if let Some(description) = model.description.as_deref() {
+                writeln!(&mut output, "  {}", description)?;
+            }
+            if let Some(size) = model.size.as_deref() {
+                if let Some(fit) = fit_hint_for_size_label(size) {
+                    writeln!(&mut output, "  {}", fit)?;
+                }
             }
             writeln!(&mut output)?;
         }
@@ -157,13 +163,16 @@ impl SearchFormatter for ConsoleFormatter {
                     writeln!(&mut output, "   {}", fit)?;
                 }
             }
-            if let Some(model) = result.catalog {
-                writeln!(
-                    &mut output,
-                    "   ⭐ Recommended: {} ({})",
-                    model.name, model.size
-                )?;
-                writeln!(&mut output, "   {}", model.description)?;
+            if let Some(model) = result.catalog.as_ref() {
+                match model.size.as_deref() {
+                    Some(size) => {
+                        writeln!(&mut output, "   ⭐ Recommended: {} ({})", model.name, size)?
+                    }
+                    None => writeln!(&mut output, "   ⭐ Recommended: {}", model.name)?,
+                }
+                if let Some(description) = model.description.as_deref() {
+                    writeln!(&mut output, "   {}", description)?;
+                }
             }
             writeln!(&mut output)?;
         }
@@ -172,17 +181,20 @@ impl SearchFormatter for ConsoleFormatter {
 }
 
 impl ModelsFormatter for ConsoleFormatter {
-    fn render_recommended(&self, models: &[&'static catalog::CatalogModel]) -> Result<()> {
+    fn render_recommended(&self, models: &[remote_catalog::RemoteCatalogModel]) -> Result<()> {
         let mut output = String::new();
         writeln!(&mut output, "📚 Recommended models")?;
         writeln!(&mut output)?;
         for model in models {
             let model_capabilities = catalog_model_capabilities(model);
-            let model_ref = catalog_model_ref(model);
-            writeln!(&mut output, "• {}  {}", model.name, model.size)?;
+            let model_ref = remote_catalog_model_ref(model);
+            let size = model.size.as_deref().unwrap_or("unknown size");
+            writeln!(&mut output, "• {}  {}", model.name, size)?;
             writeln!(&mut output, "  ref: {}", model_ref)?;
-            writeln!(&mut output, "  {}", model.description)?;
-            if let Some(draft) = catalog_model_draft_ref(model) {
+            if let Some(description) = model.description.as_deref() {
+                writeln!(&mut output, "  {}", description)?;
+            }
+            if let Some(draft) = remote_catalog_model_draft_ref(model) {
                 writeln!(&mut output, "  🧠 Draft: {}", draft)?;
             }
             if let Some(label) = model_capabilities.vision_label() {
@@ -272,8 +284,10 @@ impl ModelsFormatter for ConsoleFormatter {
             }
             writeln!(&mut output, "   delete: {}", row.delete_command)?;
             writeln!(&mut output, "   path: {}", row.path.display())?;
-            if let Some(model) = row.catalog_model {
-                writeln!(&mut output, "   about: {}", model.description)?;
+            if let Some(model) = row.catalog_model.as_ref() {
+                if let Some(description) = model.description.as_deref() {
+                    writeln!(&mut output, "   about: {}", description)?;
+                }
                 if let Some(draft) = model.draft.as_deref() {
                     writeln!(&mut output, "   🧠 draft: {}", draft)?;
                 }

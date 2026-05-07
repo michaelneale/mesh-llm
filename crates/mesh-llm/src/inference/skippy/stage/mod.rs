@@ -179,11 +179,16 @@ impl StageControlState {
         let mut effective_load = load;
         effective_load.bind_addr = bind_addr.to_string();
         super::configure_materialized_stage_cache();
-        let materialized = super::materialize_stage_load(&effective_load)?;
-        let config = stage_config(
-            &effective_load,
-            materialized.as_ref().map(|(artifact, _)| artifact),
-        )?;
+        let package_request = effective_load.clone();
+        if let Some(local_ref) = tokio::task::spawn_blocking(move || {
+            super::materialization::resolve_stage_load_package(&package_request)
+        })
+        .await
+        .context("join resolve stage load package task")??
+        {
+            effective_load.model_path = Some(local_ref);
+        }
+        let config = stage_config(&effective_load, None)?;
         let server = skippy_server::start_binary_stage(BinaryStageOptions {
             config,
             topology: None,
@@ -200,7 +205,9 @@ impl StageControlState {
             downstream_connect_timeout_secs: 30,
             openai: None,
         });
-        if let Err(error) = wait_for_binary_stage_ready(bind_addr, Duration::from_secs(120)).await {
+        if let Err(error) =
+            wait_for_binary_stage_ready(bind_addr, stage_load_timeout(&effective_load)).await
+        {
             let _ = server.shutdown().await;
             return Err(error);
         }
@@ -210,8 +217,8 @@ impl StageControlState {
             RunningStage {
                 load: effective_load.clone(),
                 server,
-                materialized: materialized.as_ref().map(|(artifact, _)| artifact.clone()),
-                _materialized_pin: materialized.map(|(_, pin)| pin),
+                materialized: None,
+                _materialized_pin: None,
             },
         );
         let status = self
@@ -313,6 +320,25 @@ async fn wait_for_binary_stage_ready(bind_addr: SocketAddr, timeout: Duration) -
         .context("join binary stage readiness probe")?
 }
 
+pub(crate) fn stage_load_timeout(load: &StageLoadRequest) -> Duration {
+    const MIN_STAGE_LOAD_TIMEOUT_SECS: u64 = 900;
+    const MAX_STAGE_LOAD_TIMEOUT_SECS: u64 = 4 * 60 * 60;
+    const STAGE_LOAD_BYTES_PER_SEC: u64 = 128 * 1024 * 1024;
+
+    let scaled_secs = load
+        .source_model_bytes
+        .map(|bytes| {
+            bytes.saturating_add(STAGE_LOAD_BYTES_PER_SEC.saturating_sub(1))
+                / STAGE_LOAD_BYTES_PER_SEC
+        })
+        .unwrap_or(MIN_STAGE_LOAD_TIMEOUT_SECS);
+    Duration::from_secs(
+        MIN_STAGE_LOAD_TIMEOUT_SECS
+            .max(scaled_secs)
+            .min(MAX_STAGE_LOAD_TIMEOUT_SECS),
+    )
+}
+
 fn probe_binary_stage_ready(bind_addr: SocketAddr, timeout: Duration) -> Result<()> {
     let deadline = std::time::Instant::now() + timeout;
     let mut last_error = None;
@@ -370,7 +396,9 @@ fn stage_config(
             .map(|artifact| artifact.source_model_path.clone())
             .or_else(|| load.model_path.clone()),
         source_model_sha256: materialized.map(|artifact| artifact.source_model_sha256.clone()),
-        source_model_bytes: materialized.and_then(|artifact| artifact.source_model_bytes),
+        source_model_bytes: materialized
+            .and_then(|artifact| artifact.source_model_bytes)
+            .or(load.source_model_bytes),
         materialized_path: materialized.map(|artifact| artifact.path.to_string_lossy().to_string()),
         materialized_pinned: materialized.is_some(),
         model_path: load.model_path.clone(),
@@ -447,7 +475,8 @@ fn status_from_running(stage: &RunningStage) -> StageStatusSnapshot {
         source_model_bytes: stage
             .materialized
             .as_ref()
-            .and_then(|artifact| artifact.source_model_bytes),
+            .and_then(|artifact| artifact.source_model_bytes)
+            .or(stage.load.source_model_bytes),
         materialized_path: stage
             .materialized
             .as_ref()

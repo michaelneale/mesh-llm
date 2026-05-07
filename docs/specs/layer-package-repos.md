@@ -66,6 +66,8 @@ layers/
   layer-00001.gguf
   layer-00002.gguf
   ...
+projectors/
+  mmproj-model-f16.gguf
 README.md
 ```
 
@@ -78,6 +80,12 @@ Required artifacts:
 | `shared/output.gguf` | Output-boundary tensors required by the final stage. |
 | `layers/layer-NNNNN.gguf` | Owned tensors for one transformer layer. |
 
+Optional artifacts:
+
+| Artifact | Purpose |
+| --- | --- |
+| `projectors/*.gguf` | Multimodal projector GGUFs, currently `kind: "mmproj"`, used by stage 0 or single-stage serving. |
+
 Artifact paths in the manifest MUST be relative to the repository root. They
 MUST NOT be absolute paths and MUST NOT escape the package root with `..`.
 Consumers MUST reject unsafe paths.
@@ -85,6 +93,10 @@ Consumers MUST reject unsafe paths.
 Each owned tensor from the source model MUST appear in exactly one package
 artifact. Shared metadata and tokenizer values may be repeated only where the
 GGUF writer requires them to keep each fragment loadable.
+
+Projector artifacts are package-level companions, not transformer-layer
+fragments. They MUST NOT be counted as owned layer tensors and MUST NOT be
+merged into per-stage GGUF materializations.
 
 ## Manifest Schema
 
@@ -148,6 +160,16 @@ Minimal shape:
       "sha256": "<64 hex chars>"
     }
   ],
+  "projectors": [
+    {
+      "kind": "mmproj",
+      "path": "projectors/mmproj-model-f16.gguf",
+      "tensor_count": 128,
+      "tensor_bytes": 123,
+      "artifact_bytes": 123,
+      "sha256": "<64 hex chars>"
+    }
+  ],
   "skippy_abi_version": "1.2.3",
   "created_at_unix_secs": 1790000000
 }
@@ -165,6 +187,7 @@ Required top-level fields:
 | `activation_width` | SHOULD be present; routing and topology planning rely on it. |
 | `shared` | MUST include `metadata`, `embeddings`, and `output` artifacts. |
 | `layers` | MUST include exactly one entry for each layer index `0..layer_count`. |
+| `projectors` | MAY include package-level projector artifacts; currently only `kind: "mmproj"` is defined. |
 | `skippy_abi_version` | MUST describe the llama/skippy ABI used to write the fragments. |
 | `created_at_unix_secs` | SHOULD be set by the package writer for provenance. |
 
@@ -180,6 +203,19 @@ Each artifact entry MUST include:
 `tensor_count` is zero and greater than zero when `tensor_count` is greater
 than zero.
 
+`projectors` is optional and defaults to an empty list. When present, each
+projector entry uses the same artifact fields plus:
+
+- `kind`: projector type. The current schema defines `mmproj`; consumers MUST
+  reject unknown kinds unless they explicitly support them.
+- `path`: repository-relative projector GGUF path, usually under `projectors/`.
+
+Projector entries MUST have non-empty, safe relative paths, positive
+`artifact_bytes`, and valid 64-character SHA-256 digests. A package MAY declare
+multiple projectors for future model variants, but the current serving default
+is to use the first declared `mmproj` when no explicit projector path is
+configured.
+
 ## Layer Selection
 
 For a stage with `layer_start..layer_end`, consumers select:
@@ -194,6 +230,17 @@ runtime SHOULD load selected parts directly. If a runtime composes those parts
 into a per-stage GGUF file, that file is derived cache and MUST NOT become the
 published repository format.
 
+Projectors are selected independently from layer parts. For a package-backed
+multimodal model:
+
+1. an explicit stage `projector_path` wins;
+2. otherwise, stage 0 or a single-stage runtime uses the first declared
+   `projectors[]` entry with `kind: "mmproj"`;
+3. downstream stages do not load projector artifacts.
+
+Consumers MUST NOT infer projector identity from sibling files or filename
+stems. If a package needs a projector, the manifest must declare it explicitly.
+
 ## Publishing Rules
 
 Package creation SHOULD use:
@@ -201,6 +248,18 @@ Package creation SHOULD use:
 ```bash
 skippy-model-package write-package org/repo:distribution --out-dir model-package/
 ```
+
+Multimodal packages SHOULD declare projector artifacts at write time:
+
+```bash
+skippy-model-package write-package org/repo:distribution \
+  --projector mmproj-model-f16.gguf \
+  --out-dir model-package/
+```
+
+The package writer copies declared projectors into `projectors/`, records their
+checksums and sizes in `model-package.json`, and keeps them as durable package
+artifacts.
 
 Local source GGUF paths are allowed only with explicit provenance:
 
@@ -223,6 +282,7 @@ A published repository SHOULD include a short `README.md` with:
 - source model coordinate and revision;
 - source artifact filename and checksum;
 - package manifest checksum;
+- projector artifact filenames and checksums, when present;
 - layer count and activation width;
 - skippy ABI version used to write the package;
 - validation command and result;
@@ -241,16 +301,27 @@ Before a stage starts, consumers MUST validate:
 - requested layers exist and are not duplicated in the manifest;
 - selected artifact paths are relative, safe, and files;
 - selected artifact sizes match `artifact_bytes`.
+- declared projector paths are relative, safe, and files;
+- declared projector sizes match `artifact_bytes`.
 
 Consumers SHOULD verify SHA-256 checksums for selected artifacts when a package
 is first downloaded or when `SKIPPY_VERIFY_PACKAGE_SHA` is set. Implementations
 may cache checksum results keyed by package repo, revision, manifest digest, and
 artifact path.
 
+Checksum verification SHOULD include declared projectors when the package is
+first downloaded, when the package is validated by tooling, or when a stage is
+about to use a projector.
+
 ## Compatibility
 
 Manifest schema changes MUST be additive when possible. New optional fields may
 be added to schema version `1` if old runtimes can ignore them safely.
+
+`projectors` is an additive schema-version-1 field. Old packages without it
+remain valid. Runtimes that do not understand projectors may still serve text
+stages from the package, but they MUST reject multimodal serving requests that
+require an undeclared or unsupported projector.
 
 Changes that alter tensor ownership, layer indexing, path semantics, ABI
 compatibility, or required fields MUST use a new schema version or a new

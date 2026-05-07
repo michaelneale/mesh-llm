@@ -472,7 +472,10 @@ impl RuntimeDataCollector {
                         .map(|size| *size as f64 / 1e9)
                         .unwrap_or_else(|| {
                             crate::models::catalog::parse_size_gb(
-                                catalog_entry.map(|m| m.size.as_str()).unwrap_or("0"),
+                                catalog_entry
+                                    .as_ref()
+                                    .and_then(|m| m.size.as_deref())
+                                    .unwrap_or("0"),
                             )
                         })
                 };
@@ -494,14 +497,24 @@ impl RuntimeDataCollector {
                         }
                     });
                 if local_known
-                    && likely_reasoning_model(name, catalog_entry.map(|m| m.description.as_str()))
+                    && likely_reasoning_model(
+                        name,
+                        catalog_entry
+                            .as_ref()
+                            .and_then(|m| m.description.as_deref()),
+                    )
                 {
                     capabilities.reasoning = capabilities
                         .reasoning
                         .max(crate::models::capabilities::CapabilityLevel::Likely);
                 }
                 if local_known
-                    && likely_vision_model(name, catalog_entry.map(|m| m.description.as_str()))
+                    && likely_vision_model(
+                        name,
+                        catalog_entry
+                            .as_ref()
+                            .and_then(|m| m.description.as_deref()),
+                    )
                 {
                     capabilities.vision = capabilities
                         .vision
@@ -509,7 +522,12 @@ impl RuntimeDataCollector {
                     capabilities.multimodal = true;
                 }
                 if local_known
-                    && likely_audio_model(name, catalog_entry.map(|m| m.description.as_str()))
+                    && likely_audio_model(
+                        name,
+                        catalog_entry
+                            .as_ref()
+                            .and_then(|m| m.description.as_deref()),
+                    )
                 {
                     capabilities.audio = capabilities
                         .audio
@@ -552,7 +570,7 @@ impl RuntimeDataCollector {
                 let tool_use_status = capabilities
                     .tool_use_label()
                     .map(|_| capabilities.tool_use_status());
-                let description = catalog_entry.map(|m| m.description.to_string());
+                let description = catalog_entry.as_ref().and_then(|m| m.description.clone());
                 let metadata = metadata_by_name.get(name);
                 let architecture = metadata
                     .map(|m| m.architecture.trim())
@@ -566,23 +584,28 @@ impl RuntimeDataCollector {
                     .filter(|s| !s.is_empty())
                     .map(str::to_string)
                     .or_else(|| {
-                        catalog_entry.map(|m| m.file.to_string()).and_then(|file| {
-                            let quant = file
-                                .strip_suffix(".gguf")
-                                .map(crate::models::inventory::derive_quantization_type)
-                                .filter(|q| !q.is_empty())?;
-                            Some(quant)
-                        })
+                        catalog_entry
+                            .as_ref()
+                            .map(|m| m.file.clone())
+                            .and_then(|file| {
+                                let quant = file
+                                    .strip_suffix(".gguf")
+                                    .map(crate::models::inventory::derive_quantization_type)
+                                    .filter(|q| !q.is_empty())?;
+                                Some(quant)
+                            })
                     });
-                let draft_model = catalog_entry.and_then(crate::models::catalog_model_draft_ref);
+                let draft_model = catalog_entry
+                    .as_ref()
+                    .and_then(crate::models::remote_catalog_model_draft_ref);
                 let source_page_url =
                     identity
                         .and_then(source_page_url_from_identity)
                         .or_else(|| {
                             if local_known {
-                                catalog_entry.and_then(|m| {
-                                    crate::models::catalog::huggingface_repo_url(&m.url)
-                                })
+                                catalog_entry
+                                    .as_ref()
+                                    .map(|m| format!("https://huggingface.co/{}", m.source_repo()))
                             } else {
                                 None
                             }
@@ -597,7 +620,7 @@ impl RuntimeDataCollector {
                 let source_revision = identity.and_then(|identity| identity.revision.clone());
                 let source_file = identity.and_then(source_file_from_identity).or_else(|| {
                     if local_known {
-                        catalog_entry.map(|m| m.file.to_string())
+                        catalog_entry.as_ref().map(|m| m.file.clone())
                     } else {
                         None
                     }
@@ -606,15 +629,9 @@ impl RuntimeDataCollector {
                     .and_then(|identity| identity.canonical_ref.clone())
                     .or_else(|| {
                         if local_known {
-                            catalog_entry.and_then(|m| {
-                                match (m.source_repo(), m.source_revision(), m.source_file()) {
-                                    (Some(repo), revision, Some(file)) => Some(match revision {
-                                        Some(revision) => format!("{repo}@{revision}/{file}"),
-                                        None => format!("{repo}/{file}"),
-                                    }),
-                                    _ => None,
-                                }
-                            })
+                            catalog_entry
+                                .as_ref()
+                                .map(crate::models::remote_catalog_model_ref)
                         } else {
                             None
                         }
@@ -1040,8 +1057,8 @@ fn build_local_instances(
     instances
 }
 
-fn find_catalog_model(name: &str) -> Option<&'static crate::models::catalog::CatalogModel> {
-    crate::models::find_catalog_model_exact(name)
+fn find_catalog_model(name: &str) -> Option<crate::models::remote_catalog::RemoteCatalogModel> {
+    crate::models::remote_catalog::find_loaded_model_exact(name)
 }
 
 fn is_huggingface_repository_like(repository: &str) -> bool {

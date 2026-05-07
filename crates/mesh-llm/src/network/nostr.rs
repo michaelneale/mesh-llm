@@ -658,6 +658,8 @@ pub async fn publish_watchdog(
 /// Criteria for filtering discovered meshes.
 #[derive(Debug, Clone, Default)]
 pub struct MeshFilter {
+    /// Match meshes by name (case-insensitive exact match)
+    pub name: Option<String>,
     /// Match meshes serving (or wanting) this model name (substring match)
     pub model: Option<String>,
     /// Minimum total VRAM in GB
@@ -668,6 +670,12 @@ pub struct MeshFilter {
 
 impl MeshFilter {
     pub fn matches(&self, mesh: &DiscoveredMesh) -> bool {
+        if let Some(ref name) = self.name {
+            match &mesh.listing.name {
+                Some(n) if n.eq_ignore_ascii_case(name) => {}
+                _ => return false,
+            }
+        }
         if let Some(ref model) = self.model {
             let model_lower = model.to_lowercase();
             let has_model = mesh
@@ -1025,14 +1033,20 @@ fn parse_size_gb(s: &str) -> f64 {
 /// Each entry is (model_ref, min_vram_gb) where min_vram = file_size * 1.1.
 /// Excludes draft models (< 1GB).
 fn model_tiers() -> Vec<(String, f64)> {
-    let mut tiers: Vec<_> = crate::models::catalog::MODEL_CATALOG
-        .iter()
-        .filter(|m| parse_size_gb(&m.size) >= 1.0) // skip drafts
-        .map(|m| {
+    let _ = crate::models::remote_catalog::ensure_catalog();
+    let mut tiers: Vec<_> = crate::models::remote_catalog::loaded_models()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|m| {
+            let size = m.size.as_deref()?;
+            if parse_size_gb(size) < 1.0 {
+                return None;
+            }
             (
-                crate::models::catalog_model_ref(m),
-                parse_size_gb(&m.size) * 1.1,
+                crate::models::remote_catalog_model_ref(&m),
+                parse_size_gb(size) * 1.1,
             )
+                .into()
         })
         .collect();
     tiers.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -1063,7 +1077,7 @@ pub fn auto_model_pack(vram_gb: f64) -> Vec<String> {
             .iter()
             .find(|(n, _)| *n == name)
             .map(|(_, s)| *s)
-            .unwrap_or(f64::MAX)
+            .unwrap_or(0.0)
     };
     let usable = vram_gb * 0.85; // 15% headroom for KV cache
 
@@ -1074,8 +1088,8 @@ pub fn auto_model_pack(vram_gb: f64) -> Vec<String> {
         models: Vec<String>,
     }
     let catalog_ref = |name: &str| {
-        crate::models::find_catalog_model_exact(name)
-            .map(crate::models::catalog_model_ref)
+        crate::models::find_remote_catalog_model_exact(name)
+            .map(|model| crate::models::remote_catalog_model_ref(&model))
             .unwrap_or_else(|| name.to_string())
     };
     let packs: Vec<Pack> = vec![
@@ -1146,8 +1160,8 @@ pub fn demand_seed_models() -> Vec<String> {
     ]
     .into_iter()
     .map(|name| {
-        crate::models::find_catalog_model_exact(name)
-            .map(crate::models::catalog_model_ref)
+        crate::models::find_remote_catalog_model_exact(name)
+            .map(|model| crate::models::remote_catalog_model_ref(&model))
             .unwrap_or_else(|| name.to_string())
     })
     .collect()
@@ -1170,8 +1184,8 @@ mod auto_pack_tests {
     use super::*;
 
     fn catalog_ref(name: &str) -> String {
-        crate::models::find_catalog_model_exact(name)
-            .map(crate::models::catalog_model_ref)
+        crate::models::find_remote_catalog_model_exact(name)
+            .map(|model| crate::models::remote_catalog_model_ref(&model))
             .unwrap_or_else(|| name.to_string())
     }
 
@@ -1469,6 +1483,17 @@ mod filter_tests {
         vram: u64,
         region: Option<&str>,
     ) -> DiscoveredMesh {
+        make_mesh_for_filter_named(serving, wanted, on_disk, vram, region, None)
+    }
+
+    fn make_mesh_for_filter_named(
+        serving: &[&str],
+        wanted: &[&str],
+        on_disk: &[&str],
+        vram: u64,
+        region: Option<&str>,
+        name: Option<&str>,
+    ) -> DiscoveredMesh {
         DiscoveredMesh {
             listing: MeshListing {
                 invite_token: "tok".into(),
@@ -1479,7 +1504,7 @@ mod filter_tests {
                 node_count: 1,
                 client_count: 0,
                 max_clients: 0,
-                name: None,
+                name: name.map(|s| s.to_string()),
                 region: region.map(|s| s.to_string()),
                 mesh_id: None,
             },
@@ -1588,14 +1613,68 @@ mod filter_tests {
             model: Some("qwen3".into()),
             min_vram_gb: Some(10.0),
             region: Some("us-east".into()),
+            ..Default::default()
         };
         let fail_model = MeshFilter {
             model: Some("llama".into()),
             min_vram_gb: Some(10.0),
             region: Some("us-east".into()),
+            ..Default::default()
         };
         assert!(pass.matches(&m));
         assert!(!fail_model.matches(&m));
+    }
+
+    #[test]
+    fn filter_name_exact() {
+        let m = make_mesh_for_filter_named(&[], &[], &[], 8_000_000_000, None, Some("poker-night"));
+        let f = MeshFilter {
+            name: Some("poker-night".into()),
+            ..Default::default()
+        };
+        assert!(f.matches(&m));
+    }
+
+    #[test]
+    fn filter_name_case_insensitive() {
+        let m = make_mesh_for_filter_named(&[], &[], &[], 8_000_000_000, None, Some("Poker-Night"));
+        let f = MeshFilter {
+            name: Some("poker-night".into()),
+            ..Default::default()
+        };
+        assert!(f.matches(&m));
+    }
+
+    #[test]
+    fn filter_name_no_match() {
+        let m = make_mesh_for_filter_named(&[], &[], &[], 8_000_000_000, None, Some("other-mesh"));
+        let f = MeshFilter {
+            name: Some("poker-night".into()),
+            ..Default::default()
+        };
+        assert!(!f.matches(&m));
+    }
+
+    #[test]
+    fn filter_name_mesh_unnamed() {
+        // Mesh has no name — filter by name should not match.
+        let m = make_mesh_for_filter_named(&[], &[], &[], 8_000_000_000, None, None);
+        let f = MeshFilter {
+            name: Some("poker-night".into()),
+            ..Default::default()
+        };
+        assert!(!f.matches(&m));
+    }
+
+    #[test]
+    fn filter_name_none_matches_all() {
+        // No name filter — matches meshes with and without names.
+        let named =
+            make_mesh_for_filter_named(&[], &[], &[], 8_000_000_000, None, Some("poker-night"));
+        let unnamed = make_mesh_for_filter_named(&[], &[], &[], 8_000_000_000, None, None);
+        let f = MeshFilter::default();
+        assert!(f.matches(&named));
+        assert!(f.matches(&unnamed));
     }
 }
 

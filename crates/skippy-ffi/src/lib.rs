@@ -129,6 +129,23 @@ pub struct MtmdInputChunks {
 }
 
 #[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MtmdInputChunkType {
+    Text = 0,
+    Image = 1,
+    Audio = 2,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct MtmdDecoderPos {
+    pub t: u32,
+    pub x: u32,
+    pub y: u32,
+    pub z: u32,
+}
+
+#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct MtmdInputText {
     pub text: *const c_char,
@@ -288,7 +305,19 @@ extern "C" {
 
     pub fn skippy_session_position(session: *const Session) -> i32;
 
+    pub fn skippy_session_native_seq_id(session: *const Session) -> i32;
+
     pub fn skippy_session_batch_size(session: *const Session) -> i32;
+
+    pub fn skippy_session_begin_external_decode(
+        session: *mut Session,
+        out_error: *mut *mut Error,
+    ) -> Status;
+
+    pub fn skippy_session_end_external_decode(
+        session: *mut Session,
+        out_error: *mut *mut Error,
+    ) -> Status;
 
     pub fn skippy_session_set_position(
         session: *mut Session,
@@ -384,6 +413,53 @@ extern "C" {
         output_payload: *mut c_void,
         output_payload_capacity: usize,
         out_output_payload_bytes: *mut usize,
+        out_error: *mut *mut Error,
+    ) -> Status;
+
+    pub fn skippy_prefill_chunk_frame_sampled(
+        session: *mut Session,
+        token_ids: *const i32,
+        token_count: usize,
+        sampling: *const SamplingConfig,
+        input_desc: *const ActivationDesc,
+        input_payload: *const c_void,
+        output_desc: *mut ActivationDesc,
+        output_payload: *mut c_void,
+        output_payload_capacity: usize,
+        out_output_payload_bytes: *mut usize,
+        out_predicted_token: *mut i32,
+        out_error: *mut *mut Error,
+    ) -> Status;
+
+    pub fn skippy_prefill_chunk_frame_with_positions(
+        session: *mut Session,
+        token_ids: *const i32,
+        token_count: usize,
+        positions: *const i32,
+        position_count: usize,
+        input_desc: *const ActivationDesc,
+        input_payload: *const c_void,
+        output_desc: *mut ActivationDesc,
+        output_payload: *mut c_void,
+        output_payload_capacity: usize,
+        out_output_payload_bytes: *mut usize,
+        out_error: *mut *mut Error,
+    ) -> Status;
+
+    pub fn skippy_prefill_chunk_frame_sampled_with_positions(
+        session: *mut Session,
+        token_ids: *const i32,
+        token_count: usize,
+        positions: *const i32,
+        position_count: usize,
+        sampling: *const SamplingConfig,
+        input_desc: *const ActivationDesc,
+        input_payload: *const c_void,
+        output_desc: *mut ActivationDesc,
+        output_payload: *mut c_void,
+        output_payload_capacity: usize,
+        out_output_payload_bytes: *mut usize,
+        out_predicted_token: *mut i32,
         out_error: *mut *mut Error,
     ) -> Status;
 
@@ -714,10 +790,39 @@ extern "C" {
 
     pub fn mtmd_helper_get_n_pos(chunks: *const MtmdInputChunks) -> i32;
 
+    pub fn mtmd_input_chunks_size(chunks: *const MtmdInputChunks) -> usize;
+
+    pub fn mtmd_input_chunks_get(chunks: *const MtmdInputChunks, index: usize) -> *const Opaque;
+
+    pub fn mtmd_decode_use_mrope(ctx: *const MtmdContext) -> bool;
+
+    pub fn mtmd_input_chunk_get_type(chunk: *const Opaque) -> MtmdInputChunkType;
+
+    pub fn mtmd_input_chunk_get_n_tokens(chunk: *const Opaque) -> usize;
+
+    pub fn mtmd_input_chunk_get_tokens_image(chunk: *const Opaque) -> *const Opaque;
+
+    pub fn mtmd_helper_image_get_decoder_pos(
+        image: *const Opaque,
+        pos_0: i32,
+        out_pos: *mut MtmdDecoderPos,
+    );
+
     pub fn mtmd_helper_eval_chunks(
         ctx: *mut MtmdContext,
         lctx: *mut Opaque,
         chunks: *const MtmdInputChunks,
+        n_past: i32,
+        seq_id: i32,
+        n_batch: i32,
+        logits_last: bool,
+        new_n_past: *mut i32,
+    ) -> c_int;
+
+    pub fn mtmd_helper_eval_chunk_single(
+        ctx: *mut MtmdContext,
+        lctx: *mut Opaque,
+        chunk: *const Opaque,
         n_past: i32,
         seq_id: i32,
         n_batch: i32,

@@ -150,16 +150,13 @@ fn decode_path_suffix(path: &str, prefix: &str) -> Option<String> {
     let mut i = 0;
     while i < bytes.len() {
         match bytes[i] {
-            b'%' if i + 2 < bytes.len() => {
-                let hi = bytes[i + 1] as char;
-                let lo = bytes[i + 2] as char;
-                let hex = [hi, lo].iter().collect::<String>();
-                if let Ok(value) = u8::from_str_radix(&hex, 16) {
-                    decoded.push(value);
-                    i += 3;
-                    continue;
-                }
-                return None;
+            b'%' => {
+                let hi = *bytes.get(i + 1)?;
+                let lo = *bytes.get(i + 2)?;
+                let value = (decode_hex_nibble(hi)? << 4) | decode_hex_nibble(lo)?;
+                decoded.push(value);
+                i += 3;
+                continue;
             }
             b'+' => decoded.push(b'+'),
             byte => decoded.push(byte),
@@ -168,6 +165,15 @@ fn decode_path_suffix(path: &str, prefix: &str) -> Option<String> {
     }
 
     String::from_utf8(decoded).ok()
+}
+
+fn decode_hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -209,6 +215,19 @@ mod tests {
         )
         .unwrap();
         assert_eq!(decoded, "Qwen/Qwen3-Coder-Next-GGUF@main:Q4_K_M");
+    }
+
+    #[test]
+    fn decode_model_interest_path_preserves_literal_plus() {
+        let decoded = decode_model_interest_path("/api/model-interests/Qwen+Coder%2BPlus").unwrap();
+        assert_eq!(decoded, "Qwen+Coder+Plus");
+    }
+
+    #[test]
+    fn decode_model_interest_path_rejects_invalid_percent_encoding() {
+        assert_eq!(decode_model_interest_path("/api/model-interests/%"), None);
+        assert_eq!(decode_model_interest_path("/api/model-interests/%8"), None);
+        assert_eq!(decode_model_interest_path("/api/model-interests/%GG"), None);
     }
 
     #[test]

@@ -10,6 +10,7 @@ mesh-client = { package = "mesh-llm-client", path = "../mesh-client", features =
 model-artifact = { path = "../model-artifact" }
 model-prepare = { path = "../model-prepare" }
 model-ref = { path = "../model-ref" }
+model-resolver = { path = "../model-resolver" }
 openai-frontend = { path = "../openai-frontend" }
 skippy-protocol = { path = "../skippy-protocol" }
 skippy-runtime = { path = "../skippy-runtime" }

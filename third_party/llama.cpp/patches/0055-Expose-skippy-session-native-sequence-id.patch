@@ -1,0 +1,43 @@
+From c72fdbbae2b17b0194d84b16104c82dfc39a3d00 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Wed, 6 May 2026 10:29:41 +1000
+Subject: [PATCH] Expose skippy session native sequence id
+
+---
+ include/skippy.h | 3 +++
+ src/skippy.cpp   | 5 +++++
+ 2 files changed, 8 insertions(+)
+
+diff --git a/include/skippy.h b/include/skippy.h
+index deb5151e..84169398 100644
+--- a/include/skippy.h
++++ b/include/skippy.h
+@@ -244,6 +244,9 @@ LLAMA_API struct llama_context * skippy_session_llama_context(
+ LLAMA_API int32_t skippy_session_position(
+         const struct skippy_session * session);
+ 
++LLAMA_API int32_t skippy_session_native_seq_id(
++        const struct skippy_session * session);
++
+ LLAMA_API int32_t skippy_session_batch_size(
+         const struct skippy_session * session);
+ 
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index 7a6756ac..cc36af21 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -1745,6 +1745,11 @@ int32_t skippy_session_position(
+     return session != nullptr ? session->n_past : -1;
+ }
+ 
++int32_t skippy_session_native_seq_id(
++        const struct skippy_session * session) {
++    return session != nullptr ? session->seq_id : -1;
++}
++
+ int32_t skippy_session_batch_size(
+         const struct skippy_session * session) {
+     return session != nullptr && session->ctx != nullptr ? llama_n_batch(session->ctx) : 0;
+-- 
+2.50.1 (Apple Git-155)
+

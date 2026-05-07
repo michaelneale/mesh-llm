@@ -16,8 +16,8 @@ use serde::Serialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use skippy_protocol::binary::{
-    read_stage_message, recv_reply, state_flags, write_stage_message, StageStateHeader,
-    StageWireMessage, WireMessageKind, WireReplyKind,
+    activation_state_flags_from_frame_flags, read_stage_message, recv_reply, state_flags,
+    write_stage_message, StageStateHeader, StageWireMessage, WireMessageKind, WireReplyKind,
 };
 use skippy_runtime::{
     package::{materialize_layer_package_details, MaterializedPackage, PackageStageRequest},
@@ -197,7 +197,7 @@ enum LocalStatePayload {
     FullState(Vec<u8>),
     RecurrentOnly(Vec<u8>),
     KvRecurrent {
-        kv_desc: RuntimeKvPageDesc,
+        kv_desc: Option<RuntimeKvPageDesc>,
         kv: Vec<u8>,
         recurrent: Vec<u8>,
     },
@@ -776,11 +776,13 @@ fn run_binary_split(args: BinarySplitConfig) -> Result<BinarySplitResult> {
     state.decode_step = 0;
     state.current_token = token_id;
     state.source_stage_index = 0;
-    let activation = skippy_protocol::binary::encode_f32_activation_payload(
+    state.flags |= activation_state_flags(&boundary);
+    let activation = skippy_protocol::binary::encode_f32_activation_payload_with_state_flags(
         wire_dtype,
         1,
         activation_width,
         &boundary.payload,
+        activation_state_flags(&boundary),
     )
     .context("failed to encode boundary activation for wire")?;
     let message = StageWireMessage {
@@ -793,6 +795,7 @@ fn run_binary_split(args: BinarySplitConfig) -> Result<BinarySplitResult> {
         sampling: None,
         chat_sampling_metadata: None,
         tokens: vec![token_id],
+        positions: Vec::new(),
         activation,
         raw_bytes: Vec::new(),
     };
@@ -1031,11 +1034,13 @@ fn run_binary_chain(args: BinaryChainConfig) -> Result<BinaryChainResult> {
     state.decode_step = 0;
     state.current_token = token_id;
     state.source_stage_index = 0;
-    let activation = skippy_protocol::binary::encode_f32_activation_payload(
+    state.flags |= activation_state_flags(&boundary);
+    let activation = skippy_protocol::binary::encode_f32_activation_payload_with_state_flags(
         wire_dtype,
         1,
         activation_width,
         &boundary.payload,
+        activation_state_flags(&boundary),
     )
     .context("failed to encode boundary activation for wire")?;
     let message = StageWireMessage {
@@ -1048,6 +1053,7 @@ fn run_binary_chain(args: BinaryChainConfig) -> Result<BinaryChainResult> {
         sampling: None,
         chat_sampling_metadata: None,
         tokens: vec![token_id],
+        positions: Vec::new(),
         activation,
         raw_bytes: Vec::new(),
     };
@@ -1999,7 +2005,8 @@ fn export_local_state_payload(
             session.export_recurrent_state()?,
         )),
         StatePayloadKind::KvRecurrent => {
-            let page = session.export_kv_page(
+            let page = export_optional_kv_page(
+                session,
                 args.state_layer_start as i32,
                 args.state_layer_end as i32,
                 0,
@@ -2007,8 +2014,8 @@ fn export_local_state_payload(
             )?;
             let recurrent = session.export_recurrent_state()?;
             Ok(LocalStatePayload::KvRecurrent {
-                kv_desc: page.desc,
-                kv: page.payload,
+                kv_desc: page.as_ref().map(|page| page.desc),
+                kv: page.map(|page| page.payload).unwrap_or_default(),
                 recurrent,
             })
         }
@@ -2070,10 +2077,36 @@ fn import_local_state_payload(
             kv,
             recurrent,
         } => {
-            session.import_kv_page(kv_desc, kv)?;
+            if let Some(kv_desc) = kv_desc {
+                session.import_kv_page(kv_desc, kv)?;
+            } else if !kv.is_empty() {
+                bail!("KV-recurrent payload has KV bytes but no KV descriptor");
+            }
             session.import_recurrent_state_for_token_count(recurrent, token_count)
         }
     }
+}
+
+fn export_optional_kv_page(
+    session: &mut StageSession,
+    layer_start: i32,
+    layer_end: i32,
+    token_start: u64,
+    token_count: u64,
+) -> Result<Option<skippy_runtime::RuntimeKvPage>> {
+    match session.export_kv_page(layer_start, layer_end, token_start, token_count) {
+        Ok(page) => Ok(Some(page)),
+        Err(error) if is_native_kv_unavailable(&error) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn is_native_kv_unavailable(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let message = cause.to_string();
+        message.contains("runtime memory type is not supported for native KV pages")
+            || message.contains("runtime has no attention KV cache")
+    })
 }
 
 fn state_payload_kind_name(kind: StatePayloadKind) -> &'static str {
@@ -2292,6 +2325,7 @@ fn send_prefill_for_state_handoff(
     state.source_stage_index = input
         .map(|frame| frame.desc.producer_stage_index)
         .unwrap_or(-1);
+    state.flags |= activation_state_flags_optional(input);
     let activation = encode_handoff_activation(input, token_count, wire_dtype, activation_width)?;
     let message = StageWireMessage {
         kind: WireMessageKind::PrefillEmbd,
@@ -2303,6 +2337,7 @@ fn send_prefill_for_state_handoff(
         sampling: None,
         chat_sampling_metadata: None,
         tokens: tokens.to_vec(),
+        positions: Vec::new(),
         activation,
         raw_bytes: Vec::new(),
     };
@@ -2334,6 +2369,7 @@ fn export_state_over_binary(
         sampling: None,
         chat_sampling_metadata: None,
         tokens: Vec::new(),
+        positions: Vec::new(),
         activation: Vec::new(),
         raw_bytes: Vec::new(),
     };
@@ -2370,6 +2406,7 @@ fn import_state_over_binary(
         sampling: None,
         chat_sampling_metadata: None,
         tokens: Vec::new(),
+        positions: Vec::new(),
         activation: Vec::new(),
         raw_bytes: state_bytes.to_vec(),
     };
@@ -2396,6 +2433,7 @@ fn decode_for_state_handoff(
     state.source_stage_index = input
         .map(|frame| frame.desc.producer_stage_index)
         .unwrap_or(-1);
+    state.flags |= activation_state_flags_optional(input);
     let activation = encode_handoff_activation(input, 1, wire_dtype, activation_width)?;
     let message = StageWireMessage {
         kind: WireMessageKind::DecodeEmbd,
@@ -2407,6 +2445,7 @@ fn decode_for_state_handoff(
         sampling: None,
         chat_sampling_metadata: None,
         tokens: vec![token_id],
+        positions: Vec::new(),
         activation,
         raw_bytes: Vec::new(),
     };
@@ -2427,13 +2466,22 @@ fn encode_handoff_activation(
     let Some(input) = input else {
         return Ok(Vec::new());
     };
-    skippy_protocol::binary::encode_f32_activation_payload(
+    skippy_protocol::binary::encode_f32_activation_payload_with_state_flags(
         wire_dtype,
         token_count,
         activation_width,
         &input.payload,
+        activation_state_flags(input),
     )
     .context("failed to encode state handoff input activation")
+}
+
+fn activation_state_flags(frame: &ActivationFrame) -> i32 {
+    activation_state_flags_from_frame_flags(frame.desc.flags)
+}
+
+fn activation_state_flags_optional(frame: Option<&ActivationFrame>) -> i32 {
+    frame.map(activation_state_flags).unwrap_or(0)
 }
 
 fn baseline_report(result: FullModelResult) -> BaselineReport {

@@ -64,7 +64,7 @@ mesh-llm client --auto
 Runtime switches:
 
 - `--join <TOKEN>`: join a specific mesh using an invite token (repeatable).
-- `--discover [QUERY]`: discover a mesh via Nostr and join.
+- `--discover [NAME]`: discover a mesh via Nostr and join it. With a name, joins the mesh matching that name. Without a name, behaves like `--auto`.
 - `--auto`: auto-join the best discovered mesh.
 - `--model <MODEL>`: model to serve (catalog id from `models recommended`, HF ref/URL, or path).
 - `--gguf <GGUF>`: serve a specific local GGUF file directly (repeatable).
@@ -251,6 +251,7 @@ Use this to discover meshes via Nostr and optionally select one automatically.
 
 Switches:
 
+- `--name <NAME>`: filter by mesh name (case-insensitive exact match).
 - `--model <MODEL>`: filter discovered meshes by model name substring.
 - `--min-vram <MIN_VRAM>`: filter by minimum VRAM (GB).
 - `--region <REGION>`: filter by region.

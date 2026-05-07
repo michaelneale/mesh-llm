@@ -150,12 +150,39 @@ fn family_policy_for_normalized_family_id(
     family_id: &str,
     activation_wire_dtype: StageWireDType,
 ) -> FamilyPolicy {
+    if matches!(family_id, "dream" | "llada" | "llada_moe") {
+        return disabled_family_policy(
+            activation_wire_dtype,
+            "non-causal diffusion family has no resident KV state to cache",
+        );
+    }
+
+    if let Some(expected) = skippy_topology::STAGE_RUNTIME_LLAMA_FAMILY_EXPECTATIONS
+        .iter()
+        .find(|expected| expected.family_id == family_id)
+    {
+        return if expected.recurrent_or_hybrid {
+            kv_recurrent_policy(activation_wire_dtype)
+        } else {
+            resident_kv_policy(activation_wire_dtype)
+        };
+    }
+
     match family_id {
-        "qwen3_dense" | "llama" | "deepseek2" | "deepseek3" | "glm4" | "olmo" | "gemma2"
-        | "gemma3" | "gemma4_a4b" | "gemma4_e4b" | "glm47_flash" | "minimax_m27" => {
+        "qwen2" | "qwen3_dense" | "llama" | "deepseek" | "deepseek2" | "deepseek3" | "glm4"
+        | "glm4_moe" | "olmo" | "olmo2" | "olmoe" | "gemma2" | "gemma" | "gemma3" | "gemma4"
+        | "gemma4_a4b" | "gemma4_e4b" | "glm47_flash" | "minimax_m27" | "qwen2moe" | "qwen3moe"
+        | "granite" | "granite_moe" | "hunyuan_dense" | "hunyuan_moe" | "hunyuan_vl"
+        | "gptneox" | "bloom" | "stablelm" | "starcoder2" | "mpt" | "phi" | "phi2" | "phimoe"
+        | "gpt2" | "mistral" | "internlm2" | "baichuan" | "exaone" | "exaone4" | "cohere2"
+        | "command_r" | "falcon" | "qwen2vl" | "qwen3vl" | "deepseek2ocr" | "qwen3vlmoe"
+        | "openai_moe" | "ernie4_5_moe" | "llama4" | "mistral4" | "seed_oss" => {
             resident_kv_policy(activation_wire_dtype)
         }
-        "qwen3next" | "falcon_h1" => kv_recurrent_policy(activation_wire_dtype),
+        "qwen3next" | "falcon_h1" | "jamba" | "lfm2" | "mamba" | "mamba2" | "rwkv6" | "rwkv7"
+        | "granite_hybrid" | "qwen35" | "qwen35moe" | "nemotron_h_moe" => {
+            kv_recurrent_policy(activation_wire_dtype)
+        }
         _ => unknown_family_policy_with_wire_dtype(activation_wire_dtype),
     }
 }
@@ -282,7 +309,7 @@ fn ggml_block_bytes(elements: u64, block_size: u64, type_size: u64) -> Option<u6
 mod tests {
     use super::*;
     use skippy_protocol::{FlashAttentionType, LoadMode};
-    use skippy_topology::reviewed_capability_records;
+    use skippy_topology::{reviewed_capability_records, STAGE_RUNTIME_LLAMA_FAMILY_EXPECTATIONS};
 
     fn meta(architecture: &str) -> GgufCompactMeta {
         GgufCompactMeta {
@@ -400,10 +427,53 @@ mod tests {
     }
 
     #[test]
+    fn qwen3_coder_active_parameter_package_uses_resident_kv_cache_shape() {
+        let policy =
+            family_policy_for_model_id("unsloth/Qwen3-Coder-480B-A35B-Instruct-GGUF:UD-Q4_K_XL");
+
+        assert_eq!(policy.activation_wire_dtype, StageWireDType::F16);
+        assert!(matches!(
+            policy.prefix_cache,
+            FamilyPrefixCachePolicy::Auto {
+                payload: FamilyPrefixCachePayload::ResidentKv,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn gemma_family_uses_resident_kv_cache_shape() {
         let policy = family_policy_for_gguf_meta(&meta("gemma3"), None);
 
         assert_eq!(policy.activation_wire_dtype, StageWireDType::F16);
+        assert!(matches!(
+            policy.prefix_cache,
+            FamilyPrefixCachePolicy::Auto {
+                payload: FamilyPrefixCachePayload::ResidentKv,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn gemma_small_reviewed_policy_uses_f32_activation_wire() {
+        let policy = family_policy_for_model_id("ggml-org/gemma-3-270m-it-GGUF:Q8_0");
+
+        assert_eq!(policy.activation_wire_dtype, StageWireDType::F32);
+        assert!(matches!(
+            policy.prefix_cache,
+            FamilyPrefixCachePolicy::Auto {
+                payload: FamilyPrefixCachePayload::ResidentKv,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn apertus_reviewed_policy_uses_f32_activation_wire() {
+        let policy = family_policy_for_model_id("unsloth/Apertus-8B-Instruct-2509-GGUF:UD-IQ2_M");
+
+        assert_eq!(policy.activation_wire_dtype, StageWireDType::F32);
         assert!(matches!(
             policy.prefix_cache,
             FamilyPrefixCachePolicy::Auto {
@@ -420,9 +490,26 @@ mod tests {
             let family_id = record.capability.family_id.as_str();
 
             match family_id {
-                "qwen3_dense" | "llama" | "deepseek2" | "deepseek3" | "glm4" | "olmo"
-                | "gemma2" | "gemma3" | "gemma4_a4b" | "gemma4_e4b" | "glm47_flash"
-                | "minimax_m27" => {
+                "dream" | "llada" | "llada_moe" => assert_eq!(
+                    policy.prefix_cache,
+                    FamilyPrefixCachePolicy::Disabled {
+                        reason: "non-causal diffusion family has no resident KV state to cache",
+                    },
+                    "{family_id}"
+                ),
+                "qwen2" | "qwen3_dense" | "llama" | "deepseek" | "deepseek2" | "deepseek3"
+                | "glm4" | "glm4_moe" | "olmo" | "olmo2" | "olmoe" | "gemma" | "gemma2"
+                | "gemma3" | "gemma3n" | "gemma4_a4b" | "gemma4_e4b" | "glm47_flash"
+                | "minimax_m27" | "qwen2moe" | "qwen3moe" | "granite" | "granite_moe"
+                | "hunyuan_dense" | "hunyuan_moe" | "hunyuan_vl" | "gptneox" | "bloom"
+                | "stablelm" | "starcoder2" | "mpt" | "phi" | "phi2" | "phimoe" | "gpt2"
+                | "mistral" | "internlm2" | "baichuan" | "exaone" | "exaone4" | "cohere2"
+                | "exaone_moe" | "falcon" | "openai_moe" | "qwen2vl" | "qwen3vl"
+                | "deepseek2ocr" | "qwen3vlmoe" | "maincoder" | "openelm" | "minicpm"
+                | "minicpm3" | "plamo" | "plamo3" | "plm" | "refact" | "smallthinker"
+                | "smollm3" | "arcee" | "chatglm" | "codeshell" | "deci" | "xverse" | "apertus"
+                | "bitnet" | "command_r" | "starcoder" | "ernie4_5" | "ernie4_5_moe" | "qwen"
+                | "jais" | "jais2" | "nemotron" | "llama4" | "mistral4" | "seed_oss" => {
                     assert_eq!(
                         policy.prefix_cache,
                         FamilyPrefixCachePolicy::Auto {
@@ -433,7 +520,9 @@ mod tests {
                         "{family_id}"
                     )
                 }
-                "qwen3next" | "falcon_h1" => assert_eq!(
+                "qwen3next" | "falcon_h1" | "jamba" | "lfm2" | "mamba" | "mamba2" | "rwkv6"
+                | "rwkv7" | "granite_hybrid" | "qwen35" | "qwen35moe" | "plamo2" | "nemotron_h"
+                | "nemotron_h_moe" | "lfm2moe" | "kimi_linear" => assert_eq!(
                     policy.prefix_cache,
                     FamilyPrefixCachePolicy::Auto {
                         payload: FamilyPrefixCachePayload::KvRecurrent,
@@ -444,6 +533,43 @@ mod tests {
                 ),
                 other => panic!("reviewed family {other} has no explicit policy assertion"),
             }
+        }
+    }
+
+    #[test]
+    fn every_stage_runtime_llama_architecture_has_cache_policy() {
+        for expected in STAGE_RUNTIME_LLAMA_FAMILY_EXPECTATIONS {
+            let policy = family_policy_for_model_id(expected.llama_architecture);
+            if matches!(expected.family_id, "dream" | "llada" | "llada_moe") {
+                assert_eq!(
+                    policy.prefix_cache,
+                    FamilyPrefixCachePolicy::Disabled {
+                        reason: "non-causal diffusion family has no resident KV state to cache",
+                    },
+                    "{} ({})",
+                    expected.llama_architecture,
+                    expected.family_id
+                );
+                continue;
+            }
+
+            let expected_payload = if expected.recurrent_or_hybrid {
+                FamilyPrefixCachePayload::KvRecurrent
+            } else {
+                FamilyPrefixCachePayload::ResidentKv
+            };
+
+            assert_eq!(
+                policy.prefix_cache,
+                FamilyPrefixCachePolicy::Auto {
+                    payload: expected_payload,
+                    min_tokens: 256,
+                    max_entries: 128,
+                },
+                "{} ({})",
+                expected.llama_architecture,
+                expected.family_id
+            );
         }
     }
 
@@ -463,6 +589,34 @@ mod tests {
                     record.capability.family_id
                 );
             }
+        }
+    }
+
+    #[test]
+    fn certified_recurrent_families_never_use_resident_kv_policy() {
+        for model_id in [
+            "tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M",
+            "bartowski/Qwen_Qwen3-Coder-Next-GGUF:IQ2_XS",
+            "bartowski/ai21labs_AI21-Jamba2-3B-GGUF:Q4_K_M",
+            "meshllm/lfm2-350m-parity-q4_k_m-gguf:Q4_K_M",
+            "mradermacher/mamba-130m-hf-GGUF:Q4_K_M",
+            "mradermacher/mamba-2.8b-hf-GGUF:Q4_K_M",
+            "latestissue/rwkv-6-finch-1b6-gguf:Q4_K",
+            "Mungert/rwkv7-191M-world-GGUF:Q4_K",
+            "mradermacher/UnifiedReward-Edit-qwen35-4b-i1-GGUF:IQ2_M",
+        ] {
+            let policy = family_policy_for_model_id(model_id);
+            assert!(
+                matches!(
+                    policy.prefix_cache,
+                    FamilyPrefixCachePolicy::Auto {
+                        payload: FamilyPrefixCachePayload::KvRecurrent,
+                        ..
+                    }
+                ),
+                "{model_id}: {:?}",
+                policy.prefix_cache
+            );
         }
     }
 

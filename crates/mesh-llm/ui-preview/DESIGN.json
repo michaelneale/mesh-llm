@@ -1,0 +1,463 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-05-06T00:00:00-04:00",
+  "title": "Design System: MeshLLM UI Preview",
+  "extensions": {
+    "colorMeta": {
+      "background-dark": {
+        "role": "neutral",
+        "displayName": "Console Field Dark",
+        "canonical": "oklch(0.17 0.015 250)",
+        "source": "src/styles/globals.css"
+      },
+      "foreground-dark": {
+        "role": "neutral",
+        "displayName": "Primary Ink Dark",
+        "canonical": "oklch(0.96 0.005 80)",
+        "source": "src/styles/globals.css"
+      },
+      "muted-dark": {
+        "role": "neutral",
+        "displayName": "Muted Field Dark",
+        "canonical": "oklch(0.23 0.02 250)",
+        "source": "src/styles/globals.css"
+      },
+      "muted-foreground-dark": {
+        "role": "neutral",
+        "displayName": "Muted Ink Dark",
+        "canonical": "oklch(0.75 0.01 250)",
+        "source": "src/styles/globals.css"
+      },
+      "border-dark": {
+        "role": "neutral",
+        "displayName": "Hairline Border Dark",
+        "canonical": "oklch(0.3 0.02 250 / 0.9)",
+        "source": "src/styles/globals.css"
+      },
+      "border-soft-dark": {
+        "role": "neutral",
+        "displayName": "Soft Divider Dark",
+        "canonical": "oklch(0.3 0.02 250 / 0.45)",
+        "source": "src/styles/globals.css"
+      },
+      "panel-dark": {
+        "role": "neutral",
+        "displayName": "Panel Deck Dark",
+        "canonical": "oklch(0.2 0.018 250)",
+        "source": "src/styles/globals.css"
+      },
+      "panel-strong-dark": {
+        "role": "neutral",
+        "displayName": "Inset Deck Dark",
+        "canonical": "oklch(0.23 0.02 250)",
+        "source": "src/styles/globals.css"
+      },
+      "accent-dark": {
+        "role": "primary",
+        "displayName": "Live Circuit Cyan",
+        "canonical": "oklch(0.8 0.14 200)",
+        "source": "src/styles/globals.css"
+      },
+      "accent-contrast-dark": {
+        "role": "primary",
+        "displayName": "Contrast Signal Dark",
+        "canonical": "oklch(0.78 0.14 322)",
+        "source": "src/styles/globals.css"
+      },
+      "accent-ink-dark": {
+        "role": "primary",
+        "displayName": "Accent Ink Dark",
+        "canonical": "oklch(0.2 0.04 220)",
+        "source": "src/styles/globals.css"
+      },
+      "accent-soft-dark": {
+        "role": "primary",
+        "displayName": "Soft Route Tint Dark",
+        "canonical": "oklch(0.3 0.06 200)",
+        "source": "src/styles/globals.css"
+      },
+      "good-dark": {
+        "role": "secondary",
+        "displayName": "Capacity Green Dark",
+        "canonical": "oklch(0.78 0.14 150)",
+        "source": "src/styles/globals.css"
+      },
+      "warn-dark": {
+        "role": "secondary",
+        "displayName": "Thermal Amber Dark",
+        "canonical": "oklch(0.8 0.12 80)",
+        "source": "src/styles/globals.css"
+      },
+      "bad-dark": {
+        "role": "secondary",
+        "displayName": "Fault Red Dark",
+        "canonical": "oklch(0.7 0.18 25)",
+        "source": "src/styles/globals.css"
+      },
+      "background-light": {
+        "role": "neutral",
+        "displayName": "Console Field Light",
+        "canonical": "oklch(0.985 0.003 80)",
+        "source": "src/styles/globals.css"
+      },
+      "foreground-light": {
+        "role": "neutral",
+        "displayName": "Primary Ink Light",
+        "canonical": "oklch(0.22 0.02 250)",
+        "source": "src/styles/globals.css"
+      },
+      "muted-light": {
+        "role": "neutral",
+        "displayName": "Muted Field Light",
+        "canonical": "oklch(0.955 0.005 80)",
+        "source": "src/styles/globals.css"
+      },
+      "muted-foreground-light": {
+        "role": "neutral",
+        "displayName": "Muted Ink Light",
+        "canonical": "oklch(0.45 0.015 250)",
+        "source": "src/styles/globals.css"
+      },
+      "border-light": {
+        "role": "neutral",
+        "displayName": "Hairline Border Light",
+        "canonical": "oklch(0.88 0.005 80)",
+        "source": "src/styles/globals.css"
+      },
+      "border-soft-light": {
+        "role": "neutral",
+        "displayName": "Soft Divider Light",
+        "canonical": "oklch(0.93 0.005 80)",
+        "source": "src/styles/globals.css"
+      },
+      "panel-light": {
+        "role": "neutral",
+        "displayName": "Panel Deck Light",
+        "canonical": "oklch(0.975 0.004 80)",
+        "source": "src/styles/globals.css"
+      },
+      "panel-strong-light": {
+        "role": "neutral",
+        "displayName": "Inset Deck Light",
+        "canonical": "oklch(0.955 0.005 80)",
+        "source": "src/styles/globals.css"
+      },
+      "accent-light": {
+        "role": "primary",
+        "displayName": "Live Circuit Blue",
+        "canonical": "oklch(0.62 0.14 220)",
+        "source": "src/styles/globals.css"
+      },
+      "accent-contrast-light": {
+        "role": "primary",
+        "displayName": "Contrast Signal Light",
+        "canonical": "oklch(0.62 0.14 322)",
+        "source": "src/styles/globals.css"
+      },
+      "accent-ink-light": {
+        "role": "primary",
+        "displayName": "Accent Ink Light",
+        "canonical": "oklch(0.98 0.01 220)",
+        "source": "src/styles/globals.css"
+      },
+      "accent-soft-light": {
+        "role": "primary",
+        "displayName": "Soft Route Tint Light",
+        "canonical": "oklch(0.92 0.05 198)",
+        "source": "src/styles/globals.css"
+      },
+      "good-light": {
+        "role": "secondary",
+        "displayName": "Capacity Green Light",
+        "canonical": "oklch(0.58 0.13 150)",
+        "source": "src/styles/globals.css"
+      },
+      "warn-light": {
+        "role": "secondary",
+        "displayName": "Thermal Amber Light",
+        "canonical": "oklch(0.62 0.14 55)",
+        "source": "src/styles/globals.css"
+      },
+      "bad-light": {
+        "role": "secondary",
+        "displayName": "Fault Red Light",
+        "canonical": "oklch(0.62 0.16 28)",
+        "source": "src/styles/globals.css"
+      }
+    },
+    "accentPreferences": [
+      {
+        "name": "blue",
+        "accent": "oklch(0.68 0.18 258)",
+        "contrast": "oklch(0.78 0.15 36)",
+        "softDark": "oklch(0.3 0.07 258)"
+      },
+      {
+        "name": "cyan",
+        "accent": "oklch(0.76 0.16 195)",
+        "contrast": "oklch(0.78 0.14 322)",
+        "softDark": "oklch(0.3 0.07 195)"
+      },
+      {
+        "name": "violet",
+        "accent": "oklch(0.75 0.14 292)",
+        "contrast": "oklch(0.78 0.15 76)",
+        "softDark": "oklch(0.3 0.07 292)"
+      },
+      {
+        "name": "green",
+        "accent": "oklch(0.76 0.16 132)",
+        "contrast": "oklch(0.76 0.14 292)",
+        "softDark": "oklch(0.3 0.07 132)"
+      },
+      {
+        "name": "amber",
+        "accent": "oklch(0.78 0.15 76)",
+        "contrast": "oklch(0.72 0.16 258)",
+        "softDark": "oklch(0.3 0.07 76)"
+      },
+      {
+        "name": "pink",
+        "accent": "oklch(0.73 0.16 8)",
+        "contrast": "oklch(0.76 0.15 170)",
+        "softDark": "oklch(0.3 0.07 8)"
+      }
+    ],
+    "typographyMeta": {
+      "display": {
+        "className": "type-display",
+        "purpose": "Rare page or route statements; compact and high authority."
+      },
+      "headline": {
+        "className": "type-headline",
+        "purpose": "Node names, major shell labels, and high-value operational titles."
+      },
+      "panel-title": {
+        "className": "type-panel-title",
+        "purpose": "Panel headers, drawers, settings groups, and compact feature headers."
+      },
+      "body": { "className": "type-body", "purpose": "Default prose and row descriptions in dense UI." },
+      "caption": {
+        "className": "type-caption",
+        "purpose": "Helper text, compact descriptions, and secondary context."
+      },
+      "label": {
+        "className": "type-label",
+        "purpose": "Uppercase operational labels, table headers, and state headings."
+      },
+      "machine": {
+        "className": "type-machine",
+        "purpose": "IDs, endpoints, model names, capacities, timings, ports, percentages, and generated configuration."
+      }
+    },
+    "density": {
+      "modes": ["compact", "dense", "normal", "sparse"],
+      "shellScalePx": {
+        "micro": 10,
+        "annotation": 10.5,
+        "label": 11,
+        "caption": 11.5,
+        "caption-lg": 12,
+        "control": 12.5,
+        "control-lg": 13,
+        "body": 13.5,
+        "body-lg": 14,
+        "title": 15.5,
+        "headline": 16.5,
+        "display": 20.5,
+        "display-lg": 22.5
+      }
+    },
+    "shadows": [
+      {
+        "name": "surface-low",
+        "token": "--shadow-surface-low",
+        "purpose": "Subtle stacked panel depth only when separated from the shell."
+      },
+      {
+        "name": "surface-popover",
+        "token": "--shadow-surface-popover",
+        "purpose": "Hover cards, menus, and small floating panels."
+      },
+      {
+        "name": "surface-modal",
+        "token": "--shadow-surface-modal",
+        "purpose": "Command palette and blocking modal surfaces."
+      },
+      {
+        "name": "surface-drawer",
+        "token": "--shadow-surface-drawer",
+        "purpose": "Side drawers and large non-modal overlays."
+      },
+      {
+        "name": "focus-accent",
+        "token": "--shadow-focus-accent",
+        "purpose": "Focus glow paired with the required 2px accent outline."
+      },
+      {
+        "name": "surface-hover",
+        "token": "--shadow-surface-hover",
+        "purpose": "Temporary hover feedback for actionable surfaces."
+      },
+      { "name": "surface-drag", "token": "--shadow-surface-drag", "purpose": "Drag or reordering state." },
+      { "name": "status-good", "token": "--shadow-status-good", "purpose": "Positive live-state emphasis only." }
+    ],
+    "motion": [
+      {
+        "name": "control-state",
+        "value": "140ms cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "Background, border, color, opacity, and shadow state changes."
+      },
+      {
+        "name": "control-press",
+        "value": "90ms cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "Small translate feedback for pressed controls."
+      },
+      {
+        "name": "mesh-live-pulse",
+        "value": "3.4s ease-in-out infinite",
+        "purpose": "Live mesh signal only; disabled under reduced motion."
+      },
+      {
+        "name": "chat-generating-dot",
+        "value": "1.15s cubic-bezier(0.16, 1, 0.3, 1) infinite",
+        "purpose": "Generation progress only; disabled under reduced motion."
+      },
+      { "name": "mesh-reclamp", "value": "220ms outExpo", "purpose": "Viewport reclamping in MeshViz." },
+      { "name": "mesh-radar", "value": "2000ms linear, 1000ms delay", "purpose": "Radar ping in MeshViz only." }
+    ],
+    "breakpoints": [
+      { "name": "mobile", "value": "max-width: 767px", "purpose": "Adjust shell, navigation, and preferences sizing." },
+      {
+        "name": "narrow-mobile",
+        "value": "max-width: 420px",
+        "purpose": "Further compress shell and utility controls."
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Base Control",
+      "kind": "button",
+      "refersTo": "ui-control",
+      "source": "src/styles/globals.css",
+      "description": "Default compact action surface with panel background, hairline border, dim text, hover accent mix, active translate, disabled opacity, and visible focus outline.",
+      "html": "<button class=\"ui-control\">Filter</button>",
+      "css": ".ui-control"
+    },
+    {
+      "name": "Primary Control",
+      "kind": "button",
+      "refersTo": "ui-control-primary",
+      "source": "src/styles/globals.css",
+      "description": "Accent-filled decisive action or active navigation state using accent ink.",
+      "html": "<button class=\"ui-control-primary\">Add model</button>",
+      "css": ".ui-control-primary"
+    },
+    {
+      "name": "StatusBadge",
+      "kind": "chip",
+      "source": "src/components/ui/StatusBadge.tsx",
+      "description": "Tone-aware pill with text label and optional dot; backgrounds use 18% state color mix and borders use 30%.",
+      "html": "<StatusBadge tone=\"good\" dot>Serving</StatusBadge>",
+      "css": "inline color-mix styles driven by tone tokens"
+    },
+    {
+      "name": "SegmentedControl",
+      "kind": "segmented-control",
+      "source": "src/components/ui/SegmentedControl.tsx",
+      "description": "Radix RadioGroup-backed pill or button variants with selected-tone support and accent focus treatment.",
+      "html": "<SegmentedControl variant=\"pill\" selectedTone=\"accent\" />",
+      "css": ".segmented-control .segmented-control__item"
+    },
+    {
+      "name": "Panel Shell",
+      "kind": "card",
+      "refersTo": "panel-shell",
+      "source": "src/styles/globals.css",
+      "description": "Flat bordered 10px-radius panel used for chat, settings, catalogs, banners, and operational sections.",
+      "html": "<section class=\"panel-shell\">...</section>",
+      "css": ".panel-shell"
+    },
+    {
+      "name": "InfoBanner",
+      "kind": "banner",
+      "source": "src/components/ui/InfoBanner.tsx",
+      "description": "Functional accent-to-panel banner with optional icon frame, status, and action; not a decorative gradient component.",
+      "html": "<InfoBanner title=\"API connected\" status={<StatusBadge />} action={<button />} />",
+      "css": "panel-shell plus accent/panel linear-gradient"
+    },
+    {
+      "name": "NativeSelect",
+      "kind": "select",
+      "source": "src/components/ui/NativeSelect.tsx",
+      "description": "32px high compact select with 240px minimum width, ui-control treatment, monospace value, and explicit focus outline.",
+      "html": "<NativeSelect value={value} onChange={setValue} options={options} />",
+      "css": "ui-control h-[32px] min-w-[240px] rounded-[var(--radius)]"
+    },
+    {
+      "name": "Slider",
+      "kind": "input",
+      "source": "src/components/ui/Slider.tsx",
+      "description": "Accessible range control with 8px track, 16px thumb, accent progress, visible value, bounds, and aria-valuetext.",
+      "html": "<Slider label=\"VRAM split\" value={value} min={0} max={100} />",
+      "css": ".ui-slider"
+    },
+    {
+      "name": "TopNav",
+      "kind": "navigation",
+      "source": "src/features/shell/components/TopNav.tsx",
+      "description": "Sticky surface-chrome app bar with compact brand cluster, primary tabs, API status chip, theme, preferences, and utility controls.",
+      "html": "<TopNav />",
+      "css": "surface-chrome sticky top-0 border-b border-border-soft"
+    },
+    {
+      "name": "Mesh Canvas",
+      "kind": "visualization",
+      "source": "src/features/network/components/MeshViz.tsx and src/styles/globals.css",
+      "description": "Faint 22px grid, sparse route glow, packets, live pulses, radar pings, and reduced-motion safeguards for the network visualization.",
+      "html": "<MeshViz />",
+      "css": ".mesh-canvas .mesh-glow .mesh-packet .mesh-live-pulse .mesh-radar-ping"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Control Room Ledger",
+    "overview": "A compact operations console for governing distributed local AI inference. It makes peers, endpoints, capacities, routes, warnings, and live packets visible and controllable without consumer-chat softness or SaaS-dashboard vagueness.",
+    "rules": [
+      {
+        "name": "The One Live Signal Rule",
+        "section": "colors",
+        "body": "Accent color marks current action, focus, route, or live state. Do not spend it on decoration."
+      },
+      {
+        "name": "The Three Surface Rule",
+        "section": "colors",
+        "body": "Ordinary depth uses only background, panel, and inset panel. Simplify before adding another surface."
+      },
+      {
+        "name": "The Machine Values Rule",
+        "section": "typography",
+        "body": "Model names, endpoints, IDs, memory values, routes, timestamps, generated config, and telemetry use mono with tabular numbers."
+      },
+      {
+        "name": "The Flat Until Floating Rule",
+        "section": "elevation",
+        "body": "Panels, rows, cards, and tables do not receive elevation at rest. Shadows mean floating, selected, live, dragged, focused, or responding to input."
+      }
+    ],
+    "dos": [
+      "Use semantic tokens from src/styles/globals.css as the source of truth.",
+      "Keep light and dark themes equally intentional.",
+      "Use mono type for machine values and telemetry.",
+      "Pair state color with text, dots, or icons.",
+      "Respect reduced motion and use motion only for state, routing, or feedback."
+    ],
+    "donts": [
+      "Do not make the product feel like generic SaaS.",
+      "Do not use gaming-neon cyberpunk, holographic sci-fi, or loud AI magic styling.",
+      "Do not use consumer-chat bubbles, giant composers, or assistant personality.",
+      "Do not use decorative gradients, glassmorphism, multicolor dashboards, or gradient text.",
+      "Do not invent local colors, type sizes, timings, or shadows when global tokens already provide the contract."
+    ]
+  }
+}

@@ -6,6 +6,7 @@ pub mod gguf;
 pub mod inventory;
 pub mod local;
 mod maintenance;
+pub mod remote_catalog;
 pub mod resolve;
 pub use resolve::ResolvedModel;
 #[cfg(test)]
@@ -26,11 +27,12 @@ pub use local::{
 };
 pub use maintenance::{run_update, warn_about_updates_for_paths};
 pub use resolve::{
-    canonicalize_interest_model_ref, catalog_model_draft_ref, catalog_model_ref,
-    download_model_ref_with_progress_details, find_catalog_model_exact,
+    canonicalize_interest_model_ref, download_model_ref_with_progress_details,
+    find_loaded_remote_catalog_model_exact, find_remote_catalog_model_exact,
     installed_model_capabilities, installed_model_display_name, installed_model_huggingface_ref,
-    resolve_model_spec, resolve_model_spec_with_progress, show_exact_model,
-    show_model_variants_with_progress, ModelDetails, ShowVariantsProgress,
+    remote_catalog_model_draft_ref, remote_catalog_model_ref, resolve_model_spec,
+    resolve_model_spec_with_progress, show_exact_model, show_model_variants_with_progress,
+    ModelDetails, ShowVariantsProgress,
 };
 pub use search::{
     search_catalog_json_payload, search_catalog_models, search_huggingface,
@@ -104,7 +106,6 @@ fn short_revision(revision: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::models::maintenance::cache_repo_id_from_dir;
     use crate::models::resolve::{parse_hf_resolve_url, parse_huggingface_ref};
 
@@ -134,11 +135,5 @@ mod tests {
         assert_eq!(repo, "Qwen/Qwen3-8B-GGUF");
         assert_eq!(revision.as_deref(), Some("main"));
         assert_eq!(file, "Qwen3-8B-Q4_K_M.gguf");
-    }
-
-    #[test]
-    fn find_catalog_model_exact_matches_filename_stem() {
-        let model = find_catalog_model_exact("Qwen3-8B-Q4_K_M").unwrap();
-        assert_eq!(model.name, "Qwen3-8B-Q4_K_M");
     }
 }

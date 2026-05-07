@@ -1,0 +1,86 @@
+From fa0d26146f615be39881aa29d76f07f218f707d0 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Thu, 7 May 2026 17:34:50 +1000
+Subject: [PATCH] Avoid double-counting optional filtered tensors
+
+---
+ src/llama-model-loader.cpp | 30 ++++++++++++++++++++++++++----
+ src/llama-model-loader.h   |  2 ++
+ 2 files changed, 28 insertions(+), 4 deletions(-)
+
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index 3e836a88..0510a646 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -1130,6 +1130,19 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+         return it->second.get();
+     };
+ 
++    auto requested_shape_matches = [&](const ggml_tensor * t_meta) -> bool {
++        if (t_meta == nullptr) {
++            return false;
++        }
++        for (size_t i = 0; i < GGML_MAX_DIMS; ++i) {
++            const int64_t dim = i < ne.size() ? ne.begin()[i] : 1;
++            if (dim != t_meta->ne[i]) {
++                return false;
++            }
++        }
++        return true;
++    };
++
+     auto buft_for_tensor = [&](ggml_tensor * t_meta) -> ggml_backend_buffer_type_t {
+         // some models use the token embedding tensor as the output, but since these are used in different layers and with different ops
+         // the tensor is duplicated
+@@ -1173,15 +1186,24 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+ 
+             if (!keep) {
+                 if (t_meta) {
++                    const bool requested_tensor_exists =
++                            !(flags & TENSOR_NOT_REQUIRED) || requested_shape_matches(t_meta);
++                    const std::string tensor_name = tn.str();
++                    bool first_filtered_request = true;
++                    if (requested_tensor_exists) {
++                        first_filtered_request = skippy_counted_filtered_tensors.insert(tensor_name).second;
++                    }
+                     const size_t nbytes = ggml_nbytes(t_meta);
+                     LLAMA_LOG_DEBUG(
+                             "llama_model_loader: stage filter skipping tensor %s (size = %zu bytes)\n",
+-                            tn.str().c_str(),
++                            tensor_name.c_str(),
+                             nbytes);
+ 
+-                    size_data -= nbytes;
+-                    if (!(flags & TENSOR_DUPLICATED)) {
+-                        n_created++;
++                    if (requested_tensor_exists && first_filtered_request) {
++                        size_data -= nbytes;
++                        if (!(flags & TENSOR_DUPLICATED)) {
++                            n_created++;
++                        }
+                     }
+                     g_skippy_last_tensor_filtered = true;
+                 } else {
+diff --git a/src/llama-model-loader.h b/src/llama-model-loader.h
+index 54f56d98..2969e818 100644
+--- a/src/llama-model-loader.h
++++ b/src/llama-model-loader.h
+@@ -14,6 +14,7 @@
+ #include <map>
+ #include <stdexcept>
+ #include <unordered_map>
++#include <unordered_set>
+ 
+ using llama_buf_map = std::unordered_map<uint32_t, ggml_backend_buffer_t>;
+ 
+@@ -100,6 +101,7 @@ struct llama_model_loader {
+ 
+     std::map<std::string, llama_tensor_weight, weight_name_comparer> weights_map;
+     std::unordered_map<std::string, llama_model_kv_override> kv_overrides;
++    std::unordered_set<std::string> skippy_counted_filtered_tensors;
+     const llama_model_tensor_buft_override * tensor_buft_overrides;
+ 
+     gguf_context_ptr metadata_ptr;
+-- 
+2.50.1 (Apple Git-155)
+

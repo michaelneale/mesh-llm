@@ -13,11 +13,11 @@ use self::interactive::InitialPromptMode;
 use self::local::{
     add_runtime_local_target, add_serving_assignment, advertise_model_ready, local_process_payload,
     model_fits_runtime_capacity, remove_runtime_local_target, remove_serving_assignment,
-    resolved_model_name, runtime_model_required_bytes, set_advertised_model_context,
-    start_runtime_local_model, start_runtime_split_model, startup_runtime_plan,
-    stop_split_generation_cleanup, withdraw_advertised_model, LocalRuntimeModelHandle,
-    LocalRuntimeModelStartSpec, ManagedModelController, RuntimeEvent, SplitCoordinatorAck,
-    SplitRuntimeReason, SplitRuntimeStart, StartupRuntimePlan,
+    resolved_model_name, runtime_model_planning_bytes, runtime_model_required_bytes,
+    set_advertised_model_context, start_runtime_local_model, start_runtime_split_model,
+    startup_runtime_plan, stop_split_generation_cleanup, withdraw_advertised_model,
+    LocalRuntimeModelHandle, LocalRuntimeModelStartSpec, ManagedModelController, RuntimeEvent,
+    SplitCoordinatorAck, SplitRuntimeReason, SplitRuntimeStart, StartupRuntimePlan,
 };
 use self::proxy::{api_proxy, bootstrap_proxy};
 use crate::api;
@@ -36,7 +36,6 @@ use crate::inference::{election, skippy};
 use crate::mesh;
 use crate::mesh::NodeRole;
 use crate::models;
-use crate::models::catalog;
 use crate::network::{affinity, nostr, tunnel};
 use crate::plugin;
 use crate::system::{autoupdate, backend, benchmark, hardware};
@@ -1109,7 +1108,27 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         .as_ref()
         .map(|gpu| gpu.vram_bytes)
         .unwrap_or_else(|| node.vram_bytes());
-    let model_bytes = election::total_model_bytes(&model_path);
+    let model_path_for_sizing = model_path.clone();
+    let model_bytes = match tokio::task::spawn_blocking(move || {
+        runtime_model_planning_bytes(&model_path_for_sizing)
+    })
+    .await
+    .context("join runtime model sizing task")
+    .and_then(|result| result)
+    {
+        Ok(model_bytes) => model_bytes,
+        Err(err) => {
+            let _ = emit_event(OutputEvent::Error {
+                message: format!("Failed to inspect model {model_name}: {err:#}"),
+                context: Some(format!("model={model_name}")),
+            });
+            update_startup_target(&target_tx, &model_name, election::InferenceTarget::None);
+            if let Some(cs) = console_state {
+                cs.update(false, false).await;
+            }
+            return;
+        }
+    };
     let runtime_plan = startup_runtime_plan(split, local_capacity, model_bytes);
     let launch_kind = match runtime_plan {
         StartupRuntimePlan::Local => survey_launch_kind,
@@ -1145,14 +1164,17 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                 });
             }
             match start_runtime_split_model(start_spec, &model_ref).await {
-                Ok(SplitRuntimeStart::Started(mut loaded)) => (
-                    loaded.loaded_name,
-                    loaded.handle,
-                    loaded.death_rx,
-                    loaded.cleanup.take(),
-                    loaded.coordinator_rx.take(),
-                    loaded.coordinator_task.take(),
-                ),
+                Ok(SplitRuntimeStart::Started(loaded)) => {
+                    let mut loaded = *loaded;
+                    (
+                        loaded.loaded_name,
+                        loaded.handle,
+                        loaded.death_rx,
+                        loaded.cleanup.take(),
+                        loaded.coordinator_rx.take(),
+                        loaded.coordinator_task.take(),
+                    )
+                }
                 Ok(SplitRuntimeStart::Standby { coordinator }) => {
                     drop(startup_load_guard);
                     let _ = emit_event(OutputEvent::Info {
@@ -1193,34 +1215,36 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                 }
             }
         }
-        StartupRuntimePlan::Local => match start_runtime_local_model(start_spec).await {
-            Ok((loaded_name, handle, death_rx)) => {
-                (loaded_name, handle, death_rx, None, None, None)
-            }
-            Err(err) => {
-                survey_telemetry.record_launch_failure(
-                    survey::SurveyModelSpec {
-                        model: &model_name,
-                        model_path: Some(&model_path),
-                        launch_kind,
-                        pinned_gpu: pinned_gpu.as_ref(),
-                        backend: None,
-                        context_length: ctx_size.map(u64::from),
-                    },
-                    launch_started.elapsed(),
-                    survey::classify_launch_failure(&err),
-                );
-                let _ = emit_event(OutputEvent::Error {
-                    message: format!("Failed to start model {model_name}: {err:#}"),
-                    context: Some(format!("model={model_name}")),
-                });
-                update_startup_target(&target_tx, &model_name, election::InferenceTarget::None);
-                if let Some(cs) = console_state {
-                    cs.update(false, false).await;
+        StartupRuntimePlan::Local => {
+            match start_runtime_local_model(start_spec, &model_ref).await {
+                Ok((loaded_name, handle, death_rx)) => {
+                    (loaded_name, handle, death_rx, None, None, None)
                 }
-                return;
+                Err(err) => {
+                    survey_telemetry.record_launch_failure(
+                        survey::SurveyModelSpec {
+                            model: &model_name,
+                            model_path: Some(&model_path),
+                            launch_kind,
+                            pinned_gpu: pinned_gpu.as_ref(),
+                            backend: None,
+                            context_length: ctx_size.map(u64::from),
+                        },
+                        launch_started.elapsed(),
+                        survey::classify_launch_failure(&err),
+                    );
+                    let _ = emit_event(OutputEvent::Error {
+                        message: format!("Failed to start model {model_name}: {err:#}"),
+                        context: Some(format!("model={model_name}")),
+                    });
+                    update_startup_target(&target_tx, &model_name, election::InferenceTarget::None);
+                    if let Some(cs) = console_state {
+                        cs.update(false, false).await;
+                    }
+                    return;
+                }
             }
-        },
+        }
     };
     drop(startup_load_guard);
 
@@ -1895,8 +1919,14 @@ pub(crate) async fn run() -> Result<()> {
     // Publication intent is now explicit only: --publish gates Nostr discovery.
     // --mesh-name alone never implies publication (Issue #240).
 
-    // Warn users who used to rely on --mesh-name auto-publishing
-    if let Some(mesh_name) = cli.mesh_name.as_ref().filter(|_| !cli.publish) {
+    // Warn users who set --mesh-name without --publish — but only when they
+    // are creating a new mesh, not when they are joining one via --discover
+    // or --auto (where --mesh-name is just a filter for which mesh to join).
+    if let Some(mesh_name) = cli
+        .mesh_name
+        .as_ref()
+        .filter(|_| !cli.publish && !cli.auto && cli.discover.is_none())
+    {
         let _ = emit_event(OutputEvent::Info {
             message: format!(
                 "Mesh named '{}' — private by default. Add --publish to make it publicly discoverable.",
@@ -1910,7 +1940,7 @@ pub(crate) async fn run() -> Result<()> {
     // If the previous run was public (--auto or --publish) but this run is
     // private, clear the stored identity so the private mesh gets a fresh key
     // that isn't associated with the old public listing.
-    let is_public = cli.auto || cli.publish;
+    let is_public = cli.auto || cli.publish || cli.discover.is_some();
     if is_public {
         mesh::mark_was_public();
     } else if mesh::was_previously_public() {
@@ -1924,18 +1954,26 @@ pub(crate) async fn run() -> Result<()> {
     let mut auto_join_candidates: Vec<(String, Option<String>)> = Vec::new();
 
     // --- Auto-discover ---
-    if cli.auto && cli.join.is_empty() {
+    // --auto: join the community mesh (unnamed / "mesh-llm"), optionally
+    //         scoped to --mesh-name.
+    // --discover [name]: discover a mesh by name on Nostr and join it.
+    //         Without a name, behaves like --auto.
+    let discover_active = cli.auto || cli.discover.is_some();
+    if discover_active && cli.join.is_empty() {
+        // When --discover provides a name, use it as the target mesh name
+        // so smart_auto filters by that name on Nostr.
+        if let Some(ref name) = cli.discover {
+            if !name.is_empty() && cli.mesh_name.is_none() {
+                cli.mesh_name = Some(name.clone());
+            }
+        }
         cli.nostr_discovery = true;
         let _ = emit_event(OutputEvent::DiscoveryStarting {
             source: "Nostr auto-discovery".to_string(),
         });
 
         let relays = nostr_relays(&cli.nostr_relay);
-        let filter = nostr::MeshFilter {
-            model: None,
-            min_vram_gb: None,
-            region: None,
-        };
+        let filter = nostr::MeshFilter::default();
         let meshes = match nostr::discover(&relays, &filter, None).await {
             Ok(meshes) => meshes,
             Err(err) => {
@@ -1954,7 +1992,7 @@ pub(crate) async fn run() -> Result<()> {
             .as_secs();
 
         let last_mesh_id = mesh::load_last_mesh_id();
-        let target_name = cli.mesh_name.as_deref();
+        let target_name = cli.mesh_name.clone();
         // When the user did not target a specific mesh, `--auto` only joins
         // the community mesh (unnamed or name == "mesh-llm"). Other named
         // meshes are still publicly discoverable on Nostr, but the user has
@@ -1985,7 +2023,7 @@ pub(crate) async fn run() -> Result<()> {
             );
         }
 
-        match nostr::smart_auto(&meshes, my_vram_gb, target_name) {
+        match smart_auto_blocking(meshes.clone(), my_vram_gb, target_name.clone()).await? {
             nostr::AutoDecision::Join { candidates } => {
                 if cli.client {
                     // Clients skip health probe — joining itself is the test.
@@ -2031,7 +2069,7 @@ pub(crate) async fn run() -> Result<()> {
                             message: "No meshes found — starting new".to_string(),
                             detail: None,
                         });
-                        let models = nostr::default_models_for_vram(my_vram_gb);
+                        let models = default_models_for_vram_blocking(my_vram_gb).await?;
                         start_new_mesh(&mut cli, &models, my_vram_gb, has_startup_models);
                     }
                 }
@@ -2051,7 +2089,8 @@ pub(crate) async fn run() -> Result<()> {
                         });
                         if let Ok(retry_meshes) = nostr::discover(&relays, &filter, None).await {
                             if let nostr::AutoDecision::Join { candidates } =
-                                nostr::smart_auto(&retry_meshes, my_vram_gb, target_name)
+                                smart_auto_blocking(retry_meshes, my_vram_gb, target_name.clone())
+                                    .await?
                             {
                                 let (_, mesh) = &candidates[0];
                                 if cli.mesh_name.is_none() {
@@ -2126,7 +2165,7 @@ pub(crate) async fn run() -> Result<()> {
         write_stderr_newline();
         return Ok(());
     }
-    let mut startup_models = resolve_startup_models(&startup_specs).await?;
+    let mut startup_models = resolve_startup_models(&startup_specs, cli.split).await?;
     let bin_dir = match &cli.bin_dir {
         Some(d) => d.clone(),
         None => detect_bin_dir()?,
@@ -2254,18 +2293,52 @@ fn build_startup_model_specs(
     Ok(specs)
 }
 
-async fn resolve_startup_models(specs: &[StartupModelSpec]) -> Result<Vec<StartupModelPlan>> {
+async fn resolve_startup_models(
+    specs: &[StartupModelSpec],
+    _split: bool,
+) -> Result<Vec<StartupModelPlan>> {
     let mut plans = Vec::with_capacity(specs.len());
     for spec in specs {
-        let resolved_path = resolve_model(&spec.model_ref).await?;
+        let requested_ref = spec.model_ref.to_string_lossy();
+
+        // Check the remote catalog for a pre-split layer package before
+        // downloading a remote monolithic GGUF. Auto-split can decide to split
+        // later, so layer-package discovery must not depend on `--split`.
+        let requested_ref_for_catalog = requested_ref.to_string();
+        let model_ref_for_catalog = spec.model_ref.clone();
+        let resolved_path = if let Some(package_ref) = tokio::task::spawn_blocking(move || {
+            resolve_split_layer_package(&requested_ref_for_catalog, &model_ref_for_catalog)
+        })
+        .await
+        .context("join resolve layer package task")?
+        {
+            PathBuf::from(package_ref)
+        } else {
+            resolve_model(&spec.model_ref).await?
+        };
+
         let mmproj_path = match spec.mmproj_ref.as_ref() {
             Some(mmproj) => Some(resolve_model(mmproj).await?),
             None => None,
         };
-        let requested_ref = spec.model_ref.to_string_lossy();
-        let declared_ref = models::find_catalog_model_exact(&requested_ref)
-            .map(models::catalog_model_ref)
-            .unwrap_or_else(|| models::model_ref_for_path(&resolved_path));
+        let declared_ref = find_remote_catalog_model_exact_blocking(requested_ref.to_string())
+            .await
+            .map(|model| models::remote_catalog_model_ref(&model))
+            .unwrap_or_else(|| {
+                // For hf:// layer package refs, use the requested ref as the model ref
+                // rather than trying to parse the hf:// URL as a filesystem path.
+                let path_str = resolved_path.to_string_lossy();
+                if path_str.starts_with("hf://") {
+                    requested_ref.to_string()
+                } else if resolved_path.join("model-package.json").is_file() {
+                    // Layer package directory: read the canonical model_id from the manifest
+                    // so that all nodes agree on the model name regardless of local path.
+                    read_layer_package_model_id(&resolved_path)
+                        .unwrap_or_else(|| models::model_ref_for_path(&resolved_path))
+                } else {
+                    models::model_ref_for_path(&resolved_path)
+                }
+            });
         plans.push(StartupModelPlan {
             declared_ref,
             resolved_path,
@@ -2282,6 +2355,45 @@ async fn resolve_startup_models(specs: &[StartupModelSpec]) -> Result<Vec<Startu
         });
     }
     Ok(plans)
+}
+
+/// Read the `model_id` field from a layer package's `model-package.json`.
+fn read_layer_package_model_id(package_dir: &Path) -> Option<String> {
+    let manifest_path = package_dir.join("model-package.json");
+    let contents = std::fs::read(&manifest_path).ok()?;
+    let manifest: serde_json::Value = serde_json::from_slice(&contents).ok()?;
+    manifest
+        .get("model_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+/// Check the remote catalog for a layer package matching the model.
+/// Returns `Some("hf://meshllm/...")` or a local package dir if found, None otherwise.
+fn resolve_split_layer_package(model_query: &str, model_path: &Path) -> Option<String> {
+    // Already an hf:// ref — use as-is
+    let path_str = model_path.to_string_lossy();
+    if path_str.starts_with("hf://") {
+        return Some(path_str.to_string());
+    }
+
+    // Local directory with model-package.json — already a layer package on disk
+    if model_path.join("model-package.json").is_file() {
+        return Some(path_str.to_string());
+    }
+
+    // Existing local GGUFs should stay local. Layer-package lookup is only meant
+    // to avoid remote monolithic downloads, not replace an explicit local file.
+    if model_path.exists() {
+        return None;
+    }
+
+    // Try remote catalog
+    if let Err(err) = models::remote_catalog::ensure_catalog() {
+        tracing::debug!("remote catalog unavailable: {err:#}");
+        return None;
+    }
+    models::remote_catalog::find_layer_package(model_query)
 }
 
 fn preflight_config_owned_startup_models(
@@ -3210,6 +3322,39 @@ fn runtime_model_capacity_for_ref(model: &str, vram_bytes: u64) -> RuntimeModelC
     runtime_model_capacity_for_path(&model_path, vram_bytes)
 }
 
+async fn find_remote_catalog_model_exact_blocking(
+    query: String,
+) -> Option<models::remote_catalog::RemoteCatalogModel> {
+    tokio::task::spawn_blocking(move || models::find_remote_catalog_model_exact(&query))
+        .await
+        .ok()
+        .flatten()
+}
+
+async fn smart_auto_blocking(
+    meshes: Vec<nostr::DiscoveredMesh>,
+    my_vram_gb: f64,
+    target_name: Option<String>,
+) -> Result<nostr::AutoDecision> {
+    tokio::task::spawn_blocking(move || {
+        nostr::smart_auto(&meshes, my_vram_gb, target_name.as_deref())
+    })
+    .await
+    .context("join smart auto task")
+}
+
+async fn default_models_for_vram_blocking(my_vram_gb: f64) -> Result<Vec<String>> {
+    tokio::task::spawn_blocking(move || nostr::default_models_for_vram(my_vram_gb))
+        .await
+        .context("join default model selection task")
+}
+
+async fn auto_model_pack_blocking(my_vram_gb: f64) -> Result<Vec<String>> {
+    tokio::task::spawn_blocking(move || nostr::auto_model_pack(my_vram_gb))
+        .await
+        .context("join auto model pack task")
+}
+
 /// Pick which model this node should serve, based on demand signals.
 ///
 /// Priority:
@@ -3354,8 +3499,11 @@ async fn pick_model_assignment(node: &mesh::Node, local_models: &[String]) -> Op
         if serving_count.get(m).copied().unwrap_or(0) > 0 {
             continue;
         }
-        if let Some(cat) = models::find_catalog_model_exact(m) {
-            let size_bytes = parse_size_str(&cat.size);
+        if let Some(cat) = find_remote_catalog_model_exact_blocking(m.clone()).await {
+            let Some(size_label) = cat.size.as_deref() else {
+                continue;
+            };
+            let size_bytes = parse_size_str(size_label);
             let needed = (size_bytes as f64 * 1.1) as u64;
             if needed <= my_vram {
                 downloadable.push((m.clone(), d.request_count));
@@ -3546,7 +3694,7 @@ fn node_display_name(cli: &Cli, node: &mesh::Node) -> String {
 async fn join_mesh_for_mcp(cli: &Cli, node: &mesh::Node) -> Result<()> {
     if !cli.join.is_empty() {
         for token in &cli.join {
-            match node.join(token).await {
+            match node.join_with_retry(token).await {
                 Ok(()) => {
                     if node.mesh_id().await.is_some() {
                         record_first_joined_mesh_ts(node).await;
@@ -3566,11 +3714,17 @@ async fn join_mesh_for_mcp(cli: &Cli, node: &mesh::Node) -> Result<()> {
     if cli.auto || cli.discover.is_some() {
         let relays = nostr_relays(&cli.nostr_relay);
         let filter = nostr::MeshFilter {
-            model: None,
-            min_vram_gb: None,
             region: cli.region.clone(),
+            ..Default::default()
         };
-        let target_name = cli.discover.as_deref().or(cli.mesh_name.as_deref());
+        // Bare --discover (no name) parses as Some(""); treat that as None
+        // so smart_auto uses the normal --auto eligibility path.
+        let target_name = cli
+            .discover
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .or(cli.mesh_name.as_deref())
+            .map(str::to_owned);
         let _ = emit_event(OutputEvent::DiscoveryStarting {
             source: "Nostr discovery".to_string(),
         });
@@ -3584,7 +3738,7 @@ async fn join_mesh_for_mcp(cli: &Cli, node: &mesh::Node) -> Result<()> {
                 return Err(err);
             }
         };
-        match nostr::smart_auto(&meshes, 0.0, target_name) {
+        match smart_auto_blocking(meshes, 0.0, target_name).await? {
             nostr::AutoDecision::Join { candidates } => {
                 let mut last_err: Option<anyhow::Error> = None;
                 for (token, mesh) in &candidates {
@@ -3598,7 +3752,7 @@ async fn join_mesh_for_mcp(cli: &Cli, node: &mesh::Node) -> Result<()> {
                         peers: mesh.listing.node_count,
                         region: mesh.listing.region.clone(),
                     });
-                    match node.join(token).await {
+                    match node.join_with_retry(token).await {
                         Ok(()) => {
                             if node.mesh_id().await.is_some() {
                                 record_first_joined_mesh_ts(node).await;
@@ -3867,7 +4021,7 @@ async fn run_auto(
         let mut successful_join: Option<(String, Option<String>)> = None;
 
         for (t, mesh_name) in &join_attempts {
-            match node.join(t).await {
+            match node.join_with_retry(t).await {
                 Ok(()) => {
                     if node.mesh_id().await.is_some() {
                         record_first_joined_mesh_ts(&node).await;
@@ -3943,10 +4097,10 @@ async fn run_auto(
             }
         });
 
-        // Nostr re-discovery: if we joined via --auto (Nostr discovery) and lose
+        // Nostr re-discovery: if we joined via --auto or --discover and lose
         // all peers, re-discover and join a new mesh. This handles the case where
         // the original mesh publisher restarts with a new identity.
-        if cli.auto {
+        if cli.auto || cli.discover.is_some() {
             let rediscover_node = node.clone();
             let rediscover_relays = nostr_relays(&cli.nostr_relay);
             let rediscover_relay_urls = cli.relay.clone();
@@ -3984,7 +4138,7 @@ async fn run_auto(
 
         // Originator also re-discovers: if we started solo and a matching mesh
         // already exists on Nostr, we should join it instead of staying alone.
-        if cli.auto {
+        if cli.auto || cli.discover.is_some() {
             let rediscover_node = node.clone();
             let rediscover_relays = nostr_relays(&cli.nostr_relay);
             let rediscover_relay_urls = cli.relay.clone();
@@ -4036,16 +4190,17 @@ async fn run_auto(
 
         let assignment = pick_model_assignment(&node, &local_models).await;
         // If no demand-based assignment but we have VRAM, use auto pack's primary model
-        let assignment = if assignment.is_none() && cli.auto && !is_client {
-            let pack = nostr::auto_model_pack(node.vram_bytes() as f64 / 1e9);
-            if !pack.is_empty() {
-                Some(pack[0].clone())
+        let assignment =
+            if assignment.is_none() && (cli.auto || cli.discover.is_some()) && !is_client {
+                let pack = auto_model_pack_blocking(node.vram_bytes() as f64 / 1e9).await?;
+                if !pack.is_empty() {
+                    Some(pack[0].clone())
+                } else {
+                    assignment
+                }
             } else {
                 assignment
-            }
-        } else {
-            assignment
-        };
+            };
         if let Some(model_name) = assignment {
             let _ = emit_event(OutputEvent::HostElected {
                 model: model_name.clone(),
@@ -4056,13 +4211,16 @@ async fn run_auto(
             let model_path = models::find_model_path(&model_name);
             if model_path.exists() {
                 model_path
-            } else if let Some(cat) = models::find_catalog_model_exact(&model_name) {
-                // Model not on disk but in catalog — download it
+            } else if let Some(cat) =
+                find_remote_catalog_model_exact_blocking(model_name.clone()).await
+            {
+                // Model not on disk but in the remote catalog — download it.
                 let _ = emit_event(OutputEvent::Info {
                     message: format!("Downloading {model_name} for mesh..."),
                     context: None,
                 });
-                catalog::download_model(cat).await?
+                let model_ref = models::remote_catalog_model_ref(&cat);
+                resolve_model(&PathBuf::from(model_ref)).await?
             } else {
                 model_path
             }
@@ -4603,8 +4761,8 @@ async fn run_auto(
                 None
             }
         }
-    } else if cli.auto {
-        // Watchdog: if we joined via --auto, watch for the publisher to die and take over
+    } else if cli.auto || cli.discover.is_some() {
+        // Watchdog: if we joined via --auto/--discover, watch for the publisher to die and take over
         let relays = nostr_relays(&cli.nostr_relay);
         let wd_node = node.clone();
         let wd_name = cli.mesh_name.clone();
@@ -4664,6 +4822,16 @@ async fn run_auto(
                     api::RuntimeControlRequest::Load { spec, resp } => {
                         let result = async {
                             let model_path = resolve_model(&PathBuf::from(&spec)).await?;
+                            let runtime_model_name = find_remote_catalog_model_exact_blocking(spec.clone())
+                                .await
+                                .map(|model| models::remote_catalog_model_ref(&model))
+                                .unwrap_or_else(|| models::model_ref_for_path(&model_path));
+                            let already_loaded = managed_models.contains_key(&runtime_model_name)
+                                || runtime_models.contains_key(&runtime_model_name);
+                            anyhow::ensure!(
+                                !already_loaded,
+                                "model '{runtime_model_name}' is already loaded"
+                            );
 
                             // Look up per-model overrides from TOML config by matching the
                             // spec string against [[models]].model entries. Metadata-based
@@ -4700,6 +4868,7 @@ async fn run_auto(
                                     slots,
                                     parallel_override,
                                 },
+                                &runtime_model_name,
                             )
                             .await
                             {
@@ -5162,7 +5331,7 @@ async fn run_passive(
                 passive_publication_state = Some(api::PublicationState::PublishFailed);
             }
         }
-    } else if cli.auto && !is_client {
+    } else if (cli.auto || cli.discover.is_some()) && !is_client {
         // Watchdog: take over publishing if the original publisher dies
         let relays = nostr_relays(&cli.nostr_relay);
         let wd_node = node.clone();
@@ -5500,6 +5669,45 @@ mod tests {
         }
     }
 
+    fn remote_catalog_layer_entry(
+        variant_name: &str,
+        curated_name: &str,
+        source_repo: &str,
+        package_repo: &str,
+    ) -> models::remote_catalog::CatalogEntry {
+        let mut variants = std::collections::HashMap::new();
+        variants.insert(
+            variant_name.to_string(),
+            models::remote_catalog::CatalogVariant {
+                source: models::remote_catalog::CatalogSource {
+                    repo: source_repo.to_string(),
+                    revision: Some("main".to_string()),
+                    file: Some(format!("{variant_name}.gguf")),
+                },
+                curated: models::remote_catalog::CatalogCurated {
+                    name: curated_name.to_string(),
+                    size: None,
+                    description: None,
+                    draft: None,
+                    moe: None,
+                    extra_files: Vec::new(),
+                    mmproj: None,
+                },
+                packages: vec![models::remote_catalog::CatalogPackage {
+                    package_type: "layer-package".to_string(),
+                    repo: package_repo.to_string(),
+                    layer_count: Some(12),
+                    total_bytes: Some(42),
+                }],
+            },
+        );
+        models::remote_catalog::CatalogEntry {
+            schema_version: 1,
+            source_repo: source_repo.to_string(),
+            variants,
+        }
+    }
+
     fn startup_model_plan(model_ref: &str) -> StartupModelPlan {
         StartupModelPlan {
             declared_ref: model_ref.to_string(),
@@ -5515,6 +5723,47 @@ mod tests {
             n_ubatch: None,
             flash_attention: FlashAttentionType::Auto,
         }
+    }
+
+    #[test]
+    #[serial]
+    fn split_layer_package_resolution_checks_remote_catalog_for_model_name() {
+        let _catalog_guard =
+            models::remote_catalog::set_catalog_entries_for_test(vec![remote_catalog_layer_entry(
+                "RemoteSplitOnlyModel-Q4_K_M",
+                "Remote Split Only Model Q4_K_M",
+                "mesh-test/remote-split-only-model",
+                "meshllm/remote-split-only-model-layers",
+            )]);
+
+        let resolved = resolve_split_layer_package(
+            "Remote Split Only Model",
+            Path::new("Remote Split Only Model"),
+        );
+
+        assert_eq!(
+            resolved,
+            Some("hf://meshllm/remote-split-only-model-layers".to_string())
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn layer_package_resolution_keeps_existing_local_gguf() {
+        let _catalog_guard =
+            models::remote_catalog::set_catalog_entries_for_test(vec![remote_catalog_layer_entry(
+                "LocalModel-Q4_K_M",
+                "Local Model Q4_K_M",
+                "mesh-test/local-model",
+                "meshllm/local-model-layers",
+            )]);
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let local_model = temp_dir.path().join("LocalModel-Q4_K_M.gguf");
+        std::fs::write(&local_model, b"gguf").expect("write local model");
+
+        let resolved = resolve_split_layer_package("LocalModel-Q4_K_M", &local_model);
+
+        assert_eq!(resolved, None);
     }
 
     #[test]

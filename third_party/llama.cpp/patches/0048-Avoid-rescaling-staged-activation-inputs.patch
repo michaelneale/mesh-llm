@@ -1,0 +1,31 @@
+From 4ce87b0de3d429482fe749b89687e41685a02097 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Wed, 6 May 2026 08:42:26 +1000
+Subject: [PATCH] Avoid rescaling staged activation inputs
+
+---
+ src/llama-graph.cpp | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index 784e0726..f8b224a6 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -1827,8 +1827,12 @@ ggml_tensor * llm_graph_context::build_inp_embd(ggml_tensor * tok_embd) const {
+ 
+     res->t_inp_embd = cur;
+ 
+-    // For Granite architecture
+-    if (hparams.f_embedding_scale != 0.0f) {
++    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
++    const bool skippy_mid_stage_input = stage_filter.enabled && stage_filter.layer_start > 0;
++
++    // For Granite architecture. A skippy mid-stage vector input is already a
++    // post-layer activation, not a raw embedding, so do not scale it again.
++    if (!skippy_mid_stage_input && hparams.f_embedding_scale != 0.0f) {
+         cur = ggml_scale(ctx0, cur, hparams.f_embedding_scale);
+     }
+ 
+-- 
+2.50.1 (Apple Git-155)
+

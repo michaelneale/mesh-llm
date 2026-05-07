@@ -6,6 +6,7 @@ use crate::runtime;
 use crate::system::backend;
 
 pub(crate) async fn run_discover(
+    name: Option<String>,
     model: Option<String>,
     min_vram: Option<f64>,
     region: Option<String>,
@@ -15,6 +16,7 @@ pub(crate) async fn run_discover(
     let relays = runtime::nostr_relays(&relays);
 
     let filter = nostr::MeshFilter {
+        name,
         model,
         min_vram_gb: min_vram,
         region,
@@ -25,7 +27,11 @@ pub(crate) async fn run_discover(
 
     if meshes.is_empty() {
         eprintln!("No meshes found.");
-        if filter.model.is_some() || filter.min_vram_gb.is_some() || filter.region.is_some() {
+        if filter.name.is_some()
+            || filter.model.is_some()
+            || filter.min_vram_gb.is_some()
+            || filter.region.is_some()
+        {
             eprintln!("Try broader filters or check relays.");
         }
         return Ok(());
@@ -86,7 +92,8 @@ pub(crate) async fn run_discover(
     } else {
         eprintln!("To join a mesh:");
         eprintln!("  mesh-llm --join <token>");
-        eprintln!("\nOr use `mesh-llm discover --join` to auto-join the best match.");
+        eprintln!("  mesh-llm --discover <name>       # join by mesh name");
+        eprintln!("  mesh-llm client --discover <name> # join as client by mesh name");
     }
 
     Ok(())

@@ -1,0 +1,633 @@
+From 4f4a06f3457e0064702481a33c891a71033af9f6 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Wed, 6 May 2026 11:23:13 +1000
+Subject: [PATCH] Support RWKV7 activation sideband
+
+---
+ include/skippy.h      |   2 +
+ src/llama-context.cpp |   4 ++
+ src/llama-context.h   |   1 +
+ src/llama-graph.cpp   |  30 +++++++++
+ src/llama-graph.h     |  26 ++++++++
+ src/models/arwkv7.cpp |  31 +++++++--
+ src/models/rwkv7.cpp  |  35 ++++++++--
+ src/skippy.cpp        | 145 ++++++++++++++++++++++++++++++++++++++----
+ 8 files changed, 253 insertions(+), 21 deletions(-)
+
+diff --git a/include/skippy.h b/include/skippy.h
+index 84169398..1c6d2c9f 100644
+--- a/include/skippy.h
++++ b/include/skippy.h
+@@ -99,6 +99,8 @@ enum skippy_activation_layout {
+     SKIPPY_ACTIVATION_LAYOUT_TOKEN_MAJOR  = 1,
+ };
+ 
++#define SKIPPY_ACTIVATION_FLAG_RWKV7_V_FIRST (UINT64_C(1) << 0)
++
+ struct skippy_model;
+ struct skippy_session;
+ struct skippy_model_info;
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 61f26773..e33df849 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -2084,6 +2084,10 @@ llm_graph_result * llama_context::get_gf_res_reserve() const {
+     return static_cast<llm_graph_result *>(gf_res_reserve.get());
+ }
+ 
++llm_graph_result * llama_context::get_gf_res_prev() const {
++    return static_cast<llm_graph_result *>(gf_res_prev.get());
++}
++
+ ggml_cgraph * llama_context::graph_reserve(
+         uint32_t n_tokens, uint32_t n_seqs, uint32_t n_outputs, const llama_memory_context_i * mctx, bool split_only, size_t * sizes) {
+     LLAMA_LOG_DEBUG("%s: reserving a graph for ubatch with n_tokens = %4u, n_seqs = %2u, n_outputs = %4u\n", __func__, n_tokens, n_seqs, n_outputs);
+diff --git a/src/llama-context.h b/src/llama-context.h
+index 92d1b0cf..61a7fce6 100644
+--- a/src/llama-context.h
++++ b/src/llama-context.h
+@@ -230,6 +230,7 @@ public:
+ 
+     // can reuse the llm_graph_result instance of the context (for example to update a memory module)
+     llm_graph_result * get_gf_res_reserve() const;
++    llm_graph_result * get_gf_res_prev() const;
+ 
+     // returns the result of ggml_backend_sched_graph_compute_async execution
+     ggml_status graph_compute(ggml_cgraph * gf, bool batched);
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index f8b224a6..3d0a86b9 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -20,6 +20,7 @@
+ 
+ static thread_local skippy_graph_filter g_skippy_graph_filter;
+ static thread_local skippy_activation_tokens g_skippy_activation_tokens;
++static thread_local skippy_activation_rwkv7_v_first g_skippy_rwkv7_v_first;
+ 
+ void skippy_graph_set_filter(const skippy_graph_filter & filter) {
+     g_skippy_graph_filter = filter;
+@@ -45,6 +46,18 @@ const skippy_activation_tokens & skippy_graph_get_activation_tokens() {
+     return g_skippy_activation_tokens;
+ }
+ 
++void skippy_graph_set_rwkv7_v_first(const skippy_activation_rwkv7_v_first & values) {
++    g_skippy_rwkv7_v_first = values;
++}
++
++void skippy_graph_clear_rwkv7_v_first() {
++    g_skippy_rwkv7_v_first = {};
++}
++
++const skippy_activation_rwkv7_v_first & skippy_graph_get_rwkv7_v_first() {
++    return g_skippy_rwkv7_v_first;
++}
++
+ // dedup helpers
+ 
+ static ggml_tensor * build_attn_inp_kq_mask(
+@@ -141,6 +154,19 @@ bool llm_graph_input_stage_tokens::can_reuse(const llm_graph_params & params) {
+     return tokens && tokens->ne[0] == params.ubatch.n_tokens;
+ }
+ 
++void llm_graph_input_rwkv7_v_first::set_input(const llama_ubatch * ubatch) {
++    const skippy_activation_rwkv7_v_first & sideband = skippy_graph_get_rwkv7_v_first();
++    GGML_ASSERT(sideband.values != nullptr);
++    GGML_ASSERT(sideband.token_count == ubatch->n_tokens);
++    GGML_ASSERT(sideband.n_embd == n_embd);
++
++    ggml_backend_tensor_set(values, sideband.values, 0, sideband.token_count*n_embd*ggml_element_size(values));
++}
++
++bool llm_graph_input_rwkv7_v_first::can_reuse(const llm_graph_params & params) {
++    return values && values->ne[0] == n_embd && values->ne[1] == params.ubatch.n_tokens;
++}
++
+ void llm_graph_input_pos::set_input(const llama_ubatch * ubatch) {
+     if (ubatch->pos && pos) {
+         const int64_t n_tokens = ubatch->n_tokens;
+@@ -859,6 +885,7 @@ void llm_graph_result::reset() {
+     t_logits      = nullptr;
+     t_embd        = nullptr;
+     t_embd_pooled = nullptr;
++    t_skippy_rwkv7_v_first = nullptr;
+     t_sampled.clear();
+     t_sampled_probs.clear();
+     t_sampled_logits.clear();
+@@ -897,6 +924,9 @@ void llm_graph_result::set_outputs() {
+     if (t_embd_pooled != nullptr) {
+         ggml_set_output(t_embd_pooled);
+     }
++    if (t_skippy_rwkv7_v_first != nullptr) {
++        ggml_set_output(t_skippy_rwkv7_v_first);
++    }
+     for (auto & [seq_id, t] : t_sampled) {
+         if (t != nullptr) {
+             ggml_set_output(t);
+diff --git a/src/llama-graph.h b/src/llama-graph.h
+index d2ba2188..5673a2a8 100644
+--- a/src/llama-graph.h
++++ b/src/llama-graph.h
+@@ -40,12 +40,21 @@ struct skippy_activation_tokens {
+     uint32_t token_count = 0;
+ };
+ 
++struct skippy_activation_rwkv7_v_first {
++    const float * values = nullptr;
++    uint32_t token_count = 0;
++    uint32_t n_embd = 0;
++};
++
+ void skippy_graph_set_filter(const skippy_graph_filter & filter);
+ void skippy_graph_clear_filter();
+ const skippy_graph_filter & skippy_graph_get_filter();
+ void skippy_graph_set_activation_tokens(const skippy_activation_tokens & tokens);
+ void skippy_graph_clear_activation_tokens();
+ const skippy_activation_tokens & skippy_graph_get_activation_tokens();
++void skippy_graph_set_rwkv7_v_first(const skippy_activation_rwkv7_v_first & values);
++void skippy_graph_clear_rwkv7_v_first();
++const skippy_activation_rwkv7_v_first & skippy_graph_get_rwkv7_v_first();
+ 
+ // certain models (typically multi-modal) can produce different types of graphs
+ enum llm_graph_type {
+@@ -152,6 +161,21 @@ public:
+     ggml_tensor * tokens = nullptr; // I32 [n_batch]
+ };
+ 
++class llm_graph_input_rwkv7_v_first : public llm_graph_input_i {
++public:
++    llm_graph_input_rwkv7_v_first(int64_t n_embd) : n_embd(n_embd) {}
++    virtual ~llm_graph_input_rwkv7_v_first() = default;
++
++    void set_input(const llama_ubatch * ubatch) override;
++
++    bool can_reuse(const llm_graph_params & params) override;
++
++    ggml_tensor * values = nullptr; // F32 [n_embd, n_batch]
++
++private:
++    int64_t n_embd;
++};
++
+ class llm_graph_input_pos : public llm_graph_input_i {
+ public:
+     llm_graph_input_pos(uint32_t n_pos_per_embd) : n_pos_per_embd(n_pos_per_embd) {}
+@@ -676,6 +700,7 @@ public:
+     ggml_tensor * get_logits()      const { return t_logits; }
+     ggml_tensor * get_embd()        const { return t_embd; }
+     ggml_tensor * get_embd_pooled() const { return t_embd_pooled; }
++    ggml_tensor * get_skippy_rwkv7_v_first() const { return t_skippy_rwkv7_v_first; }
+ 
+     ggml_cgraph  * get_gf()  const { return gf; }
+     ggml_context * get_ctx() const { return ctx_compute.get(); }
+@@ -704,6 +729,7 @@ public:
+     ggml_tensor * t_logits      = nullptr;
+     ggml_tensor * t_embd        = nullptr;
+     ggml_tensor * t_embd_pooled = nullptr;
++    ggml_tensor * t_skippy_rwkv7_v_first = nullptr;
+ 
+     std::map<llama_seq_id, ggml_tensor*> t_sampled_logits;
+     std::map<llama_seq_id, ggml_tensor*> t_candidates;
+diff --git a/src/models/arwkv7.cpp b/src/models/arwkv7.cpp
+index 79aa8c90..396f0fe6 100644
+--- a/src/models/arwkv7.cpp
++++ b/src/models/arwkv7.cpp
+@@ -124,7 +124,12 @@ llama_model_arwkv7::graph::graph(const llama_model & model, const llm_graph_para
+     ggml_tensor * inpL;
+     ggml_tensor * v_first = nullptr;
+ 
+-    inpL = build_inp_embd(model.tok_embd);
++    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
++    const bool stage_filtered = stage_filter.enabled;
++    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
++    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
++
++    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
+ 
+     auto * rs_inp = build_rs_inp();
+ 
+@@ -132,9 +137,18 @@ llama_model_arwkv7::graph::graph(const llama_model & model, const llm_graph_para
+     const auto n_seq_tokens = ubatch.n_seq_tokens;
+     const auto n_seqs = ubatch.n_seqs;
+ 
+-    ggml_tensor * inp_out_ids = build_inp_out_ids();
++    if (stage_filtered && il_start > 0) {
++        auto inp = std::make_unique<llm_graph_input_rwkv7_v_first>(n_embd);
++        inp->values = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_embd, n_tokens);
++        cb(inp->values, "inp_rwkv7_v_first", -1);
++        ggml_set_input(inp->values);
++        v_first = inp->values;
++        res->add_input(std::move(inp));
++    }
++
++    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
+ 
+-    for (int il = 0; il < n_layer; ++il) {
++    for (int il = il_start; il < il_end; ++il) {
+         const llama_layer * layer = &model.layers[il];
+         inpL = ggml_reshape_3d(ctx0, inpL, n_embd, n_seq_tokens, n_seqs);
+ 
+@@ -151,6 +165,9 @@ llama_model_arwkv7::graph::graph(const llama_model & model, const llm_graph_para
+                 );
+ 
+         cur = build_rwkv7_time_mix(rs_inp, att_norm, x_prev, v_first, ubatch, il);
++        if (stage_filtered && !stage_filter.include_output && il_start == 0 && il == 0) {
++            res->t_skippy_rwkv7_v_first = v_first;
++        }
+ 
+         token_shift = ggml_view_3d(ctx0, att_norm, n_embd, 1, n_seqs, att_norm->nb[1], att_norm->nb[2], (n_seq_tokens-1)*n_embd*ggml_element_size(att_norm));
+         ggml_build_forward_expand(gf, build_rwkv_token_shift_store(token_shift, ubatch, il));
+@@ -161,7 +178,7 @@ llama_model_arwkv7::graph::graph(const llama_model & model, const llm_graph_para
+         cur     = ggml_reshape_2d(ctx0, cur,     n_embd, n_tokens);
+         ffn_inp = ggml_reshape_2d(ctx0, ffn_inp, n_embd, n_tokens);
+ 
+-        if (il == n_layer - 1 && inp_out_ids) {
++        if (il == il_end - 1 && inp_out_ids) {
+             cur     = ggml_get_rows(ctx0, cur,     inp_out_ids);
+             ffn_inp = ggml_get_rows(ctx0, ffn_inp, inp_out_ids);
+         }
+@@ -187,6 +204,12 @@ llama_model_arwkv7::graph::graph(const llama_model & model, const llm_graph_para
+         // input for next layer
+         inpL = cur;
+     }
++    if (stage_filtered && !stage_filter.include_output) {
++        cb(inpL, "stage_boundary", il_end - 1);
++        res->t_embd = inpL;
++        ggml_build_forward_expand(gf, inpL);
++        return;
++    }
+     cur = inpL;
+     cur = build_norm(cur, model.output_norm, model.output_norm_b, LLM_NORM_RMS, -1);
+ 
+diff --git a/src/models/rwkv7.cpp b/src/models/rwkv7.cpp
+index b205e393..c3dc9eb0 100644
+--- a/src/models/rwkv7.cpp
++++ b/src/models/rwkv7.cpp
+@@ -129,8 +129,15 @@ llama_model_rwkv7::graph::graph(const llama_model & model, const llm_graph_param
+     ggml_tensor * inpL;
+     ggml_tensor * v_first = nullptr;
+ 
+-    inpL = build_inp_embd(model.tok_embd);
+-    inpL = build_norm(inpL, model.tok_norm, model.tok_norm_b, LLM_NORM, 0);
++    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
++    const bool stage_filtered = stage_filter.enabled;
++    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
++    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
++
++    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
++    if (il_start == 0) {
++        inpL = build_norm(inpL, model.tok_norm, model.tok_norm_b, LLM_NORM, 0);
++    }
+ 
+     auto * rs_inp = build_rs_inp();
+ 
+@@ -138,9 +145,18 @@ llama_model_rwkv7::graph::graph(const llama_model & model, const llm_graph_param
+     const auto n_seq_tokens = ubatch.n_seq_tokens;
+     const auto n_seqs       = ubatch.n_seqs;
+ 
+-    ggml_tensor * inp_out_ids = build_inp_out_ids();
++    if (stage_filtered && il_start > 0) {
++        auto inp = std::make_unique<llm_graph_input_rwkv7_v_first>(n_embd);
++        inp->values = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_embd, n_tokens);
++        cb(inp->values, "inp_rwkv7_v_first", -1);
++        ggml_set_input(inp->values);
++        v_first = inp->values;
++        res->add_input(std::move(inp));
++    }
++
++    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
+ 
+-    for (int il = 0; il < n_layer; ++il) {
++    for (int il = il_start; il < il_end; ++il) {
+         const llama_layer * layer = &model.layers[il];
+         inpL                      = ggml_reshape_3d(ctx0, inpL, n_embd, n_seq_tokens, n_seqs);
+ 
+@@ -159,6 +175,9 @@ llama_model_rwkv7::graph::graph(const llama_model & model, const llm_graph_param
+             ggml_view_3d(ctx0, att_norm, n_embd, n_seq_tokens - 1, n_seqs, att_norm->nb[1], att_norm->nb[2], 0), 1);
+ 
+         cur = build_rwkv7_time_mix(rs_inp, att_norm, x_prev, v_first, ubatch, il);
++        if (stage_filtered && !stage_filter.include_output && il_start == 0 && il == 0) {
++            res->t_skippy_rwkv7_v_first = v_first;
++        }
+ 
+         ggml_tensor * ffn_inp = ggml_add(ctx0, cur, inpL);
+         cb(ffn_inp, "ffn_inp", il);
+@@ -182,7 +201,7 @@ llama_model_rwkv7::graph::graph(const llama_model & model, const llm_graph_param
+         ffn_norm = ggml_reshape_2d(ctx0, ffn_norm, n_embd, n_tokens);
+         x_prev   = ggml_reshape_2d(ctx0, x_prev, n_embd, n_tokens);
+ 
+-        if (il == n_layer - 1 && inp_out_ids) {
++        if (il == il_end - 1 && inp_out_ids) {
+             ffn_inp  = ggml_get_rows(ctx0, ffn_inp, inp_out_ids);
+             ffn_norm = ggml_get_rows(ctx0, ffn_norm, inp_out_ids);
+             x_prev   = ggml_get_rows(ctx0, x_prev, inp_out_ids);
+@@ -196,6 +215,12 @@ llama_model_rwkv7::graph::graph(const llama_model & model, const llm_graph_param
+         // input for next layer
+         inpL = cur;
+     }
++    if (stage_filtered && !stage_filter.include_output) {
++        cb(inpL, "stage_boundary", il_end - 1);
++        res->t_embd = inpL;
++        ggml_build_forward_expand(gf, inpL);
++        return;
++    }
+     cur = inpL;
+     cur = build_norm(cur, model.output_norm, model.output_norm_b, LLM_NORM, -1);
+ 
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index 1010874c..91887b70 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -631,6 +631,34 @@ struct skippy_activation_tokens_scope {
+     bool enabled = false;
+ };
+ 
++struct skippy_rwkv7_v_first_scope {
++    skippy_rwkv7_v_first_scope(
++            const skippy_activation_desc * desc,
++            const void * payload,
++            size_t hidden_bytes,
++            int32_t n_embd) {
++        if (desc != nullptr &&
++            payload != nullptr &&
++            (desc->flags & SKIPPY_ACTIVATION_FLAG_RWKV7_V_FIRST) != 0 &&
++            desc->payload_bytes >= hidden_bytes) {
++            skippy_activation_rwkv7_v_first sideband;
++            sideband.values = reinterpret_cast<const float *>(static_cast<const uint8_t *>(payload) + hidden_bytes);
++            sideband.token_count = desc->token_count;
++            sideband.n_embd = static_cast<uint32_t>(n_embd);
++            skippy_graph_set_rwkv7_v_first(sideband);
++            enabled = true;
++        }
++    }
++
++    ~skippy_rwkv7_v_first_scope() {
++        if (enabled) {
++            skippy_graph_clear_rwkv7_v_first();
++        }
++    }
++
++    bool enabled = false;
++};
++
+ static bool skippy_is_filtered(const skippy_session * session) {
+     return session != nullptr &&
+            session->stage_model != nullptr &&
+@@ -641,7 +669,15 @@ static bool skippy_emits_activation_frame(const skippy_session * session) {
+     return skippy_is_filtered(session) && !session->stage_model->config.include_output;
+ }
+ 
+-static size_t skippy_activation_payload_bytes(const skippy_session * session, size_t token_count) {
++static bool skippy_is_rwkv7_activation_model(const skippy_session * session) {
++    if (session == nullptr || session->stage_model == nullptr || session->stage_model->model == nullptr) {
++        return false;
++    }
++    const llm_arch arch = session->stage_model->model->arch;
++    return arch == LLM_ARCH_RWKV7 || arch == LLM_ARCH_ARWKV7;
++}
++
++static size_t skippy_activation_hidden_bytes(const skippy_session * session, size_t token_count) {
+     if (session == nullptr || session->stage_model == nullptr || session->stage_model->model == nullptr) {
+         return 0;
+     }
+@@ -651,6 +687,35 @@ static size_t skippy_activation_payload_bytes(const skippy_session * session, si
+            sizeof(float);
+ }
+ 
++static uint64_t skippy_output_activation_flags(
++        const skippy_session * session,
++        const skippy_activation_desc * input_desc) {
++    if (!skippy_emits_activation_frame(session) || !skippy_is_rwkv7_activation_model(session)) {
++        return 0;
++    }
++
++    const skippy_runtime_config & config = session->stage_model->config;
++    if (config.layer_start == 0 && config.layer_end > 0) {
++        return SKIPPY_ACTIVATION_FLAG_RWKV7_V_FIRST;
++    }
++    if (input_desc != nullptr && (input_desc->flags & SKIPPY_ACTIVATION_FLAG_RWKV7_V_FIRST) != 0) {
++        return SKIPPY_ACTIVATION_FLAG_RWKV7_V_FIRST;
++    }
++    return 0;
++}
++
++static size_t skippy_activation_payload_bytes(
++        const skippy_session * session,
++        size_t token_count,
++        uint64_t flags) {
++    const size_t hidden_bytes = skippy_activation_hidden_bytes(session, token_count);
++    size_t payload_bytes = hidden_bytes;
++    if ((flags & SKIPPY_ACTIVATION_FLAG_RWKV7_V_FIRST) != 0) {
++        payload_bytes += hidden_bytes;
++    }
++    return payload_bytes;
++}
++
+ static bool skippy_has_activation_payload(const skippy_activation_desc * desc, const void * payload) {
+     return desc != nullptr && desc->payload_bytes > 0 && payload != nullptr;
+ }
+@@ -694,7 +759,21 @@ static enum skippy_status skippy_validate_frame_input(
+         return SKIPPY_STATUS_INVALID_ARGUMENT;
+     }
+ 
+-    const size_t expected_bytes = skippy_activation_payload_bytes(session, expected_token_count);
++    const uint64_t supported_flags = SKIPPY_ACTIVATION_FLAG_RWKV7_V_FIRST;
++    if ((input_desc->flags & ~supported_flags) != 0) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "activation frame has unsupported sideband flags");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if ((input_desc->flags & SKIPPY_ACTIVATION_FLAG_RWKV7_V_FIRST) != 0 && !skippy_is_rwkv7_activation_model(session)) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "RWKV7 v_first sideband is only valid for RWKV7 stages");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if (skippy_is_rwkv7_activation_model(session) && (input_desc->flags & SKIPPY_ACTIVATION_FLAG_RWKV7_V_FIRST) == 0) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "non-first RWKV7 runtime slices require v_first activation sideband");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    const size_t expected_bytes = skippy_activation_payload_bytes(session, expected_token_count, input_desc->flags);
+     if (input_desc->payload_bytes != expected_bytes) {
+         skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "activation frame payload size does not match model hidden size");
+         return SKIPPY_STATUS_INVALID_ARGUMENT;
+@@ -710,9 +789,11 @@ static enum skippy_status skippy_prepare_output_activation_frame(
+         size_t output_payload_capacity,
+         size_t * out_output_payload_bytes,
+         skippy_activation_desc * output_desc,
++        const skippy_activation_desc * input_desc,
+         struct skippy_error ** out_error) {
++    const uint64_t output_flags = skippy_output_activation_flags(session, input_desc);
+     const size_t payload_bytes = skippy_emits_activation_frame(session) ?
+-            skippy_activation_payload_bytes(session, token_count) : 0;
++            skippy_activation_payload_bytes(session, token_count, output_flags) : 0;
+ 
+     if (out_output_payload_bytes != nullptr) {
+         *out_output_payload_bytes = payload_bytes;
+@@ -743,7 +824,7 @@ static enum skippy_status skippy_prepare_output_activation_frame(
+         output_desc->token_count = static_cast<uint32_t>(std::min<size_t>(token_count, std::numeric_limits<uint32_t>::max()));
+         output_desc->sequence_count = token_count > 0 ? 1 : 0;
+         output_desc->payload_bytes = payload_bytes;
+-        output_desc->flags = 0;
++        output_desc->flags = output_flags;
+     }
+ 
+     return SKIPPY_STATUS_OK;
+@@ -1312,6 +1393,8 @@ static enum skippy_status skippy_copy_output_activation_frame(
+         skippy_session * session,
+         size_t token_count,
+         void * output_payload,
++        const skippy_activation_desc * input_desc,
++        const void * input_payload,
+         struct skippy_error ** out_error) {
+     if (!skippy_emits_activation_frame(session)) {
+         return skippy_success(out_error);
+@@ -1323,8 +1406,36 @@ static enum skippy_status skippy_copy_output_activation_frame(
+         return SKIPPY_STATUS_RUNTIME_ERROR;
+     }
+ 
+-    const size_t payload_bytes = skippy_activation_payload_bytes(session, token_count);
+-    std::memcpy(output_payload, embeddings, payload_bytes);
++    const uint64_t output_flags = skippy_output_activation_flags(session, input_desc);
++    const size_t hidden_bytes = skippy_activation_hidden_bytes(session, token_count);
++    std::memcpy(output_payload, embeddings, hidden_bytes);
++
++    if ((output_flags & SKIPPY_ACTIVATION_FLAG_RWKV7_V_FIRST) != 0) {
++        uint8_t * sideband_output = static_cast<uint8_t *>(output_payload) + hidden_bytes;
++        const skippy_runtime_config & config = session->stage_model->config;
++        if (config.layer_start == 0) {
++            llm_graph_result * res = session->ctx->get_gf_res_prev();
++            ggml_tensor * v_first = res != nullptr ? res->get_skippy_rwkv7_v_first() : nullptr;
++            if (v_first == nullptr) {
++                skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "RWKV7 v_first sideband output was not available");
++                return SKIPPY_STATUS_RUNTIME_ERROR;
++            }
++            if (ggml_nbytes(v_first) < hidden_bytes) {
++                skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "RWKV7 v_first sideband tensor is smaller than activation hidden payload");
++                return SKIPPY_STATUS_RUNTIME_ERROR;
++            }
++            ggml_backend_tensor_get(v_first, sideband_output, 0, hidden_bytes);
++        } else {
++            if (input_desc == nullptr ||
++                input_payload == nullptr ||
++                (input_desc->flags & SKIPPY_ACTIVATION_FLAG_RWKV7_V_FIRST) == 0 ||
++                input_desc->payload_bytes < hidden_bytes * 2) {
++                skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "RWKV7 downstream slice cannot forward missing v_first sideband");
++                return SKIPPY_STATUS_INVALID_ARGUMENT;
++            }
++            std::memcpy(sideband_output, static_cast<const uint8_t *>(input_payload) + hidden_bytes, hidden_bytes);
++        }
++    }
+     return skippy_success(out_error);
+ }
+ 
+@@ -1349,7 +1460,8 @@ static enum skippy_status skippy_decode_activation_frame(
+     const int32_t n_embd = llama_model_n_embd(session->stage_model->model);
+     llama_batch batch = llama_batch_init(n_tokens, n_embd, 1);
+     batch.n_tokens = n_tokens;
+-    std::memcpy(batch.embd, input_payload, static_cast<size_t>(input_desc->payload_bytes));
++    const size_t hidden_bytes = skippy_activation_hidden_bytes(session, token_count);
++    std::memcpy(batch.embd, input_payload, hidden_bytes);
+ 
+     for (int32_t i = 0; i < n_tokens; ++i) {
+         batch.pos[i] = session->n_past + i;
+@@ -1359,6 +1471,7 @@ static enum skippy_status skippy_decode_activation_frame(
+     }
+ 
+     skippy_activation_tokens_scope activation_tokens_scope(token_ids, token_count);
++    skippy_rwkv7_v_first_scope rwkv7_v_first_scope(input_desc, input_payload, hidden_bytes, n_embd);
+     enum skippy_status status = skippy_decode_batch(session, batch, token_count, out_error);
+     llama_batch_free(batch);
+     return status;
+@@ -1383,7 +1496,8 @@ static enum skippy_status skippy_verify_activation_frame(
+     const int32_t n_embd = llama_model_n_embd(session->stage_model->model);
+     llama_batch batch = llama_batch_init(n_tokens, n_embd, 1);
+     batch.n_tokens = n_tokens;
+-    std::memcpy(batch.embd, input_payload, static_cast<size_t>(input_desc->payload_bytes));
++    const size_t hidden_bytes = skippy_activation_hidden_bytes(session, token_count);
++    std::memcpy(batch.embd, input_payload, hidden_bytes);
+ 
+     for (int32_t i = 0; i < n_tokens; ++i) {
+         batch.pos[i] = session->n_past + i;
+@@ -1392,6 +1506,7 @@ static enum skippy_status skippy_verify_activation_frame(
+         batch.logits[i] = 1;
+     }
+ 
++    skippy_rwkv7_v_first_scope rwkv7_v_first_scope(input_desc, input_payload, hidden_bytes, n_embd);
+     enum skippy_status status = skippy_decode_batch(session, batch, token_count, out_error);
+     llama_batch_free(batch);
+     return status;
+@@ -1489,6 +1604,8 @@ static enum skippy_status skippy_finish_model_open(
+             model->arch != LLM_ARCH_QWEN35MOE &&
+             model->arch != LLM_ARCH_QWEN3MOE &&
+             model->arch != LLM_ARCH_RWKV6 &&
++            model->arch != LLM_ARCH_RWKV7 &&
++            model->arch != LLM_ARCH_ARWKV7 &&
+             model->arch != LLM_ARCH_GEMMA &&
+             model->arch != LLM_ARCH_GEMMA2 &&
+             model->arch != LLM_ARCH_GEMMA3 &&
+@@ -2141,6 +2258,7 @@ enum skippy_status skippy_prefill_chunk_frame(
+             output_payload_capacity,
+             out_output_payload_bytes,
+             output_desc,
++            input_desc,
+             out_error);
+     if (status != SKIPPY_STATUS_OK) {
+         return status;
+@@ -2155,7 +2273,7 @@ enum skippy_status skippy_prefill_chunk_frame(
+         return status;
+     }
+ 
+-    return skippy_copy_output_activation_frame(session, token_count, output_payload, out_error);
++    return skippy_copy_output_activation_frame(session, token_count, output_payload, input_desc, input_payload, out_error);
+ }
+ 
+ enum skippy_status skippy_decode_step_frame(
+@@ -2212,6 +2330,7 @@ enum skippy_status skippy_decode_step_frame_sampled(
+             output_payload_capacity,
+             out_output_payload_bytes,
+             output_desc,
++            input_desc,
+             out_error);
+     if (status != SKIPPY_STATUS_OK) {
+         return status;
+@@ -2230,7 +2349,7 @@ enum skippy_status skippy_decode_step_frame_sampled(
+         *out_predicted_token = session->stage_model->config.include_output ? skippy_sample_token(session, sampling) : -1;
+     }
+ 
+-    return skippy_copy_output_activation_frame(session, 1, output_payload, out_error);
++    return skippy_copy_output_activation_frame(session, 1, output_payload, input_desc, input_payload, out_error);
+ }
+ 
+ enum skippy_status skippy_verify_tokens_frame(
+@@ -2280,6 +2399,7 @@ enum skippy_status skippy_verify_tokens_frame(
+             output_payload_capacity,
+             out_output_payload_bytes,
+             output_desc,
++            input_desc,
+             out_error);
+     if (status != SKIPPY_STATUS_OK) {
+         return status;
+@@ -2310,7 +2430,7 @@ enum skippy_status skippy_verify_tokens_frame(
+         return status;
+     }
+ 
+-    status = skippy_copy_output_activation_frame(session, token_count, output_payload, out_error);
++    status = skippy_copy_output_activation_frame(session, token_count, output_payload, input_desc, input_payload, out_error);
+     if (status != SKIPPY_STATUS_OK) {
+         return status;
+     }
+@@ -2344,11 +2464,12 @@ enum skippy_status skippy_session_copy_output_activation_frame(
+             output_payload_capacity,
+             out_output_payload_bytes,
+             output_desc,
++            nullptr,
+             out_error);
+     if (status != SKIPPY_STATUS_OK) {
+         return status;
+     }
+-    return skippy_copy_output_activation_frame(session, token_count, output_payload, out_error);
++    return skippy_copy_output_activation_frame(session, token_count, output_payload, nullptr, nullptr, out_error);
+ }
+ 
+ static enum skippy_status skippy_validate_state_range(
+-- 
+2.50.1 (Apple Git-155)
+

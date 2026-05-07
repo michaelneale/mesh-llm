@@ -24,10 +24,10 @@ use serde_json::{json, Value};
 use skippy_metrics::{attr, metric};
 use skippy_protocol::{
     binary::{
-        read_stage_message, recv_reply, send_ready, send_reply_ack, send_reply_ack_with_stats,
-        send_reply_predicted_tokens_with_stats, send_reply_predicted_with_stats, state_flags,
-        StageReplyStats, StageSamplingConfig, StageStateHeader, StageWireMessage,
-        WireActivationDType, WireMessageKind, WireReplyKind,
+        activation_frame_flags_from_state_flags, read_stage_message, recv_reply, send_ready,
+        send_reply_ack, send_reply_ack_with_stats, send_reply_predicted_tokens_with_stats,
+        send_reply_predicted_with_stats, state_flags, StageReplyStats, StageSamplingConfig,
+        StageStateHeader, StageWireMessage, WireActivationDType, WireMessageKind, WireReplyKind,
     },
     MessageBase, StageConfig, StageTopology, SCHEMA_VERSION,
 };
@@ -1947,6 +1947,7 @@ fn restore_prefill_decode_as_decode_message(
     decode.kind = WireMessageKind::DecodeEmbd;
     decode.token_count = 1;
     decode.tokens = vec![current_token];
+    decode.positions.clear();
     decode.activation.clear();
     decode.raw_bytes.clear();
     decode.state.phase = StageStateHeader::new(
@@ -2889,7 +2890,12 @@ pub(crate) fn run_binary_stage_message(
 ) -> Result<(i32, Vec<i32>, ActivationFrame)> {
     match message.kind {
         WireMessageKind::PrefillEmbd => {
-            let output = runtime.prefill_frame(session_id, token_ids, input)?;
+            let output = runtime.prefill_frame_with_positions(
+                session_id,
+                token_ids,
+                &message.positions,
+                input,
+            )?;
             Ok((message.state.current_token, Vec::new(), output))
         }
         WireMessageKind::PrefillFinalEmbd if sample_final_prefill => {
@@ -2897,13 +2903,19 @@ pub(crate) fn run_binary_stage_message(
             let (predicted, output) = runtime.prefill_final_frame_sampled(
                 session_id,
                 token_ids,
+                &message.positions,
                 sampling.as_ref(),
                 input,
             )?;
             Ok((predicted, Vec::new(), output))
         }
         WireMessageKind::PrefillFinalEmbd => {
-            let output = runtime.prefill_frame(session_id, token_ids, input)?;
+            let output = runtime.prefill_frame_with_positions(
+                session_id,
+                token_ids,
+                &message.positions,
+                input,
+            )?;
             Ok((message.state.current_token, Vec::new(), output))
         }
         WireMessageKind::DecodeEmbd
@@ -2991,7 +3003,7 @@ fn input_activation_frame(
             token_count: message.token_count.try_into().unwrap_or(0),
             sequence_count: if message.token_count > 0 { 1 } else { 0 },
             payload_bytes: payload.len() as u64,
-            flags: 0,
+            flags: activation_frame_flags_from_state_flags(message.state.flags),
         },
         payload,
     }))

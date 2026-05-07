@@ -285,6 +285,94 @@ fn hex_lower(bytes: &[u8]) -> String {
     out
 }
 
+/// Build a `SkippyPackageIdentity` from a remote HF layer package.
+///
+/// Resolves the package into the local HF cache for inspection, downloading
+/// the manifest and shared metadata that the resolver requires, but not layer
+/// files. Layer artifacts are fetched later by the node that materializes or
+/// loads its assigned stage.
+pub(crate) fn identity_from_layer_package(package_ref: &str) -> Result<SkippyPackageIdentity> {
+    // Resolve hf:// to a local package dir for lightweight package inspection.
+    let local_ref =
+        super::materialization::resolve_hf_package_to_local(package_ref, 0, 0, false, false)?;
+    let info = skippy_runtime::package::inspect_layer_package(&local_ref)
+        .with_context(|| format!("inspect layer package {package_ref}"))?;
+
+    let activation_width =
+        required_layer_package_activation_width(package_ref, info.activation_width)?;
+    let source_model_bytes = info
+        .source_model_bytes
+        .unwrap_or_else(|| info.layers.iter().map(|l| l.artifact_bytes).sum::<u64>());
+
+    // For local paths inside an HF cache, convert to an exact hf:// ref so all
+    // nodes resolve the same snapshot independently. HF cache dirs look like:
+    // .../models--owner--name/snapshots/<hash>/
+    let canonical_package_ref = canonical_layer_package_ref(package_ref, &local_ref);
+
+    Ok(SkippyPackageIdentity {
+        package_ref: canonical_package_ref,
+        manifest_sha256: info.manifest_sha256,
+        source_model_path: PathBuf::from(&info.source_model_path),
+        source_model_sha256: info.source_model_sha256,
+        source_model_bytes,
+        source_files: Vec::new(),
+        layer_count: info.layer_count,
+        activation_width,
+        tensor_count: info.layers.iter().map(|l| l.tensor_count as u64).sum(),
+    })
+}
+
+/// Detect if a local path is inside an HF cache directory and convert to `hf://` ref.
+///
+/// HF cache paths look like:
+///   `.../hub/models--owner--name/snapshots/<hash>/`
+///
+/// Returns `Some("hf://owner/name@hash")` if detected, `None` otherwise.
+fn hf_ref_from_cache_path(path: &str) -> Option<String> {
+    // Walk path components looking for "models--*" followed by "snapshots"
+    let path = std::path::Path::new(path);
+    let components: Vec<&std::ffi::OsStr> = path
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => Some(s),
+            _ => None,
+        })
+        .collect();
+    for (i, comp) in components.iter().enumerate() {
+        let s = comp.to_str()?;
+        if let Some(repo_part) = s.strip_prefix("models--") {
+            // Verify next component is "snapshots" and preserve the exact
+            // snapshot revision/hash so peers fetch identical package content.
+            if components.get(i + 1).and_then(|c| c.to_str()) == Some("snapshots") {
+                let revision = components.get(i + 2)?.to_str()?;
+                // repo_part is "owner--name", convert to "owner/name"
+                let repo = repo_part.replacen("--", "/", 1);
+                if repo.contains('/') {
+                    return Some(format!("hf://{repo}@{revision}"));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn canonical_layer_package_ref(package_ref: &str, local_ref: &str) -> String {
+    hf_ref_from_cache_path(local_ref)
+        .or_else(|| hf_ref_from_cache_path(package_ref))
+        .unwrap_or_else(|| package_ref.to_string())
+}
+
+fn required_layer_package_activation_width(
+    package_ref: &str,
+    activation_width: Option<u32>,
+) -> Result<u32> {
+    activation_width.with_context(|| {
+        format!(
+            "layer package {package_ref} is missing activation_width; rebuild the package manifest"
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -387,5 +475,37 @@ mod tests {
         let error = direct_gguf_source_files(&second).unwrap_err().to_string();
 
         assert!(error.contains("first shard"));
+    }
+
+    #[test]
+    fn hf_ref_from_cache_path_preserves_snapshot_revision() {
+        let package_ref =
+            "/cache/hub/models--meshllm--Qwen3-layers/snapshots/abc123/model-package.json";
+
+        assert_eq!(
+            hf_ref_from_cache_path(package_ref),
+            Some("hf://meshllm/Qwen3-layers@abc123".to_string())
+        );
+    }
+
+    #[test]
+    fn canonical_layer_package_ref_prefers_resolved_snapshot() {
+        let local_ref = "/cache/hub/models--meshllm--Qwen3-layers/snapshots/abc123";
+
+        assert_eq!(
+            canonical_layer_package_ref("hf://meshllm/Qwen3-layers@main", local_ref),
+            "hf://meshllm/Qwen3-layers@abc123"
+        );
+    }
+
+    #[test]
+    fn layer_package_activation_width_is_required() {
+        let error =
+            required_layer_package_activation_width("hf://meshllm/Qwen3-layers@abc123", None)
+                .unwrap_err()
+                .to_string();
+
+        assert!(error.contains("missing activation_width"));
+        assert!(error.contains("rebuild the package manifest"));
     }
 }

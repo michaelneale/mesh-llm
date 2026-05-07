@@ -1,9 +1,10 @@
 use std::io::{self, Read, Write};
 
 use super::{
-    activation::activation_wire_bytes, invalid_data, invalid_input, StageLogitBias, StageReply,
-    StageReplyStats, StageSamplingConfig, StageStateHeader, StageWireMessage, WireActivationDType,
-    WireMessageKind, WireReplyKind, MAX_STAGE_LOGIT_BIAS, READY_MAGIC, STAGE_STATE_VERSION,
+    activation::activation_wire_bytes_with_state_flags, invalid_data, invalid_input,
+    StageLogitBias, StageReply, StageReplyStats, StageSamplingConfig, StageStateHeader,
+    StageWireMessage, WireActivationDType, WireMessageKind, WireReplyKind, MAX_STAGE_LOGIT_BIAS,
+    READY_MAGIC, STAGE_STATE_VERSION,
 };
 
 pub fn send_ready(mut writer: impl Write) -> io::Result<()> {
@@ -90,7 +91,7 @@ pub fn write_stage_message(
     dtype: WireActivationDType,
 ) -> io::Result<()> {
     // Wire v4 fixed prefix, little-endian:
-    // kind, pos_start, token_count, token_sideband_count (4 x i32);
+    // kind, pos_start, token_count, token_sideband_count, position_sideband_count (5 x i32);
     // StageStateHeader (10 x i32); request_id, session_id (2 x u64);
     // optional StageSamplingConfig follows when state_flags::SAMPLING is set.
     // Token sideband, raw StateImport bytes, or activation bytes follow this
@@ -101,6 +102,11 @@ pub fn write_stage_message(
     write_i32(
         &mut writer,
         i32::try_from(message.tokens.len()).map_err(|_| invalid_input("too many tokens"))?,
+    )?;
+    write_i32(
+        &mut writer,
+        i32::try_from(message.positions.len())
+            .map_err(|_| invalid_input("too many position sideband values"))?,
     )?;
 
     let mut state = message.state;
@@ -138,6 +144,9 @@ pub fn write_stage_message(
     for token in &message.tokens {
         write_i32(&mut writer, *token)?;
     }
+    for position in &message.positions {
+        write_i32(&mut writer, *position)?;
+    }
     writer.write_all(&message.activation)?;
     Ok(())
 }
@@ -147,6 +156,7 @@ pub fn read_stage_message(mut reader: impl Read, n_embd: i32) -> io::Result<Stag
     let pos_start = read_i32(&mut reader)?;
     let token_count = read_i32(&mut reader)?;
     let token_sideband_count = read_i32(&mut reader)?;
+    let position_sideband_count = read_i32(&mut reader)?;
     let state = read_state_header(&mut reader)?;
     if state.version != STAGE_STATE_VERSION {
         return Err(invalid_data("unsupported stage state version"));
@@ -183,11 +193,12 @@ pub fn read_stage_message(mut reader: impl Read, n_embd: i32) -> io::Result<Stag
             sampling,
             chat_sampling_metadata,
             tokens: Vec::new(),
+            positions: Vec::new(),
             activation: Vec::new(),
             raw_bytes: Vec::new(),
         });
     }
-    if token_count < 0 || token_sideband_count < 0 {
+    if token_count < 0 || token_sideband_count < 0 || position_sideband_count < 0 {
         return Err(invalid_data("negative wire count"));
     }
     if kind == WireMessageKind::StateImport {
@@ -203,6 +214,7 @@ pub fn read_stage_message(mut reader: impl Read, n_embd: i32) -> io::Result<Stag
             sampling,
             chat_sampling_metadata,
             tokens: Vec::new(),
+            positions: Vec::new(),
             activation: Vec::new(),
             raw_bytes,
         });
@@ -212,11 +224,15 @@ pub fn read_stage_message(mut reader: impl Read, n_embd: i32) -> io::Result<Stag
     for _ in 0..token_sideband_count {
         tokens.push(read_i32(&mut reader)?);
     }
+    let mut positions = Vec::with_capacity(position_sideband_count as usize);
+    for _ in 0..position_sideband_count {
+        positions.push(read_i32(&mut reader)?);
+    }
     let activation_bytes =
         if state.source_stage_index < 0 || kind.is_activationless_prefix_cache_control() {
             0
         } else {
-            activation_wire_bytes(dtype, token_count, n_embd)?
+            activation_wire_bytes_with_state_flags(dtype, token_count, n_embd, state.flags)?
         };
     let mut activation = vec![0; activation_bytes];
     if activation_bytes > 0 {
@@ -232,6 +248,7 @@ pub fn read_stage_message(mut reader: impl Read, n_embd: i32) -> io::Result<Stag
         sampling,
         chat_sampling_metadata,
         tokens,
+        positions,
         activation,
         raw_bytes: Vec::new(),
     })
