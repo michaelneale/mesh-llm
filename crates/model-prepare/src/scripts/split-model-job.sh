@@ -4,9 +4,11 @@ set -euo pipefail
 # This script runs inside an HF Job container.
 # It clones mesh-llm, builds the splitter, splits the model, validates, and publishes.
 #
-# Environment variables (set by run-split-job.sh):
-#   SOURCE_REPO, SOURCE_FILE, TARGET_REPO, MODEL_ID, SOURCE_REVISION, HF_TOKEN
+# Environment variables (set by mesh-llm model-prepare job spec):
+#   SOURCE_REPO, SOURCE_FILE, TARGET_REPO, MODEL_ID, SOURCE_REVISION
 #   MESH_LLM_REF — git ref to build from (default: main)
+#   CATALOG_CREATE_PR — "true" to open a PR for catalog updates (non-org members)
+#   HF_TOKEN — injected as a secret by HF Jobs
 #
 # Volumes:
 #   /source  — source GGUF repo (read-only mount)

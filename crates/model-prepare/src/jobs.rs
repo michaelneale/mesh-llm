@@ -92,8 +92,7 @@ pub struct LogEntry {
 impl HfJobsClient {
     /// Build a client from environment.
     ///
-    /// Token is resolved via `HF_TOKEN`, `HUGGING_FACE_HUB_TOKEN`, or
-    /// `~/.cache/huggingface/token`.
+    /// Requires `HF_TOKEN` to be set.
     pub fn from_env() -> Result<Self> {
         let token = std::env::var("HF_TOKEN")
             .ok()

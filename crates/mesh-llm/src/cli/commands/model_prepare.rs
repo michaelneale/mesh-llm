@@ -28,18 +28,20 @@ pub(crate) async fn dispatch_model_prepare(
         return run_update_script().await;
     }
 
-    let jobs_client = HfJobsClient::from_env()?;
-
     if let Some(job_id) = status {
+        let jobs_client = HfJobsClient::from_env()?;
         return run_status(&jobs_client, job_id).await;
     }
     if let Some(job_id) = logs {
+        let jobs_client = HfJobsClient::from_env()?;
         return run_logs(&jobs_client, job_id).await;
     }
     if let Some(job_id) = cancel {
+        let jobs_client = HfJobsClient::from_env()?;
         return run_cancel(&jobs_client, job_id).await;
     }
     if list {
+        let jobs_client = HfJobsClient::from_env()?;
         return run_list(&jobs_client).await;
     }
 
@@ -53,9 +55,13 @@ pub(crate) async fn dispatch_model_prepare(
     let hf_client = model_prepare::build_hf_client()?;
 
     // If no quant specified, list available quants and exit.
+    // This path doesn't need HF_TOKEN — works for public repos.
     if quant.is_none() {
         return run_list_quants(&hf_client, source_repo).await;
     }
+
+    // From here on we need HF_TOKEN for job submission.
+    let jobs_client = HfJobsClient::from_env()?;
 
     // Check script freshness (non-fatal).
     check_script_freshness(&hf_client).await;

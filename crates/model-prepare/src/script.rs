@@ -48,7 +48,8 @@ pub async fn check_bucket_script(client: &HFClient) -> Result<ScriptFreshness> {
     }
 
     // Sizes match — download to a temp file and verify SHA-256.
-    let tmp_dir = std::env::temp_dir().join("mesh-llm-script-check");
+    let tmp_dir =
+        std::env::temp_dir().join(format!("mesh-llm-script-check-{}", std::process::id()));
     std::fs::create_dir_all(&tmp_dir)?;
     let tmp_path = tmp_dir.join("split-model-job.sh");
 
@@ -85,7 +86,8 @@ pub async fn update_bucket_script(client: &HFClient) -> Result<()> {
     let bucket = client.bucket("meshllm", "layer-split-output");
 
     // Write embedded script to a temp file for upload.
-    let tmp_dir = std::env::temp_dir().join("mesh-llm-script-upload");
+    let tmp_dir =
+        std::env::temp_dir().join(format!("mesh-llm-script-upload-{}", std::process::id()));
     std::fs::create_dir_all(&tmp_dir)?;
     let tmp_path = tmp_dir.join("split-model-job.sh");
     std::fs::write(&tmp_path, EMBEDDED_SCRIPT)?;
