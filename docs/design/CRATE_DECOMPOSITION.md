@@ -28,6 +28,9 @@ Five slices are already extracted:
   were previously duplicated under the host network module: request
   normalization, stream-chunk parsing, response stream usage conversion, and
   upstream error mapping.
+- `model-artifact` owns GGUF header metadata scanning and KV-cache byte
+  estimation; host/client model modules re-export it instead of treating
+  `mesh-client` as the GGUF parser crate.
 
 ```mermaid
 flowchart TD
@@ -38,6 +41,7 @@ flowchart TD
     protocol["mesh-llm-protocol"]
     routing["mesh-llm-routing"]
     openai["openai-frontend"]
+    artifact["model-artifact"]
     ui["mesh-llm-ui"]
     api_assets["mesh-llm API asset routes"]
 
@@ -50,6 +54,8 @@ flowchart TD
     routing --> client
     routing --> host
     openai --> host
+    artifact --> client
+    artifact --> host
     ui --> api_assets
     api_assets --> host
 ```
@@ -126,7 +132,7 @@ flowchart TD
 | `system/hardware.rs`, backend detection, benchmark primitives | New `mesh-llm-system` | Local-machine concerns should stay out of mesh/protocol crates. |
 | `system/autoupdate.rs`, `release_target.rs` | Keep in root app or move to `mesh-llm-cli` | App distribution behavior, not core system modeling. |
 | `models/resolve`, `catalog`, `remote_catalog`, `search`, download code | Existing `model-resolver` and `model-hf` | Avoid creating `mesh-llm-models` for code that already belongs to model infrastructure. |
-| `models/capabilities.rs`, `models/topology.rs`, `models/gguf.rs` | Existing `model-artifact`, `model-ref`, or `model-resolver` depending on final ownership | These are model metadata concerns, not host runtime concerns. |
+| `models/capabilities.rs`, `models/topology.rs`, `models/gguf.rs` | Existing `model-artifact`, `model-ref`, or `model-resolver` depending on final ownership | GGUF scanner ownership has moved to `model-artifact`; remaining capability/topology helpers should keep moving into existing model infrastructure instead of a new host-owned model crate. |
 | `inference/skippy/*` | Existing `skippy-*` crates where possible | The host should orchestrate Skippy rather than own Skippy package, topology, and runtime internals. |
 | `inference/election.rs`, split planning | `mesh-llm-routing`, or existing shared client inference modules if needed by embedded clients | Shared target/table primitives and split-GGUF size accounting are implemented in `mesh-llm-routing`; higher-level split planning still needs further extraction. |
 | React console | `mesh-llm-ui` | The console owns its package metadata, build, generated assets, Rust embedding surface, and UI conventions instead of living under the host binary crate. |
@@ -171,7 +177,7 @@ The crate split should include the documentation migration as part of the same s
 ## Extraction order
 
 1. Extract the first `mesh-llm-types`, `mesh-llm-identity`, `mesh-llm-protocol`, and `mesh-llm-routing` slices.
-2. Move model metadata, resolve, search, and download code into existing `model-*` crates.
+2. Continue moving model metadata, resolve, search, and download code into existing `model-*` crates.
 3. Continue moving OpenAI adapter and schema code into `openai-frontend`.
 4. Push Skippy-owned logic into existing `skippy-*` crates.
 5. Extract `mesh-llm-runtime-data`.

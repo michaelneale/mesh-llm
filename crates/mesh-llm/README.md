@@ -45,6 +45,11 @@ Shared routing target primitives live in
 `src/inference/election.rs` while higher-level affinity, request parsing, and
 OpenAI transport behavior remain in host-owned networking modules.
 
+GGUF artifact metadata scanning lives in
+[`../model-artifact`](../model-artifact). The host re-exports the scanner
+through `src/models/gguf.rs` for existing call sites, but model file-format
+ownership belongs with the model artifact infrastructure.
+
 Notable built-ins under `src/plugins/` today:
 
 ```text

@@ -1,3 +1,1 @@
-pub use mesh_client::models::gguf::{scan_gguf_compact_meta, GgufKvCacheQuant};
-
-pub type GgufCompactMeta = mesh_client::models::gguf::GgufCompactMeta;
+pub use model_artifact::gguf::{scan_gguf_compact_meta, GgufCompactMeta, GgufKvCacheQuant};

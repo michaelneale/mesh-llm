@@ -1,3 +1,5 @@
+pub mod gguf;
+
 use std::path::Path;
 
 use anyhow::{bail, Result};

@@ -4088,6 +4088,7 @@ dependencies = [
  "mesh-llm-protocol",
  "mesh-llm-routing",
  "mesh-llm-types",
+ "model-artifact",
  "nostr-sdk",
  "prost",
  "rand 0.10.1",

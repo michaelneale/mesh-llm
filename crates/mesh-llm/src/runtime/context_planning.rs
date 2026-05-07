@@ -201,8 +201,8 @@ mod tests {
             vram_bytes: 80_000_000_000,
             metadata: Some(&metadata),
             kv_cache_quant: GgufKvCacheQuant::new(
-                mesh_client::models::gguf::GgufKvCacheType::Q4_0,
-                mesh_client::models::gguf::GgufKvCacheType::Q4_0,
+                model_artifact::gguf::GgufKvCacheType::Q4_0,
+                model_artifact::gguf::GgufKvCacheType::Q4_0,
             ),
         });
 

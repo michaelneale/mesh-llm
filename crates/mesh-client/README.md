@@ -35,6 +35,10 @@ Shared routing targets and model placement helpers are owned by
 `crates/mesh-llm-routing/` and re-exported here for compatibility with existing
 client call sites. Client-only runtime process details stay in this crate.
 
+GGUF artifact metadata scanning is owned by `crates/model-artifact/` and
+re-exported here for compatibility. Keep file-format parsing in model
+infrastructure crates rather than in client runtime code.
+
 Client requests should preserve the full model ref chosen by the caller. Model
 resolution, stage topology, and runtime lifecycle remain server-side mesh
 responsibilities.
