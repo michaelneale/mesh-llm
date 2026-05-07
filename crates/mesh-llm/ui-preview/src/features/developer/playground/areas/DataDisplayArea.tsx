@@ -115,7 +115,6 @@ export function DataDisplayArea({ state }: { state: DeveloperPlaygroundState }) 
                   />
                   <ModelCatalog
                     models={state.dashboardModels}
-                    filterLabel="All"
                     selectedModelName={state.selectedDashboardModelName}
                     onSelect={(model) => state.setSelectedDashboardModelName(model.name)}
                   />
@@ -262,7 +261,6 @@ export function DataDisplayArea({ state }: { state: DeveloperPlaygroundState }) 
                   </PlaygroundPanel>
                   <ModelCatalog
                     models={state.dashboardModels}
-                    filterLabel="Harness"
                     selectedModelName={state.selectedDashboardModelName}
                     onSelect={(model) => state.setSelectedDashboardModelName(model.name)}
                   />

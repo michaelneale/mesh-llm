@@ -65,5 +65,11 @@ export function SelectedReservedConfig({
 }: SelectedReservedConfigProps) {
   if (reservedGB <= 0 || selectedId !== reservedVramSelectionId(node.id, containerIdx)) return null
 
-  return <ReservedConfigCard key={`reserved-${node.id}-${containerIdx}`} locationLabel={locationLabel} reservedGB={reservedGB} />
+  return (
+    <ReservedConfigCard
+      key={`reserved-${node.id}-${containerIdx}`}
+      locationLabel={locationLabel}
+      reservedGB={reservedGB}
+    />
+  )
 }

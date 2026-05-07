@@ -29,7 +29,8 @@ export function RemoteNodeContextPanel({ node, assigns, models }: RemoteNodeCont
             {node.hostname}
           </h2>
           <p className="mt-1 text-[length:var(--density-type-control)] leading-relaxed text-fg-dim">
-            {node.region} · {nodeGpuCountLabel(node)} · {formatGB(nodeUsableGB(node), { fixedFractionDigits: 1 })} GB usable
+            {node.region} · {nodeGpuCountLabel(node)} · {formatGB(nodeUsableGB(node), { fixedFractionDigits: 1 })} GB
+            usable
           </p>
         </div>
         <span className="inline-flex items-center gap-1.5 rounded-[var(--radius)] border border-border-soft bg-surface px-2 py-1 font-mono text-[length:var(--density-type-annotation)] uppercase tracking-[0.06em] text-fg-faint">

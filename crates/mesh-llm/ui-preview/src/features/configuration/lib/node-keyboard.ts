@@ -40,7 +40,9 @@ export function nodeKeyboardAttributes({
     hasKeyboardGpuSlots
       ? 'Use left and right arrows to select models in the current GPU slot, or hold Shift to jump to the first or last model in that slot.'
       : null,
-    hasKeyboardGpuSlots ? 'Hold Alt with left or right to adjust context, or hold Alt and Shift to jump context.' : null,
+    hasKeyboardGpuSlots
+      ? 'Hold Alt with left or right to adjust context, or hold Alt and Shift to jump context.'
+      : null,
     readOnly ? 'Remote node context is read-only.' : 'Press A to add a model.',
     !readOnly && configurablePlacement ? 'Press P or S to switch placement.' : null
   ]

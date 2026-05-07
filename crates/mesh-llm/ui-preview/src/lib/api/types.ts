@@ -29,6 +29,7 @@ export type ServingModelEntry = ServingModel | string
 export interface ModelCapabilities {
   vision: boolean
   moe: boolean
+  [capability: string]: boolean | undefined
 }
 
 export interface MeshModelRaw {
@@ -45,6 +46,7 @@ export interface MeshModelRaw {
   disk_gb?: number
   moe?: boolean
   vision?: boolean
+  license?: string
 }
 
 export interface PeerInfo {

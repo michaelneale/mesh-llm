@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
-import { PEERS_TABLE_GRID_COLUMNS, PeerFilterPopover, PeerRow, SortIndicator } from '@/features/network/components/PeersTableParts'
+import {
+  PEERS_TABLE_GRID_COLUMNS,
+  PeerFilterPopover,
+  PeerRow,
+  SortIndicator
+} from '@/features/network/components/PeersTableParts'
 import {
   buildFilterOptions,
   clampPage,
@@ -15,10 +20,12 @@ import {
   type SortState
 } from '@/features/network/lib/peers-table-utils'
 import { cn } from '@/lib/cn'
-import type { Peer, PeerSummary } from '@/features/app-tabs/types'
+import type { ModelSummary, Peer, PeerSummary } from '@/features/app-tabs/types'
+import { usePeerDtos } from '@/features/network/lib/use-peer-dto'
 
 type PeersTableProps = {
   peers: Peer[]
+  models?: ModelSummary[]
   summary: PeerSummary
   selectedPeerId?: string
   onSelect?: (peer: Peer) => void
@@ -29,17 +36,18 @@ const PEERS_PAGE_SIZE = 10
 
 const columns: Array<{ key: SortKey; label: string; align?: 'right' }> = [
   { key: 'id', label: 'ID' },
-  { key: 'role', label: 'Role' },
-  { key: 'version', label: 'Version' },
-  { key: 'status', label: 'Status' },
   { key: 'hosted', label: 'Hosted' },
-  { key: 'latency', label: 'Latency', align: 'right' },
+  { key: 'version', label: 'Version' },
   { key: 'vram', label: 'VRAM', align: 'right' },
-  { key: 'share', label: 'Share', align: 'right' }
+  { key: 'share', label: 'Share', align: 'right' },
+  { key: 'latency', label: 'Latency', align: 'right' },
+  { key: 'role', label: 'Role', align: 'right' },
+  { key: 'status', label: 'Status', align: 'right' }
 ]
 
 export function PeersTable({
   peers,
+  models = [],
   summary,
   selectedPeerId,
   onSelect,
@@ -94,6 +102,7 @@ export function PeersTable({
     () => sortedPeers.slice(firstPeerIndex, firstPeerIndex + PEERS_PAGE_SIZE),
     [firstPeerIndex, sortedPeers]
   )
+  const visibleDtos = usePeerDtos(visiblePeers, models)
   const visibleStart = sortedPeers.length === 0 ? 0 : firstPeerIndex + 1
   const visibleEnd = firstPeerIndex + visiblePeers.length
 
@@ -138,6 +147,11 @@ export function PeersTable({
     setPage(0)
   }
 
+  function handleSelectNone(key: FilterKey) {
+    setFilters((current) => ({ ...current, [key]: [] }))
+    setPage(0)
+  }
+
   function handleClearFilters() {
     setFilters({})
     setPage(0)
@@ -148,16 +162,6 @@ export function PeersTable({
       <header className="flex items-center justify-between gap-3 border-b border-border-soft px-3.5 py-2.5">
         <h2 className="type-panel-title">Connected peers</h2>
         <div className="flex min-w-0 items-center gap-2 text-[length:var(--density-type-caption)] text-fg-faint">
-          <PeerFilterPopover
-            activeFilterGroups={activeFilterGroups}
-            optionsByColumn={filterOptionsByColumn}
-            selectedValues={selectedFilterValues}
-            totalCount={summary.total}
-            visibleCount={sortedPeers.length}
-            onClear={handleClearFilters}
-            onSelectAll={handleSelectAll}
-            onValueChange={handleFilterValueChange}
-          />
           {showPagination && (
             <div className="flex items-center gap-1.5">
               <button
@@ -195,7 +199,17 @@ export function PeersTable({
           <span aria-hidden="true" className="text-fg-faint">
             ·
           </span>
-          <span className="whitespace-nowrap text-good">● {summary.capacity}</span>
+          <PeerFilterPopover
+            activeFilterGroups={activeFilterGroups}
+            optionsByColumn={filterOptionsByColumn}
+            selectedValues={selectedFilterValues}
+            totalCount={summary.total}
+            visibleCount={sortedPeers.length}
+            onClear={handleClearFilters}
+            onSelectAll={handleSelectAll}
+            onSelectNone={handleSelectNone}
+            onValueChange={handleFilterValueChange}
+          />
         </div>
       </header>
       <div className="max-w-full overflow-x-auto [contain:inline-size]">
@@ -224,14 +238,14 @@ export function PeersTable({
             )
           })}
         </div>
-        {visiblePeers.length > 0 ? (
-          visiblePeers.map((peer, i) => (
+        {visibleDtos.length > 0 ? (
+          visibleDtos.map((dto, i) => (
             <PeerRow
-              key={peer.id}
-              peer={peer}
-              active={peer.id === selectedPeerId}
-              isLast={i === visiblePeers.length - 1}
-              onSelect={onSelect}
+              key={dto.id}
+              peer={dto}
+              active={dto.id === selectedPeerId}
+              isLast={i === visibleDtos.length - 1}
+              onSelect={onSelect ? () => onSelect(visiblePeers[i]!) : undefined}
               onHoverPeerIdChange={onHoverPeerIdChange}
             />
           ))

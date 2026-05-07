@@ -44,7 +44,11 @@ export function vramDropBarStyle({
   }
 }
 
-export function vramFreeLaneStyle({ invalidDropActive, validDropActive, free }: VramFreeLaneStyleOptions): CSSProperties {
+export function vramFreeLaneStyle({
+  invalidDropActive,
+  validDropActive,
+  free
+}: VramFreeLaneStyleOptions): CSSProperties {
   return {
     borderColor: invalidDropActive
       ? 'color-mix(in oklch, var(--color-bad), transparent 45%)'

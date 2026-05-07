@@ -39,6 +39,8 @@ export function adaptModelsToSummary(models: MeshModelRaw[]): ModelSummary[] {
     diskGB: model.disk_gb,
     ctxMaxK: model.context_length == null ? undefined : Math.round(model.context_length / 1000),
     moe: model.capabilities?.moe ?? model.moe ?? false,
-    vision: model.capabilities?.vision ?? model.vision ?? model.tags?.includes('vision') ?? false
+    vision: model.capabilities?.vision ?? model.vision ?? model.tags?.includes('vision') ?? false,
+    capabilities: model.capabilities,
+    license: model.license
   }))
 }

@@ -77,7 +77,12 @@ export function getVramDropIntent({
 
   const sourceNodeId = event.dataTransfer.getData('text/source-node')
   const sourceContainerIdx = Number(event.dataTransfer.getData('text/source-container'))
-  if (sourceNodeId && Number.isFinite(sourceContainerIdx) && sourceNodeId === node.id && sourceContainerIdx === containerIdx) {
+  if (
+    sourceNodeId &&
+    Number.isFinite(sourceContainerIdx) &&
+    sourceNodeId === node.id &&
+    sourceContainerIdx === containerIdx
+  ) {
     return { supported: false, fits: false, effect: 'none' }
   }
 
@@ -89,7 +94,9 @@ export function getVramDropIntent({
   const model = findModel(existing.modelId, models)
   return {
     supported: true,
-    fits: Boolean(model && canFitModelInContainer(model, node, assigns, containerIdx, existing.ctx, existing.id, models)),
+    fits: Boolean(
+      model && canFitModelInContainer(model, node, assigns, containerIdx, existing.ctx, existing.id, models)
+    ),
     effect: 'move'
   }
 }

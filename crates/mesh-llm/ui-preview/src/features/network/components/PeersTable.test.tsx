@@ -41,7 +41,7 @@ describe('PeersTable', () => {
     expect(screen.queryByRole('button', { name: 'View worker-1 node, peer ID peer-1' })).not.toBeInTheDocument()
     expect(screen.getByText('11-12')).toBeInTheDocument()
     expect(screen.getByText('12 total')).toBeInTheDocument()
-    expect(screen.getByText('● 144 GB')).toBeInTheDocument()
+    expect(screen.queryByText('● 144 GB')).not.toBeInTheDocument()
   })
 
   it('sorts the full peer list by clicked column before rendering rows', async () => {

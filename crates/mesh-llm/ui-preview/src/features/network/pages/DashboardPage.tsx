@@ -227,16 +227,12 @@ function DashboardPageContent({
         </div>
       }
       catalog={
-        <ModelCatalog
-          models={displayData.models}
-          filterLabel="All"
-          selectedModelName={selectedModelView?.name}
-          onSelect={selectModel}
-        />
+        <ModelCatalog models={displayData.models} selectedModelName={selectedModelView?.name} onSelect={selectModel} />
       }
       peers={
         <PeersTable
           peers={displayData.peers}
+          models={displayData.models}
           summary={displayData.peerSummary}
           selectedPeerId={selectedPeer?.id}
           onSelect={selectPeer}

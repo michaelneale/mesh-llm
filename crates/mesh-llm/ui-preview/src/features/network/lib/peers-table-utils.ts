@@ -23,7 +23,7 @@ export function roleLabel(role: NonNullable<Peer['role']>): string {
   return 'Peer'
 }
 
-export function statusLabel(peer: Peer): string {
+export function statusLabel(peer: { nodeState?: Peer['nodeState']; status: Peer['status'] }): string {
   return meshStatusLabel(peer)
 }
 
@@ -90,7 +90,7 @@ function isIdentifierLike(value: string): boolean {
   return /^[a-f0-9-]{8,}$/i.test(value)
 }
 
-export function displayHostname(peer: Peer): string | undefined {
+export function displayHostname(peer: { hostname: string; id: string; shortId?: string }): string | undefined {
   const hostname = peer.hostname.trim()
   if (!hostname) return undefined
   if (hostname === peer.id || hostname === peer.shortId) return undefined
@@ -99,7 +99,7 @@ export function displayHostname(peer: Peer): string | undefined {
   return hostname
 }
 
-export function rowAriaLabel(peer: Peer, active: boolean): string {
+export function rowAriaLabel(peer: { shortId?: string; id: string; hostname: string }, active: boolean): string {
   const primaryId = peer.shortId ?? peer.id
   const hostname = displayHostname(peer)
   const nodeLabel = hostname

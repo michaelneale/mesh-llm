@@ -42,6 +42,16 @@ export type Peer = {
   owner?: string
 }
 export type PeerSummary = { total: number; online: number; capacity: string }
+
+export type PeerHostedModel = {
+  name: string
+  paramsB?: number
+  sizeGB?: number
+}
+
+export type PeerDTO = Omit<Peer, 'hostedModels'> & {
+  hostedModels: PeerHostedModel[]
+}
 export type ModelFamilyColorKey =
   | 'family-0'
   | 'family-1'
@@ -51,6 +61,7 @@ export type ModelFamilyColorKey =
   | 'family-5'
   | 'family-6'
   | 'family-7'
+export type ModelCapabilities = Partial<Record<string, boolean>>
 export type ModelSummary = {
   name: string
   family: string
@@ -70,6 +81,8 @@ export type ModelSummary = {
   ctxPerGB?: number
   moe?: boolean
   vision?: boolean
+  capabilities?: ModelCapabilities
+  license?: string
   activitySummary?: string
 }
 export type MeshNodeRenderKind = 'client' | 'worker' | 'active' | 'serving' | 'self'

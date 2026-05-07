@@ -1,6 +1,5 @@
-import * as Popover from '@radix-ui/react-popover'
-import { Check, Funnel } from 'lucide-react'
-import type { ReactElement } from 'react'
+import type { ReactElement, ReactNode } from 'react'
+import { FilterPopover } from '@/components/ui/FilterPopover'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { meshStatusTone } from '@/features/network/lib/mesh-status'
@@ -17,12 +16,12 @@ import {
 } from '@/features/network/lib/peers-table-utils'
 import { cn } from '@/lib/cn'
 import { formatLatency } from '@/lib/format-latency'
-import type { Peer } from '@/features/app-tabs/types'
+import type { PeerDTO } from '@/features/app-tabs/types'
 
 export const PEERS_TABLE_GRID_COLUMNS =
-  'minmax(7.75rem,0.58fr) minmax(4.25rem,5rem) minmax(5.5rem,8rem) minmax(5.5rem,6rem) minmax(14rem,1.6fr) minmax(4.75rem,5.25rem) minmax(4.5rem,5rem) minmax(7rem,7rem)'
+  'minmax(7.75rem,0.58fr) minmax(14rem,1.6fr) minmax(5.5rem,8rem) minmax(4.5rem,5rem) minmax(7rem,7rem) minmax(4.75rem,5.25rem) minmax(4.25rem,5rem) minmax(5.5rem,6rem)'
 
-function PeerValueTooltip({ content, children }: { content: string | undefined; children: ReactElement }) {
+function PeerValueTooltip({ content, children }: { content: ReactNode; children: ReactElement }) {
   if (!content) return children
   return (
     <Tooltip content={content} side="top">
@@ -31,7 +30,7 @@ function PeerValueTooltip({ content, children }: { content: string | undefined; 
   )
 }
 
-function RolePill({ role }: { role: NonNullable<Peer['role']> }) {
+function RolePill({ role }: { role: NonNullable<PeerDTO['role']> }) {
   const isYou = role === 'you'
   const label = roleLabel(role)
   return (
@@ -50,7 +49,7 @@ function RolePill({ role }: { role: NonNullable<Peer['role']> }) {
   )
 }
 
-function StatusPill({ peer }: { peer: Peer }) {
+function StatusPill({ peer }: { peer: PeerDTO }) {
   const label = statusLabel(peer)
   const tone = meshStatusTone(peer)
 
@@ -109,6 +108,7 @@ type PeerFilterPopoverProps = {
   totalCount: number
   onValueChange: (key: FilterKey, value: string, checked: boolean) => void
   onSelectAll: (key: FilterKey) => void
+  onSelectNone: (key: FilterKey) => void
   onClear: () => void
 }
 
@@ -120,139 +120,50 @@ export function PeerFilterPopover({
   totalCount,
   onValueChange,
   onSelectAll,
+  onSelectNone,
   onClear
 }: PeerFilterPopoverProps) {
-  const filtersActive = activeFilterGroups > 0
-
   return (
-    <Popover.Root>
-      <Popover.Trigger asChild>
-        <button
-          type="button"
-          aria-controls="peer-table-filter"
-          aria-haspopup="dialog"
-          aria-label={filtersActive ? `Filter peers, ${activeFilterGroups} active` : 'Filter peers'}
-          className={cn(
-            'ui-control inline-flex h-7 shrink-0 items-center gap-1.5 rounded-[var(--radius)] px-2 text-[length:var(--density-type-caption)] outline-none transition-[border-color,background,color,box-shadow]',
-            'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
-            filtersActive &&
-              'border-accent/45 bg-[color-mix(in_oklab,var(--color-accent)_12%,var(--color-panel))] text-fg shadow-surface-selected'
-          )}
-        >
-          <Funnel aria-hidden={true} className="size-3.5" strokeWidth={1.8} />
-          <span className="hidden sm:inline">Filter</span>
-          {filtersActive ? (
-            <span className="rounded-full bg-accent px-1.5 py-px font-mono text-[10px] leading-none text-accent-ink">
-              {activeFilterGroups}
-            </span>
-          ) : null}
-        </button>
-      </Popover.Trigger>
-      <Popover.Portal>
-        <Popover.Content
-          id="peer-table-filter"
-          align="end"
-          aria-label="Filter connected peers"
-          className="surface-popover-panel z-50 w-[min(22rem,calc(100vw-2rem))] rounded-[var(--radius-lg)] border border-border bg-panel p-3 text-[length:var(--density-type-caption)] text-fg shadow-surface-popover outline-none"
-          collisionPadding={12}
-          side="bottom"
-          sideOffset={8}
-        >
-          <div className="flex items-start justify-between gap-3 border-b border-border-soft pb-2.5">
-            <div className="min-w-0">
-              <div className="type-panel-title text-[length:var(--density-type-control)]">Filter peers</div>
-              <p className="mt-0.5 text-[length:var(--density-type-caption)] text-fg-faint">
-                Showing <span className="font-mono text-fg-dim">{visibleCount}</span> of{' '}
-                <span className="font-mono text-fg-dim">{totalCount}</span>
-              </p>
-            </div>
-            <button
-              type="button"
-              className="rounded-[var(--radius-sm)] px-2 py-1 text-[length:var(--density-type-caption)] text-fg-dim transition-colors hover:bg-panel-strong hover:text-fg disabled:pointer-events-none disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-              disabled={!filtersActive}
-              onClick={onClear}
-            >
-              Reset
-            </button>
-          </div>
-          <div className="mt-2.5 grid max-h-[min(28rem,70vh)] gap-3 overflow-y-auto pr-1">
-            {filterColumns.map((column) => {
-              const options = optionsByColumn[column.key]
-              const selected = selectedValues[column.key]
-              const selectedCount = options.filter((option) => selected.has(option.value)).length
-              const columnActive = selectedCount < options.length
-
-              return (
-                <section key={column.key} className="min-w-0">
-                  <div className="mb-1.5 flex items-center justify-between gap-2">
-                    <div className="type-label text-fg-faint">{column.label}</div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono text-[10px] text-fg-faint">
-                        {selectedCount}/{options.length}
-                      </span>
-                      <button
-                        type="button"
-                        className="rounded-[var(--radius-sm)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.07em] text-fg-dim transition-colors hover:bg-panel-strong hover:text-fg disabled:pointer-events-none disabled:opacity-35 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-                        disabled={!columnActive}
-                        onClick={() => onSelectAll(column.key)}
-                      >
-                        All
-                      </button>
-                    </div>
-                  </div>
-                  <div className="grid gap-1">
-                    {options.map((option) => {
-                      const checked = selected.has(option.value)
-                      const label = filterOptionLabel(option.value)
-                      return (
-                        <label
-                          key={option.value}
-                          className="flex min-w-0 cursor-pointer items-center gap-2 rounded-[var(--radius)] px-2 py-1.5 transition-colors hover:bg-panel-strong focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-accent"
-                        >
-                          <input
-                            type="checkbox"
-                            className="sr-only"
-                            aria-label={`${label}, ${option.count} peers`}
-                            checked={checked}
-                            onChange={(event) => onValueChange(column.key, option.value, event.currentTarget.checked)}
-                          />
-                          <span
-                            aria-hidden={true}
-                            className={cn(
-                              'grid size-4 shrink-0 place-items-center rounded-[4px] border transition-colors',
-                              checked
-                                ? 'border-accent bg-accent text-accent-ink'
-                                : 'border-border bg-panel-strong text-transparent'
-                            )}
-                          >
-                            <Check className="size-3" strokeWidth={2.2} />
-                          </span>
-                          <span className="min-w-0 flex-1 truncate font-mono text-fg-dim">{label}</span>
-                          <span className="shrink-0 font-mono text-[10px] text-fg-faint">{option.count}</span>
-                        </label>
-                      )
-                    })}
-                  </div>
-                </section>
-              )
-            })}
-          </div>
-        </Popover.Content>
-      </Popover.Portal>
-    </Popover.Root>
+    <FilterPopover
+      activeFilterGroups={activeFilterGroups}
+      categories={filterColumns}
+      contentLabel="Filter connected peers"
+      formatOptionLabel={filterOptionLabel}
+      id="peer-table-filter"
+      itemLabel="peers"
+      optionsByCategory={optionsByColumn}
+      selectedValuesByCategory={selectedValues}
+      title="Filter peers"
+      totalCount={totalCount}
+      triggerLabel="Filter peers"
+      visibleCount={visibleCount}
+      onClear={onClear}
+      onSelectAll={onSelectAll}
+      onSelectNone={onSelectNone}
+      onValueChange={onValueChange}
+    />
   )
 }
 
 type PeerRowProps = {
-  peer: Peer
+  peer: PeerDTO
   active: boolean
   isLast: boolean
-  onSelect?: (peer: Peer) => void
+  onSelect?: () => void
   onHoverPeerIdChange?: (peerId: string | undefined) => void
 }
 
 export function PeerRow({ peer, active, isLast, onSelect, onHoverPeerIdChange }: PeerRowProps) {
-  const hostedModels = peer.hostedModels.join(' ')
+  const firstModel = peer.hostedModels[0] ?? null
+  const extraModelCount = peer.hostedModels.length - 1
+  const hostedModelsTooltip =
+    peer.hostedModels.length > 0 ? (
+      <div className="flex flex-col gap-0.5">
+        {peer.hostedModels.map((model) => (
+          <span key={model.name}>{model.name}</span>
+        ))}
+      </div>
+    ) : undefined
   const primaryId = peer.shortId ?? peer.id
   const hostname = displayHostname(peer)
   const peerTooltip = hostname ? `${peer.id} · ${hostname}` : peer.id
@@ -261,7 +172,7 @@ export function PeerRow({ peer, active, isLast, onSelect, onHoverPeerIdChange }:
     <button
       aria-label={rowAriaLabel(peer, active)}
       data-active={active ? 'true' : undefined}
-      onClick={() => onSelect?.(peer)}
+      onClick={() => onSelect?.()}
       onFocus={() => onHoverPeerIdChange?.(peer.id)}
       onBlur={() => onHoverPeerIdChange?.(undefined)}
       onPointerEnter={() => onHoverPeerIdChange?.(peer.id)}
@@ -278,9 +189,7 @@ export function PeerRow({ peer, active, isLast, onSelect, onHoverPeerIdChange }:
         <div className="flex min-w-0 items-center gap-2 lg:contents">
           <PeerValueTooltip content={peerTooltip}>
             <div className="flex min-w-0 items-center gap-1.5">
-              <span className="min-w-0 max-w-[5rem] truncate font-mono text-[length:var(--density-type-control)]">
-                {primaryId}
-              </span>
+              <span className="min-w-0 truncate font-mono text-[length:var(--density-type-control)]">{primaryId}</span>
               {hostname && (
                 <>
                   <span className="text-[length:var(--density-type-caption)] text-fg-faint">·</span>
@@ -291,28 +200,63 @@ export function PeerRow({ peer, active, isLast, onSelect, onHoverPeerIdChange }:
               )}
             </div>
           </PeerValueTooltip>
-          <div className="hidden lg:block">{peer.role && <RolePill role={peer.role} />}</div>
+          <PeerValueTooltip content={hostedModelsTooltip}>
+            <div className="hidden min-w-0 lg:flex lg:items-center lg:gap-1.5">
+              {firstModel ? (
+                <>
+                  <span className="min-w-0 truncate font-mono text-[length:var(--density-type-caption)] text-fg-dim">
+                    {firstModel.name}
+                  </span>
+                  {extraModelCount > 0 && (
+                    <span className="shrink-0 rounded-full border border-border px-1.5 py-px font-mono text-[10px] text-fg-faint">
+                      +{extraModelCount} more
+                    </span>
+                  )}
+                </>
+              ) : (
+                <span className="font-mono text-[length:var(--density-type-caption)] text-fg-dim">—</span>
+              )}
+            </div>
+          </PeerValueTooltip>
           <PeerValueTooltip content={peer.version}>
             <div className="hidden min-w-0 truncate font-mono text-[length:var(--density-type-caption-lg)] text-fg-dim lg:block">
               {peer.version ?? '—'}
             </div>
           </PeerValueTooltip>
+          <div className="hidden text-right font-mono text-[length:var(--density-type-caption-lg)] lg:block">
+            {peer.vramGB?.toFixed(1) ?? '—'} GB
+          </div>
           <div className="hidden lg:block">
+            <ShareMeter sharePct={peer.sharePct} />
+          </div>
+          <div className="hidden text-right font-mono text-[length:var(--density-type-caption-lg)] text-fg-dim lg:block">
+            {formatLatency(peer.latencyMs)} ms
+          </div>
+          <div className="hidden justify-end text-right lg:flex">{peer.role && <RolePill role={peer.role} />}</div>
+          <div className="hidden justify-end text-right lg:flex">
             <StatusPill peer={peer} />
           </div>
-          <PeerValueTooltip content={hostedModels || undefined}>
-            <div className="hidden min-w-0 truncate font-mono text-[length:var(--density-type-caption)] text-fg-dim lg:block">
-              {hostedModels || '—'}
-            </div>
-          </PeerValueTooltip>
         </div>
         <div className="flex items-center justify-end gap-1.5 lg:hidden">
           {peer.role && <RolePill role={peer.role} />}
           <StatusPill peer={peer} />
         </div>
-        <PeerValueTooltip content={hostedModels || undefined}>
-          <div className="col-span-2 hidden min-w-0 truncate font-mono text-[length:var(--density-type-caption)] text-fg-dim min-[401px]:block lg:hidden">
-            {hostedModels || '—'}
+        <PeerValueTooltip content={hostedModelsTooltip}>
+          <div className="col-span-2 hidden min-w-0 min-[401px]:flex min-[401px]:items-center min-[401px]:gap-1.5 lg:hidden">
+            {firstModel ? (
+              <>
+                <span className="min-w-0 truncate font-mono text-[length:var(--density-type-caption)] text-fg-dim">
+                  {firstModel.name}
+                </span>
+                {extraModelCount > 0 && (
+                  <span className="shrink-0 rounded-full border border-border px-1.5 py-px font-mono text-[10px] text-fg-faint">
+                    +{extraModelCount} more
+                  </span>
+                )}
+              </>
+            ) : (
+              <span className="font-mono text-[length:var(--density-type-caption)] text-fg-dim">—</span>
+            )}
           </div>
         </PeerValueTooltip>
         <div className="col-span-2 grid min-w-0 grid-cols-[auto_auto_minmax(92px,1fr)] items-center gap-x-3 gap-y-1 lg:hidden">
@@ -323,15 +267,6 @@ export function PeerRow({ peer, active, isLast, onSelect, onHoverPeerIdChange }:
             {peer.vramGB?.toFixed(1) ?? '—'} GB
           </div>
           <ShareMeter sharePct={peer.sharePct} compact />
-        </div>
-        <div className="hidden lg:contents">
-          <div className="text-right font-mono text-[length:var(--density-type-caption-lg)] text-fg-dim">
-            {formatLatency(peer.latencyMs)} ms
-          </div>
-          <div className="text-right font-mono text-[length:var(--density-type-caption-lg)]">
-            {peer.vramGB?.toFixed(1) ?? '—'} GB
-          </div>
-          <ShareMeter sharePct={peer.sharePct} />
         </div>
       </div>
     </button>

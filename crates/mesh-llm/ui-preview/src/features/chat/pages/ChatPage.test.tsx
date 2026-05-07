@@ -1,11 +1,11 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { configure, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { MultimodalContent } from '@tanstack/ai-client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { CHAT_HARNESS } from '@/features/app-tabs/data'
 import { APP_STORAGE_KEYS } from '@/features/app-tabs/data'
 import { ChatSessionProvider } from '@/features/chat/api/chat-session'
-import { loadChatState, saveChatState } from '@/features/chat/api/chat-storage'
+import { loadChatState, saveChatState, trimThreadMessages } from '@/features/chat/api/chat-storage'
 import { ChatLayout } from '@/features/chat/layouts/ChatLayout'
 import { ChatPage, ChatPageContent } from '@/features/chat/pages/ChatPage'
 import { adaptModelsToSummary } from '@/features/network/api/models-adapter'
@@ -15,6 +15,8 @@ import { FeatureFlagProvider } from '@/lib/feature-flags'
 const scrollIntoViewMock = vi.fn()
 const createObjectUrlMock = vi.fn((file: File) => `blob:preview/${file.name}`)
 const revokeObjectUrlMock = vi.fn()
+
+configure({ asyncUtilTimeout: 4_000 })
 
 function installPointerCaptureShim() {
   Object.defineProperty(HTMLElement.prototype, 'hasPointerCapture', {
@@ -168,7 +170,8 @@ vi.mock('@/features/chat/api/chat-storage', () => ({
   MAX_CHAT_CONVERSATIONS: 80,
   clearChatState: vi.fn(),
   loadChatState: vi.fn(),
-  saveChatState: vi.fn()
+  saveChatState: vi.fn(),
+  trimThreadMessages: vi.fn((messages: Array<unknown>) => messages)
 }))
 
 vi.mock('@/features/network/api/use-models-query', () => ({
@@ -438,6 +441,7 @@ describe('ChatPage', () => {
     window.localStorage.removeItem(APP_STORAGE_KEYS.chatSystemPrompt)
     vi.mocked(loadChatState).mockResolvedValue(undefined)
     vi.mocked(saveChatState).mockResolvedValue(undefined)
+    vi.mocked(trimThreadMessages).mockImplementation((messages) => messages)
     vi.mocked(adaptModelsToSummary).mockReturnValue(CHAT_HARNESS.models)
     attachmentPreprocessingMock.describeImageForPrompt.mockReset()
     attachmentPreprocessingMock.extractPdfTextFromFile.mockReset()

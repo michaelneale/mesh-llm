@@ -153,9 +153,9 @@ function ModelDrawerContent({
         <SectionHead icon={drawerIcon(Network)}>Capabilities</SectionHead>
         <div className="flex flex-wrap gap-[6px] px-[18px]">
           {model.tags.map((tag) => (
-              <StatusBadge key={tag} tone="accent">
-                {tag}
-              </StatusBadge>
+            <StatusBadge key={tag} tone="accent">
+              {tag}
+            </StatusBadge>
           ))}
         </div>
 
