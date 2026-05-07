@@ -1477,6 +1477,17 @@ mod filter_tests {
         vram: u64,
         region: Option<&str>,
     ) -> DiscoveredMesh {
+        make_mesh_for_filter_named(serving, wanted, on_disk, vram, region, None)
+    }
+
+    fn make_mesh_for_filter_named(
+        serving: &[&str],
+        wanted: &[&str],
+        on_disk: &[&str],
+        vram: u64,
+        region: Option<&str>,
+        name: Option<&str>,
+    ) -> DiscoveredMesh {
         DiscoveredMesh {
             listing: MeshListing {
                 invite_token: "tok".into(),
@@ -1487,7 +1498,7 @@ mod filter_tests {
                 node_count: 1,
                 client_count: 0,
                 max_clients: 0,
-                name: None,
+                name: name.map(|s| s.to_string()),
                 region: region.map(|s| s.to_string()),
                 mesh_id: None,
             },
@@ -1606,6 +1617,58 @@ mod filter_tests {
         };
         assert!(pass.matches(&m));
         assert!(!fail_model.matches(&m));
+    }
+
+    #[test]
+    fn filter_name_exact() {
+        let m = make_mesh_for_filter_named(&[], &[], &[], 8_000_000_000, None, Some("poker-night"));
+        let f = MeshFilter {
+            name: Some("poker-night".into()),
+            ..Default::default()
+        };
+        assert!(f.matches(&m));
+    }
+
+    #[test]
+    fn filter_name_case_insensitive() {
+        let m = make_mesh_for_filter_named(&[], &[], &[], 8_000_000_000, None, Some("Poker-Night"));
+        let f = MeshFilter {
+            name: Some("poker-night".into()),
+            ..Default::default()
+        };
+        assert!(f.matches(&m));
+    }
+
+    #[test]
+    fn filter_name_no_match() {
+        let m = make_mesh_for_filter_named(&[], &[], &[], 8_000_000_000, None, Some("other-mesh"));
+        let f = MeshFilter {
+            name: Some("poker-night".into()),
+            ..Default::default()
+        };
+        assert!(!f.matches(&m));
+    }
+
+    #[test]
+    fn filter_name_mesh_unnamed() {
+        // Mesh has no name — filter by name should not match.
+        let m = make_mesh_for_filter_named(&[], &[], &[], 8_000_000_000, None, None);
+        let f = MeshFilter {
+            name: Some("poker-night".into()),
+            ..Default::default()
+        };
+        assert!(!f.matches(&m));
+    }
+
+    #[test]
+    fn filter_name_none_matches_all() {
+        // No name filter — matches meshes with and without names.
+        let named =
+            make_mesh_for_filter_named(&[], &[], &[], 8_000_000_000, None, Some("poker-night"));
+        let unnamed = make_mesh_for_filter_named(&[], &[], &[], 8_000_000_000, None, None);
+        let f = MeshFilter::default();
+        assert!(f.matches(&named));
+        assert!(f.matches(&unnamed));
     }
 }
 

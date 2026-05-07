@@ -3121,15 +3121,7 @@ fn node_display_name(cli: &Cli, node: &mesh::Node) -> String {
 async fn join_mesh_for_mcp(cli: &Cli, node: &mesh::Node) -> Result<()> {
     if !cli.join.is_empty() {
         for token in &cli.join {
-            let result = match node.join(token).await {
-                Ok(()) => Ok(()),
-                Err(first_err) => {
-                    tracing::info!("First join attempt failed ({first_err:#}), retrying in 5s...");
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    node.join(token).await
-                }
-            };
-            match result {
+            match node.join_with_retry(token).await {
                 Ok(()) => {
                     if node.mesh_id().await.is_some() {
                         record_first_joined_mesh_ts(node).await;
@@ -3430,18 +3422,7 @@ async fn run_auto(
         let mut successful_join: Option<(String, Option<String>)> = None;
 
         for (t, mesh_name) in &join_attempts {
-            // Try joining, and if the first attempt fails (e.g. relay not yet
-            // connected), wait briefly and retry once. Relay-only connections
-            // can take longer to establish than the initial connect timeout.
-            let result = match node.join(t).await {
-                Ok(()) => Ok(()),
-                Err(first_err) => {
-                    tracing::info!("First join attempt failed ({first_err:#}), retrying in 5s...");
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    node.join(t).await
-                }
-            };
-            match result {
+            match node.join_with_retry(t).await {
                 Ok(()) => {
                     if node.mesh_id().await.is_some() {
                         record_first_joined_mesh_ts(&node).await;
