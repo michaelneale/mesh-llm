@@ -272,7 +272,37 @@ fn repo_only_resolution_falls_back_to_gguf_when_no_mlx_weights() {
 }
 
 #[test]
+#[serial]
 fn canonicalize_interest_model_ref_accepts_catalog_names() {
+    use std::collections::HashMap;
+    let mut variants = HashMap::new();
+    variants.insert(
+        "Q4_K_M".to_string(),
+        crate::models::remote_catalog::CatalogVariant {
+            source: crate::models::remote_catalog::CatalogSource {
+                repo: "unsloth/Qwen3-8B-GGUF".to_string(),
+                revision: None,
+                file: Some("Qwen3-8B-Q4_K_M.gguf".to_string()),
+            },
+            curated: crate::models::remote_catalog::CatalogCurated {
+                name: "Qwen3-8B-Q4_K_M".to_string(),
+                size: None,
+                description: None,
+                draft: None,
+                moe: None,
+                extra_files: Vec::new(),
+                mmproj: None,
+            },
+            packages: Vec::new(),
+        },
+    );
+    let entry = crate::models::remote_catalog::CatalogEntry {
+        schema_version: 1,
+        source_repo: "unsloth/Qwen3-8B-GGUF".to_string(),
+        variants,
+    };
+    let _catalog_guard =
+        crate::models::remote_catalog::set_catalog_entries_for_test(vec![entry]);
     let canonical = canonicalize_interest_model_ref("Qwen3-8B-Q4_K_M").unwrap();
     assert_eq!(canonical, "unsloth/Qwen3-8B-GGUF:Q4_K_M");
 }

@@ -1069,7 +1069,7 @@ pub fn auto_model_pack(vram_gb: f64) -> Vec<String> {
             .iter()
             .find(|(n, _)| *n == name)
             .map(|(_, s)| *s)
-            .unwrap_or(f64::MAX)
+            .unwrap_or(0.0)
     };
     let usable = vram_gb * 0.85; // 15% headroom for KV cache
 
