@@ -366,6 +366,14 @@ pub(crate) struct WakeableNode {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum LatencySource {
+    Direct,
+    Estimated,
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub(crate) struct PeerPayload {
     pub(crate) id: String,
     pub(crate) owner: OwnershipPayload,
@@ -380,6 +388,10 @@ pub(crate) struct PeerPayload {
     pub(crate) hosted_models_known: bool,
     pub(crate) version: Option<String>,
     pub(crate) rtt_ms: Option<u32>,
+    pub(crate) latency_ms: Option<u32>,
+    pub(crate) latency_source: LatencySource,
+    pub(crate) latency_age_ms: Option<u64>,
+    pub(crate) latency_observer_id: Option<String>,
     pub(crate) hostname: Option<String>,
     pub(crate) is_soc: Option<bool>,
     pub(crate) gpus: Vec<GpuEntry>,
@@ -889,6 +901,10 @@ mod tests {
             hosted_models_known: false,
             version: Some("0.56.0".to_string()),
             rtt_ms: None,
+            latency_ms: None,
+            latency_source: LatencySource::Unknown,
+            latency_age_ms: None,
+            latency_observer_id: None,
             hostname: None,
             is_soc: None,
             gpus: vec![],
@@ -915,6 +931,10 @@ mod tests {
             hosted_models_known: false,
             version: None,
             rtt_ms: None,
+            latency_ms: None,
+            latency_source: LatencySource::Unknown,
+            latency_age_ms: None,
+            latency_observer_id: None,
             hostname: None,
             is_soc: None,
             gpus: vec![],
@@ -923,6 +943,122 @@ mod tests {
 
         let json = serde_json::to_string(&peer).expect("serialization failed");
         assert!(json.contains("\"version\":null"));
+    }
+
+    #[test]
+    fn peer_payload_latency_unknown_is_explicitly_null_for_consumers() {
+        let peer = PeerPayload {
+            id: "test-id".to_string(),
+            owner: test_owner_payload(),
+            role: "Worker".to_string(),
+            state: NodeState::Standby,
+            models: vec![],
+            available_models: vec![],
+            requested_models: vec![],
+            vram_gb: 8.0,
+            serving_models: vec![],
+            hosted_models: vec![],
+            hosted_models_known: false,
+            version: None,
+            rtt_ms: None,
+            latency_ms: None,
+            latency_source: LatencySource::Unknown,
+            latency_age_ms: None,
+            latency_observer_id: None,
+            hostname: None,
+            is_soc: None,
+            gpus: vec![],
+            first_joined_mesh_ts: None,
+        };
+
+        let value = serde_json::to_value(&peer).expect("serialization failed");
+        let object = value
+            .as_object()
+            .expect("peer payload should serialize to an object");
+        assert!(
+            object.contains_key("latency_ms"),
+            "consumer payload should preserve unknown latency as an explicit null field"
+        );
+        assert_eq!(value["latency_ms"], serde_json::Value::Null);
+        assert_eq!(value["latency_source"], serde_json::json!("unknown"));
+        assert!(
+            object.contains_key("latency_age_ms"),
+            "consumer payload should keep unknown latency freshness explicit instead of implying current data"
+        );
+        assert_eq!(value["latency_age_ms"], serde_json::Value::Null);
+        assert!(
+            object.contains_key("latency_observer_id"),
+            "consumer payload should keep observer provenance explicit even when latency is unknown"
+        );
+        assert_eq!(value["latency_observer_id"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn peer_payload_latency_direct_keeps_legacy_rtt_and_current_latency_in_sync() {
+        let peer = PeerPayload {
+            id: "test-id".to_string(),
+            owner: test_owner_payload(),
+            role: "Host".to_string(),
+            state: NodeState::Serving,
+            models: vec![],
+            available_models: vec![],
+            requested_models: vec![],
+            vram_gb: 8.0,
+            serving_models: vec!["Qwen".to_string()],
+            hosted_models: vec!["Qwen".to_string()],
+            hosted_models_known: true,
+            version: Some("0.60.2".to_string()),
+            rtt_ms: Some(12),
+            latency_ms: Some(12),
+            latency_source: LatencySource::Direct,
+            latency_age_ms: Some(0),
+            latency_observer_id: None,
+            hostname: Some("peer.local".to_string()),
+            is_soc: Some(false),
+            gpus: vec![],
+            first_joined_mesh_ts: None,
+        };
+
+        let value = serde_json::to_value(&peer).expect("serialization failed");
+        assert_eq!(value["rtt_ms"], serde_json::json!(12));
+        assert_eq!(value["latency_ms"], serde_json::json!(12));
+        assert_eq!(value["latency_source"], serde_json::json!("direct"));
+        assert_eq!(value["latency_age_ms"], serde_json::json!(0));
+        assert_eq!(value["latency_observer_id"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn peer_payload_latency_estimated_preserves_age_and_observer() {
+        let peer = PeerPayload {
+            id: "test-id".to_string(),
+            owner: test_owner_payload(),
+            role: "Worker".to_string(),
+            state: NodeState::Standby,
+            models: vec![],
+            available_models: vec![],
+            requested_models: vec![],
+            vram_gb: 8.0,
+            serving_models: vec![],
+            hosted_models: vec![],
+            hosted_models_known: false,
+            version: Some("0.60.2".to_string()),
+            rtt_ms: None,
+            latency_ms: Some(44),
+            latency_source: LatencySource::Estimated,
+            latency_age_ms: Some(130_000),
+            latency_observer_id: Some("bridge-1".to_string()),
+            hostname: Some("peer.local".to_string()),
+            is_soc: Some(false),
+            gpus: vec![],
+            first_joined_mesh_ts: None,
+        };
+
+        let value = serde_json::to_value(&peer).expect("serialization failed");
+        assert_eq!(value["rtt_ms"], serde_json::Value::Null);
+        assert_eq!(value["latency_ms"], serde_json::json!(44));
+        assert_eq!(value["latency_source"], serde_json::json!("estimated"));
+        assert_eq!(value["latency_age_ms"], serde_json::json!(130_000));
+        assert_eq!(value["latency_observer_id"], serde_json::json!("bridge-1"));
     }
 
     #[test]
@@ -1165,6 +1301,10 @@ mod tests {
             hosted_models_known: true,
             version: Some("0.60.2".to_string()),
             rtt_ms: Some(12),
+            latency_ms: Some(12),
+            latency_source: LatencySource::Direct,
+            latency_age_ms: Some(0),
+            latency_observer_id: None,
             hostname: Some("peer.local".to_string()),
             is_soc: Some(false),
             gpus: vec![],

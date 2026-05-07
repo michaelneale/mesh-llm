@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+
 import * as HoverCardPrimitive from '@radix-ui/react-hover-card'
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
@@ -85,5 +87,15 @@ describe('MeshVizNodeHoverCard', () => {
     expect(screen.getByText('Local')).toBeInTheDocument()
     expect(screen.getByText('<1 ms')).toBeInTheDocument()
     expect(screen.getByText('16.0 GB')).toBeInTheDocument()
+  })
+
+  it('renders unknown latency for peer-backed cards instead of implying 0 ms', () => {
+    const peerWithoutLatency = { ...peer, latencyMs: null } as unknown as Peer
+
+    renderOpenHoverCard({ ...node, latencyMs: null }, peerWithoutLatency)
+
+    expect(screen.getByText('Unknown')).toBeInTheDocument()
+    expect(screen.queryByText(/\b0\s*ms\b/i)).not.toBeInTheDocument()
+    expect(screen.queryByText('<1 ms')).not.toBeInTheDocument()
   })
 })

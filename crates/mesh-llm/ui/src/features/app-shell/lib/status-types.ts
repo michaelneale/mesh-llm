@@ -55,6 +55,8 @@ export type Ownership = {
   hostname_hint?: string;
 };
 
+export type LatencySource = "direct" | "estimated" | "unknown";
+
 export type Peer = {
   id: string;
   owner?: Ownership;
@@ -68,6 +70,10 @@ export type Peer = {
   hosted_models?: string[];
   hosted_models_known?: boolean;
   rtt_ms?: number | null;
+  latency_ms?: number | null;
+  latency_source?: LatencySource;
+  latency_age_ms?: number | null;
+  latency_observer_id?: string | null;
   hostname?: string;
   version?: string;
   is_soc?: boolean;

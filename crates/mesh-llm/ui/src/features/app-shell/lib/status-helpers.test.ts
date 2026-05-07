@@ -2,12 +2,17 @@ import { describe, expect, it } from "vitest";
 
 import {
   displayVramGb,
+  formatLatency,
+  formatPeerLatency,
   formatLiveNodeState,
   gpuInventoryVramGb,
   localRoutableModels,
   meshGpuVram,
   normalizeVramGb,
   overviewVramGb,
+  peerLatencyHint,
+  peerLatencyState,
+  peerLatencyTooltip,
   modelRefLabel,
   topologyStatusTone,
   topologyStatusTooltip,
@@ -76,6 +81,90 @@ describe("live node state helpers", () => {
     
     expect(topologyStatusTooltip(undefined as any)).toBe("Node state unavailable");
     expect(topologyStatusTooltip(null as any)).toBe("Node state unavailable");
+  });
+
+  it("preserves unknown latency as an em dash instead of implying 0 ms", () => {
+    expect(formatLatency(undefined)).toBe("—");
+    expect(formatLatency(null)).toBe("—");
+    expect(formatLatency(Number.NaN)).toBe("—");
+    expect(formatLatency(0)).toBe("<1 ms");
+  });
+
+  it("formats canonical latency metadata without collapsing unknown peers to 0 ms", () => {
+    expect(
+      formatPeerLatency({
+        latencyMs: null,
+        latencySource: "unknown",
+      }),
+    ).toBe("—");
+    expect(
+      formatPeerLatency({
+        latencyMs: 44,
+        latencySource: "estimated",
+        latencyAgeMs: 4_500,
+        latencyObserverId: "observer-node",
+      }),
+    ).toBe("44 ms");
+  });
+
+  it("distinguishes direct, estimated, stale, and unknown latency states", () => {
+    expect(
+      peerLatencyState({
+        latencyMs: 12,
+        latencySource: "direct",
+        latencyAgeMs: 250,
+      }),
+    ).toBe("direct");
+
+    expect(
+      peerLatencyHint({
+        latencyMs: 44,
+        latencySource: "estimated",
+        latencyAgeMs: 4_500,
+        latencyObserverId: "observer-node",
+      }),
+    ).toEqual({ label: "Estimated", tone: "info" });
+
+    expect(
+      peerLatencyState({
+        latencyMs: 23,
+        latencySource: "direct",
+        latencyAgeMs: 120_000,
+      }),
+    ).toBe("stale");
+    expect(
+      peerLatencyHint({
+        latencyMs: 23,
+        latencySource: "direct",
+        latencyAgeMs: 120_000,
+      }),
+    ).toEqual({ label: "Stale", tone: "warn" });
+
+    expect(
+      peerLatencyState({
+        latencyMs: null,
+        latencySource: "unknown",
+      }),
+    ).toBe("unknown");
+  });
+
+  it("keeps estimated observer provenance distinct from stale direct samples", () => {
+    expect(
+      peerLatencyState({
+        latencyMs: 44,
+        latencySource: "estimated",
+        latencyAgeMs: 130_000,
+        latencyObserverId: "bridge-1",
+      }),
+    ).toBe("estimated");
+    expect(
+      peerLatencyTooltip({
+        latencyMs: 44,
+        latencySource: "estimated",
+        latencyAgeMs: 130_000,
+        latencyObserverId: "bridge-1",
+      }),
+    ).toContain("bridge-1");
   });
 
   it("excludes client nodes from local routable models", () => {

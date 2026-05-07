@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+
 import { act, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NodeDrawer } from './NodeDrawer'
@@ -209,6 +211,36 @@ class MockEventSource implements MockEventSourceInstance {
   }
 }
 
+const node: MeshNode = {
+  id: 'peer-node',
+  label: 'PEER-NODE',
+  x: 24,
+  y: 40,
+  status: 'online',
+  role: 'peer',
+  meshState: 'serving',
+  subLabel: 'Remote node',
+  servingModels: ['Qwen'],
+  hostname: 'peer-node.mesh',
+  vramGB: 24
+}
+
+const basePeer: Peer = {
+  id: 'peer-node',
+  hostname: 'peer-node.mesh',
+  region: 'us-east',
+  status: 'online',
+  hostedModels: ['Qwen'],
+  sharePct: 25,
+  latencyMs: 17,
+  loadPct: 12,
+  shortId: 'peernode',
+  role: 'host',
+  version: '0.64.0',
+  vramGB: 24,
+  toksPerSec: 15.5
+}
+
 describe('NodeDrawer runtime section', () => {
   beforeEach(() => {
     MockEventSource.instances = []
@@ -330,5 +362,60 @@ describe('NodeDrawer runtime section', () => {
     expect(screen.getByText('Worker')).toBeInTheDocument()
     expect(screen.getByText('Standby')).toBeInTheDocument()
     expect(screen.queryByText('Client')).not.toBeInTheDocument()
+  })
+})
+
+describe('NodeDrawer latency states', () => {
+  it('renders unknown latency as text instead of a fabricated zero value', () => {
+    render(
+      <NodeDrawer
+        open
+        node={node}
+        peer={{ ...basePeer, latencyMs: null, latencySource: 'unknown' }}
+        onClose={vi.fn()}
+      />
+    )
+
+    expect(screen.getAllByText('Unknown').length).toBeGreaterThan(0)
+    expect(screen.queryByText(/\b0\s*ms\b/i)).not.toBeInTheDocument()
+    expect(screen.queryByText('<1 ms')).not.toBeInTheDocument()
+  })
+
+  it('labels estimated and stale peer latency distinctly from direct measurements', () => {
+    const { rerender } = render(
+      <NodeDrawer
+        open
+        node={node}
+        peer={{
+          ...basePeer,
+          latencyMs: 44,
+          latencySource: 'estimated',
+          latencyAgeMs: 4_500,
+          latencyObserverId: 'observer-node'
+        }}
+        onClose={vi.fn()}
+      />
+    )
+
+    expect(screen.getByText('44.0 ms')).toBeInTheDocument()
+    expect(screen.getByText('Estimated')).toBeInTheDocument()
+
+    rerender(
+      <NodeDrawer
+        open
+        node={node}
+        peer={{
+          ...basePeer,
+          latencyMs: 23,
+          latencySource: 'direct',
+          latencyAgeMs: 120_000,
+          latencyObserverId: 'observer-node'
+        }}
+        onClose={vi.fn()}
+      />
+    )
+
+    expect(screen.getByText('23.0 ms')).toBeInTheDocument()
+    expect(screen.getByText('Stale')).toBeInTheDocument()
   })
 })

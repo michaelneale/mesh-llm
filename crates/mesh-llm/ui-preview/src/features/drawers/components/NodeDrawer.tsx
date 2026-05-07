@@ -11,7 +11,7 @@ import { KV } from '@/features/drawers/components/KV'
 import { SectionHead } from '@/features/drawers/components/SectionHead'
 import { meshNodeStatusSource, meshStatusLabel, meshStatusTone } from '@/features/network/lib/mesh-status'
 import { useLlamaRuntime } from '@/features/network/api/use-llama-runtime'
-import { formatLatency } from '@/lib/format-latency'
+import { peerLatencyHint, peerLatencyState } from '@/lib/format-latency'
 import type { ConfigNode, MeshNode, ModelSummary, Peer } from '@/features/app-tabs/types'
 import type { LlamaRuntimeMetricSample, LlamaRuntimePayload, LlamaRuntimeSlotItem } from '@/lib/api/types'
 
@@ -128,6 +128,25 @@ function meshRoleTone(role: string): StatusBadgeTone {
   if (role === 'Client' || role === 'Peer') return 'muted'
   if (role === 'Worker') return 'warn'
   return 'good'
+}
+
+function LatencyValue({ peer }: { peer: Peer | undefined }) {
+  if (!peer) return <>N/A</>
+  const descriptor = {
+    latencyMs: peer.latencyMs,
+    latencySource: peer.latencySource,
+    latencyAgeMs: peer.latencyAgeMs,
+    latencyObserverId: peer.latencyObserverId
+  }
+  const state = peerLatencyState(descriptor)
+  if (state.status === 'unknown') return <>Unknown</>
+  const hint = peerLatencyHint(descriptor)
+  return (
+    <>
+      <span>{state.latencyMs.toFixed(1)} ms</span>
+      {hint && <span className="text-fg-faint">{hint}</span>}
+    </>
+  )
 }
 
 export function NodeDrawer({ open, node, peer, models = [], onClose }: NodeDrawerProps) {
@@ -304,7 +323,7 @@ function NodeDrawerContent({
         <h3 className="sr-only">Node metadata</h3>
         <div className="flex gap-2 px-[18px]">
           <KV icon={drawerIcon(Activity)} label="Latency">
-            {peer ? `${formatLatency(peer.latencyMs)} ms` : 'N/A'}
+            <LatencyValue peer={peer} />
           </KV>
           <KV icon={drawerIcon(HardDrive)} label="Node VRAM">
             {peer?.vramGB != null ? `${peer.vramGB.toFixed(1)} GB` : 'N/A'}

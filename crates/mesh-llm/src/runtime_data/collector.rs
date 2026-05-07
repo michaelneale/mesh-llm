@@ -980,6 +980,7 @@ fn derive_peer_state(peer: &mesh::PeerInfo) -> NodeState {
 }
 
 fn build_peer_payload(peer: &mesh::PeerInfo) -> PeerPayload {
+    let display_latency = peer.display_latency();
     PeerPayload {
         id: peer.id.fmt_short().to_string(),
         owner: build_ownership_payload(&peer.owner_summary),
@@ -997,7 +998,18 @@ fn build_peer_payload(peer: &mesh::PeerInfo) -> PeerPayload {
         hosted_models: peer.hosted_models.clone(),
         hosted_models_known: peer.hosted_models_known,
         version: peer.version.clone(),
+        // Legacy `rtt_ms` stays tied to the routing-grade direct RTT field.
         rtt_ms: peer.rtt_ms,
+        latency_ms: display_latency.latency_ms,
+        latency_source: match display_latency.source {
+            mesh::DisplayLatencySource::Direct => crate::api::status::LatencySource::Direct,
+            mesh::DisplayLatencySource::Estimated => crate::api::status::LatencySource::Estimated,
+            mesh::DisplayLatencySource::Unknown => crate::api::status::LatencySource::Unknown,
+        },
+        latency_age_ms: display_latency.age_ms,
+        latency_observer_id: display_latency
+            .observer_id
+            .map(|observer_id| observer_id.fmt_short().to_string()),
         hostname: peer.hostname.clone(),
         is_soc: peer.is_soc,
         gpus: build_gpus(

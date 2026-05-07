@@ -468,7 +468,9 @@ fn peer_info_to_mesh_peer(peer: &PeerInfo) -> crate::plugin::proto::MeshPeer {
         serving_models: peer.serving_models.clone(),
         available_models: Vec::new(),
         requested_models: peer.requested_models.clone(),
-        rtt_ms: peer.rtt_ms,
+        // Plugin events are telemetry/display-oriented: surface the latest
+        // direct sample when we have one, while routing keeps its own best RTT.
+        rtt_ms: peer.current_direct_rtt_ms(),
         model_source: peer.model_source.clone().unwrap_or_default(),
         hosted_models: peer.hosted_models.clone(),
         hosted_models_known: Some(peer.hosted_models_known),
@@ -603,6 +605,39 @@ pub(crate) struct PeerAnnouncement {
     pub(crate) served_model_descriptors: Vec<ServedModelDescriptor>,
     pub(crate) served_model_runtime: Vec<ModelRuntimeDescriptor>,
     pub(crate) owner_attestation: Option<SignedNodeOwnership>,
+    pub(crate) latency_ms: Option<u32>,
+    pub(crate) latency_source: Option<crate::proto::node::LatencySource>,
+    pub(crate) latency_age_ms: Option<u64>,
+    pub(crate) latency_observer_id: Option<EndpointId>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DirectLatencyObservation {
+    pub(crate) rtt_ms: u32,
+    pub(crate) observed_at: std::time::Instant,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub(crate) struct PropagatedLatencyObservation {
+    pub(crate) latency_ms: u32,
+    pub(crate) age_ms_at_received: u64,
+    pub(crate) received_at: std::time::Instant,
+    pub(crate) observer_id: Option<EndpointId>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) enum DisplayLatencySource {
+    Direct,
+    Estimated,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) struct DisplayLatency {
+    pub(crate) latency_ms: Option<u32>,
+    pub(crate) source: DisplayLatencySource,
+    pub(crate) age_ms: Option<u64>,
+    pub(crate) observer_id: Option<EndpointId>,
 }
 
 #[derive(Debug, Clone)]
@@ -613,7 +648,18 @@ pub struct PeerInfo {
     pub first_joined_mesh_ts: Option<u64>,
     pub models: Vec<String>,
     pub vram_bytes: u64,
+    /// Current direct-path RTT sample in milliseconds.
+    /// Routing/consultation uses this as the direct latency input; display
+    /// surfaces copy it as the current observation, while relay-health keeps
+    /// its own selected-path snapshot.
     pub rtt_ms: Option<u32>,
+    /// Latest locally observed direct RTT sample for operator-facing display.
+    /// Unlike `rtt_ms`, this tracks the most recent valid direct sample even if
+    /// it is slower than the routing-grade best RTT.
+    pub display_rtt: Option<DirectLatencyObservation>,
+    /// Latest bridge-provided latency metadata for transitive/operator display.
+    /// This never participates in routing or split decisions.
+    pub propagated_latency: Option<PropagatedLatencyObservation>,
     pub model_source: Option<String>,
     /// All models assigned to this peer, even if not yet healthy.
     pub serving_models: Vec<String>,
@@ -686,6 +732,8 @@ impl PeerInfo {
             models: ann.models.clone(),
             vram_bytes: ann.vram_bytes,
             rtt_ms: None,
+            display_rtt: None,
+            propagated_latency: None,
             model_source: ann.model_source.clone(),
             serving_models: ann.serving_models.clone(),
             hosted_models: ann.hosted_models.clone().unwrap_or_default(),
@@ -732,6 +780,64 @@ impl PeerInfo {
         models.sort();
         models.dedup();
         models
+    }
+
+    pub(crate) fn current_direct_rtt_ms(&self) -> Option<u32> {
+        self.display_rtt
+            .as_ref()
+            .map(|sample| sample.rtt_ms)
+            .or(self.rtt_ms)
+    }
+
+    pub(crate) fn display_latency(&self) -> DisplayLatency {
+        let observed = self
+            .display_rtt
+            .as_ref()
+            .map(|sample| (sample.rtt_ms, sample.observed_at))
+            .or_else(|| self.rtt_ms.map(|rtt_ms| (rtt_ms, self.last_seen)));
+        if let Some((latency_ms, observed_at)) = observed {
+            let age_ms = u64::try_from(observed_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let source = if age_ms < PEER_STALE_SECS.saturating_mul(1000) {
+                DisplayLatencySource::Direct
+            } else {
+                DisplayLatencySource::Estimated
+            };
+            return DisplayLatency {
+                latency_ms: Some(latency_ms),
+                source,
+                age_ms: Some(age_ms),
+                observer_id: None,
+            };
+        }
+
+        if let Some(propagated) = self.propagated_latency.as_ref() {
+            let received_elapsed_ms =
+                u64::try_from(propagated.received_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let age_ms = propagated
+                .age_ms_at_received
+                .saturating_add(received_elapsed_ms);
+            if age_ms >= PEER_STALE_SECS.saturating_mul(2).saturating_mul(1000) {
+                return DisplayLatency {
+                    latency_ms: None,
+                    source: DisplayLatencySource::Unknown,
+                    age_ms: None,
+                    observer_id: None,
+                };
+            }
+            return DisplayLatency {
+                latency_ms: Some(propagated.latency_ms),
+                source: DisplayLatencySource::Estimated,
+                age_ms: Some(age_ms),
+                observer_id: propagated.observer_id,
+            };
+        }
+
+        DisplayLatency {
+            latency_ms: None,
+            source: DisplayLatencySource::Unknown,
+            age_ms: None,
+            observer_id: None,
+        }
     }
 
     pub fn routes_model(&self, model: &str) -> bool {
@@ -2348,7 +2454,7 @@ impl Node {
                 self.merge_remote_demand(&ann.model_demand);
                 self.add_peer(remote_id, ann.addr.clone(), ann).await;
             } else {
-                self.update_transitive_peer(ann.addr.id, &ann.addr, ann)
+                self.update_transitive_peer(ann.addr.id, &ann.addr, ann, remote_id)
                     .await;
             }
         }
@@ -2679,20 +2785,27 @@ impl Node {
         if rtt_ms == 0 {
             return;
         }
+        // This stores the direct observation used by routing and consultation.
+        // If storage splits later, this is the direct_rtt_ms input; any
+        // display-facing latency cache should remain separate and carry its own
+        // provenance/age metadata.
         let (updated_peer, old_rtt) = {
             let mut state = self.state.lock().await;
             if let Some(peer) = state.peers.get_mut(&id) {
                 let prev = peer.rtt_ms;
+                peer.display_rtt = Some(DirectLatencyObservation {
+                    rtt_ms,
+                    observed_at: std::time::Instant::now(),
+                });
                 // Only accept equal-or-lower RTT. Gossip round-trip timing
                 // can inflate the value when routed via relay, overwriting a
                 // good direct-path measurement. The RTT gate only cares about
                 // "fast enough for split", so keeping the best-seen value is
                 // correct — if the path truly degrades the peer will be
                 // unreachable and removed via the normal liveness path.
-                if prev.is_some_and(|p| rtt_ms > p) {
-                    return;
+                if !prev.is_some_and(|p| rtt_ms > p) {
+                    peer.rtt_ms = Some(rtt_ms);
                 }
-                peer.rtt_ms = Some(rtt_ms);
                 (Some(peer.clone()), prev)
             } else {
                 (None, None)

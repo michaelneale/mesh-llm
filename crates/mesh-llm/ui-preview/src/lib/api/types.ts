@@ -62,8 +62,10 @@ export interface PeerInfo {
   models?: string[]
   my_vram_gb?: number
   vram_gb?: number
-  latency_ms?: number
-  rtt_ms?: number
+  latency_ms?: number | null
+  latency_source?: 'direct' | 'estimated' | 'unknown'
+  latency_age_ms?: number | null
+  latency_observer_id?: string | null
   load_pct?: number
   version?: string
   share_pct?: number

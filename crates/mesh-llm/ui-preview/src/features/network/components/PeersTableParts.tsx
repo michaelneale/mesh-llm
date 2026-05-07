@@ -15,7 +15,7 @@ import {
   type SortDirection
 } from '@/features/network/lib/peers-table-utils'
 import { cn } from '@/lib/cn'
-import { formatLatency } from '@/lib/format-latency'
+import { peerLatencyHint, peerLatencyState } from '@/lib/format-latency'
 import type { PeerDTO } from '@/features/app-tabs/types'
 
 export const PEERS_TABLE_GRID_COLUMNS =
@@ -89,6 +89,26 @@ function ShareMeter({ sharePct, compact = false }: { sharePct: number; compact?:
         {sharePct}%
       </span>
     </div>
+  )
+}
+
+function LatencyCellValue({ peer }: { peer: PeerDTO }) {
+  const descriptor = {
+    latencyMs: peer.latencyMs,
+    latencySource: peer.latencySource,
+    latencyAgeMs: peer.latencyAgeMs,
+    latencyObserverId: peer.latencyObserverId
+  }
+  const state = peerLatencyState(descriptor)
+  if (state.status === 'unknown') {
+    return <span className="text-fg-faint">Unknown</span>
+  }
+  const hint = peerLatencyHint(descriptor)
+  return (
+    <>
+      <span>{state.latencyMs.toFixed(1)} ms</span>
+      {hint && <span className="ml-1 text-[length:var(--density-type-caption)] text-fg-faint">{hint}</span>}
+    </>
   )
 }
 
@@ -227,7 +247,7 @@ export function PeerRow({ peer, active, isLast, onSelect, onHoverPeerIdChange }:
             <ShareMeter sharePct={peer.sharePct} />
           </div>
           <div className="hidden text-right font-mono text-[length:var(--density-type-caption-lg)] text-fg-dim lg:block">
-            {formatLatency(peer.latencyMs)} ms
+            <LatencyCellValue peer={peer} />
           </div>
           <div className="hidden justify-end text-right lg:flex">{peer.role && <RolePill role={peer.role} />}</div>
           <div className="hidden justify-end text-right lg:flex">
@@ -258,7 +278,7 @@ export function PeerRow({ peer, active, isLast, onSelect, onHoverPeerIdChange }:
         </PeerValueTooltip>
         <div className="col-span-2 grid min-w-0 grid-cols-[auto_auto_minmax(92px,1fr)] items-center gap-x-3 gap-y-1 lg:hidden">
           <div className="text-right font-mono text-[length:var(--density-type-caption-lg)] text-fg-dim">
-            {formatLatency(peer.latencyMs)} ms
+            <LatencyCellValue peer={peer} />
           </div>
           <div className="text-right font-mono text-[length:var(--density-type-caption-lg)]">
             {peer.vramGB?.toFixed(1) ?? '—'} GB

@@ -591,6 +591,115 @@ describe("App routing and status", () => {
     expect(screen.queryAllByText("Serving")).toHaveLength(0);
   });
 
+  it("renders unknown peer latency as an em dash without implying a measured 0 ms", async () => {
+    statusPayload = {
+      ...createStatusPayload(),
+      peers: [
+        {
+          id: "peer-unknown",
+          role: "Host",
+          state: "serving",
+          models: ["model-a"],
+          available_models: ["model-a"],
+          requested_models: [],
+          serving_models: ["model-a"],
+          hosted_models: ["model-a"],
+          hosted_models_known: true,
+          vram_gb: 16,
+          rtt_ms: null,
+          hostname: "peer-unknown.mesh",
+        },
+      ],
+    };
+
+    setPath("/dashboard");
+    render(<App />);
+
+    expect(await screen.findByText("—")).toBeInTheDocument();
+    expect(screen.queryByText(/\b0\s*ms\b/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("<1 ms")).not.toBeInTheDocument();
+  });
+
+  it("labels estimated peer latency distinctly from direct measured latency in the dashboard details", async () => {
+    const estimatedPeer = {
+      id: "peer-estimated",
+      role: "Host",
+      state: "serving",
+      models: ["model-a"],
+      available_models: ["model-a"],
+      requested_models: [],
+      serving_models: ["model-a"],
+      hosted_models: ["model-a"],
+      hosted_models_known: true,
+      vram_gb: 16,
+      rtt_ms: null,
+      hostname: "peer-estimated.mesh",
+      latency_ms: 44,
+      latency_source: "estimated",
+      latency_age_ms: 4_500,
+      latency_observer_id: "observer-node",
+    } as StatusPayload["peers"][number] & {
+      latency_ms?: number | null;
+      latency_source?: "direct" | "estimated" | "unknown";
+      latency_age_ms?: number | null;
+      latency_observer_id?: string | null;
+    };
+
+    statusPayload = {
+      ...createStatusPayload(),
+      peers: [estimatedPeer],
+    };
+
+    setPath("/dashboard");
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "peer-estimated" }));
+
+    await screen.findByRole("heading", { name: "peer-estimated.mesh" });
+    expect(screen.getByText(/44 ms/i)).toBeInTheDocument();
+    expect(screen.getByText((content) => content === "Estimated")).toBeInTheDocument();
+  });
+
+  it("visibly marks stale peer latency in the dashboard details even when the last sample was direct", async () => {
+    const stalePeer = {
+      id: "peer-stale",
+      role: "Host",
+      state: "serving",
+      models: ["model-a"],
+      available_models: ["model-a"],
+      requested_models: [],
+      serving_models: ["model-a"],
+      hosted_models: ["model-a"],
+      hosted_models_known: true,
+      vram_gb: 16,
+      rtt_ms: 23,
+      hostname: "peer-stale.mesh",
+      latency_ms: 23,
+      latency_source: "direct",
+      latency_age_ms: 120_000,
+      latency_observer_id: "observer-node",
+    } as StatusPayload["peers"][number] & {
+      latency_ms?: number | null;
+      latency_source?: "direct" | "estimated" | "unknown";
+      latency_age_ms?: number | null;
+      latency_observer_id?: string | null;
+    };
+
+    statusPayload = {
+      ...createStatusPayload(),
+      peers: [stalePeer],
+    };
+
+    setPath("/dashboard");
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "peer-stale" }));
+
+    await screen.findByRole("heading", { name: "peer-stale.mesh" });
+    expect(screen.getAllByText("23 ms").length).toBeGreaterThan(0);
+    expect(screen.getByText((content) => content === "Stale")).toBeInTheDocument();
+  });
+
   it("shows model peer shares from model-serving VRAM instead of physical inventory", async () => {
     statusPayload = {
       ...createStatusPayload(),

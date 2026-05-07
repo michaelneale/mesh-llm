@@ -787,6 +787,8 @@ fn make_test_peer_info(peer_id: EndpointId) -> PeerInfo {
         models: vec![],
         vram_bytes: 0,
         rtt_ms: None,
+        display_rtt: None,
+        propagated_latency: None,
         model_source: None,
         serving_models: vec![],
         hosted_models: vec![],
@@ -1332,6 +1334,10 @@ fn gossip_frame_roundtrip_preserves_scanned_model_metadata() {
             ready: true,
         }],
         owner_attestation: None,
+        latency_ms: None,
+        latency_source: None,
+        latency_age_ms: None,
+        latency_observer_id: None,
     };
 
     let proto_pa = local_ann_to_proto_ann(&local_ann);
@@ -1554,9 +1560,13 @@ fn transitive_peer_update_refreshes_metadata_fields() {
         served_model_descriptors: vec![],
         served_model_runtime: vec![],
         owner_attestation: None,
+        latency_ms: None,
+        latency_source: None,
+        latency_age_ms: None,
+        latency_observer_id: None,
     };
 
-    apply_transitive_ann(&mut existing, &addr, &ann);
+    apply_transitive_ann(&mut existing, &addr, &ann, make_test_endpoint_id(0x55));
 
     assert!(
         existing.available_models.is_empty(),
@@ -1632,9 +1642,13 @@ fn transitive_peer_merge_preserves_richer_direct_address() {
         served_model_descriptors: vec![],
         served_model_runtime: vec![],
         owner_attestation: None,
+        latency_ms: None,
+        latency_source: None,
+        latency_age_ms: None,
+        latency_observer_id: None,
     };
 
-    apply_transitive_ann(&mut existing, &weak_addr, &ann);
+    apply_transitive_ann(&mut existing, &weak_addr, &ann, make_test_endpoint_id(0x54));
 
     assert_eq!(
         existing.addr.addrs.len(),
@@ -1684,8 +1698,17 @@ fn transitive_peer_merge_preserves_richer_direct_address() {
         served_model_descriptors: vec![],
         served_model_runtime: vec![],
         owner_attestation: None,
+        latency_ms: None,
+        latency_source: None,
+        latency_age_ms: None,
+        latency_observer_id: None,
     };
-    apply_transitive_ann(&mut existing, &richer_addr, &ann2);
+    apply_transitive_ann(
+        &mut existing,
+        &richer_addr,
+        &ann2,
+        make_test_endpoint_id(0x56),
+    );
 
     assert_eq!(
         existing.addr.addrs.len(),
@@ -2254,9 +2277,13 @@ fn transitive_peer_update_refreshes_last_mentioned() {
         served_model_descriptors: vec![],
         served_model_runtime: vec![],
         owner_attestation: None,
+        latency_ms: None,
+        latency_source: None,
+        latency_age_ms: None,
+        latency_observer_id: None,
     };
 
-    apply_transitive_ann(&mut peer, &addr, &ann);
+    apply_transitive_ann(&mut peer, &addr, &ann, make_test_endpoint_id(0x57));
 
     // Before refreshing last_mentioned, verify the peer WOULD be pruned.
     let prune_cutoff_pre =
@@ -2974,6 +3001,11 @@ fn make_test_peer(id: EndpointId, rtt_ms: Option<u32>, vram_gb: u64) -> PeerInfo
         models: vec![],
         vram_bytes: vram_gb * 1024 * 1024 * 1024,
         rtt_ms,
+        display_rtt: rtt_ms.map(|rtt_ms| super::DirectLatencyObservation {
+            rtt_ms,
+            observed_at: std::time::Instant::now(),
+        }),
+        propagated_latency: None,
         model_source: None,
         serving_models: vec![],
         hosted_models: vec![],
@@ -3120,6 +3152,168 @@ async fn test_rtt_cannot_regress() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[tokio::test]
+async fn latency_current_direct_rtt_replaces_older_lower_sample_for_display_contract() -> Result<()>
+{
+    let node = make_test_node(super::NodeRole::Worker).await?;
+    let peer_key = SecretKey::generate();
+    let peer_id = EndpointId::from(peer_key.public());
+
+    {
+        let mut state = node.state.lock().await;
+        state
+            .peers
+            .insert(peer_id, make_test_peer(peer_id, Some(15), 16));
+    }
+
+    node.update_peer_rtt(peer_id, 40).await;
+
+    let state = node.state.lock().await;
+    let peer = state.peers.get(&peer_id).unwrap();
+    assert_eq!(
+        peer.rtt_ms,
+        Some(15),
+        "routing-grade RTT should keep the best direct sample for split decisions"
+    );
+    assert_eq!(
+        peer.current_direct_rtt_ms(),
+        Some(40),
+        "latest direct RTT should become the current display latency even when routing keeps a separate best-ever sample"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn latency_zero_rtt_is_rejected_without_overwriting_last_direct_sample() -> Result<()> {
+    let node = make_test_node(super::NodeRole::Worker).await?;
+    let peer_key = SecretKey::generate();
+    let peer_id = EndpointId::from(peer_key.public());
+
+    {
+        let mut state = node.state.lock().await;
+        state
+            .peers
+            .insert(peer_id, make_test_peer(peer_id, Some(15), 16));
+    }
+
+    node.update_peer_rtt(peer_id, 0).await;
+
+    let state = node.state.lock().await;
+    let rtt = state.peers.get(&peer_id).unwrap().rtt_ms;
+    assert_eq!(rtt, Some(15), "zero RTT must be rejected as invalid");
+
+    Ok(())
+}
+
+#[test]
+fn latency_transitive_mentions_do_not_refresh_direct_observation_freshness() {
+    let peer_id = EndpointId::from(SecretKey::from_bytes(&[0xC2; 32]).public());
+    let mut peer = make_test_peer_info(peer_id);
+    let old_time =
+        std::time::Instant::now() - std::time::Duration::from_secs(PEER_STALE_SECS * 2 + 60);
+    peer.rtt_ms = Some(18);
+    peer.last_seen = old_time;
+    peer.last_mentioned = old_time;
+
+    let addr = EndpointAddr {
+        id: peer_id,
+        addrs: Default::default(),
+    };
+    let ann = super::PeerAnnouncement {
+        addr: addr.clone(),
+        role: super::NodeRole::Worker,
+        first_joined_mesh_ts: None,
+        models: vec!["SomeModel-Q4_K_M".to_string()],
+        vram_bytes: 8 * 1024 * 1024 * 1024,
+        model_source: None,
+        serving_models: vec![],
+        hosted_models: None,
+        available_models: vec![],
+        requested_models: vec![],
+        explicit_model_interests: vec![],
+        version: None,
+        model_demand: HashMap::new(),
+        mesh_id: None,
+        gpu_name: None,
+        hostname: None,
+        is_soc: None,
+        gpu_vram: None,
+        gpu_reserved_bytes: None,
+        gpu_mem_bandwidth_gbps: None,
+        gpu_compute_tflops_fp32: None,
+        gpu_compute_tflops_fp16: None,
+        available_model_metadata: vec![],
+        experts_summary: None,
+        available_model_sizes: HashMap::new(),
+        served_model_descriptors: vec![],
+        served_model_runtime: vec![],
+        owner_attestation: None,
+        latency_ms: None,
+        latency_source: None,
+        latency_age_ms: None,
+        latency_observer_id: None,
+    };
+
+    apply_transitive_ann(&mut peer, &addr, &ann, make_test_endpoint_id(0x58));
+    peer.last_mentioned = std::time::Instant::now();
+
+    assert_eq!(peer.rtt_ms, Some(18));
+    assert_eq!(peer.last_seen, old_time);
+    assert!(
+        peer.last_mentioned.elapsed().as_secs() < 1,
+        "transitive mentions should stay fresh for estimated/unknown display logic"
+    );
+    assert!(
+        peer.last_seen.elapsed().as_secs() >= PEER_STALE_SECS,
+        "transitive mentions must not make the peer look directly observed"
+    );
+}
+
+#[test]
+fn latency_transitive_estimate_ages_conservatively_and_preserves_observer() {
+    let peer_id = EndpointId::from(SecretKey::from_bytes(&[0xC3; 32]).public());
+    let observer_id = EndpointId::from(SecretKey::from_bytes(&[0xC4; 32]).public());
+    let mut peer = make_test_peer_info(peer_id);
+    peer.propagated_latency = Some(super::PropagatedLatencyObservation {
+        latency_ms: 44,
+        age_ms_at_received: 90_000,
+        received_at: std::time::Instant::now() - std::time::Duration::from_secs(40),
+        observer_id: Some(observer_id),
+    });
+
+    let display_latency = peer.display_latency();
+    assert_eq!(display_latency.latency_ms, Some(44));
+    assert_eq!(
+        display_latency.source,
+        super::DisplayLatencySource::Estimated
+    );
+    assert!(
+        display_latency.age_ms.expect("age should be present") >= 130_000,
+        "propagated latency age should include both bridge-provided age and local elapsed time"
+    );
+    assert_eq!(display_latency.observer_id, Some(observer_id));
+}
+
+#[test]
+fn latency_transitive_estimate_decays_to_unknown_after_conservative_cutoff() {
+    let peer_id = EndpointId::from(SecretKey::from_bytes(&[0xC5; 32]).public());
+    let observer_id = EndpointId::from(SecretKey::from_bytes(&[0xC6; 32]).public());
+    let mut peer = make_test_peer_info(peer_id);
+    peer.propagated_latency = Some(super::PropagatedLatencyObservation {
+        latency_ms: 44,
+        age_ms_at_received: PEER_STALE_SECS.saturating_mul(2).saturating_mul(1000),
+        received_at: std::time::Instant::now(),
+        observer_id: Some(observer_id),
+    });
+
+    let display_latency = peer.display_latency();
+    assert_eq!(display_latency.latency_ms, None);
+    assert_eq!(display_latency.source, super::DisplayLatencySource::Unknown);
+    assert_eq!(display_latency.age_ms, None);
+    assert_eq!(display_latency.observer_id, None);
 }
 
 /// Regression test: connect_to_peer must skip peers already in state.peers,

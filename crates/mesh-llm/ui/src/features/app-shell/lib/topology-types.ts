@@ -1,4 +1,4 @@
-import type { LiveNodeState } from "./status-types";
+import type { LatencySource, LiveNodeState } from "./status-types";
 
 export type TopologyNode = {
   id: string;
@@ -13,6 +13,9 @@ export type TopologyNode = {
   ageSeconds?: number | null;
 
   latencyMs?: number | null;
+  latencySource?: LatencySource;
+  latencyAgeMs?: number | null;
+  latencyObserverId?: string | null;
   hostname?: string;
   isSoc?: boolean;
   gpus?: { name: string; vram_bytes: number; bandwidth_gbps?: number }[];

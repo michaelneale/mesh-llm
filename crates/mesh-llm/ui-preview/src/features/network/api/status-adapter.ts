@@ -110,6 +110,12 @@ function resolveOwner(owner: PeerInfo['owner']): string | undefined {
   return owner?.display_name ?? owner?.name ?? owner?.status
 }
 
+function resolveLatencySource(peer: PeerInfo): 'direct' | 'estimated' | 'unknown' {
+  if (peer.latency_source) return peer.latency_source
+  if (peer.latency_ms == null) return 'unknown'
+  return 'direct'
+}
+
 function finiteMetric(value: number | undefined): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
@@ -156,7 +162,10 @@ function adaptPeer(peer: PeerInfo, fallbackIndex: number): Peer {
     status: mapNodeState(resolvePeerState(peer)),
     hostedModels: resolveHostedModels(peer),
     sharePct: normalizeSharePct(peer.share_pct),
-    latencyMs: peer.latency_ms ?? peer.rtt_ms ?? 0,
+    latencyMs: peer.latency_ms ?? null,
+    latencySource: resolveLatencySource(peer),
+    latencyAgeMs: peer.latency_age_ms ?? null,
+    latencyObserverId: peer.latency_observer_id ?? null,
     loadPct: peer.load_pct ?? 0,
     shortId: id.slice(0, 8),
     version: peer.version,
@@ -182,7 +191,7 @@ function adaptSelfPeer(payload: StatusPayload): Peer {
     status: mapNodeState(payload.node_state),
     hostedModels: servingModels,
     sharePct: 0,
-    latencyMs: 0,
+    latencyMs: null,
     loadPct: payload.load_pct ?? 0,
     shortId: payload.node_id.slice(0, 8),
     role: 'you' as const,

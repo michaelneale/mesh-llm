@@ -12,11 +12,13 @@ export function ModelFactCard({
   value,
   icon,
   tooltip,
+  supportingContent,
 }: {
   title: string;
   value: string;
   icon: ReactNode;
   tooltip?: string;
+  supportingContent?: ReactNode;
 }) {
   const card = (
     <Card>
@@ -28,6 +30,7 @@ export function ModelFactCard({
         <div className="flex min-w-0 items-center gap-2 text-sm font-semibold text-foreground">
           <span className="truncate">{value}</span>
         </div>
+        {supportingContent ? <div className="mt-2 flex flex-wrap gap-1">{supportingContent}</div> : null}
       </CardContent>
     </Card>
   );

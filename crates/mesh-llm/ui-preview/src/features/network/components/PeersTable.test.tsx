@@ -1,4 +1,6 @@
-import { render, screen } from '@testing-library/react'
+// @vitest-environment jsdom
+
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { PeersTable } from './PeersTable'
@@ -20,6 +22,22 @@ function buildPeer(index: number): Peer {
     version: '0.65.0',
     vramGB: 12
   }
+}
+
+const basePeer: Peer = {
+  id: 'peer-base',
+  hostname: 'peer-base.mesh',
+  region: 'local',
+  status: 'online',
+  hostedModels: ['Qwen'],
+  sharePct: 25,
+  latencyMs: 17,
+  loadPct: 12,
+  shortId: 'peerbase',
+  role: 'peer',
+  version: '0.64.0',
+  vramGB: 24,
+  toksPerSec: 15.5
 }
 
 describe('PeersTable', () => {
@@ -251,7 +269,7 @@ describe('PeersTable', () => {
     expect(screen.getByText('Mac')).toBeInTheDocument()
   })
 
-  it('rounds latency to the nearest millisecond without hiding positive sub-millisecond values', () => {
+  it('formats latency to one decimal place without hiding positive sub-millisecond values', () => {
     const peers = [
       { ...buildPeer(1), latencyMs: 241.4 },
       { ...buildPeer(2), latencyMs: 0.4 },
@@ -260,9 +278,68 @@ describe('PeersTable', () => {
 
     render(<PeersTable peers={peers} summary={{ total: peers.length, online: peers.length, capacity: '12 GB' }} />)
 
-    expect(screen.getAllByText('241 ms').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('<1 ms').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('0 ms').length).toBeGreaterThan(0)
-    expect(screen.queryByText('241.4 ms')).not.toBeInTheDocument()
+    expect(screen.getAllByText('241.4 ms').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('0.4 ms').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('0.0 ms').length).toBeGreaterThan(0)
+    expect(screen.queryByText('241 ms')).not.toBeInTheDocument()
+  })
+})
+
+describe('PeersTable latency states', () => {
+  it('renders direct, estimated, stale, and unknown latency states without a fabricated zero fallback', () => {
+    const peers: Peer[] = [
+      basePeer,
+      {
+        ...basePeer,
+        id: 'peer-unknown',
+        hostname: 'peer-unknown.mesh',
+        shortId: 'unknown1',
+        latencyMs: null,
+        latencySource: 'unknown'
+      },
+      {
+        ...basePeer,
+        id: 'peer-estimated',
+        hostname: 'peer-estimated.mesh',
+        shortId: 'estimate',
+        latencyMs: 44,
+        latencySource: 'estimated',
+        latencyAgeMs: 4_500,
+        latencyObserverId: 'observer-node'
+      },
+      {
+        ...basePeer,
+        id: 'peer-stale',
+        hostname: 'peer-stale.mesh',
+        shortId: 'stalelat',
+        latencyMs: 23,
+        latencySource: 'direct',
+        latencyAgeMs: 120_000,
+        latencyObserverId: 'observer-node'
+      }
+    ]
+
+    render(
+      <PeersTable
+        peers={peers}
+        summary={{ total: peers.length, online: peers.length, capacity: '96 GB' }}
+      />
+    )
+
+    expect(screen.getAllByText('17.0 ms').length).toBeGreaterThan(0)
+
+    const unknownRow = screen.getByRole('button', { name: 'View peer-unknown.mesh node, peer ID peer-unknown' })
+    expect(within(unknownRow).getAllByText('Unknown').length).toBeGreaterThan(0)
+
+    const estimatedRow = screen.getByRole('button', { name: 'View peer-estimated.mesh node, peer ID peer-estimated' })
+    expect(within(estimatedRow).getAllByText('44.0 ms').length).toBeGreaterThan(0)
+    expect(within(estimatedRow).getAllByText('Estimated').length).toBeGreaterThan(0)
+
+    const staleRow = screen.getByRole('button', { name: 'View peer-stale.mesh node, peer ID peer-stale' })
+    expect(within(staleRow).getAllByText('23.0 ms').length).toBeGreaterThan(0)
+    expect(within(staleRow).getAllByText('Stale').length).toBeGreaterThan(0)
+
+    expect(screen.queryByText(/^0(?:\.0)?\s*ms$/i)).not.toBeInTheDocument()
+    expect(screen.queryByText('<1 ms')).not.toBeInTheDocument()
   })
 })

@@ -1,5 +1,6 @@
 import { LIVE_NODE_STATE_LABELS } from "./status-types";
 import type {
+  LatencySource,
   LiveNodeState,
   MeshModel,
   Ownership,
@@ -10,6 +11,18 @@ import type {
 import type { TopologyNode } from "./topology-types";
 
 type GpuInventory = Array<{ vram_bytes: number }>;
+
+const STALE_LATENCY_AGE_MS = 60_000;
+
+type LatencyDescriptor = {
+  rttMs?: number | null;
+  latencyMs?: number | null;
+  latencySource?: LatencySource | null;
+  latencyAgeMs?: number | null;
+  latencyObserverId?: string | null;
+};
+
+export type PeerLatencyState = "direct" | "estimated" | "stale" | "unknown";
 
 export function modelDisplayName(model?: MeshModel | null) {
   if (!model) return "";
@@ -140,6 +153,67 @@ export function formatLatency(value?: number | null) {
   const ms = Math.round(Number(value));
   if (ms <= 0) return "<1 ms";
   return `${ms} ms`;
+}
+
+function resolvedLatencySource(latency: LatencyDescriptor): LatencySource {
+  if (latency.latencySource) return latency.latencySource;
+  return latency.latencyMs != null || latency.rttMs != null ? "direct" : "unknown";
+}
+
+export function peerLatencyValueMs(latency: LatencyDescriptor): number | null {
+  const value = latency.latencyMs ?? latency.rttMs ?? null;
+  if (value == null || !Number.isFinite(Number(value))) return null;
+  return Number(value);
+}
+
+export function peerLatencyState(latency: LatencyDescriptor): PeerLatencyState {
+  const value = peerLatencyValueMs(latency);
+  const source = resolvedLatencySource(latency);
+  if (value == null || source === "unknown") return "unknown";
+
+  const ageMs = Number(latency.latencyAgeMs);
+  const isAgedSample = Number.isFinite(ageMs) && ageMs >= STALE_LATENCY_AGE_MS;
+  const isStaleDirect =
+    isAgedSample &&
+    (source === "direct" || (source === "estimated" && !latency.latencyObserverId));
+  if (isStaleDirect) return "stale";
+  if (source === "estimated") return "estimated";
+  return "direct";
+}
+
+export function formatPeerLatency(latency: LatencyDescriptor) {
+  return formatLatency(peerLatencyValueMs(latency));
+}
+
+export function peerLatencyHint(latency: LatencyDescriptor): {
+  label: "Estimated" | "Stale";
+  tone: "info" | "warn";
+} | null {
+  const state = peerLatencyState(latency);
+  if (state === "estimated") {
+    return { label: "Estimated", tone: "info" };
+  }
+  if (state === "stale") {
+    return { label: "Stale", tone: "warn" };
+  }
+  return null;
+}
+
+export function peerLatencyTooltip(latency: LatencyDescriptor) {
+  const state = peerLatencyState(latency);
+  if (state === "unknown") {
+    return "Latency is currently unknown for this peer.";
+  }
+  if (state === "stale") {
+    return "Last direct latency sample is older than a minute and may be out of date.";
+  }
+  if (state === "estimated") {
+    if (latency.latencyObserverId) {
+      return `Estimated by mesh observer ${latency.latencyObserverId}; not measured directly from this node.`;
+    }
+    return "Estimated from the last known path and not measured directly from this node.";
+  }
+  return "Direct round-trip latency measured from your node to this peer.";
 }
 
 export function topologyStatusTone(

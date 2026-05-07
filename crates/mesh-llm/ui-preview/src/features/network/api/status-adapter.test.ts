@@ -18,7 +18,7 @@ const PUBLIC_STATUS_PAYLOAD: StatusPayload = {
       serving_models: [],
       hosted_models: [],
       version: '0.65.0',
-      rtt_ms: 7,
+      latency_ms: 7,
       hostname: '1266a345aeb9'
     }
   ],
@@ -391,5 +391,116 @@ describe('adaptStatusToDashboard', () => {
       expect.objectContaining({ sharePct: 0 })
     )
     expect(dashboard.peers.find((peer) => peer.id === 'api-client')).toEqual(expect.objectContaining({ sharePct: 0 }))
+  })
+})
+
+const baseStatusPayload: StatusPayload = {
+  node_id: 'self-node',
+  node_state: 'serving',
+  model_name: 'Qwen',
+  peers: [],
+  models: [],
+  my_vram_gb: 24,
+  gpus: [],
+  serving_models: [{ name: 'Qwen', node_id: 'self-node', status: 'warm' }],
+  hostname: 'self.mesh',
+  region: 'local',
+  version: '0.60.2'
+}
+
+describe('adaptStatusToDashboard latency semantics', () => {
+  it('keeps direct peer latency numeric when the API provides a measured value', () => {
+    const dashboard = adaptStatusToDashboard({
+      ...baseStatusPayload,
+      peers: [
+        {
+          node_id: 'peer-direct',
+          hostname: 'peer-direct.mesh',
+          node_state: 'serving',
+          serving_models: ['Qwen'],
+          latency_ms: 17
+        }
+      ]
+    })
+
+    expect(dashboard.peers[1]?.latencyMs).toBe(17)
+  })
+
+  it('preserves unknown peer latency as null instead of coercing it to 0 ms', () => {
+    const dashboard = adaptStatusToDashboard({
+      ...baseStatusPayload,
+      peers: [
+        {
+          node_id: 'peer-unknown',
+          hostname: 'peer-unknown.mesh',
+          node_state: 'standby',
+          serving_models: []
+        }
+      ]
+    })
+
+    expect(dashboard.peers[1]?.latencyMs).toBeNull()
+    expect(dashboard.peers[1]?.latencyMs).not.toBe(0)
+    expect((dashboard.peers[1] as any)?.latencySource).toBe('unknown')
+    expect((dashboard.peers[1] as any)?.latencyAgeMs).toBeNull()
+    expect((dashboard.peers[1] as any)?.latencyObserverId).toBeNull()
+  })
+
+  it('preserves estimated latency metadata so preview renderers can label it distinctly from direct measurements', () => {
+    const peerWithEstimatedLatency = {
+      node_id: 'peer-estimated',
+      hostname: 'peer-estimated.mesh',
+      node_state: 'serving',
+      serving_models: ['Qwen'],
+      latency_ms: 44,
+      latency_source: 'estimated',
+      latency_age_ms: 4_500,
+      latency_observer_id: 'observer-node',
+    } as StatusPayload['peers'][number] & {
+      latency_source?: 'direct' | 'estimated' | 'unknown'
+      latency_age_ms?: number
+      latency_observer_id?: string
+    }
+
+    const dashboard = adaptStatusToDashboard({
+      ...baseStatusPayload,
+      peers: [peerWithEstimatedLatency]
+    })
+
+    const adaptedPeer = dashboard.peers[1] as any
+
+    expect(adaptedPeer?.latencyMs).toBe(44)
+    expect(adaptedPeer?.latencySource).toBe('estimated')
+    expect(adaptedPeer?.latencyAgeMs).toBe(4_500)
+    expect(adaptedPeer?.latencyObserverId).toBe('observer-node')
+  })
+
+  it('keeps stale direct latency metadata available so preview renderers can visibly mark aged samples as stale', () => {
+    const peerWithStaleDirectLatency = {
+      node_id: 'peer-stale',
+      hostname: 'peer-stale.mesh',
+      node_state: 'serving',
+      serving_models: ['Qwen'],
+      latency_ms: 23,
+      latency_source: 'direct',
+      latency_age_ms: 120_000,
+      latency_observer_id: 'observer-node',
+    } as StatusPayload['peers'][number] & {
+      latency_source?: 'direct' | 'estimated' | 'unknown'
+      latency_age_ms?: number
+      latency_observer_id?: string
+    }
+
+    const dashboard = adaptStatusToDashboard({
+      ...baseStatusPayload,
+      peers: [peerWithStaleDirectLatency]
+    })
+
+    const adaptedPeer = dashboard.peers[1] as any
+
+    expect(adaptedPeer?.latencyMs).toBe(23)
+    expect(adaptedPeer?.latencySource).toBe('direct')
+    expect(adaptedPeer?.latencyAgeMs).toBeGreaterThan(60_000)
+    expect(adaptedPeer?.latencyObserverId).toBe('observer-node')
   })
 })

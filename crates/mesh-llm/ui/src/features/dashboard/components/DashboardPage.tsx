@@ -53,8 +53,8 @@ import {
 import { cn } from "../../../lib/utils";
 import {
   formatLiveNodeState,
-  formatLatency,
   displayVramGb,
+  formatPeerLatency,
   localRoutableModels,
   meshGpuVram,
   modelDisplayName,
@@ -63,6 +63,8 @@ import {
   ownershipPrimaryLabel,
   ownershipStatusLabel,
   ownershipTone,
+  peerLatencyHint,
+  peerLatencyTooltip,
   peerAssignedModels,
   peerPrimaryModel,
   peerRoutableModels,
@@ -107,6 +109,9 @@ type NodeSidebarRecord = {
   state: LiveNodeState;
   role: string;
   latencyLabel: string;
+  latencyHintLabel?: "Estimated" | "Stale" | null;
+  latencyHintTone?: "info" | "warn";
+  latencyTooltip: string;
   vramGb: number;
   vramSharePct: number | null;
   isSoc?: boolean;
@@ -202,7 +207,7 @@ export function DashboardPage({
       const primaryModel = peerPrimaryModel(peer);
       const modelLabel =
         primaryModel && primaryModel !== "(idle)" ? modelRefLabel(primaryModel) : "idle";
-      const latencyLabel = formatLatency(peer.rtt_ms);
+      const latencyLabel = formatPeerLatency({ rttMs: peer.rtt_ms });
       const peerDisplayVramGb = displayVramGb(peer.state === "client", peer.vram_gb, peer.gpus);
       const sharePct =
         peer.state !== "client" && totalMeshVramGb > 0
@@ -213,6 +218,13 @@ export function DashboardPage({
         displayVramGb: peerDisplayVramGb,
         modelLabel,
         latencyLabel,
+        latencyTooltip: peerLatencyTooltip({
+          rttMs: peer.rtt_ms,
+          latencyMs: peer.latency_ms,
+          latencySource: peer.latency_source,
+          latencyAgeMs: peer.latency_age_ms,
+          latencyObserverId: peer.latency_observer_id,
+        }),
         shareLabel: sharePct == null ? "n/a" : `${sharePct}%`,
       };
     });
@@ -278,6 +290,15 @@ export function DashboardPage({
     const requestedModels = topologyNode.self
       ? uniqueModels(status.requested_models)
       : uniqueModels(peer?.requested_models);
+    const latencyHint = topologyNode.self
+      ? null
+      : peerLatencyHint({
+          rttMs: peer?.rtt_ms,
+          latencyMs: topologyNode.latencyMs,
+          latencySource: topologyNode.latencySource,
+          latencyAgeMs: topologyNode.latencyAgeMs,
+          latencyObserverId: topologyNode.latencyObserverId,
+        });
     return {
       id: topologyNode.id,
       title: topologyNode.hostname || topologyNode.id,
@@ -285,7 +306,27 @@ export function DashboardPage({
       self: topologyNode.self,
       state: topologyNode.state,
       role: topologyNodeRole(topologyNode),
-      latencyLabel: topologyNode.self ? "local" : formatLatency(topologyNode.latencyMs),
+      latencyLabel:
+        topologyNode.self
+          ? "local"
+          : formatPeerLatency({
+              rttMs: peer?.rtt_ms,
+              latencyMs: topologyNode.latencyMs,
+              latencySource: topologyNode.latencySource,
+              latencyAgeMs: topologyNode.latencyAgeMs,
+              latencyObserverId: topologyNode.latencyObserverId,
+            }),
+      latencyHintLabel: latencyHint?.label,
+      latencyHintTone: latencyHint?.tone,
+      latencyTooltip: topologyNode.self
+        ? "This is the local node."
+        : peerLatencyTooltip({
+            rttMs: peer?.rtt_ms,
+            latencyMs: topologyNode.latencyMs,
+            latencySource: topologyNode.latencySource,
+            latencyAgeMs: topologyNode.latencyAgeMs,
+            latencyObserverId: topologyNode.latencyObserverId,
+          }),
       vramGb: Math.max(0, topologyNode.vram),
       vramSharePct: topologyNode.state === "client"
         ? null
@@ -397,10 +438,8 @@ export function DashboardPage({
         <Alert className="border-border/60 bg-card/80">
           <Loader2 className="h-4 w-4 animate-spin" />
           <AlertTitle className="text-sm font-medium">Loading model catalog</AlertTitle>
-          <AlertDescription className="space-y-2">
-            <div className="text-xs text-muted-foreground">
-              Scanning local models and assembling mesh metadata.
-            </div>
+          <AlertDescription className="text-xs text-muted-foreground">
+            Scanning local models and assembling mesh metadata.
           </AlertDescription>
         </Alert>
       ) : null}
@@ -628,7 +667,9 @@ export function DashboardPage({
                         <TableCell className="max-w-[180px] truncate">
                           {peer.modelLabel}
                         </TableCell>
-                        <TableCell className="text-right">{peer.latencyLabel}</TableCell>
+                        <TableCell className="text-right">
+                          <span title={peer.latencyTooltip}>{peer.latencyLabel}</span>
+                        </TableCell>
                         <TableCell className="text-right">
                           {peer.state === "client" ? "n/a" : `${peer.displayVramGb.toFixed(1)} GB`}
                         </TableCell>

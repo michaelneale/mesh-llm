@@ -599,6 +599,8 @@ fn make_test_state_peer(seed: u8, role: mesh::NodeRole) -> mesh::PeerInfo {
         models: vec![],
         vram_bytes: 0,
         rtt_ms: None,
+        display_rtt: None,
+        propagated_latency: None,
         model_source: None,
         serving_models: vec![],
         hosted_models: vec![],
@@ -871,6 +873,8 @@ fn make_test_peer(
         models: Vec::new(),
         vram_bytes: 24_000_000_000,
         rtt_ms: None,
+        display_rtt: None,
+        propagated_latency: None,
         model_source: None,
         serving_models: serving_models.into_iter().map(str::to_string).collect(),
         hosted_models: hosted_models.into_iter().map(str::to_string).collect(),
@@ -2537,6 +2541,167 @@ async fn test_api_status_includes_routing_metrics_summary() {
     assert_eq!(
         payload["routing_metrics"]["local_node"]["local_attempt_count"],
         json!(1)
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn latency_status_payload_marks_stale_direct_latency_as_estimated_without_losing_best_route_rtt(
+) {
+    let state = build_test_mesh_api().await;
+    let node = {
+        let inner = state.inner.lock().await;
+        inner.node.clone()
+    };
+
+    let mut peer = make_test_peer(
+        0x61,
+        mesh::NodeRole::Host { http_port: 9337 },
+        vec!["latency-model"],
+        vec!["latency-model"],
+        true,
+    );
+    peer.rtt_ms = Some(18);
+    peer.last_seen = Instant::now() - Duration::from_secs(185);
+    peer.last_mentioned = Instant::now();
+    node.insert_test_peer(peer).await;
+
+    let (addr, handle) = spawn_management_test_server(state).await;
+    let response = send_management_request(
+        addr,
+        "GET /api/status HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
+    )
+    .await;
+
+    assert!(response.starts_with("HTTP/1.1 200"));
+    let payload = json_body(&response);
+    let peer_payload = &payload["peers"][0];
+    let peer_object = peer_payload.as_object().expect("peer payload object");
+    assert_eq!(peer_payload["rtt_ms"], json!(18));
+    assert_eq!(peer_payload["latency_ms"], json!(18));
+    assert_eq!(peer_payload["latency_source"], json!("estimated"));
+    assert!(
+        peer_object.contains_key("latency_age_ms"),
+        "estimated latency must keep relative freshness explicit for display consumers"
+    );
+    let latency_age_ms = peer_payload["latency_age_ms"]
+        .as_u64()
+        .expect("estimated latency should expose age in milliseconds");
+    assert!(
+        latency_age_ms >= 180_000,
+        "estimated latency age should reflect the stale direct observation age, got {latency_age_ms}"
+    );
+    assert!(
+        peer_object.contains_key("latency_observer_id"),
+        "estimated latency should reserve explicit observer provenance instead of forcing consumers to guess"
+    );
+    assert_eq!(peer_payload["latency_observer_id"], serde_json::Value::Null);
+    assert!(
+        peer_object.contains_key("latency_ms"),
+        "estimated latency must stay explicit for consumers instead of disappearing or becoming 0"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn latency_status_payload_preserves_unknown_latency_as_null_for_legacy_missing_fields() {
+    let state = build_test_mesh_api().await;
+    let node = {
+        let inner = state.inner.lock().await;
+        inner.node.clone()
+    };
+
+    let peer = make_test_peer(
+        0x62,
+        mesh::NodeRole::Worker,
+        vec!["legacy-latency-model"],
+        Vec::new(),
+        false,
+    );
+    node.insert_test_peer(peer).await;
+
+    let (addr, handle) = spawn_management_test_server(state).await;
+    let response = send_management_request(
+        addr,
+        "GET /api/status HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
+    )
+    .await;
+
+    assert!(response.starts_with("HTTP/1.1 200"));
+    let payload = json_body(&response);
+    let peer_payload = &payload["peers"][0];
+    let peer_object = peer_payload.as_object().expect("peer payload object");
+    assert!(
+        peer_object.contains_key("latency_ms"),
+        "legacy peers should serialize unknown latency explicitly so consumers never infer 0 ms"
+    );
+    assert_eq!(peer_payload["latency_ms"], serde_json::Value::Null);
+    assert_eq!(peer_payload["latency_source"], json!("unknown"));
+    assert!(
+        peer_object.contains_key("latency_age_ms"),
+        "legacy peers should serialize unknown latency freshness explicitly instead of implying a current sample"
+    );
+    assert_eq!(peer_payload["latency_age_ms"], serde_json::Value::Null);
+    assert!(
+        peer_object.contains_key("latency_observer_id"),
+        "legacy peers should keep observer provenance explicit even when missing"
+    );
+    assert_eq!(peer_payload["latency_observer_id"], serde_json::Value::Null);
+    assert_ne!(peer_payload["latency_ms"], json!(0));
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn latency_status_payload_surfaces_transitive_estimate_with_observer_and_aged_freshness() {
+    let state = build_test_mesh_api().await;
+    let node = {
+        let inner = state.inner.lock().await;
+        inner.node.clone()
+    };
+
+    let observer_id = iroh::EndpointId::from(iroh::SecretKey::from_bytes(&[0x63; 32]).public());
+    let mut peer = make_test_peer(
+        0x64,
+        mesh::NodeRole::Worker,
+        vec!["bridged-latency-model"],
+        Vec::new(),
+        false,
+    );
+    peer.propagated_latency = Some(mesh::PropagatedLatencyObservation {
+        latency_ms: 44,
+        age_ms_at_received: 90_000,
+        received_at: Instant::now() - Duration::from_secs(40),
+        observer_id: Some(observer_id),
+    });
+    peer.last_seen = Instant::now() - Duration::from_secs(240);
+    peer.last_mentioned = Instant::now();
+    node.insert_test_peer(peer).await;
+
+    let (addr, handle) = spawn_management_test_server(state).await;
+    let response = send_management_request(
+        addr,
+        "GET /api/status HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
+    )
+    .await;
+
+    assert!(response.starts_with("HTTP/1.1 200"));
+    let payload = json_body(&response);
+    let peer_payload = &payload["peers"][0];
+    assert_eq!(peer_payload["rtt_ms"], serde_json::Value::Null);
+    assert_eq!(peer_payload["latency_ms"], json!(44));
+    assert_eq!(peer_payload["latency_source"], json!("estimated"));
+    assert!(
+        peer_payload["latency_age_ms"]
+            .as_u64()
+            .expect("estimated latency should expose age")
+            >= 130_000
+    );
+    assert_eq!(
+        peer_payload["latency_observer_id"],
+        json!(observer_id.fmt_short().to_string())
     );
 
     handle.abort();

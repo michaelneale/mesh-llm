@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+
 import { describe, expect, it } from 'vitest'
 import type { MeshNode, Peer } from '@/features/app-tabs/types'
 import {
@@ -47,14 +49,36 @@ describe('MeshViz helpers', () => {
   it('derives render labels and hover metrics from node and peer data', () => {
     expect(renderKind(servingNode, undefined)).toBe('serving')
     expect(roleLabel(servingNode, hostPeer)).toBe('Host')
-    expect(latencyLabel(servingNode, hostPeer)).toBe('<1 ms')
+    expect(latencyLabel(servingNode, hostPeer)).toBe('1.2 ms')
 
     expect(nodeMetrics(servingNode, hostPeer).map(({ id, label, value }) => ({ id, label, value }))).toEqual([
       { id: 'model', label: 'Model', value: 'peer-model-q8' },
-      { id: 'latency', label: 'Latency', value: '<1 ms' },
+      { id: 'latency', label: 'Latency', value: '1.2 ms' },
       { id: 'compute', label: 'Compute', value: 'us-east' },
       { id: 'vram', label: 'VRAM', value: '48.0 GB' }
     ])
+  })
+
+  it('marks unknown, estimated, and stale latency states without fabricating 0 ms', () => {
+    expect(latencyLabel({ ...servingNode, latencyMs: null }, undefined)).toBe('Unknown')
+    expect(
+      latencyLabel(servingNode, {
+        ...hostPeer,
+        latencyMs: 44,
+        latencySource: 'estimated',
+        latencyAgeMs: 4_500,
+        latencyObserverId: 'observer-node'
+      })
+    ).toBe('44.0 ms · Estimated')
+    expect(
+      latencyLabel(servingNode, {
+        ...hostPeer,
+        latencyMs: 23,
+        latencySource: 'direct',
+        latencyAgeMs: 120_000,
+        latencyObserverId: 'observer-node'
+      })
+    ).toBe('23.0 ms · Stale')
   })
 
   it('keeps status and visual tokens aligned for debug and non-debug nodes', () => {

@@ -44,6 +44,8 @@ pub(super) enum SelectedPathKind {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct RelayPathSnapshot {
     pub(super) kind: SelectedPathKind,
+    /// Relay-health only: selected-path RTT used for reconnect heuristics.
+    /// This is intentionally separate from `PeerInfo.rtt_ms`.
     pub(super) rtt_ms: Option<u32>,
 }
 
@@ -712,5 +714,38 @@ impl Node {
             tokio::time::timeout(std::time::Duration::from_secs(1), existing_conn.closed()).await;
 
         true
+    }
+
+    /// Start a background task that refreshes `display_rtt` for all connected
+    /// peers every 15 seconds by reading the already-maintained QUIC path RTT.
+    ///
+    /// No messages are sent — iroh keeps path RTT up to date internally via its
+    /// own keep-alive/path-probing. This task just surfaces that value into
+    /// `PeerState::display_rtt` more frequently than the 60s heartbeat so that
+    /// the operator-facing latency display stays fresh.
+    pub fn start_rtt_refresh(&self) {
+        let node = self.clone();
+        tokio::spawn(async move {
+            const INTERVAL_SECS: u64 = 15;
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(INTERVAL_SECS)).await;
+
+                let peers_and_conns: Vec<(EndpointId, Connection)> = {
+                    let state = node.state.lock().await;
+                    state
+                        .connections
+                        .iter()
+                        .map(|(id, conn)| (*id, conn.clone()))
+                        .collect()
+                };
+
+                for (peer_id, conn) in peers_and_conns {
+                    let snapshot = selected_path_snapshot(&conn);
+                    if let Some(rtt_ms) = snapshot.rtt_ms {
+                        node.update_peer_rtt(peer_id, rtt_ms).await;
+                    }
+                }
+            }
+        });
     }
 }

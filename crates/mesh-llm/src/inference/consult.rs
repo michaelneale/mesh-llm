@@ -31,6 +31,7 @@ pub async fn find_vision_peer(node: &mesh::Node, exclude_model: &str) -> Option<
                 d.capabilities.supports_vision_runtime() && d.identity.model_name != exclude_model
             })
         })
+        // Lower RTT is only a routing tie-breaker after capability matching.
         .min_by_key(|p| p.rtt_ms.unwrap_or(u32::MAX))
         .map(|p| p.id)
 }
@@ -46,6 +47,7 @@ pub async fn find_audio_peer(node: &mesh::Node, exclude_model: &str) -> Option<E
                 d.capabilities.supports_audio_runtime() && d.identity.model_name != exclude_model
             })
         })
+        // Lower RTT is only a routing tie-breaker after capability matching.
         .min_by_key(|p| p.rtt_ms.unwrap_or(u32::MAX))
         .map(|p| p.id)
 }

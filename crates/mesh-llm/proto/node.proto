@@ -44,6 +44,17 @@ message PeerAnnouncement {
   optional HardwareInfo hardware = 33;              // Introduced in v0.60.0; preferred structured hardware inventory
   optional uint64 first_joined_mesh_ts = 34;
   repeated string explicit_model_interests = 35;    // Advisory canonical refs this node wants the mesh to consider
+  optional uint32 latency_ms = 36;                  // Display-facing latency observation; additive to legacy routing RTT
+  optional LatencySource latency_source = 37;       // direct | estimated | unknown provenance for latency_ms
+  optional uint32 latency_age_ms = 38;              // Relative age/freshness of latency_ms from the advertising node's point of view
+  optional bytes latency_observer_id = 39;          // exactly 32 bytes when present; observer/bridge that measured or relayed latency_ms
+}
+
+enum LatencySource {
+  LATENCY_SOURCE_UNSPECIFIED = 0;
+  LATENCY_SOURCE_DIRECT = 1;
+  LATENCY_SOURCE_ESTIMATED = 2;
+  LATENCY_SOURCE_UNKNOWN = 3;
 }
 
 message HardwareInfo {

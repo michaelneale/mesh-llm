@@ -528,6 +528,8 @@ mod tests {
             models: vec![],
             vram_bytes: 0,
             rtt_ms: None,
+            display_rtt: None,
+            propagated_latency: None,
             model_source: None,
             serving_models: vec![],
             hosted_models: vec![],
@@ -1217,6 +1219,10 @@ mod tests {
             available_model_sizes: HashMap::new(),
             served_model_descriptors: vec![],
             served_model_runtime: vec![],
+            latency_ms: None,
+            latency_source: None,
+            latency_age_ms: None,
+            latency_observer_id: None,
             owner_attestation: Some(crate::crypto::SignedNodeOwnership {
                 claim: crate::crypto::NodeOwnershipClaim {
                     version: 1,
@@ -1285,6 +1291,10 @@ mod tests {
             available_model_sizes: HashMap::new(),
             served_model_descriptors: vec![],
             served_model_runtime: vec![],
+            latency_ms: None,
+            latency_source: None,
+            latency_age_ms: None,
+            latency_observer_id: None,
             owner_attestation: None,
         };
 
@@ -1429,6 +1439,132 @@ mod tests {
             Some("312.00,312.00")
         );
         assert_eq!(roundtripped.is_soc, Some(false));
+    }
+
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    struct LegacyPeerAnnouncementV1 {
+        #[prost(bytes = "vec", tag = "1")]
+        endpoint_id: Vec<u8>,
+        #[prost(enumeration = "crate::proto::node::NodeRole", tag = "2")]
+        role: i32,
+        #[prost(uint32, optional, tag = "14")]
+        rtt_ms: Option<u32>,
+    }
+
+    #[test]
+    fn legacy_decoder_ignores_additive_latency_metadata_fields() {
+        use prost::Message as _;
+
+        let peer_id = EndpointId::from(SecretKey::from_bytes(&[0xD1; 32]).public());
+        let observer_id = EndpointId::from(SecretKey::from_bytes(&[0xD2; 32]).public());
+        let proto_pa = crate::proto::node::PeerAnnouncement {
+            endpoint_id: peer_id.as_bytes().to_vec(),
+            role: NodeRole::Worker as i32,
+            rtt_ms: Some(17),
+            latency_ms: Some(44),
+            latency_source: Some(crate::proto::node::LatencySource::Estimated as i32),
+            latency_age_ms: Some(9_000),
+            latency_observer_id: Some(observer_id.as_bytes().to_vec()),
+            ..Default::default()
+        };
+
+        let encoded = proto_pa.encode_to_vec();
+        let legacy = LegacyPeerAnnouncementV1::decode(encoded.as_slice())
+            .expect("legacy protobuf decoder must ignore additive latency metadata");
+
+        assert_eq!(legacy.endpoint_id, peer_id.as_bytes().to_vec());
+        assert_eq!(legacy.role, NodeRole::Worker as i32);
+        assert_eq!(legacy.rtt_ms, Some(17));
+    }
+
+    #[test]
+    fn current_decoder_accepts_legacy_payload_without_latency_metadata() {
+        use prost::Message as _;
+
+        let peer_id = EndpointId::from(SecretKey::from_bytes(&[0xD3; 32]).public());
+        let legacy = LegacyPeerAnnouncementV1 {
+            endpoint_id: peer_id.as_bytes().to_vec(),
+            role: NodeRole::Host as i32,
+            rtt_ms: Some(23),
+        };
+
+        let encoded = legacy.encode_to_vec();
+        let decoded = crate::proto::node::PeerAnnouncement::decode(encoded.as_slice()).expect(
+            "current protobuf decoder must accept legacy payloads that omit latency metadata",
+        );
+
+        assert_eq!(decoded.endpoint_id, peer_id.as_bytes().to_vec());
+        assert_eq!(decoded.role, NodeRole::Host as i32);
+        assert_eq!(decoded.rtt_ms, Some(23));
+        assert_eq!(decoded.latency_ms, None);
+        assert_eq!(decoded.latency_source, None);
+        assert_eq!(decoded.latency_age_ms, None);
+        assert_eq!(decoded.latency_observer_id, None);
+    }
+
+    #[test]
+    fn latency_metadata_roundtrips_through_proto_announcement() {
+        let peer_id = EndpointId::from(SecretKey::from_bytes(&[0xD4; 32]).public());
+        let observer_id = EndpointId::from(SecretKey::from_bytes(&[0xD5; 32]).public());
+        let ann = super::PeerAnnouncement {
+            addr: EndpointAddr {
+                id: peer_id,
+                addrs: Default::default(),
+            },
+            role: super::NodeRole::Worker,
+            first_joined_mesh_ts: None,
+            models: vec![],
+            vram_bytes: 0,
+            model_source: None,
+            serving_models: vec![],
+            hosted_models: None,
+            available_models: vec![],
+            requested_models: vec![],
+            explicit_model_interests: vec![],
+            version: None,
+            model_demand: HashMap::new(),
+            mesh_id: None,
+            gpu_name: None,
+            hostname: None,
+            is_soc: None,
+            gpu_vram: None,
+            gpu_reserved_bytes: None,
+            gpu_mem_bandwidth_gbps: None,
+            gpu_compute_tflops_fp32: None,
+            gpu_compute_tflops_fp16: None,
+            available_model_metadata: vec![],
+            experts_summary: None,
+            available_model_sizes: HashMap::new(),
+            served_model_descriptors: vec![],
+            served_model_runtime: vec![],
+            owner_attestation: None,
+            latency_ms: Some(44),
+            latency_source: Some(crate::proto::node::LatencySource::Estimated),
+            latency_age_ms: Some(91_000),
+            latency_observer_id: Some(observer_id),
+        };
+
+        let proto_pa = local_ann_to_proto_ann(&ann);
+        assert_eq!(proto_pa.latency_ms, Some(44));
+        assert_eq!(
+            proto_pa.latency_source,
+            Some(crate::proto::node::LatencySource::Estimated as i32)
+        );
+        assert_eq!(proto_pa.latency_age_ms, Some(91_000));
+        assert_eq!(
+            proto_pa.latency_observer_id,
+            Some(observer_id.as_bytes().to_vec())
+        );
+
+        let (_, roundtripped) =
+            proto_ann_to_local(&proto_pa).expect("proto_ann_to_local must succeed");
+        assert_eq!(roundtripped.latency_ms, Some(44));
+        assert_eq!(
+            roundtripped.latency_source,
+            Some(crate::proto::node::LatencySource::Estimated)
+        );
+        assert_eq!(roundtripped.latency_age_ms, Some(91_000));
+        assert_eq!(roundtripped.latency_observer_id, Some(observer_id));
     }
 
     #[test]
@@ -2007,6 +2143,10 @@ mod tests {
             available_model_sizes: HashMap::new(),
             served_model_descriptors: vec![],
             served_model_runtime: vec![],
+            latency_ms: None,
+            latency_source: None,
+            latency_age_ms: None,
+            latency_observer_id: None,
             owner_attestation: None,
         };
 
@@ -2051,6 +2191,10 @@ mod tests {
             available_model_sizes: HashMap::new(),
             served_model_descriptors: vec![],
             served_model_runtime: vec![],
+            latency_ms: None,
+            latency_source: None,
+            latency_age_ms: None,
+            latency_observer_id: None,
             owner_attestation: None,
         };
 

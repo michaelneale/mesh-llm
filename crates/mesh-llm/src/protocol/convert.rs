@@ -459,6 +459,14 @@ pub(crate) fn local_ann_to_proto_ann(
         available_model_metadata: ann.available_model_metadata.clone(),
         experts_summary: ann.experts_summary.clone(),
         rtt_ms: None,
+        latency_ms: ann.latency_ms,
+        latency_source: ann.latency_source.map(|source| source as i32),
+        latency_age_ms: ann
+            .latency_age_ms
+            .and_then(|age_ms| u32::try_from(age_ms).ok()),
+        latency_observer_id: ann
+            .latency_observer_id
+            .map(|observer_id| observer_id.as_bytes().to_vec()),
         catalog_models: ann.models.clone(),
         vram_bytes: ann.vram_bytes,
         model_source: ann.model_source.clone(),
@@ -646,6 +654,27 @@ pub(crate) fn proto_ann_to_local(
             .owner_attestation
             .as_ref()
             .map(proto_owner_attestation_to_local),
+        latency_ms: pa.latency_ms,
+        latency_source: match crate::proto::node::LatencySource::try_from(
+            pa.latency_source.unwrap_or_default(),
+        ) {
+            Ok(crate::proto::node::LatencySource::Direct) => {
+                Some(crate::proto::node::LatencySource::Direct)
+            }
+            Ok(crate::proto::node::LatencySource::Estimated) => {
+                Some(crate::proto::node::LatencySource::Estimated)
+            }
+            Ok(crate::proto::node::LatencySource::Unknown) => {
+                Some(crate::proto::node::LatencySource::Unknown)
+            }
+            _ => None,
+        },
+        latency_age_ms: pa.latency_age_ms.map(u64::from),
+        latency_observer_id: pa.latency_observer_id.as_ref().and_then(|observer_id| {
+            let bytes: [u8; 32] = observer_id.as_slice().try_into().ok()?;
+            let pk = iroh::PublicKey::from_bytes(&bytes).ok()?;
+            Some(EndpointId::from(pk))
+        }),
     };
     crate::mesh::backfill_legacy_descriptors(&mut ann);
     Some((addr, ann))

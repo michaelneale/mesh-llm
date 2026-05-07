@@ -8,6 +8,7 @@ export type PanelStyle = 'solid' | 'soft'
 export type AppTab = 'network' | 'chat' | 'configuration'
 
 export type StatusBadgeTone = 'good' | 'warn' | 'bad' | 'muted' | 'accent'
+export type LatencySource = 'direct' | 'estimated' | 'unknown'
 export type StatusMetric = {
   id: string
   icon?: ReactNode
@@ -29,7 +30,10 @@ export type Peer = {
   status: 'online' | 'degraded' | 'offline'
   hostedModels: string[]
   sharePct: number
-  latencyMs: number
+  latencyMs: number | null
+  latencySource?: LatencySource | null
+  latencyAgeMs?: number | null
+  latencyObserverId?: string | null
   loadPct: number
   shortId?: string
   role?: 'you' | 'host' | 'peer' | 'client' | 'worker'

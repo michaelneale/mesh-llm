@@ -64,6 +64,9 @@ type NodeSidebarRecord = {
   state: LiveNodeState;
   role: string;
   latencyLabel: string;
+  latencyHintLabel?: "Estimated" | "Stale" | null;
+  latencyHintTone?: "info" | "warn";
+  latencyTooltip: string;
   vramGb: number;
   vramSharePct: number | null;
   isSoc?: boolean;
@@ -185,7 +188,12 @@ export function NodeSidebar({
             title="Latency"
             value={node.latencyLabel}
             icon={<Wifi className="h-4 w-4" />}
-            tooltip={nodeLatencyTooltip(node.self)}
+            tooltip={node.latencyTooltip}
+            supportingContent={
+              node.latencyHintLabel ? (
+                <StatusPill label={node.latencyHintLabel} tone={node.latencyHintTone ?? "info"} />
+              ) : null
+            }
           />
           <ModelFactCard
             title="Node VRAM"
@@ -671,13 +679,6 @@ function nodeRoleTooltip(role: string) {
     return "Sends requests, but does not contribute VRAM.";
   }
   return "Connected to the mesh, but not actively serving a model.";
-}
-
-function nodeLatencyTooltip(self: boolean) {
-  if (self) {
-    return "This is the local node.";
-  }
-  return "Observed round-trip latency from your node to this peer.";
 }
 
 function nodeVramTooltip(role: string) {
