@@ -1357,7 +1357,7 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                     continue;
                 };
                 let event = match event {
-                    SplitCoordinatorEvent::Replace(event) => event,
+                    SplitCoordinatorEvent::Replace(event) => *event,
                     SplitCoordinatorEvent::Withdraw(event) => {
                         let missing_stage_nodes = event
                             .missing_stage_nodes

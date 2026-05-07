@@ -172,7 +172,7 @@ pub(super) struct SplitRuntimeGenerationHandle {
 }
 
 pub(super) enum SplitCoordinatorEvent {
-    Replace(SplitCoordinatorReplaceEvent),
+    Replace(Box<SplitCoordinatorReplaceEvent>),
     Withdraw(SplitCoordinatorWithdrawEvent),
 }
 
@@ -1095,16 +1095,17 @@ impl SplitTopologyCoordinator {
         })
         .await?;
         let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
-        let event = SplitCoordinatorEvent::Replace(SplitCoordinatorReplaceEvent {
+        let event = SplitCoordinatorEvent::Replace(Box::new(SplitCoordinatorReplaceEvent {
             reason,
             generation: candidate.generation,
             loaded,
             ack: ack_tx,
-        });
+        }));
         if let Err(err) = self.event_tx.send(event).await {
             let SplitCoordinatorEvent::Replace(event) = err.0 else {
                 unreachable!("replace event send returned a non-replace event")
             };
+            let event = *event;
             event.loaded.handle.shutdown().await;
             stop_split_generation(&self.node, &candidate, candidate.generation).await;
             anyhow::bail!("publish split topology candidate to runtime loop: receiver closed");
