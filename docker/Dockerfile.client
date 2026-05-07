@@ -37,6 +37,7 @@ WORKDIR /src
 # Satisfy GitHub Actions preflight checks (exact strings required)
 COPY Cargo.toml Cargo.lock ./
 COPY crates/mesh-llm-ui/ crates/mesh-llm-ui/
+COPY crates/mesh-llm-types/ crates/mesh-llm-types/
 COPY crates/mesh-llm/Cargo.toml crates/mesh-llm/Cargo.toml
 COPY crates/mesh-llm/build.rs crates/mesh-llm/build.rs
 COPY crates/mesh-llm-plugin/Cargo.toml crates/mesh-llm-plugin/Cargo.toml
@@ -89,6 +90,7 @@ COPY --from=ui-builder /app/dist crates/mesh-llm-ui/dist
 # Satisfy GitHub Actions preflight checks (exact strings required)
 COPY Cargo.toml Cargo.lock ./
 COPY crates/mesh-llm-ui/ crates/mesh-llm-ui/
+COPY crates/mesh-llm-types/ crates/mesh-llm-types/
 COPY crates/mesh-llm/Cargo.toml crates/mesh-llm/Cargo.toml
 COPY crates/mesh-llm/build.rs crates/mesh-llm/build.rs
 COPY crates/mesh-llm-plugin/Cargo.toml crates/mesh-llm-plugin/Cargo.toml

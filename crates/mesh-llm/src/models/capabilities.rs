@@ -1,4 +1,4 @@
-pub use mesh_client::models::capabilities::{
+pub use mesh_llm_types::models::capabilities::{
     merge_config_signals, merge_name_signals, merge_sibling_signals, CapabilityLevel,
     ModelCapabilities,
 };

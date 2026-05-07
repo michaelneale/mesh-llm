@@ -28,3 +28,5 @@ Per-crate docs stay with their crates. The main binary crate overview lives at
 [../crates/mesh-llm/README.md](../crates/mesh-llm/README.md), and the web
 console/embedded asset crate overview lives at
 [../crates/mesh-llm-ui/README.md](../crates/mesh-llm-ui/README.md).
+Shared protocol-facing model/type ownership lives at
+[../crates/mesh-llm-types/README.md](../crates/mesh-llm-types/README.md).

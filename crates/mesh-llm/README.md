@@ -27,6 +27,11 @@ src/
 └── system/                hardware detection, benchmarking, self-update
 ```
 
+Pure protocol-facing model/type definitions that are shared with client crates
+live in [`../mesh-llm-types`](../mesh-llm-types). The host crate should re-export
+or consume those definitions rather than making embedded clients depend on host
+runtime modules.
+
 Notable built-ins under `src/plugins/` today:
 
 ```text

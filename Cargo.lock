@@ -4027,6 +4027,7 @@ dependencies = [
  "libc",
  "mesh-llm-client",
  "mesh-llm-plugin",
+ "mesh-llm-types",
  "mesh-llm-ui",
  "model-artifact",
  "model-ref",
@@ -4082,6 +4083,7 @@ dependencies = [
  "hex",
  "httparse",
  "iroh",
+ "mesh-llm-types",
  "nostr-sdk",
  "prost",
  "rand 0.10.1",
@@ -4118,6 +4120,16 @@ dependencies = [
  "reqwest 0.12.28",
  "serde_json",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "mesh-llm-types"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]

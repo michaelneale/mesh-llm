@@ -4,7 +4,7 @@
 //! by first byte. Skippy stage control and activation transport use the
 //! separate `skippy-stage/1` ALPN.
 
-pub use mesh_client::mesh::{
+pub use mesh_llm_types::mesh::{
     infer_available_model_descriptors, infer_local_served_model_descriptor,
     infer_served_model_descriptors, merge_demand, ModelDemand, ModelRuntimeDescriptor,
     ModelSourceKind, ServedModelDescriptor, ServedModelIdentity, DEMAND_TTL_SECS, MAX_SPLIT_RTT_MS,

@@ -64,6 +64,7 @@ jobs:
               - 'crates/mesh-api/**'
               - 'crates/mesh-api-ffi/**'
               - 'crates/mesh-client/**'
+              - 'crates/mesh-llm-types/**'
               - 'sdk/**'
               - 'Package.swift'
               - 'scripts/ci-native-sdk-smoke.sh'
