@@ -499,17 +499,17 @@ mod tests {
                 ),
                 "qwen2" | "qwen3_dense" | "llama" | "deepseek" | "deepseek2" | "deepseek3"
                 | "glm4" | "glm4_moe" | "olmo" | "olmo2" | "olmoe" | "gemma" | "gemma2"
-                | "gemma3" | "gemma4_a4b" | "gemma4_e4b" | "glm47_flash" | "minimax_m27"
-                | "qwen2moe" | "qwen3moe" | "granite" | "granite_moe" | "hunyuan_dense"
-                | "hunyuan_moe" | "hunyuan_vl" | "gptneox" | "bloom" | "stablelm"
-                | "starcoder2" | "mpt" | "phi" | "phi2" | "phimoe" | "gpt2" | "mistral"
-                | "internlm2" | "baichuan" | "exaone" | "exaone4" | "cohere2" | "falcon"
-                | "openai_moe" | "qwen2vl" | "qwen3vl" | "deepseek2ocr" | "qwen3vlmoe"
-                | "maincoder" | "openelm" | "minicpm" | "minicpm3" | "plamo" | "plamo3" | "plm"
-                | "refact" | "smallthinker" | "smollm3" | "arcee" | "chatglm" | "codeshell"
-                | "deci" | "xverse" | "apertus" | "bitnet" | "command_r" | "starcoder"
-                | "ernie4_5" | "ernie4_5_moe" | "qwen" | "jais" | "jais2" | "nemotron"
-                | "llama4" | "mistral4" | "seed_oss" => {
+                | "gemma3" | "gemma3n" | "gemma4_a4b" | "gemma4_e4b" | "glm47_flash"
+                | "minimax_m27" | "qwen2moe" | "qwen3moe" | "granite" | "granite_moe"
+                | "hunyuan_dense" | "hunyuan_moe" | "hunyuan_vl" | "gptneox" | "bloom"
+                | "stablelm" | "starcoder2" | "mpt" | "phi" | "phi2" | "phimoe" | "gpt2"
+                | "mistral" | "internlm2" | "baichuan" | "exaone" | "exaone4" | "cohere2"
+                | "exaone_moe" | "falcon" | "openai_moe" | "qwen2vl" | "qwen3vl"
+                | "deepseek2ocr" | "qwen3vlmoe" | "maincoder" | "openelm" | "minicpm"
+                | "minicpm3" | "plamo" | "plamo3" | "plm" | "refact" | "smallthinker"
+                | "smollm3" | "arcee" | "chatglm" | "codeshell" | "deci" | "xverse" | "apertus"
+                | "bitnet" | "command_r" | "starcoder" | "ernie4_5" | "ernie4_5_moe" | "qwen"
+                | "jais" | "jais2" | "nemotron" | "llama4" | "mistral4" | "seed_oss" => {
                     assert_eq!(
                         policy.prefix_cache,
                         FamilyPrefixCachePolicy::Auto {

@@ -393,6 +393,14 @@ fn model_ref_path_preference_key(path: &Path) -> (u8, String) {
     (rank, path.to_string_lossy().to_string())
 }
 
+fn model_ref_path_preference_key_for_cache_root(root: &Path, path: &Path) -> (u8, String) {
+    let rank = identity_from_cache_snapshot_path(path, root)
+        .filter(|identity| identity.repo_id.ends_with("-layers"))
+        .map(|identity| layered_package_relative_preference(&identity.file))
+        .unwrap_or(0);
+    (rank, path.to_string_lossy().to_string())
+}
+
 fn push_model_name(
     path: &Path,
     names: &mut Vec<String>,
@@ -650,7 +658,7 @@ fn find_hf_cache_model_ref_path(root: &Path, model: &model_ref::ModelRef) -> Opt
             }
         }
     }
-    candidates.sort();
+    candidates.sort_by_key(|path| model_ref_path_preference_key_for_cache_root(root, path));
     candidates.into_iter().next()
 }
 
@@ -1244,9 +1252,11 @@ mod tests {
             installed,
             vec!["meshllm/DeepSeek-V3.2-UD-Q4_K_XL-layers".to_string()]
         );
+        let parsed_ref =
+            model_ref::ModelRef::parse("meshllm/DeepSeek-V3.2-UD-Q4_K_XL-layers").unwrap();
         assert_eq!(
-            find_model_path("meshllm/DeepSeek-V3.2-UD-Q4_K_XL-layers"),
-            shared
+            find_hf_cache_model_ref_path(&temp, &parsed_ref),
+            Some(shared.clone())
         );
         assert_eq!(layered_package_layer_count_for_path(&layer_000), Some(3));
         assert_eq!(

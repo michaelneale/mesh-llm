@@ -2266,6 +2266,7 @@ fn send_trim_session(
         sampling: None,
         chat_sampling_metadata: None,
         tokens: Vec::new(),
+        positions: Vec::new(),
         activation: Vec::new(),
         raw_bytes: Vec::new(),
     };
@@ -2498,6 +2499,7 @@ fn send_decode_step(
         sampling: None,
         chat_sampling_metadata: None,
         tokens: vec![current],
+        positions: Vec::new(),
         activation: Vec::new(),
         raw_bytes: Vec::new(),
     };
@@ -2552,6 +2554,7 @@ fn send_verify_span(
         sampling: None,
         chat_sampling_metadata: None,
         tokens: tokens.to_vec(),
+        positions: Vec::new(),
         activation: Vec::new(),
         raw_bytes: Vec::new(),
     };
@@ -3043,6 +3046,7 @@ fn send_session_control(
         sampling: None,
         chat_sampling_metadata: None,
         tokens: Vec::new(),
+        positions: Vec::new(),
         activation: Vec::new(),
         raw_bytes: Vec::new(),
     };
@@ -3087,6 +3091,7 @@ fn send_try_restore_prefill(
         sampling: None,
         chat_sampling_metadata: None,
         tokens: tokens.to_vec(),
+        positions: Vec::new(),
         activation: Vec::new(),
         raw_bytes: Vec::new(),
     };
@@ -3133,6 +3138,7 @@ fn send_prefill_chunk(
         sampling: None,
         chat_sampling_metadata: None,
         tokens: chunk.tokens.to_vec(),
+        positions: Vec::new(),
         activation: Vec::new(),
         raw_bytes: Vec::new(),
     };
