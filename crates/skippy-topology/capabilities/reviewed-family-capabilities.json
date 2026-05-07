@@ -294,6 +294,45 @@
     }
   },
   {
+    "model_id": "lmstudio-community/gemma-3n-E2B-it-GGUF:Q4_K_M",
+    "source_repo": "lmstudio-community/gemma-3n-E2B-it-GGUF",
+    "source_revision": "55989072aa7997ceac0c5965d0883ccc9f83ccdb",
+    "source_file": "gemma-3n-E2B-it-Q4_K_M.gguf",
+    "canonical_ref": "lmstudio-community/gemma-3n-E2B-it-GGUF@55989072aa7997ceac0c5965d0883ccc9f83ccdb/gemma-3n-E2B-it-Q4_K_M.gguf",
+    "distribution_id": "gemma-3n-E2B-it-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "gemma3n",
+      "layer_count": 30,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [
+        {
+          "kind": "shared_kv_producer_consumer",
+          "range": {
+            "start": 15,
+            "end": 30
+          },
+          "forbidden_boundaries": [
+            20
+          ],
+          "reject_boundary_inside": false,
+          "reason": "Gemma3n layers 20+ reuse KV owned by layers 15..19; keep the final slice starting at 15 unless KV replay or transfer is added"
+        }
+      ],
+      "sidebands": [
+        {
+          "kind": "gemma3n_altup",
+          "first_required_layer": 30,
+          "reason": "Gemma3n downstream slices require the full AltUp activation sideband in addition to the boundary hidden state"
+        }
+      ]
+    }
+  },
+  {
     "model_id": "ggml-org/gemma-3-270m-it-GGUF:Q8_0",
     "source_repo": "ggml-org/gemma-3-270m-it-GGUF",
     "source_revision": "e7647be17ae1108f2f605ed061ca0608b171afff",
@@ -1059,6 +1098,26 @@
       "default_wire_dtype": "f16",
       "q8_wire_validation": "validated",
       "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "LGAI-EXAONE/K-EXAONE-236B-A23B-GGUF:Q4_K_M",
+    "source_repo": "LGAI-EXAONE/K-EXAONE-236B-A23B-GGUF",
+    "source_revision": "73a9e3c2605b16ecfdd8bbff4f5f8628454a5262",
+    "source_file": "K-EXAONE-236B-A23B-Q4_K_M.gguf",
+    "canonical_ref": "LGAI-EXAONE/K-EXAONE-236B-A23B-GGUF@73a9e3c2605b16ecfdd8bbff4f5f8628454a5262/K-EXAONE-236B-A23B-Q4_K_M.gguf",
+    "distribution_id": "K-EXAONE-236B-A23B-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "exaone_moe",
+      "layer_count": 49,
+      "activation_width": 6144,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "untested",
+      "exact_state_mobility": "rejected_too_large",
       "recurrent_ranges": [],
       "split_constraints": [],
       "sidebands": []

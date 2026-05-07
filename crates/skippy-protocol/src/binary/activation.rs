@@ -80,7 +80,9 @@ pub fn encode_f32_activation_payload_with_state_flags(
 }
 
 pub fn activation_payload_multiplier_from_state_flags(state_flag_bits: i32) -> usize {
-    if (state_flag_bits & state_flags::RWKV7_V_FIRST_SIDEBAND) != 0 {
+    if (state_flag_bits & state_flags::GEMMA3N_ALTUP_SIDEBAND) != 0 {
+        4
+    } else if (state_flag_bits & state_flags::RWKV7_V_FIRST_SIDEBAND) != 0 {
         2
     } else {
         1

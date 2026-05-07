@@ -265,10 +265,12 @@
     {
       "llama_model": "gemma3n",
       "family": "gemma3n",
-      "status": "needs_runtime_slice_support",
+      "status": "certified",
       "repo": "lmstudio-community/gemma-3n-E2B-it-GGUF",
       "include": "*Q4_K_M.gguf",
-      "notes": "local Q4_K_M artifact is downloaded; rechecked in llama-parity-gemma3n-recheck-20260507 and state-handoff passed, but single-step, chain, and dtype lanes fail because the stage ABI reports runtime-slice execution is not supported for gemma3n; the graph has no stage-filter hooks and carries 3D AltUp/per-layer state, so promotion needs explicit runtime-slice graph support plus multimodal media/projector strategy"
+      "split_layer": 15,
+      "splits": "10,15",
+      "notes": "certified with lmstudio-community/gemma-3n-E2B-it-GGUF Q4_K_M in llama-parity-gemma3n-cpu-20260507d; Gemma3n carries AltUp sideband state across activation frames and split topologies must keep KV-reuse layers with their KV-owner layers, so the reviewed three-stage split is 0..10,10..15,15..30 rather than an even 0..10,10..20,20..30 split"
     },
     {
       "llama_model": "deepseek",
@@ -750,8 +752,8 @@
     {
       "llama_model": "exaone-moe",
       "family": "exaone_moe",
-      "status": "package_or_remote_only",
-      "notes": "official public K-EXAONE GGUF package advertises llama.cpp architecture exaone-moe; package-sized candidate for remote/materialized certification; Q4_K_M file is the selected candidate",
+      "status": "certified_package_only",
+      "notes": "official public K-EXAONE GGUF package advertises llama.cpp architecture exaone-moe; remote range metadata check on 2026-05-07 verified K-EXAONE-236B-A23B-Q4_K_M.gguf at revision 73a9e3c2605b16ecfdd8bbff4f5f8628454a5262 has 49 layers, activation width 6144, 128 experts, 8 active experts, and 143471722240 bytes. It is too large for the cheap monolithic correctness lane, so support is package/stage-policy evidence only and exact state mobility is rejected as too large.",
       "repo": "LGAI-EXAONE/K-EXAONE-236B-A23B-GGUF",
       "include": "K-EXAONE-236B-A23B-Q4_K_M.gguf"
     },

@@ -26,6 +26,7 @@ Correctness options:
   --prompt TEXT               correctness prompt; default: Hello
   --ctx-size N                context size; default: 128
   --n-gpu-layers N            llama.cpp GPU layers; default: 999
+  --startup-timeout-secs N    stage server readiness timeout; default: correctness harness default
   --wire-dtype DTYPE          default activation wire dtype; default: f16
   --wire-dtypes CSV           dtype matrix list; default: f32,f16,q8
   --allow-mismatch            allow mismatch in single-step and chain lanes
@@ -110,6 +111,7 @@ ACTIVATION_WIDTH=""
 PROMPT="Hello"
 CTX_SIZE="128"
 N_GPU_LAYERS="999"
+STARTUP_TIMEOUT_SECS=""
 WIRE_DTYPE="f16"
 WIRE_DTYPES="f32,f16,q8"
 ALLOW_MISMATCH=0
@@ -153,6 +155,7 @@ while [[ $# -gt 0 ]]; do
     --prompt) PROMPT="$2"; shift 2 ;;
     --ctx-size) CTX_SIZE="$2"; shift 2 ;;
     --n-gpu-layers) N_GPU_LAYERS="$2"; shift 2 ;;
+    --startup-timeout-secs) STARTUP_TIMEOUT_SECS="$2"; shift 2 ;;
     --wire-dtype) WIRE_DTYPE="$2"; shift 2 ;;
     --wire-dtypes) WIRE_DTYPES="$2"; shift 2 ;;
     --allow-mismatch) ALLOW_MISMATCH=1; shift ;;
@@ -333,6 +336,9 @@ correctness_common=(
 )
 if [[ -n "$MODEL_ID" ]]; then
   correctness_common+=(--model-id "$MODEL_ID")
+fi
+if [[ -n "$STARTUP_TIMEOUT_SECS" ]]; then
+  correctness_common+=(--startup-timeout-secs "$STARTUP_TIMEOUT_SECS")
 fi
 
 echo "family certification"

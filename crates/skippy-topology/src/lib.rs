@@ -226,6 +226,7 @@ pub struct SidebandRequirement {
 pub enum SidebandKind {
     TokenIds,
     Rwkv7VFirst,
+    Gemma3nAltup,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -318,6 +319,11 @@ pub const STAGE_RUNTIME_LLAMA_FAMILY_EXPECTATIONS: &[StageRuntimeFamilyExpectati
     StageRuntimeFamilyExpectation {
         llama_architecture: "gemma3",
         family_id: "gemma3",
+        recurrent_or_hybrid: false,
+    },
+    StageRuntimeFamilyExpectation {
+        llama_architecture: "gemma3n",
+        family_id: "gemma3n",
         recurrent_or_hybrid: false,
     },
     StageRuntimeFamilyExpectation {
@@ -1167,7 +1173,9 @@ fn apply_family_boundary_rules(
         if layer_boundary <= sideband.first_required_layer {
             reason_codes.push(match sideband.kind {
                 SidebandKind::TokenIds => PlanReasonCode::TokenSidebandRequired,
-                SidebandKind::Rwkv7VFirst => PlanReasonCode::ActivationSidebandRequired,
+                SidebandKind::Rwkv7VFirst | SidebandKind::Gemma3nAltup => {
+                    PlanReasonCode::ActivationSidebandRequired
+                }
             });
             messages.push(sideband.reason.clone());
         }
@@ -1178,11 +1186,19 @@ fn activation_payload_multiplier_for_boundary(
     family: &FamilyCapabilityRecord,
     layer_boundary: u32,
 ) -> u64 {
-    let has_activation_sideband = family.sidebands.iter().any(|sideband| {
+    let has_gemma3n_altup_sideband = family.sidebands.iter().any(|sideband| {
+        sideband.kind == SidebandKind::Gemma3nAltup
+            && layer_boundary <= sideband.first_required_layer
+    });
+    if has_gemma3n_altup_sideband {
+        return 4;
+    }
+
+    let has_rwkv7_v_first_sideband = family.sidebands.iter().any(|sideband| {
         sideband.kind == SidebandKind::Rwkv7VFirst
             && layer_boundary <= sideband.first_required_layer
     });
-    if has_activation_sideband {
+    if has_rwkv7_v_first_sideband {
         2
     } else {
         1
@@ -1432,6 +1448,33 @@ pub fn gemma3_capability(layer_count: u32, activation_width: u32) -> FamilyCapab
     )
 }
 
+pub fn gemma3n_capability(layer_count: u32, activation_width: u32) -> FamilyCapabilityRecord {
+    FamilyCapabilityRecord {
+        family_id: "gemma3n".to_string(),
+        layer_count,
+        activation_width,
+        default_wire_dtype: WireDType::F16,
+        q8_wire_validation: WireValidation::Validated,
+        exact_state_mobility: ExactStateMobility::Accepted,
+        recurrent_ranges: Vec::new(),
+        split_constraints: vec![SplitConstraint {
+            kind: SplitConstraintKind::SharedKvProducerConsumer,
+            range: LayerRange {
+                start: layer_count / 2,
+                end: layer_count,
+            },
+            forbidden_boundaries: vec![layer_count.saturating_mul(2) / 3],
+            reject_boundary_inside: false,
+            reason: "Gemma3n upper layers reuse KV owned by lower upper-stack layers; keep the final slice start on the reviewed KV-owner boundary unless KV replay or transfer is added".to_string(),
+        }],
+        sidebands: vec![SidebandRequirement {
+            kind: SidebandKind::Gemma3nAltup,
+            first_required_layer: layer_count,
+            reason: "Gemma3n downstream slices require the full AltUp activation sideband in addition to the boundary hidden state".to_string(),
+        }],
+    }
+}
+
 pub fn gemma4_a4b_capability(layer_count: u32, activation_width: u32) -> FamilyCapabilityRecord {
     dense_family_capability(
         "gemma4_a4b",
@@ -1676,6 +1719,9 @@ pub fn infer_family_capability(
             WireValidation::Untested,
             ExactStateMobility::Untested,
         ));
+    }
+    if compact.contains("gemma3n") {
+        return Some(gemma3n_capability(layer_count, activation_width));
     }
     if compact.contains("gemma3") {
         return Some(gemma3_capability(layer_count, activation_width));
@@ -2031,7 +2077,7 @@ pub fn infer_family_capability(
             layer_count,
             activation_width,
             WireValidation::Untested,
-            ExactStateMobility::Accepted,
+            ExactStateMobility::RejectedTooLarge,
         ));
     }
     if compact.contains("exaone4") {

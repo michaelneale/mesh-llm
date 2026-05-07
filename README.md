@@ -65,13 +65,13 @@ curl http://localhost:9337/v1/chat/completions \
 
 ## Supported model families
 
-Mesh LLM's stage runtime tracks llama.cpp family parity with reviewed GGUF representatives per family. The current reviewed support set covers 72 P0/P1 family rows, with 88 certified rows in the full llama.cpp parity inventory:
+Mesh LLM's stage runtime tracks llama.cpp family parity with reviewed GGUF representatives per family. The current reviewed support set covers 72 P0/P1 family rows, with 89 certified rows in the full llama.cpp parity inventory:
 
 ```text
-Arcee, Baichuan, Bloom, ChatGLM, CodeShell, Cohere2, Deci, DeepSeek, DeepSeek2, DeepSeek3, DeepSeek-OCR, EXAONE, EXAONE4, Falcon, Falcon-H1, Gemma, Gemma2, Gemma3, Gemma4, GLM4, GLM-4.7 Flash, GLM4-MoE, GPT2, GPT-NeoX, Granite, Granite-Hybrid, Granite-MoE, Hunyuan-Dense, Hunyuan-MoE, Hunyuan-VL/HunyuanOCR, InternLM2, Jamba, Kimi Linear, LFM2, Llama, Maincoder, Mamba, Mamba2, MiniCPM, MiniCPM3, MiniMax M2.7, Mistral, MPT, OLMo, OLMo2, OLMoE, OpenELM, Phi, Phi2, PhiMoE, Plamo3, PLM, Qwen2, Qwen2-MoE, Qwen2-VL, Qwen3 dense, Qwen3-MoE, Qwen3.5 recurrent, Qwen3Next, Qwen3-VL, Qwen3-VL-MoE, Refact, RWKV6, RWKV7, SmallThinker, SmolLM3, StableLM, StarCoder2, XVerse
+Arcee, Baichuan, Bloom, ChatGLM, CodeShell, Cohere2, Deci, DeepSeek, DeepSeek2, DeepSeek3, DeepSeek-OCR, EXAONE, EXAONE4, EXAONE-MoE, Falcon, Falcon-H1, Gemma, Gemma2, Gemma3, Gemma3n, Gemma4, GLM4, GLM-4.7 Flash, GLM4-MoE, GPT2, GPT-NeoX, Granite, Granite-Hybrid, Granite-MoE, Hunyuan-Dense, Hunyuan-MoE, Hunyuan-VL/HunyuanOCR, InternLM2, Jamba, Kimi Linear, LFM2, Llama, Maincoder, Mamba, Mamba2, MiniCPM, MiniCPM3, MiniMax M2.7, Mistral, MPT, OLMo, OLMo2, OLMoE, OpenELM, Phi, Phi2, PhiMoE, Plamo3, PLM, Qwen2, Qwen2-MoE, Qwen2-VL, Qwen3 dense, Qwen3-MoE, Qwen3.5 recurrent, Qwen3Next, Qwen3-VL, Qwen3-VL-MoE, Refact, RWKV6, RWKV7, SmallThinker, SmolLM3, StableLM, StarCoder2, XVerse
 ```
 
-Split multimodal serving is certified for Qwen2-VL, Qwen3-VL, Qwen3-VL-MoE, HunyuanOCR/Hunyuan-VL, and DeepSeek-OCR using real GGUF plus projector fixtures. Granite-MoE is layout-parity support from a tiny random GGUF and should be replaced with a real small artifact when one is available. DeepSeek3 is supported through package-backed stages because the full GGUF is too large for the cheap local baseline.
+Split multimodal serving is certified for Qwen2-VL, Qwen3-VL, Qwen3-VL-MoE, HunyuanOCR/Hunyuan-VL, and DeepSeek-OCR using real GGUF plus projector fixtures. Granite-MoE is layout-parity support from a tiny random GGUF and should be replaced with a real small artifact when one is available. DeepSeek3 and EXAONE-MoE are supported through package-backed stages because the full GGUFs are too large for the cheap local baseline.
 
 See [docs/skippy/FAMILY_STATUS.md](docs/skippy/FAMILY_STATUS.md) for the full artifact, split, wire dtype, cache policy, and exception matrix. See [docs/skippy/LLAMA_PARITY.md](docs/skippy/LLAMA_PARITY.md) for the remaining llama.cpp parity queue.
 

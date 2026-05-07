@@ -417,6 +417,54 @@ fn gemma4_e4b_rejects_known_bad_shared_kv_boundaries() {
 }
 
 #[test]
+fn gemma3n_requires_altup_sideband_and_reviewed_kv_boundary() {
+    let request = TopologyPlanRequest {
+        topology_id: "gemma3n".to_string(),
+        model_id: "gemma3n".to_string(),
+        layers: dense_attention_layers(30, 10),
+        nodes: nodes(3),
+        family: Some(gemma3n_capability(30, 2048)),
+        policy: PlannerPolicy::default(),
+    };
+
+    let even_plan = plan_even_contiguous(&request).expect("even plan");
+    assert_eq!(
+        even_plan
+            .boundaries
+            .iter()
+            .map(|boundary| {
+                (
+                    boundary.layer_boundary,
+                    boundary.decision,
+                    boundary.raw_activation_bytes_per_token,
+                    boundary.wire_payload_bytes_per_token,
+                )
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            (10, BoundaryDecision::Accepted, 32768, 16384),
+            (20, BoundaryDecision::Rejected, 32768, 16384)
+        ]
+    );
+    assert!(even_plan.boundaries.iter().all(|boundary| boundary
+        .reason_codes
+        .contains(&PlanReasonCode::ActivationSidebandRequired)));
+
+    let reviewed_plan = plan_contiguous_with_splits(&request, &[10, 15]).expect("reviewed plan");
+    assert_eq!(
+        reviewed_plan
+            .boundaries
+            .iter()
+            .map(|boundary| (boundary.layer_boundary, boundary.decision))
+            .collect::<Vec<_>>(),
+        vec![
+            (10, BoundaryDecision::Accepted),
+            (15, BoundaryDecision::Accepted)
+        ]
+    );
+}
+
+#[test]
 fn explicit_splits_return_reasoned_boundary_decisions() {
     let request = TopologyPlanRequest {
         topology_id: "gemma-explicit".to_string(),
@@ -603,6 +651,25 @@ fn infers_known_family_capabilities_from_model_identity() {
         infer_family_capability("unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q4_K_M", 48, 2048)
             .expect("qwen3 coder 30b");
     assert_eq!(qwen3_coder_30b.family_id, "qwen3moe");
+    let exaone_moe_package =
+        infer_family_capability("LGAI-EXAONE/K-EXAONE-236B-A23B-GGUF:Q4_K_M", 49, 6144)
+            .expect("exaone-moe package");
+    assert_eq!(exaone_moe_package.family_id, "exaone_moe");
+    assert_eq!(
+        exaone_moe_package.q8_wire_validation,
+        WireValidation::Untested
+    );
+    assert_eq!(
+        exaone_moe_package.exact_state_mobility,
+        ExactStateMobility::RejectedTooLarge
+    );
+    let gemma3n =
+        infer_family_capability("lmstudio-community/gemma-3n-E2B-it-GGUF:Q4_K_M", 30, 2048)
+            .expect("gemma3n");
+    assert_eq!(gemma3n.family_id, "gemma3n");
+    assert_eq!(gemma3n.q8_wire_validation, WireValidation::Validated);
+    assert_eq!(gemma3n.exact_state_mobility, ExactStateMobility::Accepted);
+    assert_eq!(gemma3n.sidebands[0].kind, SidebandKind::Gemma3nAltup);
     let qwen2vl = infer_family_capability("bartowski/Qwen2-VL-2B-Instruct-GGUF:Q4_K_M", 28, 1536)
         .expect("qwen2vl");
     assert_eq!(qwen2vl.family_id, "qwen2vl");
@@ -1090,7 +1157,9 @@ fn reviewed_supported_families_smoke_plan_with_expected_policy_signals() {
                 .iter()
                 .map(|sideband| match sideband.kind {
                     SidebandKind::TokenIds => PlanReasonCode::TokenSidebandRequired,
-                    SidebandKind::Rwkv7VFirst => PlanReasonCode::ActivationSidebandRequired,
+                    SidebandKind::Rwkv7VFirst | SidebandKind::Gemma3nAltup => {
+                        PlanReasonCode::ActivationSidebandRequired
+                    }
                 })
                 .collect();
             assert!(

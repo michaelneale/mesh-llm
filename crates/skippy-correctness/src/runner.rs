@@ -795,6 +795,7 @@ fn run_binary_split(args: BinarySplitConfig) -> Result<BinarySplitResult> {
         sampling: None,
         chat_sampling_metadata: None,
         tokens: vec![token_id],
+        positions: Vec::new(),
         activation,
         raw_bytes: Vec::new(),
     };
@@ -1052,6 +1053,7 @@ fn run_binary_chain(args: BinaryChainConfig) -> Result<BinaryChainResult> {
         sampling: None,
         chat_sampling_metadata: None,
         tokens: vec![token_id],
+        positions: Vec::new(),
         activation,
         raw_bytes: Vec::new(),
     };
@@ -2335,6 +2337,7 @@ fn send_prefill_for_state_handoff(
         sampling: None,
         chat_sampling_metadata: None,
         tokens: tokens.to_vec(),
+        positions: Vec::new(),
         activation,
         raw_bytes: Vec::new(),
     };
@@ -2366,6 +2369,7 @@ fn export_state_over_binary(
         sampling: None,
         chat_sampling_metadata: None,
         tokens: Vec::new(),
+        positions: Vec::new(),
         activation: Vec::new(),
         raw_bytes: Vec::new(),
     };
@@ -2402,6 +2406,7 @@ fn import_state_over_binary(
         sampling: None,
         chat_sampling_metadata: None,
         tokens: Vec::new(),
+        positions: Vec::new(),
         activation: Vec::new(),
         raw_bytes: state_bytes.to_vec(),
     };
@@ -2440,6 +2445,7 @@ fn decode_for_state_handoff(
         sampling: None,
         chat_sampling_metadata: None,
         tokens: vec![token_id],
+        positions: Vec::new(),
         activation,
         raw_bytes: Vec::new(),
     };

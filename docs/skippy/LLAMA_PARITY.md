@@ -215,20 +215,18 @@ available. Current classification:
 
 | Status | Count | Meaning |
 | --- | ---: | --- |
-| `certified` | 88 | Cheap representative passed the promoted split-serving evidence for this branch. |
-| `certified_package_only` | 6 | Huge model has package/stage evidence rather than a monolithic local baseline. |
+| `certified` | 89 | Cheap representative passed the promoted split-serving evidence for this branch. |
+| `certified_package_only` | 7 | Huge model has package/stage evidence rather than a monolithic local baseline. |
 | `candidate_multimodal` | 3 | Needs projector/media sideband certification before multimodal promotion. |
-| `needs_runtime_slice_support` | 1 | Causal llama.cpp family exists, but skippy's stage ABI does not yet support its graph/tensor filtering. |
 | `non_causal_aux` | 14 | Encoder, embedding, audio, or other non-causal serving lane. |
 | `implementation_base` | 4 | Shared implementation helper, not a standalone GGUF architecture. |
-| `package_or_remote_only` | 10 | No cheap local representative; certify on larger hardware or package artifacts. |
+| `package_or_remote_only` | 9 | No cheap local representative; certify on larger hardware or package artifacts. |
 | `no_public_gguf_candidate` | 5 | No public GGUF matching that llama.cpp architecture was found. |
 
-The active P0/P1 queue has no `needs_candidate` or `candidate_multimodal`
-rows. Remaining P0/P1 gaps are one explicit runtime-slice implementation
-blocker (`gemma3n`) plus remaining package/remote certification for oversized
-models. The three remaining `candidate_multimodal` rows are long-tail
-non-P0/P1 families.
+The active P0/P1 queue has no `needs_candidate`, `candidate_multimodal`, or
+`needs_runtime_slice_support` rows. The remaining `candidate_multimodal` rows
+are long-tail non-P0/P1 families; remaining package/remote rows need larger
+hardware or package artifact evidence before promotion.
 
 ## Family Board
 
@@ -244,7 +242,7 @@ or a blocker is discovered.
 | `lfm2` | `lfm2` | selected | yes | pass | pass | `KvRecurrent` | pass | recurrent cache restore ready; keep normal decode ownership sticky |
 | `gpt2` | `gpt2` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `gemma` | `gemma` | selected | yes | pass with `f32` wire | pass | `ResidentKv` | pass | cache restore ready with `f32`; `f16`/`q8` rejected |
-| `gemma3n` | `gemma3n` | selected | yes | blocked | state handoff pass only | disabled | blocked | needs runtime-slice graph support for 3D AltUp/per-layer state before text or multimodal promotion |
+| `gemma3n` | `gemma3n` | selected | yes | pass | pass | `ResidentKv` text path | pass | certified with AltUp sideband activation frames; reviewed topology keeps KV-reuse layers with their KV-owner layers (`0..10,10..15,15..30`) |
 | `mpt` | `mpt` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `olmo2` | `olmo2` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `olmoe` | `olmoe` | selected | yes | pass | pass | `ResidentKv` | pass + MoE expert smoke | cache restore and MoE expert-stage smoke ready |
@@ -370,7 +368,8 @@ themselves until the reviewed topology records are updated.
 | `hunyuan_vl` | split smoke via `cargo test -p skippy-server real_multimodal_split_smoke_when_fixture_is_set` with `HunyuanOCR-Q8_0.gguf`, `mmproj-HunyuanOCR-Q8_0.gguf`, and `test-1.jpeg` | split multimodal passed with the shared Hunyuan-Dense/VL graph filter | untested | untested | projector/media sideband split smoke passed; default f16 activation wire is the support target |
 | `deepseek2ocr` | see `target/family-certify/llama-parity-new-mm-candidates-20260507b`; split smoke via `cargo test -p skippy-server real_multimodal_split_smoke_when_fixture_is_set` with `DeepSeek-OCR-Q8_0.gguf`, `mmproj-DeepSeek-OCR-Q8_0.gguf`, and `test-1.jpeg` | text `single-step`, `chain`, dtype matrix, and split multimodal passed | rejected | accepted | `ResidentKv` handoff and split multimodal smoke passed |
 | `qwen3vlmoe` | see `target/family-certify/llama-parity-new-mm-candidates-20260507b`; split smoke via `cargo test -p skippy-server real_multimodal_split_smoke_when_fixture_is_set` with `Qwen3-VL-30B-A3B-Instruct-1M-MXFP4_MOE.gguf`, `mmproj-F16.gguf`, and `test-1.jpeg` | text `single-step`, `chain`, dtype matrix, and split multimodal passed | rejected | accepted | `ResidentKv` handoff and split multimodal smoke passed; stage readiness wait allows large local fixtures |
-| `gemma3n` | `lmstudio-community/gemma-3n-E2B-it-GGUF` | blocked: llama.cpp reports `runtime-slice execution is not supported for this model architecture yet` | untested | untested | text and multimodal promotion blocked until Gemma3n graph support and media loader/projector strategy are implemented |
+| `gemma3n` | see `target/family-certify/llama-parity-gemma3n-cpu-20260507d` | `single-step`, chain split `0..10,10..15,15..30`, dtype matrix, and state handoff passed after adding AltUp sideband activation frames | validated | accepted for text `ResidentKv` policy | multimodal/projector smoke remains separate, but text split serving is certified |
+| `exaone_moe` | `LGAI-EXAONE/K-EXAONE-236B-A23B-GGUF:Q4_K_M` | package-only certified from remote GGUF metadata: architecture `exaone-moe`, 49 layers, width 6144, 128 experts, 8 active experts, 143471722240 bytes | untested | rejected-too-large | full monolithic correctness is too large for cheap local hardware; package/stage-policy evidence is the support contract |
 | `bert` | `nomic-ai/nomic-embed-text-v1.5-GGUF` | non-causal aux; downloaded and inspected | not applicable | not applicable | GGUF reports `nomic-bert`, 12 blocks, width 768; do not promote as causal stage-split serving |
 | `t5` | `cyanic-selkie/flan-t5-small-Q4_K_M-GGUF` | non-causal aux; downloaded and inspected | not applicable | not applicable | GGUF reports `t5`, 8 blocks, width 512; encoder-decoder support needs a separate serving lane |
 | `qwen2moe` | see `target/family-certify/llama-parity-qwen2moe-runtime-slice-4`, `/tmp/skippy-cache-correctness-dense-medium`, and `/Volumes/External/tmp/skippy-moe-expert-smoke-20260506` | `single-step`, `chain`, and f16 dtype matrix passed | rejected | accepted | `ResidentKv` cache smoke and MoE expert-stage smoke passed |
@@ -538,10 +537,12 @@ inference.
 - `phi2` required a llama.cpp stage-filter fix for filtered fused-QKV tensors:
   when a merged QKV weight is skipped for a slice, the matching merged QKV bias
   must also be accounted for instead of falling back to separate Q/K/V tensors.
-- `gemma3n` is locally downloaded, but remains blocked before promotion because
-  the pinned llama.cpp graph rejects runtime-slice execution for `gemma3n`; the
-  sampled LM Studio artifact also does not expose a separate mmproj file for the
-  current multimodal smoke harness.
+- `gemma3n` now has text split-serving support. Its graph needs a full AltUp
+  sideband, and the safe multi-stage split keeps layers 20+ with KV-owner layers
+  15..19 instead of using an even `0..10,10..20,20..30` split.
+- `exaone_moe` is package-only: remote range metadata verified the public
+  K-EXAONE Q4_K_M GGUF shape and architecture, but the 143.5 GB artifact is too
+  large for the cheap monolithic correctness lane.
 - `olmoe`, `qwen2moe`, and `qwen3moe` now pass MoE expert-stage smoke for
   one-stage, split-middle, and split-final ranges. The smoke confirms nonzero
   expert tensor ownership in each tested range, native sequence remap `0 -> 1`,

@@ -39,6 +39,12 @@ pub fn connect_ready(addr: SocketAddr, timeout_secs: u64) -> Result<TcpStream> {
         match TcpStream::connect(addr) {
             Ok(mut stream) => {
                 stream.set_nodelay(true).ok();
+                stream
+                    .set_read_timeout(Some(Duration::from_millis(500)))
+                    .ok();
+                stream
+                    .set_write_timeout(Some(Duration::from_millis(500)))
+                    .ok();
                 match recv_ready(&mut stream) {
                     Ok(()) => return Ok(stream),
                     Err(error) => {

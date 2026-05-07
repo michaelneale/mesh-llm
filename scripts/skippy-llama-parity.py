@@ -347,10 +347,10 @@ def inventory(args: argparse.Namespace) -> list[dict[str, Any]]:
                         row.update(
                             {
                                 "gguf_arch": arch,
-                                "layer_end": layer_count,
+                                "layer_end": entry.get("layer_end", layer_count),
                                 "activation_width": activation_width,
-                                "split_layer": split_layer,
-                                "splits": splits,
+                                "split_layer": entry.get("split_layer", split_layer),
+                                "splits": entry.get("splits", splits),
                             }
                         )
                     else:
@@ -542,7 +542,7 @@ def run_certifications(args: argparse.Namespace, rows: list[dict[str, Any]]) -> 
             "--ctx-size",
             str(ctx_size),
             "--n-gpu-layers",
-            str(args.n_gpu_layers or defaults.get("n_gpu_layers", 999)),
+            str(args.n_gpu_layers if args.n_gpu_layers is not None else defaults.get("n_gpu_layers", 999)),
             "--wire-dtype",
             str(row.get("wire_dtype") or defaults.get("wire_dtype", "f16")),
             "--wire-dtypes",
@@ -552,6 +552,8 @@ def run_certifications(args: argparse.Namespace, rows: list[dict[str, Any]]) -> 
             "--run-id",
             args.run_id,
         ]
+        if args.startup_timeout_secs is not None:
+            cmd.extend(["--startup-timeout-secs", str(args.startup_timeout_secs)])
         entry = next(
             (
                 candidate
@@ -644,6 +646,7 @@ def main() -> int:
     run_parser.add_argument("--stop-on-failure", action="store_true")
     run_parser.add_argument("--ctx-size", type=int)
     run_parser.add_argument("--n-gpu-layers", type=int)
+    run_parser.add_argument("--startup-timeout-secs", type=int)
     run_parser.add_argument("--run-id", default="llama-parity-cheap")
 
     args = parser.parse_args()

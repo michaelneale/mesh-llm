@@ -180,24 +180,32 @@ pub mod state_flags {
     pub const FULL_STATE: i32 = 1 << 4;
     pub const CHAT_SAMPLING_METADATA: i32 = 1 << 5;
     pub const RWKV7_V_FIRST_SIDEBAND: i32 = 1 << 6;
+    pub const GEMMA3N_ALTUP_SIDEBAND: i32 = 1 << 7;
 }
 
 pub const ACTIVATION_FLAG_RWKV7_V_FIRST: u64 = 1 << 0;
+pub const ACTIVATION_FLAG_GEMMA3N_ALTUP: u64 = 1 << 1;
 
 pub fn activation_frame_flags_from_state_flags(flags: i32) -> u64 {
+    let mut frame_flags = 0;
     if (flags & state_flags::RWKV7_V_FIRST_SIDEBAND) != 0 {
-        ACTIVATION_FLAG_RWKV7_V_FIRST
-    } else {
-        0
+        frame_flags |= ACTIVATION_FLAG_RWKV7_V_FIRST;
     }
+    if (flags & state_flags::GEMMA3N_ALTUP_SIDEBAND) != 0 {
+        frame_flags |= ACTIVATION_FLAG_GEMMA3N_ALTUP;
+    }
+    frame_flags
 }
 
 pub fn activation_state_flags_from_frame_flags(flags: u64) -> i32 {
+    let mut state = 0;
     if (flags & ACTIVATION_FLAG_RWKV7_V_FIRST) != 0 {
-        state_flags::RWKV7_V_FIRST_SIDEBAND
-    } else {
-        0
+        state |= state_flags::RWKV7_V_FIRST_SIDEBAND;
     }
+    if (flags & ACTIVATION_FLAG_GEMMA3N_ALTUP) != 0 {
+        state |= state_flags::GEMMA3N_ALTUP_SIDEBAND;
+    }
+    state
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
