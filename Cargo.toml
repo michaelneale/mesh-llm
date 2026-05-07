@@ -2,6 +2,7 @@
 members = [
     "crates/mesh-llm",
     "crates/mesh-llm-identity",
+    "crates/mesh-llm-protocol",
     "crates/mesh-llm-types",
     "crates/mesh-llm-ui",
     "crates/mesh-llm-plugin",

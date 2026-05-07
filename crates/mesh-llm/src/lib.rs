@@ -15,9 +15,7 @@ mod runtime_data;
 mod system;
 
 pub mod proto {
-    pub mod node {
-        include!(concat!(env!("OUT_DIR"), "/meshllm.node.v1.rs"));
-    }
+    pub use mesh_llm_protocol::proto::*;
 }
 
 pub(crate) use plugins::blackboard;

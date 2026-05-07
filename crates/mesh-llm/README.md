@@ -36,6 +36,10 @@ Shared owner identity and envelope crypto live in
 [`../mesh-llm-identity`](../mesh-llm-identity). Host-only keychain, keystore, and
 trust-store persistence remain in this crate's `crypto/` module for now.
 
+Shared protobuf message types and frame helpers live in
+[`../mesh-llm-protocol`](../mesh-llm-protocol). Host-local protocol conversion
+stays in `src/protocol/` until mesh control-plane/runtime ownership is smaller.
+
 Notable built-ins under `src/plugins/` today:
 
 ```text

@@ -1,1 +1,1 @@
-pub mod node;
+pub use mesh_llm_protocol::proto::*;

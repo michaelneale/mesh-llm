@@ -32,3 +32,5 @@ Shared protocol-facing model/type ownership lives at
 [../crates/mesh-llm-types/README.md](../crates/mesh-llm-types/README.md).
 Shared owner identity and envelope crypto lives at
 [../crates/mesh-llm-identity/README.md](../crates/mesh-llm-identity/README.md).
+Shared wire protocol ownership lives at
+[../crates/mesh-llm-protocol/README.md](../crates/mesh-llm-protocol/README.md).

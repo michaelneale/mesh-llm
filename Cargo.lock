@@ -4028,6 +4028,7 @@ dependencies = [
  "mesh-llm-client",
  "mesh-llm-identity",
  "mesh-llm-plugin",
+ "mesh-llm-protocol",
  "mesh-llm-types",
  "mesh-llm-ui",
  "model-artifact",
@@ -4039,8 +4040,6 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "prost",
- "prost-build",
- "protoc-bin-vendored",
  "rand 0.10.1",
  "ratatui",
  "regex-lite",
@@ -4085,6 +4084,7 @@ dependencies = [
  "httparse",
  "iroh",
  "mesh-llm-identity",
+ "mesh-llm-protocol",
  "mesh-llm-types",
  "nostr-sdk",
  "prost",
@@ -4127,6 +4127,18 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "mesh-llm-protocol"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hex",
+ "iroh",
+ "prost",
+ "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]

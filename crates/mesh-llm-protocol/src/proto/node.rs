@@ -100,6 +100,11 @@ pub struct PeerAnnouncement {
     /// Introduced in v0.60.0; preferred structured hardware inventory
     #[prost(message, optional, tag = "33")]
     pub hardware: ::core::option::Option<HardwareInfo>,
+    #[prost(uint64, optional, tag = "34")]
+    pub first_joined_mesh_ts: ::core::option::Option<u64>,
+    /// Advisory canonical refs this node wants the mesh to consider
+    #[prost(string, repeated, tag = "35")]
+    pub explicit_model_interests: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct HardwareInfo {

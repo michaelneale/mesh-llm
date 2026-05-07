@@ -19,6 +19,9 @@ Three slices are already extracted:
   descriptors, model demand counters, and shared routing constants.
 - `mesh-llm-identity` owns shared owner keypairs, owner ID derivation, signed
   encrypted envelopes, key-provider traits, and shared crypto errors.
+- `mesh-llm-protocol` owns generated protobuf message types, mesh ALPN/stream
+  constants, control-frame validation, frame helpers, v0 tunnel-map
+  compatibility, and canonical config hashing.
 
 ```mermaid
 flowchart TD
@@ -26,6 +29,7 @@ flowchart TD
     client["mesh-client"]
     identity["mesh-llm-identity"]
     host["mesh-llm"]
+    protocol["mesh-llm-protocol"]
     ui["mesh-llm-ui"]
     api_assets["mesh-llm API asset routes"]
 
@@ -33,6 +37,8 @@ flowchart TD
     types --> host
     identity --> client
     identity --> host
+    protocol --> client
+    protocol --> host
     ui --> api_assets
     api_assets --> host
 ```
@@ -93,7 +99,8 @@ flowchart TD
 
 | Current area | Destination | Reason |
 | --- | --- | --- |
-| `protocol/`, generated proto, ALPN and stream IDs, frame validation | New `mesh-llm-protocol` | Shared by host and client; protocol compatibility deserves a small, explicit crate. |
+| Generated proto, ALPN and stream IDs, frame validation, frame helpers, legacy tunnel-map decoding | `mesh-llm-protocol` | Implemented as the shared wire-protocol crate consumed by the host and `mesh-client`. |
+| Host protocol conversion between proto and runtime structs | Host `protocol/convert.rs` for now | These conversions still depend on host-owned mesh, ownership, plugin config, and runtime structs; move them after control-plane/runtime boundaries are smaller. |
 | Pure shared mesh/client model types such as capabilities, topology, model demand, served-model identity, and descriptors | `mesh-llm-types` | Implemented first because these types are protocol-facing but do not need QUIC, protobuf, ownership, CLI, or runtime dependencies. |
 | Runtime peer state such as `PeerAnnouncement`, `PeerInfo`, and `NodeRole` | Later `mesh-llm-control-plane` or `mesh-llm-protocol` boundary after decoupling | These still carry `iroh`, protobuf summaries, ownership attestation, timestamps, and gossip semantics, so moving them before protocol/control-plane cleanup would smear dependencies into `mesh-llm-types`. |
 | Shared signing and envelope crypto | `mesh-llm-identity` | Implemented as a dependency-light shared crate for owner keypairs, owner IDs, signed encrypted envelopes, and key-provider traits. |
@@ -137,7 +144,7 @@ The main blocker is dependency direction. Before extracting crates, reduce direc
 - Add a `MeshEventSink` or equivalent callback instead of calling `crate::cli::output` from `mesh/`.
 - Move pinned-GPU preflight out of `mesh/` and into runtime or plugin config handling.
 - Continue moving protocol-facing shared types into `mesh-llm-types` so protocol conversion does not depend on `crate::mesh`.
-- Keep generated protobuf and frame validation in `mesh-llm-protocol`.
+- Continue shrinking host protocol conversion until only wire-format code remains in `mesh-llm-protocol`.
 - Make host-only integrations explicit through traits or feature-gated adapters.
 
 ## Documentation scope
@@ -152,7 +159,7 @@ The crate split should include the documentation migration as part of the same s
 
 ## Extraction order
 
-1. Extract the first `mesh-llm-types` and `mesh-llm-identity` slices, then continue with `mesh-llm-protocol`.
+1. Extract the first `mesh-llm-types`, `mesh-llm-identity`, and `mesh-llm-protocol` slices.
 2. Move model metadata, resolve, search, and download code into existing `model-*` crates.
 3. Move OpenAI adapter and schema code into `openai-frontend`.
 4. Push Skippy-owned logic into existing `skippy-*` crates.
