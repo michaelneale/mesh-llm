@@ -1,0 +1,39 @@
+From cb81dd9d88f0dcabb76ba58a4a09cfe00ffa6a6d Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Thu, 7 May 2026 18:34:54 +1000
+Subject: [PATCH] Pad activation frame decode batches to native input width
+
+---
+ src/skippy.cpp | 14 ++++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index a91fbc2b..9b01eda1 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -1469,10 +1469,20 @@ static enum skippy_status skippy_decode_activation_frame(
+ 
+     const int32_t n_tokens = static_cast<int32_t>(token_count);
+     const int32_t n_embd = llama_model_n_embd(session->stage_model->model);
+-    llama_batch batch = llama_batch_init(n_tokens, n_embd, 1);
++    const int32_t n_embd_inp = llama_model_n_embd_inp(session->stage_model->model);
++    llama_batch batch = llama_batch_init(n_tokens, n_embd_inp, 1);
+     batch.n_tokens = n_tokens;
+     const size_t hidden_bytes = skippy_activation_hidden_bytes(session, token_count);
+-    std::memcpy(batch.embd, input_payload, hidden_bytes);
++    if (n_embd_inp == n_embd) {
++        std::memcpy(batch.embd, input_payload, hidden_bytes);
++    } else {
++        const float * input = static_cast<const float *>(input_payload);
++        for (int32_t i = 0; i < n_tokens; ++i) {
++            float * dst = batch.embd + static_cast<size_t>(i)*n_embd_inp;
++            std::memcpy(dst, input + static_cast<size_t>(i)*n_embd, static_cast<size_t>(n_embd)*sizeof(float));
++            std::memset(dst + n_embd, 0, static_cast<size_t>(n_embd_inp - n_embd)*sizeof(float));
++        }
++    }
+ 
+     for (int32_t i = 0; i < n_tokens; ++i) {
+         batch.pos[i] = session->n_past + i;
+-- 
+2.50.1 (Apple Git-155)
+

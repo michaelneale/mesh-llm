@@ -1,0 +1,257 @@
+From 58acfe520f1ebebbbfb72f467c235d26eef5c595 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Thu, 7 May 2026 18:45:41 +1000
+Subject: [PATCH] Carry activation frame position sideband
+
+---
+ include/skippy.h |  30 +++++++++++
+ src/skippy.cpp   | 127 ++++++++++++++++++++++++++++++++++++++++++-----
+ 2 files changed, 145 insertions(+), 12 deletions(-)
+
+diff --git a/include/skippy.h b/include/skippy.h
+index c588c862..eb6da73e 100644
+--- a/include/skippy.h
++++ b/include/skippy.h
+@@ -365,6 +365,36 @@ LLAMA_API enum skippy_status skippy_prefill_chunk_frame_sampled(
+         llama_token * out_predicted_token,
+         struct skippy_error ** out_error);
+ 
++LLAMA_API enum skippy_status skippy_prefill_chunk_frame_with_positions(
++        struct skippy_session * session,
++        const llama_token * token_ids,
++        size_t token_count,
++        const llama_pos * positions,
++        size_t position_count,
++        const struct skippy_activation_desc * input_desc,
++        const void * input_payload,
++        struct skippy_activation_desc * output_desc,
++        void * output_payload,
++        size_t output_payload_capacity,
++        size_t * out_output_payload_bytes,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_prefill_chunk_frame_sampled_with_positions(
++        struct skippy_session * session,
++        const llama_token * token_ids,
++        size_t token_count,
++        const llama_pos * positions,
++        size_t position_count,
++        const struct skippy_sampling_config * sampling,
++        const struct skippy_activation_desc * input_desc,
++        const void * input_payload,
++        struct skippy_activation_desc * output_desc,
++        void * output_payload,
++        size_t output_payload_capacity,
++        size_t * out_output_payload_bytes,
++        llama_token * out_predicted_token,
++        struct skippy_error ** out_error);
++
+ LLAMA_API enum skippy_status skippy_decode_step_frame(
+         struct skippy_session * session,
+         llama_token token_id,
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index 9b01eda1..558666e5 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -1455,6 +1455,8 @@ static enum skippy_status skippy_decode_activation_frame(
+         const skippy_activation_desc * input_desc,
+         const void * input_payload,
+         const llama_token * token_ids,
++        const llama_pos * positions,
++        size_t position_count,
+         size_t token_count,
+         bool request_logits,
+         struct skippy_error ** out_error) {
+@@ -1470,31 +1472,62 @@ static enum skippy_status skippy_decode_activation_frame(
+     const int32_t n_tokens = static_cast<int32_t>(token_count);
+     const int32_t n_embd = llama_model_n_embd(session->stage_model->model);
+     const int32_t n_embd_inp = llama_model_n_embd_inp(session->stage_model->model);
+-    llama_batch batch = llama_batch_init(n_tokens, n_embd_inp, 1);
+-    batch.n_tokens = n_tokens;
++    const int32_t n_pos_per_embd = session->stage_model->model->hparams.n_pos_per_embd();
++    const size_t expected_position_count = static_cast<size_t>(n_tokens)*n_pos_per_embd;
++
++    std::vector<float> embd_storage(static_cast<size_t>(n_tokens)*n_embd_inp);
++    std::vector<llama_pos> pos_storage(expected_position_count);
++    std::vector<int32_t> n_seq_id_storage(n_tokens);
++    std::vector<llama_seq_id> seq_id_0(1, session->seq_id);
++    std::vector<llama_seq_id *> seq_id_storage(n_tokens + 1, nullptr);
++    std::vector<int8_t> logits_storage(n_tokens);
++
+     const size_t hidden_bytes = skippy_activation_hidden_bytes(session, token_count);
+     if (n_embd_inp == n_embd) {
+-        std::memcpy(batch.embd, input_payload, hidden_bytes);
++        std::memcpy(embd_storage.data(), input_payload, hidden_bytes);
+     } else {
+         const float * input = static_cast<const float *>(input_payload);
+         for (int32_t i = 0; i < n_tokens; ++i) {
+-            float * dst = batch.embd + static_cast<size_t>(i)*n_embd_inp;
++            float * dst = embd_storage.data() + static_cast<size_t>(i)*n_embd_inp;
+             std::memcpy(dst, input + static_cast<size_t>(i)*n_embd, static_cast<size_t>(n_embd)*sizeof(float));
+             std::memset(dst + n_embd, 0, static_cast<size_t>(n_embd_inp - n_embd)*sizeof(float));
+         }
+     }
+ 
+     for (int32_t i = 0; i < n_tokens; ++i) {
+-        batch.pos[i] = session->n_past + i;
+-        batch.n_seq_id[i] = 1;
+-        batch.seq_id[i][0] = session->seq_id;
+-        batch.logits[i] = request_logits && i == n_tokens - 1 ? 1 : 0;
++        n_seq_id_storage[i] = 1;
++        seq_id_storage[i] = seq_id_0.data();
++        logits_storage[i] = request_logits && i == n_tokens - 1 ? 1 : 0;
++    }
++    if (positions != nullptr && position_count == expected_position_count) {
++        std::memcpy(pos_storage.data(), positions, expected_position_count*sizeof(llama_pos));
++    } else if (n_pos_per_embd == 4) {
++        for (int32_t i = 0; i < n_tokens; ++i) {
++            const llama_pos position = session->n_past + i;
++            pos_storage[               i] = position;
++            pos_storage[    n_tokens + i] = position;
++            pos_storage[2 * n_tokens + i] = position;
++            pos_storage[3 * n_tokens + i] = 0;
++        }
++    } else {
++        for (int32_t i = 0; i < n_tokens; ++i) {
++            pos_storage[i] = session->n_past + i;
++        }
+     }
+ 
++    llama_batch batch = {
++        /*n_tokens =*/ n_tokens,
++        /*token    =*/ nullptr,
++        /*embd     =*/ embd_storage.data(),
++        /*pos      =*/ pos_storage.data(),
++        /*n_seq_id =*/ n_seq_id_storage.data(),
++        /*seq_id   =*/ seq_id_storage.data(),
++        /*logits   =*/ logits_storage.data(),
++    };
++
+     skippy_activation_tokens_scope activation_tokens_scope(token_ids, token_count);
+     skippy_rwkv7_v_first_scope rwkv7_v_first_scope(input_desc, input_payload, hidden_bytes, n_embd);
+     enum skippy_status status = skippy_decode_batch(session, batch, token_count, out_error);
+-    llama_batch_free(batch);
+     return status;
+ }
+ 
+@@ -2338,6 +2371,8 @@ static enum skippy_status skippy_prefill_chunk_frame_impl(
+         struct skippy_session * session,
+         const llama_token * token_ids,
+         size_t token_count,
++        const llama_pos * positions,
++        size_t position_count,
+         bool request_logits,
+         const struct skippy_sampling_config * sampling,
+         const struct skippy_activation_desc * input_desc,
+@@ -2384,7 +2419,7 @@ static enum skippy_status skippy_prefill_chunk_frame_impl(
+     }
+ 
+     if (skippy_is_filtered(session) && session->stage_model->config.layer_start > 0) {
+-        status = skippy_decode_activation_frame(session, input_desc, input_payload, token_ids, token_count, request_logits, out_error);
++        status = skippy_decode_activation_frame(session, input_desc, input_payload, token_ids, positions, position_count, token_count, request_logits, out_error);
+     } else {
+         status = skippy_decode_tokens(session, token_ids, token_count, request_logits, out_error);
+     }
+@@ -2415,6 +2450,8 @@ enum skippy_status skippy_prefill_chunk_frame(
+             session,
+             token_ids,
+             token_count,
++            nullptr,
++            0,
+             false,
+             nullptr,
+             input_desc,
+@@ -2444,6 +2481,72 @@ enum skippy_status skippy_prefill_chunk_frame_sampled(
+             session,
+             token_ids,
+             token_count,
++            nullptr,
++            0,
++            true,
++            sampling,
++            input_desc,
++            input_payload,
++            output_desc,
++            output_payload,
++            output_payload_capacity,
++            out_output_payload_bytes,
++            out_predicted_token,
++            out_error);
++}
++
++enum skippy_status skippy_prefill_chunk_frame_with_positions(
++        struct skippy_session * session,
++        const llama_token * token_ids,
++        size_t token_count,
++        const llama_pos * positions,
++        size_t position_count,
++        const struct skippy_activation_desc * input_desc,
++        const void * input_payload,
++        struct skippy_activation_desc * output_desc,
++        void * output_payload,
++        size_t output_payload_capacity,
++        size_t * out_output_payload_bytes,
++        struct skippy_error ** out_error) {
++    return skippy_prefill_chunk_frame_impl(
++            session,
++            token_ids,
++            token_count,
++            positions,
++            position_count,
++            false,
++            nullptr,
++            input_desc,
++            input_payload,
++            output_desc,
++            output_payload,
++            output_payload_capacity,
++            out_output_payload_bytes,
++            nullptr,
++            out_error);
++}
++
++enum skippy_status skippy_prefill_chunk_frame_sampled_with_positions(
++        struct skippy_session * session,
++        const llama_token * token_ids,
++        size_t token_count,
++        const llama_pos * positions,
++        size_t position_count,
++        const struct skippy_sampling_config * sampling,
++        const struct skippy_activation_desc * input_desc,
++        const void * input_payload,
++        struct skippy_activation_desc * output_desc,
++        void * output_payload,
++        size_t output_payload_capacity,
++        size_t * out_output_payload_bytes,
++        llama_token * out_predicted_token,
++        struct skippy_error ** out_error) {
++    return skippy_prefill_chunk_frame_impl(
++            session,
++            token_ids,
++            token_count,
++            positions,
++            position_count,
+             true,
+             sampling,
+             input_desc,
+@@ -2517,7 +2620,7 @@ enum skippy_status skippy_decode_step_frame_sampled(
+     }
+ 
+     if (skippy_is_filtered(session) && session->stage_model->config.layer_start > 0) {
+-        status = skippy_decode_activation_frame(session, input_desc, input_payload, &token_id, 1, true, out_error);
++        status = skippy_decode_activation_frame(session, input_desc, input_payload, &token_id, nullptr, 0, 1, true, out_error);
+     } else {
+         status = skippy_decode_tokens(session, &token_id, 1, true, out_error);
+     }
+@@ -2600,7 +2703,7 @@ enum skippy_status skippy_verify_tokens_frame(
+     if (skippy_is_filtered(session) && session->stage_model->config.layer_start > 0) {
+         status = session->stage_model->config.include_output ?
+                 skippy_verify_activation_frame(session, input_desc, input_payload, token_count, out_error) :
+-                skippy_decode_activation_frame(session, input_desc, input_payload, token_ids, token_count, false, out_error);
++                skippy_decode_activation_frame(session, input_desc, input_payload, token_ids, nullptr, 0, token_count, false, out_error);
+     } else {
+         status = session->stage_model->config.include_output ?
+                 skippy_verify_token_batch(session, token_ids, token_count, out_error) :
+-- 
+2.50.1 (Apple Git-155)
+

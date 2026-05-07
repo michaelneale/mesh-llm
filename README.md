@@ -65,13 +65,13 @@ curl http://localhost:9337/v1/chat/completions \
 
 ## Supported model families
 
-Mesh LLM's stage runtime tracks llama.cpp family parity with one reviewed GGUF representative per family. The current reviewed support set covers 64 text-serving family labels plus two VL text lanes:
+Mesh LLM's stage runtime tracks llama.cpp family parity with reviewed GGUF representatives per family. The current reviewed support set covers 72 P0/P1 family rows, with 88 certified rows in the full llama.cpp parity inventory:
 
 ```text
-Arcee, Baichuan, Bloom, ChatGLM, CodeShell, Cohere2, Deci, DeepSeek, DeepSeek2, DeepSeek3, EXAONE, EXAONE4, Falcon, Falcon-H1, Gemma, Gemma2, Gemma3, Gemma4, GLM4, GLM-4.7 Flash, GLM4-MoE, GPT2, GPT-NeoX, Granite, Granite-Hybrid, Granite-MoE, Hunyuan-Dense, Hunyuan-MoE, InternLM2, Jamba, Kimi Linear, LFM2, Llama, Maincoder, Mamba, Mamba2, MiniCPM, MiniCPM3, MiniMax M2.7, Mistral, MPT, OLMo, OLMo2, OLMoE, OpenELM, Phi, Phi2, PhiMoE, Plamo3, PLM, Qwen2, Qwen2-MoE, Qwen3 dense, Qwen3-MoE, Qwen3.5 recurrent, Qwen3Next, Refact, RWKV6, RWKV7, SmallThinker, SmolLM3, StableLM, StarCoder2, XVerse
+Arcee, Baichuan, Bloom, ChatGLM, CodeShell, Cohere2, Deci, DeepSeek, DeepSeek2, DeepSeek3, DeepSeek-OCR, EXAONE, EXAONE4, Falcon, Falcon-H1, Gemma, Gemma2, Gemma3, Gemma4, GLM4, GLM-4.7 Flash, GLM4-MoE, GPT2, GPT-NeoX, Granite, Granite-Hybrid, Granite-MoE, Hunyuan-Dense, Hunyuan-MoE, Hunyuan-VL/HunyuanOCR, InternLM2, Jamba, Kimi Linear, LFM2, Llama, Maincoder, Mamba, Mamba2, MiniCPM, MiniCPM3, MiniMax M2.7, Mistral, MPT, OLMo, OLMo2, OLMoE, OpenELM, Phi, Phi2, PhiMoE, Plamo3, PLM, Qwen2, Qwen2-MoE, Qwen2-VL, Qwen3 dense, Qwen3-MoE, Qwen3.5 recurrent, Qwen3Next, Qwen3-VL, Qwen3-VL-MoE, Refact, RWKV6, RWKV7, SmallThinker, SmolLM3, StableLM, StarCoder2, XVerse
 ```
 
-Qwen2-VL and Qwen3-VL are supported for text split/cache; split multimodal serving remains behind projector/media sideband certification. Granite-MoE is layout-parity support from a tiny random GGUF and should be replaced with a real small artifact when one is available. DeepSeek3 is supported through package-backed stages because the full GGUF is too large for the cheap local baseline.
+Split multimodal serving is certified for Qwen2-VL, Qwen3-VL, Qwen3-VL-MoE, HunyuanOCR/Hunyuan-VL, and DeepSeek-OCR using real GGUF plus projector fixtures. Granite-MoE is layout-parity support from a tiny random GGUF and should be replaced with a real small artifact when one is available. DeepSeek3 is supported through package-backed stages because the full GGUF is too large for the cheap local baseline.
 
 See [docs/skippy/FAMILY_STATUS.md](docs/skippy/FAMILY_STATUS.md) for the full artifact, split, wire dtype, cache policy, and exception matrix. See [docs/skippy/LLAMA_PARITY.md](docs/skippy/LLAMA_PARITY.md) for the remaining llama.cpp parity queue.
 
@@ -374,8 +374,11 @@ The console supports image, audio, and file attachments. Large attachments use r
 
 | Family / model type | Vision | Audio | Notes |
 |---|---|---|---|
-| `Qwen3-VL`, `Qwen3VL` | yes | no | Example: `Qwen3VL-2B-Instruct-Q4_K_M` |
-| `Qwen2-VL`, `Qwen2.5-VL` | yes | no | Vision-capable Qwen VL families |
+| `Qwen3-VL`, `Qwen3VL` | yes | no | Split multimodal certified with `Qwen3VL-2B-Instruct-Q4_K_M` plus `mmproj-Qwen3VL-2B-Instruct-Q8_0` |
+| `Qwen2-VL`, `Qwen2.5-VL` | yes | no | Split multimodal certified with `Qwen2-VL-2B-Instruct-Q4_K_M` plus `mmproj-Qwen2-VL-2B-Instruct-f16` |
+| `Qwen3-VL-MoE`, `Qwen3VLMoE` | yes | no | Split multimodal certified with the Qwen3-VL 30B A3B MXFP4 MoE GGUF plus projector |
+| `HunyuanOCR`, `Hunyuan-VL` | yes | no | Split multimodal certified with `HunyuanOCR-Q8_0` plus `mmproj-HunyuanOCR-Q8_0` |
+| `DeepSeek-OCR`, `deepseek2ocr` | yes | no | Split multimodal certified with `DeepSeek-OCR-Q8_0` plus `mmproj-DeepSeek-OCR-Q8_0` |
 | `LLaVA`, `mllama`, `PaliGemma`, `Idefics`, `Molmo`, `InternVL`, `GLM-4V`, `Ovis`, `Florence` | yes | no | Detected as vision-capable families |
 | `Qwen2-Audio` | no | yes | Audio-capable family |
 | `SeaLLM-Audio` | no | yes | Audio-capable family |

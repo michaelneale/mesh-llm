@@ -215,20 +215,20 @@ available. Current classification:
 
 | Status | Count | Meaning |
 | --- | ---: | --- |
-| `certified` | 83 | Cheap representative passed the promoted text/cache evidence for this branch. |
+| `certified` | 88 | Cheap representative passed the promoted split-serving evidence for this branch. |
 | `certified_package_only` | 6 | Huge model has package/stage evidence rather than a monolithic local baseline. |
-| `candidate_multimodal` | 8 | Needs projector/media sideband certification before multimodal promotion. |
+| `candidate_multimodal` | 3 | Needs projector/media sideband certification before multimodal promotion. |
 | `needs_runtime_slice_support` | 1 | Causal llama.cpp family exists, but skippy's stage ABI does not yet support its graph/tensor filtering. |
 | `non_causal_aux` | 14 | Encoder, embedding, audio, or other non-causal serving lane. |
 | `implementation_base` | 4 | Shared implementation helper, not a standalone GGUF architecture. |
 | `package_or_remote_only` | 10 | No cheap local representative; certify on larger hardware or package artifacts. |
 | `no_public_gguf_candidate` | 5 | No public GGUF matching that llama.cpp architecture was found. |
 
-The active P0/P1 queue has no `needs_candidate` rows. Remaining gaps are one
-explicit runtime-slice implementation blocker (`gemma3n`), multimodal
-projector/media sideband work, remaining package/remote certification for
-oversized models, and five exact-public-artifact gaps where HF re-audit still
-found no public GGUF.
+The active P0/P1 queue has no `needs_candidate` or `candidate_multimodal`
+rows. Remaining P0/P1 gaps are one explicit runtime-slice implementation
+blocker (`gemma3n`) plus remaining package/remote certification for oversized
+models. The three remaining `candidate_multimodal` rows are long-tail
+non-P0/P1 families.
 
 ## Family Board
 
@@ -248,7 +248,7 @@ or a blocker is discovered.
 | `mpt` | `mpt` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `olmo2` | `olmo2` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `olmoe` | `olmoe` | selected | yes | pass | pass | `ResidentKv` | pass + MoE expert smoke | cache restore and MoE expert-stage smoke ready |
-| `qwen3vl` | `qwen3vl` | selected | yes | pass | FullState blocked by M-RoPE; `ResidentKv` pass | `ResidentKv` for text | pass for text; local projector pass; split multimodal blocked | text split/cache ready; split media sideband crashes in filtered stage-0 prefill |
+| `qwen3vl` | `qwen3vl` | selected | yes | pass | FullState blocked by M-RoPE; `ResidentKv` pass | `ResidentKv` for text | pass + split multimodal pass | text split/cache and split multimodal ready |
 | `phi` | `phi3` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `phi2` | `phi2` | selected | yes | pass | rejected-too-large | `ResidentKv` | pass | runtime-slice and resident cache ready; full-state payload is too large for mobility |
 | `granite` | `granite` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
@@ -256,6 +256,7 @@ or a blocker is discovered.
 | `granite_moe` | `granite-moe` | layout probe selected | yes | pass | pass | `ResidentKv` | pass | tiny random layout probe only; replace with a real small artifact when available |
 | `hunyuan_dense` | `hunyuan-dense` | selected | yes | pass | pass | `ResidentKv` | pass | runtime-slice and cache restore ready |
 | `hunyuan_moe` | `hunyuan-moe` | selected | yes | pass | pass | `ResidentKv` | pass | real A13B MoE runtime-slice and cache restore ready |
+| `hunyuan_vl` | `hunyuan-vl` | selected | yes | pass | untested | default `f16` media path | split multimodal pass | HunyuanOCR projector split multimodal ready |
 | `bloom` | `bloom` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `gptneox` | `gptneox` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `openai_moe` | `openai-moe` / `gpt-oss` | selected | yes | pass | pass | `ResidentKv` | pass | GPT-OSS 20B split/cache ready; f16 wire validated, q8 rejected |
@@ -275,9 +276,10 @@ or a blocker is discovered.
 | `mamba` | `mamba` | selected | yes | pass | pass | `KvRecurrent` | pass | recurrent-only cache restore ready; keep normal decode ownership sticky |
 | `mamba2` | `mamba2` | selected | yes | pass | pass | `KvRecurrent` | pass | recurrent-only cache restore ready; keep normal decode ownership sticky |
 | `rwkv6` | `rwkv6` | replacement selected | yes | pass | pass | `KvRecurrent` | pass | recurrent-only cache restore ready; keep normal decode ownership sticky |
-| `qwen2vl` | `qwen2vl` | selected | yes | pass | FullState blocked by M-RoPE; `ResidentKv` pass | `ResidentKv` for text | pass for text; local projector pass; split multimodal blocked | text split/cache ready; split media sideband crashes in filtered stage-0 prefill |
+| `qwen2vl` | `qwen2vl` | selected | yes | pass | FullState blocked by M-RoPE; `ResidentKv` pass | `ResidentKv` for text | pass + split multimodal pass | text split/cache and split multimodal ready |
 | `qwen2moe` | `qwen2moe` | selected | yes | pass | pass | `ResidentKv` | pass + MoE expert smoke | cache restore and MoE expert-stage smoke ready |
 | `qwen3moe` | `qwen3moe` | selected | yes | pass | pass | `ResidentKv` | pass + MoE expert smoke | cache restore and MoE expert-stage smoke ready |
+| `qwen3vlmoe` | `qwen3vlmoe` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` for text | pass + split multimodal pass | Qwen3-VL-MoE split/cache and split multimodal ready |
 | `arcee` | `arcee` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready; q8 rejected |
 | `chatglm` | `chatglm` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready; q8 rejected |
 | `codeshell` | `codeshell` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready; q8 rejected |
@@ -297,6 +299,7 @@ or a blocker is discovered.
 | `smollm3` | `smollm3` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready |
 | `llama4` | `llama4` | package selected | yes | package validated | package validated | package-local `ResidentKv` target | package validated | `ggml-org/Llama-4-Scout-17B-16E-Instruct-GGUF:Q4_K_M` package-only certified; 48-layer split-GGUF package materialized and validated with all 627 owned tensors accounted for |
 | `seed_oss` | `seed-oss` | package selected | yes | package validated | package validated | package-local `ResidentKv` target | package validated | `lmstudio-community/Seed-OSS-36B-Instruct-GGUF:Q4_K_M` package-only certified; 64-layer package materialized and validated with all 771 tensors accounted for |
+| `deepseek2ocr` | `deepseek2ocr` | selected | yes | pass | pass | `ResidentKv` | pass + split multimodal pass | DeepSeek-OCR split/cache and split multimodal ready |
 
 Broader coverage lives in `docs/skippy/llama-parity-candidates.json`. The board
 above tracks the active certification queue rather than every pinned llama.cpp
@@ -304,16 +307,14 @@ implementation.
 
 ## Next Batch
 
-1. Finish P0 multimodal promotion for Qwen2-VL, Qwen3-VL, Qwen3-VL-MoE, and
-   Hunyuan-VL by proving projector/media sideband split serving.
-2. Finish package or remote certification for MiMo-V2 and Exaone-MoE.
-3. Add Gemma3n runtime-slice graph support before attempting text or multimodal
+1. Finish package or remote certification for MiMo-V2 and Exaone-MoE.
+2. Add Gemma3n runtime-slice graph support before attempting text or multimodal
    promotion; its current graph carries 3D AltUp/per-layer state and has no
    stage-filter hooks.
-4. Keep non-causal auxiliary rows in their own serving lanes instead of
+3. Keep non-causal auxiliary rows in their own serving lanes instead of
    promoting them as causal stage-split serving.
-5. Promote multimodal only after projector/media sideband evidence, even when
-   text-lane split support passes.
+4. Keep the remaining long-tail multimodal rows in `candidate_multimodal` until
+   they have real projector/media sideband split evidence.
 
 ## Current Local Evidence
 
@@ -364,8 +365,11 @@ themselves until the reviewed topology records are updated.
 | `mpt` | see `target/family-certify/llama-parity-mpt-runtime-slice-1` | `single-step`, `chain`, and f16 dtype matrix passed | rejected | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 1657.77x cache-hit speedup |
 | `olmo2` | see `target/family-certify/llama-parity-olmo2-runtime-slice-1` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 159.19x cache-hit speedup |
 | `olmoe` | see `target/family-certify/llama-parity-olmoe-runtime-slice-1` and `/Volumes/External/tmp/skippy-moe-expert-smoke-20260506` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 197.09x cache-hit speedup; MoE expert-stage smoke passed for one-stage, split-middle, and split-final |
-| `qwen2vl` | see `target/family-certify/llama-parity-candidate-multimodal-20260506b`; local smoke via `cargo test -p skippy-server real_multimodal_local_smoke_when_fixture_is_set` with real mmproj/image fixtures | text `single-step`, `chain`, f32, and f16 passed after allowing tied output embeddings in final runtime slices | rejected: q8 predicted token `362` vs baseline `11` | FullState restore blocked by M-RoPE native-position rules; production `ResidentKv` text cache passed | `ResidentKv` one-stage borrowed-hit smoke passed, 8-token prefix, 229,376 resident bytes, 2.43x cache-hit speedup; split multimodal still blocked in filtered stage-0 media prefill |
-| `qwen3vl` | see `target/family-certify/llama-parity-candidate-multimodal-20260506b`; local smoke via `cargo test -p skippy-server real_multimodal_local_smoke_when_fixture_is_set` with real mmproj/image fixtures | text `single-step`, `chain`, and dtype matrix passed after allowing tied output embeddings in final runtime slices | validated | FullState restore blocked by M-RoPE native-position rules; production `ResidentKv` text cache passed | `ResidentKv` one-stage borrowed-hit smoke passed, 8-token prefix, 917,504 resident bytes, 1.83x cache-hit speedup; split multimodal still blocked in filtered stage-0 media prefill |
+| `qwen2vl` | see `target/family-certify/llama-parity-candidate-multimodal-20260506b`; split smoke via `cargo test -p skippy-server real_multimodal_split_smoke_when_fixture_is_set` with `Qwen2-VL-2B-Instruct-Q4_K_M.gguf`, `mmproj-Qwen2-VL-2B-Instruct-f16.gguf`, and `test-1.jpeg` | text `single-step`, `chain`, f32, and f16 passed after allowing tied output embeddings in final runtime slices; split multimodal passed after sampled final media prefill and position sideband forwarding | rejected: q8 predicted token `362` vs baseline `11` | FullState restore blocked by M-RoPE native-position rules; production `ResidentKv` text cache passed | `ResidentKv` one-stage borrowed-hit smoke passed, 8-token prefix, 229,376 resident bytes, 2.43x cache-hit speedup; split multimodal smoke passed |
+| `qwen3vl` | see `target/family-certify/llama-parity-candidate-multimodal-20260506b`; split smoke via `cargo test -p skippy-server real_multimodal_split_smoke_when_fixture_is_set` with `Qwen3VL-2B-Instruct-Q4_K_M.gguf`, `mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf`, and `test-1.jpeg` | text `single-step`, `chain`, and dtype matrix passed after allowing tied output embeddings in final runtime slices; split multimodal passed after native input-width activation padding, sampled final media prefill, and position sideband forwarding | validated | FullState restore blocked by M-RoPE native-position rules; production `ResidentKv` text cache passed | `ResidentKv` one-stage borrowed-hit smoke passed, 8-token prefix, 917,504 resident bytes, 1.83x cache-hit speedup; split multimodal smoke passed |
+| `hunyuan_vl` | split smoke via `cargo test -p skippy-server real_multimodal_split_smoke_when_fixture_is_set` with `HunyuanOCR-Q8_0.gguf`, `mmproj-HunyuanOCR-Q8_0.gguf`, and `test-1.jpeg` | split multimodal passed with the shared Hunyuan-Dense/VL graph filter | untested | untested | projector/media sideband split smoke passed; default f16 activation wire is the support target |
+| `deepseek2ocr` | see `target/family-certify/llama-parity-new-mm-candidates-20260507b`; split smoke via `cargo test -p skippy-server real_multimodal_split_smoke_when_fixture_is_set` with `DeepSeek-OCR-Q8_0.gguf`, `mmproj-DeepSeek-OCR-Q8_0.gguf`, and `test-1.jpeg` | text `single-step`, `chain`, dtype matrix, and split multimodal passed | rejected | accepted | `ResidentKv` handoff and split multimodal smoke passed |
+| `qwen3vlmoe` | see `target/family-certify/llama-parity-new-mm-candidates-20260507b`; split smoke via `cargo test -p skippy-server real_multimodal_split_smoke_when_fixture_is_set` with `Qwen3-VL-30B-A3B-Instruct-1M-MXFP4_MOE.gguf`, `mmproj-F16.gguf`, and `test-1.jpeg` | text `single-step`, `chain`, dtype matrix, and split multimodal passed | rejected | accepted | `ResidentKv` handoff and split multimodal smoke passed; stage readiness wait allows large local fixtures |
 | `gemma3n` | `lmstudio-community/gemma-3n-E2B-it-GGUF` | blocked: llama.cpp reports `runtime-slice execution is not supported for this model architecture yet` | untested | untested | text and multimodal promotion blocked until Gemma3n graph support and media loader/projector strategy are implemented |
 | `bert` | `nomic-ai/nomic-embed-text-v1.5-GGUF` | non-causal aux; downloaded and inspected | not applicable | not applicable | GGUF reports `nomic-bert`, 12 blocks, width 768; do not promote as causal stage-split serving |
 | `t5` | `cyanic-selkie/flan-t5-small-Q4_K_M-GGUF` | non-causal aux; downloaded and inspected | not applicable | not applicable | GGUF reports `t5`, 8 blocks, width 512; encoder-decoder support needs a separate serving lane |
@@ -573,19 +577,16 @@ inference.
 - qwen2 full-state handoff was fixed by syncing token-count-aware imports back
   into the native session position before decode. Without that, restored KV was
   present but decode restarted at position zero.
-- `qwen2vl` and `qwen3vl` now pass full-model local multimodal OpenAI smoke
-  with real projectors and an image fixture. Their text split lane also passes
-  after the stage ABI was relaxed for final slices that need tied token
-  embeddings as output weights. Qwen2-VL should stay on `f16` wire because q8
-  changed the next-token argmax; Qwen3-VL validates q8. FullState restore is
-  blocked by M-RoPE native-position rules, so the production cache proof is
-  `ResidentKv`: both families pass one-stage borrowed-hit restore with suffix
-  prefill and repeated hits. Split multimodal is still blocked: after enabling
-  `filter_tensors_on_load=true` for split stages, stage-0 media prefill reaches
-  `mtmd_helper_eval_chunks`, prints `embeddings required but some input tokens
-  were not marked as outputs -> overriding`, and then SIGSEGVs before activation
-  forwarding. Do not promote multimodal stage-split support until the filtered
-  stage-0 media prefill ABI is fixed.
+- `qwen2vl`, `qwen3vl`, `qwen3vlmoe`, `hunyuan_vl`/HunyuanOCR, and
+  `deepseek2ocr` now pass split multimodal smoke with real projectors and an
+  image fixture. The fix is not just a doc promotion: stage-0 media prefill now
+  forwards each projector chunk separately, carries the M-RoPE position sideband
+  across the stage protocol, samples from the final media prefill without
+  re-decoding logits, and pads Qwen3-VL activation frames to the native input
+  width expected by downstream llama.cpp graphs. Qwen2-VL should stay on `f16`
+  wire because q8 changed the next-token argmax; Qwen3-VL validates q8.
+  FullState restore remains blocked by M-RoPE native-position rules, so the
+  production text-cache proof for Qwen VL remains `ResidentKv`.
 - `bert` and `t5` are now downloaded and inspected, but intentionally remain
   outside the causal stage-split board. The BERT representative reports
   `general.architecture = nomic-bert`, 12 blocks, and width 768. The T5

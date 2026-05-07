@@ -2847,49 +2847,88 @@ impl StageOpenAiBackend {
                 }
             }
 
-            let final_prefill = multimodal_final_prefill_message(
-                request.wire_dtype,
-                MultimodalFinalPrefillArgs {
-                    request_id,
-                    session_id,
-                    prompt_token_count: prefill.token_count,
-                    sampling: wire_sampling.clone(),
-                },
-            )?;
-            let forwarded = forwarded_stage_message_timed(
-                &request.config,
-                &final_prefill,
-                &prefill.output,
-                request.wire_dtype,
-                request.activation_width,
-            )
-            .map_err(openai_backend_error)?;
-            let write_timer = PhaseTimer::start();
-            write_stage_message_conditioned(
-                &mut lane.stream,
-                &forwarded.message,
-                request.wire_dtype,
-                request.downstream_wire_condition,
-            )
-            .map_err(openai_io_error)?;
-            let forward_write_ms = write_timer.elapsed_ms();
-            let wait_timer = PhaseTimer::start();
-            let reply = recv_reply(&mut lane.stream).map_err(openai_io_error)?;
-            let downstream_wait_ms = wait_timer.elapsed_ms();
-            if reply.kind != WireReplyKind::PredictedToken {
-                return Err(OpenAiError::backend(format!(
-                    "expected multimodal prefill predicted-token reply from downstream, got {:?}",
-                    reply.kind
-                )));
+            let media_chunks = if prefill.chunks.is_empty() {
+                return Err(OpenAiError::backend(
+                    "multimodal prefill produced no activation chunks",
+                ));
+            } else {
+                &prefill.chunks
+            };
+            let prefill_forward_timer = PhaseTimer::start();
+            let mut final_reply = None;
+            let mut prefill_pos_start = 0usize;
+            let mut forward_activation_bytes = 0usize;
+            let mut activation_encode_ms = 0.0;
+            let mut forward_write_ms = 0.0;
+            let mut downstream_wait_ms = 0.0;
+            for (chunk_index, chunk) in media_chunks.iter().enumerate() {
+                let is_final_chunk = chunk_index + 1 == media_chunks.len();
+                let message = multimodal_prefill_message(
+                    request.wire_dtype,
+                    MultimodalPrefillArgs {
+                        request_id,
+                        session_id,
+                        prompt_token_count: prefill.token_count,
+                        pos_start: prefill_pos_start,
+                        token_count: chunk.token_count,
+                        positions: chunk.positions.clone(),
+                        sampling: is_final_chunk.then_some(wire_sampling.clone()).flatten(),
+                        final_chunk: is_final_chunk,
+                    },
+                )?;
+                let forwarded = forwarded_stage_message_timed(
+                    &request.config,
+                    &message,
+                    &chunk.output,
+                    request.wire_dtype,
+                    request.activation_width,
+                )
+                .map_err(openai_backend_error)?;
+                let write_timer = PhaseTimer::start();
+                write_stage_message_conditioned(
+                    &mut lane.stream,
+                    &forwarded.message,
+                    request.wire_dtype,
+                    request.downstream_wire_condition,
+                )
+                .map_err(openai_io_error)?;
+                forward_write_ms += write_timer.elapsed_ms();
+                let wait_timer = PhaseTimer::start();
+                let reply = recv_reply(&mut lane.stream).map_err(openai_io_error)?;
+                downstream_wait_ms += wait_timer.elapsed_ms();
+                let expected = if is_final_chunk {
+                    WireReplyKind::PredictedToken
+                } else {
+                    WireReplyKind::Ack
+                };
+                if reply.kind != expected {
+                    return Err(OpenAiError::backend(format!(
+                        "expected multimodal prefill {expected:?} reply from downstream chunk {chunk_index}, got {:?}",
+                        reply.kind
+                    )));
+                }
+                forward_activation_bytes += forwarded.message.activation.len();
+                activation_encode_ms += forwarded.activation_encode_ms;
+                if is_final_chunk {
+                    final_reply = Some(reply);
+                }
+                prefill_pos_start = prefill_pos_start
+                    .checked_add(chunk.token_count)
+                    .ok_or_else(|| {
+                        OpenAiError::backend("multimodal prefill token offset overflow")
+                    })?;
             }
+            let reply = final_reply.ok_or_else(|| {
+                OpenAiError::backend("multimodal prefill produced no predicted token")
+            })?;
             let mut attrs = self.openai_attrs(&request.ids);
             attrs.insert(
                 "llama_stage.forward_activation_bytes".to_string(),
-                json!(forwarded.message.activation.len()),
+                json!(forward_activation_bytes),
             );
             attrs.insert(
                 "llama_stage.activation_encode_ms".to_string(),
-                json!(forwarded.activation_encode_ms),
+                json!(activation_encode_ms),
             );
             attrs.insert(
                 "llama_stage.forward_write_ms".to_string(),
@@ -2899,7 +2938,11 @@ impl StageOpenAiBackend {
                 "llama_stage.downstream_wait_ms".to_string(),
                 json!(downstream_wait_ms),
             );
-            self.emit_openai_phase("stage.openai_media_prefill_forward", write_timer, attrs);
+            self.emit_openai_phase(
+                "stage.openai_media_prefill_forward",
+                prefill_forward_timer,
+                attrs,
+            );
 
             let decode_timer = PhaseTimer::start();
             let mut decoded_tokens = 0usize;
@@ -3888,6 +3931,7 @@ impl StageOpenAiBackend {
                     sampling: wire_sampling.clone(),
                     chat_sampling_metadata: None,
                     tokens: vec![current],
+                    positions: Vec::new(),
                     activation: Vec::new(),
                     raw_bytes: Vec::new(),
                 };
@@ -4809,6 +4853,7 @@ impl StageOpenAiBackend {
                     sampling: wire_sampling.clone(),
                     chat_sampling_metadata: None,
                     tokens: vec![current],
+                    positions: Vec::new(),
                     activation: Vec::new(),
                     raw_bytes: Vec::new(),
                 };
@@ -6204,6 +6249,7 @@ fn embedded_decode_message(
         sampling: args.sampling,
         chat_sampling_metadata: None,
         tokens: vec![args.current],
+        positions: Vec::new(),
         activation: Vec::new(),
         raw_bytes: Vec::new(),
     })
@@ -6251,6 +6297,7 @@ fn embedded_verify_message(
         sampling: None,
         chat_sampling_metadata: None,
         tokens: args.tokens.to_vec(),
+        positions: Vec::new(),
         activation: Vec::new(),
         raw_bytes: Vec::new(),
     })
@@ -6272,6 +6319,7 @@ fn embedded_session_control_message(
         sampling: None,
         chat_sampling_metadata: None,
         tokens: Vec::new(),
+        positions: Vec::new(),
         activation: Vec::new(),
         raw_bytes: Vec::new(),
     }
@@ -6491,6 +6539,7 @@ fn send_prefill_chunk(
         sampling: None,
         chat_sampling_metadata: None,
         tokens: chunk.tokens.to_vec(),
+        positions: Vec::new(),
         activation: Vec::new(),
         raw_bytes: Vec::new(),
     };
@@ -6551,6 +6600,7 @@ fn embedded_prefill_message(
         sampling: None,
         chat_sampling_metadata: None,
         tokens: chunk.tokens.to_vec(),
+        positions: Vec::new(),
         activation: Vec::new(),
         raw_bytes: Vec::new(),
     })
@@ -6579,6 +6629,7 @@ fn embedded_prefix_cache_message(
         sampling: None,
         chat_sampling_metadata: None,
         tokens: tokens.to_vec(),
+        positions: Vec::new(),
         activation: Vec::new(),
         raw_bytes: Vec::new(),
     })
@@ -6621,6 +6672,7 @@ fn embedded_restore_prefill_decode_message(
         sampling: args.sampling,
         chat_sampling_metadata: None,
         tokens,
+        positions: Vec::new(),
         activation: Vec::new(),
         raw_bytes: Vec::new(),
     })
@@ -6634,27 +6686,37 @@ fn openai_stage_mask(stage_index: u32) -> i64 {
     }
 }
 
-struct MultimodalFinalPrefillArgs {
+struct MultimodalPrefillArgs {
     request_id: u64,
     session_id: u64,
     prompt_token_count: usize,
+    pos_start: usize,
+    token_count: usize,
+    positions: Vec<i32>,
     sampling: Option<WireSamplingConfig>,
+    final_chunk: bool,
 }
 
-fn multimodal_final_prefill_message(
+fn multimodal_prefill_message(
     wire_dtype: WireActivationDType,
-    args: MultimodalFinalPrefillArgs,
+    args: MultimodalPrefillArgs,
 ) -> OpenAiResult<StageWireMessage> {
-    let mut state = StageStateHeader::new(WireMessageKind::PrefillFinalEmbd, wire_dtype);
+    let kind = if args.final_chunk {
+        WireMessageKind::PrefillFinalEmbd
+    } else {
+        WireMessageKind::PrefillEmbd
+    };
+    let mut state = StageStateHeader::new(kind, wire_dtype);
     state.seq_id = 0;
     state.prompt_token_count = i32::try_from(args.prompt_token_count)
         .map_err(|_| OpenAiError::backend("multimodal prefill token count exceeds i32"))?;
     state.current_token = LLAMA_TOKEN_NULL;
     state.source_stage_index = -1;
     Ok(StageWireMessage {
-        kind: WireMessageKind::PrefillFinalEmbd,
-        pos_start: 0,
-        token_count: i32::try_from(args.prompt_token_count)
+        kind,
+        pos_start: i32::try_from(args.pos_start)
+            .map_err(|_| OpenAiError::backend("multimodal prefill position exceeds i32"))?,
+        token_count: i32::try_from(args.token_count)
             .map_err(|_| OpenAiError::backend("multimodal prefill token count exceeds i32"))?,
         state,
         request_id: args.request_id,
@@ -6662,6 +6724,7 @@ fn multimodal_final_prefill_message(
         sampling: args.sampling,
         chat_sampling_metadata: None,
         tokens: Vec::new(),
+        positions: args.positions,
         activation: Vec::new(),
         raw_bytes: Vec::new(),
     })

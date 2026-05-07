@@ -765,6 +765,26 @@
     }
   },
   {
+    "model_id": "ggml-org/HunyuanOCR-GGUF:Q8_0",
+    "source_repo": "ggml-org/HunyuanOCR-GGUF",
+    "source_revision": "88f96aa291346e927e74554297ada7645a1b3b19",
+    "source_file": "HunyuanOCR-Q8_0.gguf",
+    "canonical_ref": "ggml-org/HunyuanOCR-GGUF@88f96aa291346e927e74554297ada7645a1b3b19/HunyuanOCR-Q8_0.gguf",
+    "distribution_id": "HunyuanOCR-Q8_0",
+    "selector": "Q8_0",
+    "capability": {
+      "family_id": "hunyuan_vl",
+      "layer_count": 24,
+      "activation_width": 1024,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "untested",
+      "exact_state_mobility": "untested",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
     "model_id": "warriorknight3/pythia-70m-Q4_K_M-GGUF:Q4_K_M",
     "source_repo": "warriorknight3/pythia-70m-Q4_K_M-GGUF",
     "source_revision": "ba4a120b4593c70f38bb7a0b788d564266f9a4f1",

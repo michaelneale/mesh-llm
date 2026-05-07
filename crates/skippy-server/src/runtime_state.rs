@@ -168,8 +168,18 @@ impl RuntimeState {
         token_ids: &[i32],
         input: Option<&ActivationFrame>,
     ) -> Result<ActivationFrame> {
+        self.prefill_frame_with_positions(session_id, token_ids, &[], input)
+    }
+
+    pub fn prefill_frame_with_positions(
+        &mut self,
+        session_id: &str,
+        token_ids: &[i32],
+        positions: &[i32],
+        input: Option<&ActivationFrame>,
+    ) -> Result<ActivationFrame> {
         let session = self.session(session_id)?;
-        let frame = session.prefill_chunk_frame(token_ids, input, 0)?;
+        let frame = session.prefill_chunk_frame_with_positions(token_ids, positions, input, 0)?;
         self.add_session_tokens(session_id, token_ids.len() as u64);
         Ok(frame)
     }
@@ -178,12 +188,13 @@ impl RuntimeState {
         &mut self,
         session_id: &str,
         token_ids: &[i32],
+        positions: &[i32],
         sampling: Option<&SamplingConfig>,
         input: Option<&ActivationFrame>,
     ) -> Result<(i32, ActivationFrame)> {
         let session = self.session(session_id)?;
-        let frame = session.prefill_chunk_frame(token_ids, input, 0)?;
-        let predicted = session.sample_current(sampling)?;
+        let (predicted, frame) = session
+            .prefill_chunk_frame_sampled_with_positions(token_ids, positions, sampling, input, 0)?;
         self.add_session_tokens(session_id, token_ids.len() as u64);
         Ok((predicted, frame))
     }

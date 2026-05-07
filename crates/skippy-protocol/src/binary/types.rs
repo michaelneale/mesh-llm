@@ -5,14 +5,14 @@ use super::{
     invalid_data,
 };
 
-pub const STAGE_STATE_VERSION: i32 = 5;
+pub const STAGE_STATE_VERSION: i32 = 6;
 pub const MAX_STAGE_LOGIT_BIAS: usize = 256;
 pub const READY_MAGIC: i32 = 0x5352_4459; // "SRDY"
 pub const LLAMA_TOKEN_NULL: i32 = -1;
 pub const STAGE_STATE_HEADER_BYTES: usize = 10 * 4;
 pub const STAGE_SAMPLING_CONFIG_BASE_BYTES: usize = 10 * 4;
 pub const STAGE_LOGIT_BIAS_WIRE_BYTES: usize = 4 + 4;
-pub const STAGE_WIRE_FIXED_HEADER_BYTES: usize = 4 * 4 + STAGE_STATE_HEADER_BYTES + 2 * 8;
+pub const STAGE_WIRE_FIXED_HEADER_BYTES: usize = 5 * 4 + STAGE_STATE_HEADER_BYTES + 2 * 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
@@ -336,6 +336,7 @@ pub struct StageWireMessage {
     pub sampling: Option<StageSamplingConfig>,
     pub chat_sampling_metadata: Option<String>,
     pub tokens: Vec<i32>,
+    pub positions: Vec<i32>,
     pub activation: Vec<u8>,
     pub raw_bytes: Vec<u8>,
 }
@@ -360,6 +361,7 @@ impl StageWireMessage {
             sampling: None,
             chat_sampling_metadata: None,
             tokens: Vec::new(),
+            positions: Vec::new(),
             activation: Vec::new(),
             raw_bytes: Vec::new(),
         }
@@ -385,6 +387,7 @@ impl StageWireMessage {
             sampling,
             chat_sampling_metadata,
             tokens: Vec::new(),
+            positions: Vec::new(),
             activation: Vec::new(),
             raw_bytes: Vec::new(),
         }

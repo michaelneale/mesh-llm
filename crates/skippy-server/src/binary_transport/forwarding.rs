@@ -44,7 +44,17 @@ pub(crate) fn forwarded_stage_message_timed(
         &output.payload,
         state.flags,
     )
-    .context("encode output activation payload")?;
+    .with_context(|| {
+        format!(
+            "encode output activation payload; wire_dtype={wire_dtype:?} incoming_tokens={} output_tokens={} activation_width={} payload_bytes={} frame_payload_bytes={} state_flags={}",
+            incoming.token_count,
+            output.desc.token_count,
+            activation_width,
+            output.payload.len(),
+            output.desc.payload_bytes,
+            state.flags,
+        )
+    })?;
     Ok(ForwardedStageMessage {
         message: StageWireMessage {
             kind: incoming.kind,
@@ -56,6 +66,7 @@ pub(crate) fn forwarded_stage_message_timed(
             sampling: incoming.sampling.clone(),
             chat_sampling_metadata: None,
             tokens: incoming.tokens.clone(),
+            positions: incoming.positions.clone(),
             activation,
             raw_bytes: Vec::new(),
         },
@@ -125,6 +136,7 @@ mod tests {
             sampling: None,
             chat_sampling_metadata: None,
             tokens: vec![11],
+            positions: Vec::new(),
             activation: Vec::new(),
             raw_bytes: Vec::new(),
         }

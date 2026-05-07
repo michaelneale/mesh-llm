@@ -92,6 +92,7 @@ mod tests {
             }),
             chat_sampling_metadata: None,
             tokens: vec![11],
+            positions: Vec::new(),
             activation: activation.clone(),
             raw_bytes: Vec::new(),
         };
@@ -170,6 +171,7 @@ mod tests {
             sampling: None,
             chat_sampling_metadata: None,
             tokens: vec![11, 22],
+            positions: Vec::new(),
             activation: Vec::new(),
             raw_bytes: Vec::new(),
         };
@@ -203,6 +205,7 @@ mod tests {
             sampling: None,
             chat_sampling_metadata: None,
             tokens,
+            positions: Vec::new(),
             activation: Vec::new(),
             raw_bytes: Vec::new(),
         };
@@ -211,7 +214,7 @@ mod tests {
 
         assert_eq!(STAGE_STATE_HEADER_BYTES, 40);
         assert_eq!(STAGE_SAMPLING_CONFIG_BASE_BYTES, 40);
-        assert_eq!(STAGE_WIRE_FIXED_HEADER_BYTES, 72);
+        assert_eq!(STAGE_WIRE_FIXED_HEADER_BYTES, 76);
         assert_eq!(
             bytes.len(),
             STAGE_WIRE_FIXED_HEADER_BYTES + message.tokens.len() * 4
@@ -236,6 +239,7 @@ mod tests {
                 sampling: None,
                 chat_sampling_metadata: None,
                 tokens: Vec::new(),
+                positions: Vec::new(),
                 activation: Vec::new(),
                 raw_bytes: Vec::new(),
             };
@@ -264,6 +268,7 @@ mod tests {
             sampling: None,
             chat_sampling_metadata: None,
             tokens: Vec::new(),
+            positions: Vec::new(),
             activation: Vec::new(),
             raw_bytes: vec![1, 2, 3, 4],
         };
@@ -289,6 +294,7 @@ mod tests {
             sampling: None,
             chat_sampling_metadata: None,
             tokens: Vec::new(),
+            positions: Vec::new(),
             activation: Vec::new(),
             raw_bytes: Vec::new(),
         };
@@ -346,6 +352,7 @@ mod tests {
             sampling: None,
             chat_sampling_metadata: None,
             tokens: vec![42],
+            positions: Vec::new(),
             activation,
             raw_bytes: Vec::new(),
         };

@@ -1,0 +1,148 @@
+From 38c346557de8b535eb7f5b83a4509aa4792bd416 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Thu, 7 May 2026 18:18:58 +1000
+Subject: [PATCH] Support external media prefill in staged runtime ABI
+
+---
+ include/skippy.h | 14 ++++++++++
+ src/skippy.cpp   | 73 ++++++++++++++++++++++++++++++++++++++++++++++--
+ 2 files changed, 84 insertions(+), 3 deletions(-)
+
+diff --git a/include/skippy.h b/include/skippy.h
+index c48bc240..c588c862 100644
+--- a/include/skippy.h
++++ b/include/skippy.h
+@@ -351,6 +351,20 @@ LLAMA_API enum skippy_status skippy_prefill_chunk_frame(
+         size_t * out_output_payload_bytes,
+         struct skippy_error ** out_error);
+ 
++LLAMA_API enum skippy_status skippy_prefill_chunk_frame_sampled(
++        struct skippy_session * session,
++        const llama_token * token_ids,
++        size_t token_count,
++        const struct skippy_sampling_config * sampling,
++        const struct skippy_activation_desc * input_desc,
++        const void * input_payload,
++        struct skippy_activation_desc * output_desc,
++        void * output_payload,
++        size_t output_payload_capacity,
++        size_t * out_output_payload_bytes,
++        llama_token * out_predicted_token,
++        struct skippy_error ** out_error);
++
+ LLAMA_API enum skippy_status skippy_decode_step_frame(
+         struct skippy_session * session,
+         llama_token token_id,
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index 93b756a0..34be30f7 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -2313,17 +2313,23 @@ enum skippy_status skippy_verify_tokens(
+     return status;
+ }
+ 
+-enum skippy_status skippy_prefill_chunk_frame(
++static enum skippy_status skippy_prefill_chunk_frame_impl(
+         struct skippy_session * session,
+         const llama_token * token_ids,
+         size_t token_count,
++        bool request_logits,
++        const struct skippy_sampling_config * sampling,
+         const struct skippy_activation_desc * input_desc,
+         const void * input_payload,
+         struct skippy_activation_desc * output_desc,
+         void * output_payload,
+         size_t output_payload_capacity,
+         size_t * out_output_payload_bytes,
++        llama_token * out_predicted_token,
+         struct skippy_error ** out_error) {
++    if (out_predicted_token != nullptr) {
++        *out_predicted_token = -1;
++    }
+     if (token_count == 0) {
+         skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "token_count must be greater than zero");
+         return SKIPPY_STATUS_INVALID_ARGUMENT;
+@@ -2357,17 +2363,78 @@ enum skippy_status skippy_prefill_chunk_frame(
+     }
+ 
+     if (skippy_is_filtered(session) && session->stage_model->config.layer_start > 0) {
+-        status = skippy_decode_activation_frame(session, input_desc, input_payload, token_ids, token_count, false, out_error);
++        status = skippy_decode_activation_frame(session, input_desc, input_payload, token_ids, token_count, request_logits, out_error);
+     } else {
+-        status = skippy_decode_tokens(session, token_ids, token_count, false, out_error);
++        status = skippy_decode_tokens(session, token_ids, token_count, request_logits, out_error);
+     }
+     if (status != SKIPPY_STATUS_OK) {
+         return status;
+     }
+ 
++    if (out_predicted_token != nullptr) {
++        *out_predicted_token = session->stage_model->config.include_output ?
++                skippy_sample_token(session, sampling) : -1;
++    }
++
+     return skippy_copy_output_activation_frame(session, token_count, output_payload, input_desc, input_payload, out_error);
+ }
+ 
++enum skippy_status skippy_prefill_chunk_frame(
++        struct skippy_session * session,
++        const llama_token * token_ids,
++        size_t token_count,
++        const struct skippy_activation_desc * input_desc,
++        const void * input_payload,
++        struct skippy_activation_desc * output_desc,
++        void * output_payload,
++        size_t output_payload_capacity,
++        size_t * out_output_payload_bytes,
++        struct skippy_error ** out_error) {
++    return skippy_prefill_chunk_frame_impl(
++            session,
++            token_ids,
++            token_count,
++            false,
++            nullptr,
++            input_desc,
++            input_payload,
++            output_desc,
++            output_payload,
++            output_payload_capacity,
++            out_output_payload_bytes,
++            nullptr,
++            out_error);
++}
++
++enum skippy_status skippy_prefill_chunk_frame_sampled(
++        struct skippy_session * session,
++        const llama_token * token_ids,
++        size_t token_count,
++        const struct skippy_sampling_config * sampling,
++        const struct skippy_activation_desc * input_desc,
++        const void * input_payload,
++        struct skippy_activation_desc * output_desc,
++        void * output_payload,
++        size_t output_payload_capacity,
++        size_t * out_output_payload_bytes,
++        llama_token * out_predicted_token,
++        struct skippy_error ** out_error) {
++    return skippy_prefill_chunk_frame_impl(
++            session,
++            token_ids,
++            token_count,
++            true,
++            sampling,
++            input_desc,
++            input_payload,
++            output_desc,
++            output_payload,
++            output_payload_capacity,
++            out_output_payload_bytes,
++            out_predicted_token,
++            out_error);
++}
++
+ enum skippy_status skippy_decode_step_frame(
+         struct skippy_session * session,
+         llama_token token_id,
+-- 
+2.50.1 (Apple Git-155)
+

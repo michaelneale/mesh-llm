@@ -621,6 +621,14 @@ fn infers_known_family_capabilities_from_model_identity() {
         deepseek2ocr.exact_state_mobility,
         ExactStateMobility::Accepted
     );
+    let hunyuan_vl =
+        infer_family_capability("ggml-org/HunyuanOCR-GGUF:Q8_0", 24, 1024).expect("hunyuan_vl");
+    assert_eq!(hunyuan_vl.family_id, "hunyuan_vl");
+    assert_eq!(hunyuan_vl.q8_wire_validation, WireValidation::Untested);
+    assert_eq!(
+        hunyuan_vl.exact_state_mobility,
+        ExactStateMobility::Untested
+    );
     let qwen3vlmoe = infer_family_capability(
         "noctrex/Qwen3-VL-30B-A3B-Instruct-1M-MXFP4_MOE-GGUF:MXFP4_MOE",
         48,

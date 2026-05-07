@@ -1947,6 +1947,7 @@ fn restore_prefill_decode_as_decode_message(
     decode.kind = WireMessageKind::DecodeEmbd;
     decode.token_count = 1;
     decode.tokens = vec![current_token];
+    decode.positions.clear();
     decode.activation.clear();
     decode.raw_bytes.clear();
     decode.state.phase = StageStateHeader::new(
@@ -2889,7 +2890,12 @@ pub(crate) fn run_binary_stage_message(
 ) -> Result<(i32, Vec<i32>, ActivationFrame)> {
     match message.kind {
         WireMessageKind::PrefillEmbd => {
-            let output = runtime.prefill_frame(session_id, token_ids, input)?;
+            let output = runtime.prefill_frame_with_positions(
+                session_id,
+                token_ids,
+                &message.positions,
+                input,
+            )?;
             Ok((message.state.current_token, Vec::new(), output))
         }
         WireMessageKind::PrefillFinalEmbd if sample_final_prefill => {
@@ -2897,13 +2903,19 @@ pub(crate) fn run_binary_stage_message(
             let (predicted, output) = runtime.prefill_final_frame_sampled(
                 session_id,
                 token_ids,
+                &message.positions,
                 sampling.as_ref(),
                 input,
             )?;
             Ok((predicted, Vec::new(), output))
         }
         WireMessageKind::PrefillFinalEmbd => {
-            let output = runtime.prefill_frame(session_id, token_ids, input)?;
+            let output = runtime.prefill_frame_with_positions(
+                session_id,
+                token_ids,
+                &message.positions,
+                input,
+            )?;
             Ok((message.state.current_token, Vec::new(), output))
         }
         WireMessageKind::DecodeEmbd
