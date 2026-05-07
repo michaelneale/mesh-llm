@@ -51,7 +51,7 @@ fn load_request() -> StageLoadRequest {
 #[test]
 fn stage_config_preserves_backend_neutral_load_fields() {
     let request = load_request();
-    let config = stage_config(&request, None).unwrap();
+    let config = stage_config(&request, None, None).unwrap();
 
     assert_eq!(config.topology_id, "topology-a");
     assert_eq!(config.run_id, "run-a");
@@ -92,6 +92,34 @@ fn stage_config_preserves_backend_neutral_load_fields() {
 }
 
 #[test]
+fn stage_config_prefers_package_source_identity_over_local_ref() {
+    let mut request = load_request();
+    request.load_mode = LoadMode::LayerPackage;
+    request.model_path = Some("/tmp/hf-cache/snapshots/abc123".to_string());
+    request.source_model_bytes = Some(123);
+    let package = super::super::materialization::ResolvedStagePackage {
+        local_ref: "/tmp/hf-cache/snapshots/abc123".to_string(),
+        source_model_path: "model-a.gguf".to_string(),
+        source_model_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            .to_string(),
+        source_model_bytes: Some(456),
+    };
+
+    let config = stage_config(&request, None, Some(&package)).unwrap();
+
+    assert_eq!(
+        config.model_path.as_deref(),
+        Some("/tmp/hf-cache/snapshots/abc123")
+    );
+    assert_eq!(config.source_model_path.as_deref(), Some("model-a.gguf"));
+    assert_eq!(
+        config.source_model_sha256.as_deref(),
+        Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    );
+    assert_eq!(config.source_model_bytes, Some(456));
+}
+
+#[test]
 fn stage_config_rejects_empty_selected_backend_device() {
     let mut request = load_request();
     request.selected_device = Some(StageDevice {
@@ -101,7 +129,7 @@ fn stage_config_rejects_empty_selected_backend_device() {
         vram_bytes: Some(24_000_000_000),
     });
 
-    let err = stage_config(&request, None).unwrap_err().to_string();
+    let err = stage_config(&request, None, None).unwrap_err().to_string();
 
     assert!(err.contains("selected backend device"));
 }

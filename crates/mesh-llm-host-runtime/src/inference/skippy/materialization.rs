@@ -7,7 +7,9 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use skippy_protocol::{LoadMode, StageConfig};
-use skippy_runtime::package::{self, LayerPackageInfo, PackageStageRequest};
+use skippy_runtime::package::{
+    self, LayerPackageInfo, PackageIntegrityOptions, PackageStageRequest,
+};
 
 use super::StageLoadRequest;
 
@@ -97,6 +99,14 @@ pub(crate) struct StagePackageLayerInfo {
 pub(crate) struct MaterializedStageArtifact {
     pub(crate) path: PathBuf,
     pub(crate) manifest_sha256: String,
+    pub(crate) source_model_path: String,
+    pub(crate) source_model_sha256: String,
+    pub(crate) source_model_bytes: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedStagePackage {
+    pub(crate) local_ref: String,
     pub(crate) source_model_path: String,
     pub(crate) source_model_sha256: String,
     pub(crate) source_model_bytes: Option<u64>,
@@ -216,6 +226,67 @@ fn resolve_local_package_files(
     Ok(package_dir.to_string_lossy().to_string())
 }
 
+fn package_integrity_cache_dir() -> PathBuf {
+    crate::models::mesh_llm_cache_dir().join("skippy-package-integrity")
+}
+
+fn is_metadata_only_package_inspection(
+    layer_start: u32,
+    layer_end: u32,
+    include_embeddings: bool,
+    include_output: bool,
+) -> bool {
+    layer_start == layer_end && !include_embeddings && !include_output
+}
+
+fn verify_resolved_hf_package_files(
+    package_dir: &Path,
+    layer_start: u32,
+    layer_end: u32,
+    include_embeddings: bool,
+    include_output: bool,
+) -> Result<String> {
+    let local_ref = resolve_local_package_files(
+        package_dir,
+        layer_start,
+        layer_end,
+        include_embeddings,
+        include_output,
+    )?;
+    let metadata_only = is_metadata_only_package_inspection(
+        layer_start,
+        layer_end,
+        include_embeddings,
+        include_output,
+    );
+    let options = PackageIntegrityOptions::verify_with_cache(package_integrity_cache_dir());
+    let report = if metadata_only {
+        package::verify_layer_package_metadata_integrity(&local_ref, &options)
+    } else {
+        let request = PackageStageRequest {
+            model_id: "hf-layer-package".to_string(),
+            topology_id: "hf-layer-package-resolver".to_string(),
+            package_ref: local_ref.clone(),
+            stage_id: format!("layers-{layer_start}-{layer_end}"),
+            layer_start,
+            layer_end,
+            include_embeddings,
+            include_output,
+        };
+        package::verify_layer_package_integrity(&request, &options)
+    }
+    .map_err(|error| anyhow::anyhow!("verify resolved HF layer package artifacts: {error:#}"))?;
+    tracing::debug!(
+        artifacts = report.artifacts,
+        verified_artifacts = report.verified_artifacts,
+        cached_artifacts = report.cached_artifacts,
+        manifest_sha256 = %report.manifest_sha256,
+        metadata_only,
+        "verified resolved HF layer package artifacts"
+    );
+    Ok(local_ref)
+}
+
 pub(crate) fn resolve_hf_package_to_local(
     package_ref: &str,
     layer_start: u32,
@@ -257,7 +328,7 @@ pub(crate) fn resolve_hf_package_to_local(
         .join("snapshots")
         .join(&revision_cache_path);
     if direct_snapshot_dir.join("model-package.json").is_file() {
-        return resolve_local_package_files(
+        return verify_resolved_hf_package_files(
             &direct_snapshot_dir,
             layer_start,
             layer_end,
@@ -275,7 +346,7 @@ pub(crate) fn resolve_hf_package_to_local(
             .join("snapshots")
             .join(commit_hash_path);
         if snapshot_dir.join("model-package.json").is_file() {
-            return resolve_local_package_files(
+            return verify_resolved_hf_package_files(
                 &snapshot_dir,
                 layer_start,
                 layer_end,
@@ -368,7 +439,13 @@ pub(crate) fn resolve_hf_package_to_local(
             .with_context(|| format!("download layer package file: {file_name}"))?;
     }
 
-    Ok(package_dir.to_string_lossy().to_string())
+    verify_resolved_hf_package_files(
+        &package_dir,
+        layer_start,
+        layer_end,
+        include_embeddings,
+        include_output,
+    )
 }
 
 fn safe_manifest_file_path(path: &str) -> Result<PathBuf> {
@@ -399,7 +476,9 @@ pub(crate) fn inspect_stage_package(package_ref: &str) -> Result<StagePackageInf
 /// Resolve an `hf://` package ref in a stage load request to a local directory.
 /// Returns the resolved local path if the package ref needed resolution, or `None`
 /// if it was already local / not a layer package.
-pub(crate) fn resolve_stage_load_package(load: &StageLoadRequest) -> Result<Option<String>> {
+pub(crate) fn resolve_stage_load_package(
+    load: &StageLoadRequest,
+) -> Result<Option<ResolvedStagePackage>> {
     if load.load_mode != LoadMode::LayerPackage {
         return Ok(None);
     }
@@ -414,7 +493,14 @@ pub(crate) fn resolve_stage_load_package(load: &StageLoadRequest) -> Result<Opti
         is_first, // include_embeddings
         is_final, // include_output
     )?;
-    Ok(Some(local_ref))
+    let info = package::inspect_layer_package(&local_ref)
+        .with_context(|| format!("inspect resolved layer package {}", load.package_ref))?;
+    Ok(Some(ResolvedStagePackage {
+        local_ref,
+        source_model_path: info.source_model_path,
+        source_model_sha256: info.source_model_sha256,
+        source_model_bytes: info.source_model_bytes,
+    }))
 }
 
 pub(crate) fn materialize_stage_config(
@@ -758,6 +844,81 @@ mod tests {
         }
     }
 
+    fn sha256_hex(bytes: &[u8]) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        let digest = hasher.finalize();
+        let mut out = String::with_capacity(64);
+        for byte in digest {
+            out.push_str(&format!("{byte:02x}"));
+        }
+        out
+    }
+
+    fn write_cached_package_snapshot(snapshot: &Path, layer_sha: String) {
+        fs::create_dir_all(snapshot.join("shared")).unwrap();
+        fs::create_dir_all(snapshot.join("layers")).unwrap();
+        fs::write(snapshot.join("shared/metadata.gguf"), b"metadata").unwrap();
+        fs::write(snapshot.join("layers/layer-000.gguf"), b"layer").unwrap();
+        fs::write(
+            snapshot.join("model-package.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": 1,
+                "model_id": "model-a",
+                "source_model": {
+                    "path": "model-a.gguf",
+                    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "files": [
+                        {
+                            "path": "model-a.gguf",
+                            "size_bytes": 123,
+                            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        }
+                    ]
+                },
+                "format": "layer-package",
+                "layer_count": 1,
+                "activation_width": 4096,
+                "shared": {
+                    "metadata": {
+                        "path": "shared/metadata.gguf",
+                        "tensor_count": 1,
+                        "tensor_bytes": 1,
+                        "artifact_bytes": 8,
+                        "sha256": sha256_hex(b"metadata")
+                    },
+                    "embeddings": {
+                        "path": "shared/metadata.gguf",
+                        "tensor_count": 1,
+                        "tensor_bytes": 1,
+                        "artifact_bytes": 8,
+                        "sha256": sha256_hex(b"metadata")
+                    },
+                    "output": {
+                        "path": "shared/metadata.gguf",
+                        "tensor_count": 1,
+                        "tensor_bytes": 1,
+                        "artifact_bytes": 8,
+                        "sha256": sha256_hex(b"metadata")
+                    }
+                },
+                "layers": [
+                    {
+                        "layer_index": 0,
+                        "path": "layers/layer-000.gguf",
+                        "tensor_count": 1,
+                        "tensor_bytes": 1,
+                        "artifact_bytes": 5,
+                        "sha256": layer_sha
+                    }
+                ],
+                "skippy_abi_version": "0.1.0",
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn layer_package_ref_detects_local_manifest_dir() {
         let dir = tempfile::tempdir().unwrap();
@@ -925,23 +1086,7 @@ mod tests {
             .join("models--owner--repo")
             .join("snapshots")
             .join("abc123");
-        fs::create_dir_all(snapshot.join("shared")).unwrap();
-        fs::create_dir_all(snapshot.join("layers")).unwrap();
-        fs::write(snapshot.join("shared/metadata.gguf"), b"metadata").unwrap();
-        fs::write(snapshot.join("layers/layer-000.gguf"), b"layer").unwrap();
-        fs::write(
-            snapshot.join("model-package.json"),
-            serde_json::json!({
-                "shared": {
-                    "metadata": { "path": "shared/metadata.gguf" }
-                },
-                "layers": [
-                    { "layer_index": 0, "path": "layers/layer-000.gguf" }
-                ]
-            })
-            .to_string(),
-        )
-        .unwrap();
+        write_cached_package_snapshot(&snapshot, sha256_hex(b"layer"));
 
         let resolved =
             resolve_hf_package_to_local("hf://owner/repo@abc123", 0, 1, false, false).unwrap();
@@ -951,6 +1096,139 @@ mod tests {
         restore_env("HF_HOME", prev_hf_home);
         restore_env("HF_HUB_CACHE", prev_hf_cache);
         restore_env("HUGGINGFACE_HUB_CACHE", prev_huggingface_cache);
+    }
+
+    #[test]
+    #[serial]
+    fn hf_package_metadata_only_cache_resolution_uses_metadata_integrity_scope() {
+        let prev_hf_home = std::env::var_os("HF_HOME");
+        let prev_hf_cache = std::env::var_os("HF_HUB_CACHE");
+        let prev_huggingface_cache = std::env::var_os("HUGGINGFACE_HUB_CACHE");
+        let prev_xdg_cache = std::env::var_os("XDG_CACHE_HOME");
+
+        let temp = tempfile::tempdir().unwrap();
+        std::env::set_var("HF_HOME", temp.path().join("hf"));
+        std::env::set_var("XDG_CACHE_HOME", temp.path().join("mesh-cache"));
+        std::env::remove_var("HF_HUB_CACHE");
+        std::env::remove_var("HUGGINGFACE_HUB_CACHE");
+
+        let snapshot = temp
+            .path()
+            .join("hf")
+            .join("hub")
+            .join("models--owner--repo")
+            .join("snapshots")
+            .join("abc123");
+        write_cached_package_snapshot(
+            &snapshot,
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+        );
+
+        let resolved =
+            resolve_hf_package_to_local("hf://owner/repo@abc123", 0, 0, false, false).unwrap();
+        assert_eq!(PathBuf::from(resolved), snapshot);
+
+        let info = inspect_stage_package("hf://owner/repo@abc123").unwrap();
+        assert_eq!(info.model_id, "model-a");
+        assert_eq!(info.layer_count, 1);
+
+        fs::write(snapshot.join("shared/metadata.gguf"), b"metadota").unwrap();
+        let error = resolve_hf_package_to_local("hf://owner/repo@abc123", 0, 0, false, false)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("checksum mismatch"), "{error}");
+        assert!(error.contains("shared/metadata.gguf"), "{error}");
+
+        restore_env("HF_HOME", prev_hf_home);
+        restore_env("HF_HUB_CACHE", prev_hf_cache);
+        restore_env("HUGGINGFACE_HUB_CACHE", prev_huggingface_cache);
+        restore_env("XDG_CACHE_HOME", prev_xdg_cache);
+    }
+
+    #[test]
+    #[serial]
+    fn hf_package_resolution_verifies_cached_snapshot_artifact_checksums() {
+        let prev_hf_home = std::env::var_os("HF_HOME");
+        let prev_hf_cache = std::env::var_os("HF_HUB_CACHE");
+        let prev_huggingface_cache = std::env::var_os("HUGGINGFACE_HUB_CACHE");
+        let prev_xdg_cache = std::env::var_os("XDG_CACHE_HOME");
+
+        let temp = tempfile::tempdir().unwrap();
+        std::env::set_var("HF_HOME", temp.path().join("hf"));
+        std::env::set_var("XDG_CACHE_HOME", temp.path().join("mesh-cache"));
+        std::env::remove_var("HF_HUB_CACHE");
+        std::env::remove_var("HUGGINGFACE_HUB_CACHE");
+
+        let snapshot = temp
+            .path()
+            .join("hf")
+            .join("hub")
+            .join("models--owner--repo")
+            .join("snapshots")
+            .join("abc123");
+        write_cached_package_snapshot(
+            &snapshot,
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+        );
+
+        let error = resolve_hf_package_to_local("hf://owner/repo@abc123", 0, 1, false, false)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("checksum mismatch"), "{error}");
+
+        restore_env("HF_HOME", prev_hf_home);
+        restore_env("HF_HUB_CACHE", prev_hf_cache);
+        restore_env("HUGGINGFACE_HUB_CACHE", prev_huggingface_cache);
+        restore_env("XDG_CACHE_HOME", prev_xdg_cache);
+    }
+
+    #[test]
+    fn resolved_stage_load_package_keeps_local_path_out_of_source_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        write_cached_package_snapshot(dir.path(), sha256_hex(b"layer"));
+        let load = StageLoadRequest {
+            topology_id: "topology-a".to_string(),
+            run_id: "run-a".to_string(),
+            model_id: "model-a".to_string(),
+            backend: "skippy".to_string(),
+            package_ref: dir.path().to_string_lossy().to_string(),
+            manifest_sha256: "manifest".to_string(),
+            stage_id: "stage-0".to_string(),
+            stage_index: 0,
+            layer_start: 0,
+            layer_end: 1,
+            model_path: None,
+            source_model_bytes: None,
+            projector_path: None,
+            selected_device: None,
+            bind_addr: "127.0.0.1:0".to_string(),
+            activation_width: 4096,
+            wire_dtype: crate::inference::skippy::StageWireDType::F16,
+            ctx_size: 512,
+            lane_count: 1,
+            n_batch: None,
+            n_ubatch: None,
+            n_gpu_layers: 0,
+            cache_type_k: "f16".to_string(),
+            cache_type_v: "f16".to_string(),
+            flash_attn_type: skippy_protocol::FlashAttentionType::Auto,
+            shutdown_generation: 0,
+            load_mode: LoadMode::LayerPackage,
+            upstream: None,
+            downstream: None,
+        };
+
+        let resolved = resolve_stage_load_package(&load)
+            .unwrap()
+            .expect("layer package should resolve");
+
+        assert_eq!(resolved.local_ref, dir.path().to_string_lossy());
+        assert_eq!(resolved.source_model_path, "model-a.gguf");
+        assert_eq!(
+            resolved.source_model_sha256,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
     }
 
     #[test]
