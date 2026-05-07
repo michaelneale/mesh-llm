@@ -1975,7 +1975,7 @@ pub(crate) async fn run() -> Result<()> {
             .as_secs();
 
         let last_mesh_id = mesh::load_last_mesh_id();
-        let target_name = cli.mesh_name.as_deref();
+        let target_name = cli.mesh_name.clone();
         // When the user did not target a specific mesh, `--auto` only joins
         // the community mesh (unnamed or name == "mesh-llm"). Other named
         // meshes are still publicly discoverable on Nostr, but the user has
@@ -2006,7 +2006,7 @@ pub(crate) async fn run() -> Result<()> {
             );
         }
 
-        match nostr::smart_auto(&meshes, my_vram_gb, target_name) {
+        match smart_auto_blocking(meshes.clone(), my_vram_gb, target_name.clone()).await? {
             nostr::AutoDecision::Join { candidates } => {
                 if cli.client {
                     // Clients skip health probe — joining itself is the test.
@@ -2052,7 +2052,7 @@ pub(crate) async fn run() -> Result<()> {
                             message: "No meshes found — starting new".to_string(),
                             detail: None,
                         });
-                        let models = nostr::default_models_for_vram(my_vram_gb);
+                        let models = default_models_for_vram_blocking(my_vram_gb).await?;
                         start_new_mesh(&mut cli, &models, my_vram_gb, has_startup_models);
                     }
                 }
@@ -2072,7 +2072,8 @@ pub(crate) async fn run() -> Result<()> {
                         });
                         if let Ok(retry_meshes) = nostr::discover(&relays, &filter, None).await {
                             if let nostr::AutoDecision::Join { candidates } =
-                                nostr::smart_auto(&retry_meshes, my_vram_gb, target_name)
+                                smart_auto_blocking(retry_meshes, my_vram_gb, target_name.clone())
+                                    .await?
                             {
                                 let (_, mesh) = &candidates[0];
                                 if cli.mesh_name.is_none() {
@@ -3313,6 +3314,30 @@ async fn find_remote_catalog_model_exact_blocking(
         .flatten()
 }
 
+async fn smart_auto_blocking(
+    meshes: Vec<nostr::DiscoveredMesh>,
+    my_vram_gb: f64,
+    target_name: Option<String>,
+) -> Result<nostr::AutoDecision> {
+    tokio::task::spawn_blocking(move || {
+        nostr::smart_auto(&meshes, my_vram_gb, target_name.as_deref())
+    })
+    .await
+    .context("join smart auto task")
+}
+
+async fn default_models_for_vram_blocking(my_vram_gb: f64) -> Result<Vec<String>> {
+    tokio::task::spawn_blocking(move || nostr::default_models_for_vram(my_vram_gb))
+        .await
+        .context("join default model selection task")
+}
+
+async fn auto_model_pack_blocking(my_vram_gb: f64) -> Result<Vec<String>> {
+    tokio::task::spawn_blocking(move || nostr::auto_model_pack(my_vram_gb))
+        .await
+        .context("join auto model pack task")
+}
+
 /// Pick which model this node should serve, based on demand signals.
 ///
 /// Priority:
@@ -3676,7 +3701,7 @@ async fn join_mesh_for_mcp(cli: &Cli, node: &mesh::Node) -> Result<()> {
             min_vram_gb: None,
             region: cli.region.clone(),
         };
-        let target_name = cli.discover.as_deref().or(cli.mesh_name.as_deref());
+        let target_name = cli.discover.clone().or_else(|| cli.mesh_name.clone());
         let _ = emit_event(OutputEvent::DiscoveryStarting {
             source: "Nostr discovery".to_string(),
         });
@@ -3690,7 +3715,7 @@ async fn join_mesh_for_mcp(cli: &Cli, node: &mesh::Node) -> Result<()> {
                 return Err(err);
             }
         };
-        match nostr::smart_auto(&meshes, 0.0, target_name) {
+        match smart_auto_blocking(meshes, 0.0, target_name).await? {
             nostr::AutoDecision::Join { candidates } => {
                 let mut last_err: Option<anyhow::Error> = None;
                 for (token, mesh) in &candidates {
@@ -4143,7 +4168,7 @@ async fn run_auto(
         let assignment = pick_model_assignment(&node, &local_models).await;
         // If no demand-based assignment but we have VRAM, use auto pack's primary model
         let assignment = if assignment.is_none() && cli.auto && !is_client {
-            let pack = nostr::auto_model_pack(node.vram_bytes() as f64 / 1e9);
+            let pack = auto_model_pack_blocking(node.vram_bytes() as f64 / 1e9).await?;
             if !pack.is_empty() {
                 Some(pack[0].clone())
             } else {
