@@ -1,4 +1,4 @@
-use ed25519_dalek::{SigningKey, VerifyingKey};
+use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
 
 use super::error::CryptoError;
@@ -72,6 +72,11 @@ impl OwnerKeypair {
     /// Raw encryption secret key bytes (for keystore serialization).
     pub fn encryption_bytes(&self) -> [u8; 32] {
         self.encryption.to_bytes()
+    }
+
+    /// Sign arbitrary domain-separated bytes with the owner signing key.
+    pub fn sign_bytes(&self, bytes: &[u8]) -> [u8; 64] {
+        self.signing.sign(bytes).to_bytes()
     }
 }
 

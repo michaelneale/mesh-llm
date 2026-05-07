@@ -32,6 +32,10 @@ live in [`../mesh-llm-types`](../mesh-llm-types). The host crate should re-expor
 or consume those definitions rather than making embedded clients depend on host
 runtime modules.
 
+Shared owner identity and envelope crypto live in
+[`../mesh-llm-identity`](../mesh-llm-identity). Host-only keychain, keystore, and
+trust-store persistence remain in this crate's `crypto/` module for now.
+
 Notable built-ins under `src/plugins/` today:
 
 ```text

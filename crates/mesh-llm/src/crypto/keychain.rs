@@ -13,9 +13,8 @@ use keyring::Entry;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-use super::error::CryptoError;
-use super::keys::OwnerKeypair;
 use super::keystore::{load_keystore, save_keystore, write_keystore_bytes_atomically};
+use super::{CryptoError, OwnerKeypair};
 
 /// Service name used for all mesh-llm keychain entries.
 pub const KEYCHAIN_SERVICE: &str = "mesh-llm";

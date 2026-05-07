@@ -3522,9 +3522,7 @@ fn build_signed_config_push(
     expected_revision: u64,
     config: crate::proto::node::NodeConfigSnapshot,
 ) -> crate::proto::node::ConfigPush {
-    use ed25519_dalek::Signer as _;
-
-    let vk = owner_keypair.signing.verifying_key();
+    let vk = owner_keypair.verifying_key();
 
     let mut push = crate::proto::node::ConfigPush {
         owner_id: String::new(),
@@ -3537,8 +3535,7 @@ fn build_signed_config_push(
         signature: vec![0u8; 64],
     };
     let payload = config_push_signature_payload(&push);
-    let sig = owner_keypair.signing.sign(&payload);
-    push.signature = sig.to_bytes().to_vec();
+    push.signature = owner_keypair.sign_bytes(&payload).to_vec();
     push
 }
 

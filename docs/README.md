@@ -30,3 +30,5 @@ console/embedded asset crate overview lives at
 [../crates/mesh-llm-ui/README.md](../crates/mesh-llm-ui/README.md).
 Shared protocol-facing model/type ownership lives at
 [../crates/mesh-llm-types/README.md](../crates/mesh-llm-types/README.md).
+Shared owner identity and envelope crypto lives at
+[../crates/mesh-llm-identity/README.md](../crates/mesh-llm-identity/README.md).

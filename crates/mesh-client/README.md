@@ -24,6 +24,10 @@ Shared protocol-facing model/type definitions are owned by
 expect them. Keep pure shared data there instead of adding host-runtime
 dependencies to this crate.
 
+Shared owner identity and envelope crypto are owned by
+`crates/mesh-llm-identity/` and re-exported here for compatibility with existing
+client call sites.
+
 Client requests should preserve the full model ref chosen by the caller. Model
 resolution, stage topology, and runtime lifecycle remain server-side mesh
 responsibilities.

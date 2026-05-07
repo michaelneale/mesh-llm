@@ -10,24 +10,29 @@ parse CLI, configure logging, assemble runtime dependencies, and call `run()`.
 
 ## Implemented slices
 
-Two slices are already extracted:
+Three slices are already extracted:
 
 - `mesh-llm-ui` owns the React console source, package metadata, build output,
   embedded asset helpers, and UI README.
 - `mesh-llm-types` owns pure shared model and protocol-facing data shapes:
   capabilities, topology metadata, served-model identity/descriptors, runtime
   descriptors, model demand counters, and shared routing constants.
+- `mesh-llm-identity` owns shared owner keypairs, owner ID derivation, signed
+  encrypted envelopes, key-provider traits, and shared crypto errors.
 
 ```mermaid
 flowchart TD
     types["mesh-llm-types"]
     client["mesh-client"]
+    identity["mesh-llm-identity"]
     host["mesh-llm"]
     ui["mesh-llm-ui"]
     api_assets["mesh-llm API asset routes"]
 
     types --> client
     types --> host
+    identity --> client
+    identity --> host
     ui --> api_assets
     api_assets --> host
 ```
@@ -91,7 +96,8 @@ flowchart TD
 | `protocol/`, generated proto, ALPN and stream IDs, frame validation | New `mesh-llm-protocol` | Shared by host and client; protocol compatibility deserves a small, explicit crate. |
 | Pure shared mesh/client model types such as capabilities, topology, model demand, served-model identity, and descriptors | `mesh-llm-types` | Implemented first because these types are protocol-facing but do not need QUIC, protobuf, ownership, CLI, or runtime dependencies. |
 | Runtime peer state such as `PeerAnnouncement`, `PeerInfo`, and `NodeRole` | Later `mesh-llm-control-plane` or `mesh-llm-protocol` boundary after decoupling | These still carry `iroh`, protobuf summaries, ownership attestation, timestamps, and gossip semantics, so moving them before protocol/control-plane cleanup would smear dependencies into `mesh-llm-types`. |
-| Shared signing, ownership, and envelope crypto | New `mesh-llm-identity` | Both `mesh-client` and the host need this; keychain and storage can stay behind host-only features. |
+| Shared signing and envelope crypto | `mesh-llm-identity` | Implemented as a dependency-light shared crate for owner keypairs, owner IDs, signed encrypted envelopes, and key-provider traits. |
+| Host ownership persistence, keystore files, trust-store files, OS keychain integration | Host crypto modules for now | These are local machine and CLI/runtime policy concerns; they can move later behind host-oriented crate boundaries. |
 | `mesh/` gossip, heartbeat, membership, peer state, config sync | New `mesh-llm-control-plane` | This avoids the self-referential `mesh-llm-mesh` name and describes the subsystem's actual role: control-plane membership and coordination, not model execution. |
 | `network/router.rs`, `network/affinity.rs`, route scoring, request placement, election-adjacent logic | New `mesh-llm-routing` | Routing and placement should be reusable without pulling in process runtime or CLI UI. |
 | `network/proxy.rs`, `network/tunnel.rs`, HTTP ingress glue | New `mesh-llm-gateway` | This is the network edge around OpenAI/API traffic. |
@@ -146,7 +152,7 @@ The crate split should include the documentation migration as part of the same s
 
 ## Extraction order
 
-1. Extract the first `mesh-llm-types` slice, then continue with `mesh-llm-identity` and `mesh-llm-protocol`.
+1. Extract the first `mesh-llm-types` and `mesh-llm-identity` slices, then continue with `mesh-llm-protocol`.
 2. Move model metadata, resolve, search, and download code into existing `model-*` crates.
 3. Move OpenAI adapter and schema code into `openai-frontend`.
 4. Push Skippy-owned logic into existing `skippy-*` crates.

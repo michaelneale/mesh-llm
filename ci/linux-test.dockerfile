@@ -22,6 +22,7 @@ RUN cmake -B llama.cpp/build -S llama.cpp \
 # Build mesh-llm (UI already built on host via npm run build, dist/ included)
 COPY Cargo.toml Cargo.lock ./
 COPY crates/mesh-llm-ui/ crates/mesh-llm-ui/
+COPY crates/mesh-llm-identity/ crates/mesh-llm-identity/
 COPY crates/mesh-llm-types/ crates/mesh-llm-types/
 COPY crates/mesh-llm/ crates/mesh-llm/
 COPY crates/mesh-llm-plugin/ crates/mesh-llm-plugin/

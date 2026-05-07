@@ -182,7 +182,7 @@ pub fn open_message(
     // 3. Verify sender_owner_id matches the signing key (prevents identity spoofing).
     let sender_verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&sender_sign_pk_bytes)
         .map_err(|_| CryptoError::InvalidSignature)?;
-    let expected_owner_id = super::keys::owner_id_from_verifying_key(&sender_verifying_key);
+    let expected_owner_id = crate::keys::owner_id_from_verifying_key(&sender_verifying_key);
     if envelope.sender_owner_id != expected_owner_id {
         return Err(CryptoError::VerificationFailed {
             reason: "sender_owner_id does not match signing public key".into(),

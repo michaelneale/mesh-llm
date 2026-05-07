@@ -1,12 +1,10 @@
 use std::path::{Path, PathBuf};
 
 use clap::ValueEnum;
-use ed25519_dalek::Signer;
 use serde::{Deserialize, Serialize};
 
-use super::error::CryptoError;
-use super::keys::{owner_id_from_verifying_key, OwnerKeypair};
 use super::keystore::write_keystore_bytes_atomically;
+use super::{owner_id_from_verifying_key, CryptoError, OwnerKeypair};
 
 pub const NODE_OWNERSHIP_VERSION: u32 = 1;
 pub const TRUST_STORE_VERSION: u32 = 1;
@@ -265,10 +263,10 @@ pub fn sign_node_ownership(
         hostname_hint,
     };
     let bytes = canonical_claim_bytes(&claim)?;
-    let signature = owner.signing.sign(&bytes);
+    let signature = owner.sign_bytes(&bytes);
     Ok(SignedNodeOwnership {
         claim,
-        signature: hex::encode(signature.to_bytes()),
+        signature: hex::encode(signature),
     })
 }
 

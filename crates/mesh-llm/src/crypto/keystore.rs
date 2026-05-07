@@ -7,8 +7,7 @@ use chacha20poly1305::{ChaCha20Poly1305, KeyInit};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use super::error::CryptoError;
-use super::keys::OwnerKeypair;
+use super::{owner_id_from_verifying_key, CryptoError, OwnerKeypair};
 
 const KEYSTORE_VERSION: u32 = 1;
 
@@ -166,7 +165,7 @@ pub fn keystore_metadata(path: &Path) -> Result<KeystoreInfo, CryptoError> {
         .map_err(|e| CryptoError::InvalidKeyMaterial {
             reason: format!("invalid signing public key: {e}"),
         })?;
-    let verified_owner_id = super::keys::owner_id_from_verifying_key(&signing_public_key);
+    let verified_owner_id = owner_id_from_verifying_key(&signing_public_key);
     if ks.owner_id != verified_owner_id {
         return Err(CryptoError::VerificationFailed {
             reason: "owner_id does not match signing public key".into(),

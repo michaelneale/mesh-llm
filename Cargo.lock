@@ -4026,6 +4026,7 @@ dependencies = [
  "keyring",
  "libc",
  "mesh-llm-client",
+ "mesh-llm-identity",
  "mesh-llm-plugin",
  "mesh-llm-types",
  "mesh-llm-ui",
@@ -4083,6 +4084,7 @@ dependencies = [
  "hex",
  "httparse",
  "iroh",
+ "mesh-llm-identity",
  "mesh-llm-types",
  "nostr-sdk",
  "prost",
@@ -4095,6 +4097,20 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "mesh-llm-identity"
+version = "0.1.0"
+dependencies = [
+ "crypto_box",
+ "ed25519-dalek",
+ "hex",
+ "rand 0.10.1",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

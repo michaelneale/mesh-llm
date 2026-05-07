@@ -1,4 +1,4 @@
-use crate::crypto::keys::OwnerKeypair;
+use crate::keys::OwnerKeypair;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
