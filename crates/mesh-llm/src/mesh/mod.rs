@@ -2361,6 +2361,28 @@ impl Node {
         self.connect_to_peer(addr).await
     }
 
+    /// Like [`join`], but retries once after a delay on transient (connect/timeout)
+    /// errors.  Decode errors (invalid base64/JSON) fail immediately.
+    pub async fn join_with_retry(&self, invite_token: &str) -> Result<()> {
+        // Decode first — bail immediately on bad tokens.
+        let json = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(invite_token)
+            .context("invalid invite token encoding")?;
+        let addr: EndpointAddr =
+            serde_json::from_slice(&json).context("invalid invite token JSON")?;
+
+        self.state.lock().await.dead_peers.remove(&addr.id);
+        match self.connect_to_peer(addr.clone()).await {
+            Ok(()) => Ok(()),
+            Err(first_err) => {
+                tracing::info!("First join attempt failed ({first_err:#}), retrying in 5s...");
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                self.state.lock().await.dead_peers.remove(&addr.id);
+                self.connect_to_peer(addr).await
+            }
+        }
+    }
+
     /// Connect to a peer without gossip exchange — for passive nodes (clients/standby).
     pub fn id(&self) -> EndpointId {
         self.endpoint.id()

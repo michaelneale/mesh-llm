@@ -1827,8 +1827,14 @@ pub(crate) async fn run() -> Result<()> {
     // Publication intent is now explicit only: --publish gates Nostr discovery.
     // --mesh-name alone never implies publication (Issue #240).
 
-    // Warn users who used to rely on --mesh-name auto-publishing
-    if let Some(mesh_name) = cli.mesh_name.as_ref().filter(|_| !cli.publish) {
+    // Warn users who set --mesh-name without --publish — but only when they
+    // are creating a new mesh, not when they are joining one via --discover
+    // or --auto (where --mesh-name is just a filter for which mesh to join).
+    if let Some(mesh_name) = cli
+        .mesh_name
+        .as_ref()
+        .filter(|_| !cli.publish && !cli.auto && cli.discover.is_none())
+    {
         let _ = emit_event(OutputEvent::Info {
             message: format!(
                 "Mesh named '{}' — private by default. Add --publish to make it publicly discoverable.",
@@ -1842,7 +1848,7 @@ pub(crate) async fn run() -> Result<()> {
     // If the previous run was public (--auto or --publish) but this run is
     // private, clear the stored identity so the private mesh gets a fresh key
     // that isn't associated with the old public listing.
-    let is_public = cli.auto || cli.publish;
+    let is_public = cli.auto || cli.publish || cli.discover.is_some();
     if is_public {
         mesh::mark_was_public();
     } else if mesh::was_previously_public() {
@@ -1856,18 +1862,26 @@ pub(crate) async fn run() -> Result<()> {
     let mut auto_join_candidates: Vec<(String, Option<String>)> = Vec::new();
 
     // --- Auto-discover ---
-    if cli.auto && cli.join.is_empty() {
+    // --auto: join the community mesh (unnamed / "mesh-llm"), optionally
+    //         scoped to --mesh-name.
+    // --discover [name]: discover a mesh by name on Nostr and join it.
+    //         Without a name, behaves like --auto.
+    let discover_active = cli.auto || cli.discover.is_some();
+    if discover_active && cli.join.is_empty() {
+        // When --discover provides a name, use it as the target mesh name
+        // so smart_auto filters by that name on Nostr.
+        if let Some(ref name) = cli.discover {
+            if !name.is_empty() && cli.mesh_name.is_none() {
+                cli.mesh_name = Some(name.clone());
+            }
+        }
         cli.nostr_discovery = true;
         let _ = emit_event(OutputEvent::DiscoveryStarting {
             source: "Nostr auto-discovery".to_string(),
         });
 
         let relays = nostr_relays(&cli.nostr_relay);
-        let filter = nostr::MeshFilter {
-            model: None,
-            min_vram_gb: None,
-            region: None,
-        };
+        let filter = nostr::MeshFilter::default();
         let meshes = match nostr::discover(&relays, &filter, None).await {
             Ok(meshes) => meshes,
             Err(err) => {
@@ -3478,7 +3492,7 @@ fn node_display_name(cli: &Cli, node: &mesh::Node) -> String {
 async fn join_mesh_for_mcp(cli: &Cli, node: &mesh::Node) -> Result<()> {
     if !cli.join.is_empty() {
         for token in &cli.join {
-            match node.join(token).await {
+            match node.join_with_retry(token).await {
                 Ok(()) => {
                     if node.mesh_id().await.is_some() {
                         record_first_joined_mesh_ts(node).await;
@@ -3498,9 +3512,8 @@ async fn join_mesh_for_mcp(cli: &Cli, node: &mesh::Node) -> Result<()> {
     if cli.auto || cli.discover.is_some() {
         let relays = nostr_relays(&cli.nostr_relay);
         let filter = nostr::MeshFilter {
-            model: None,
-            min_vram_gb: None,
             region: cli.region.clone(),
+            ..Default::default()
         };
         let target_name = cli.discover.as_deref().or(cli.mesh_name.as_deref());
         let _ = emit_event(OutputEvent::DiscoveryStarting {
@@ -3780,7 +3793,7 @@ async fn run_auto(
         let mut successful_join: Option<(String, Option<String>)> = None;
 
         for (t, mesh_name) in &join_attempts {
-            match node.join(t).await {
+            match node.join_with_retry(t).await {
                 Ok(()) => {
                     if node.mesh_id().await.is_some() {
                         record_first_joined_mesh_ts(&node).await;
