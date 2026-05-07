@@ -127,6 +127,7 @@ flowchart TD
 | `network/proxy.rs`, `network/tunnel.rs`, HTTP ingress glue | New `mesh-llm-gateway` | This is the network edge around OpenAI/API traffic. |
 | `network/openai/*` | Existing `openai-frontend` | Request/response adapter shims, stream-chunk schema parsing, response stream usage conversion, and upstream error mapping now live in `openai-frontend`; host networking keeps ingress and mesh transport glue. |
 | `plugin/` host runtime, MCP bridge, transport, config support | New `mesh-llm-plugin-host` | Keep host-side plugin orchestration separate from `mesh-llm-plugin`, which should remain the plugin author API. |
+| Plugin protobuf schema | `mesh-llm-plugin` | The plugin wire schema now lives beside the plugin author/runtime API crate instead of under the host binary crate. |
 | `plugins/blobstore`, `plugins/blackboard`, telemetry, OpenAI endpoint plugin | Initially submodules of `mesh-llm-plugin-host`; later first-party plugin crates if needed | These do not all need crates yet. Extract only when boundaries harden. |
 | `runtime_data/` | New `mesh-llm-runtime-data` | Shared by runtime, API, plugins, and CLI dashboard. |
 | `system/hardware.rs`, backend detection, benchmark primitives | New `mesh-llm-system` | Local-machine concerns should stay out of mesh/protocol crates. |

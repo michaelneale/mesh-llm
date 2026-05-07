@@ -31,7 +31,6 @@ COPY crates/mesh-llm/Cargo.toml crates/mesh-llm/Cargo.toml
 COPY crates/mesh-llm/build.rs crates/mesh-llm/build.rs
 COPY crates/mesh-llm-plugin/Cargo.toml crates/mesh-llm-plugin/Cargo.toml
 COPY crates/mesh-llm-plugin/build.rs crates/mesh-llm-plugin/build.rs
-COPY crates/mesh-llm/proto/ crates/mesh-llm/proto/
 COPY crates/mesh-llm/ crates/mesh-llm/
 COPY crates/mesh-llm-plugin/ crates/mesh-llm-plugin/
 COPY crates/mesh-client/ crates/mesh-client/

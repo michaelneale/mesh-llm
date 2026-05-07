@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 
 fn main() {
-    watch_path(Path::new("../mesh-llm/proto"));
+    watch_path(Path::new("proto"));
     compile_proto();
 }
 
@@ -28,6 +28,6 @@ fn compile_proto() {
     std::env::set_var("PROTOC", protoc);
 
     prost_build::Config::new()
-        .compile_protos(&["../mesh-llm/proto/plugin.proto"], &["../mesh-llm/proto"])
+        .compile_protos(&["proto/plugin.proto"], &["proto"])
         .expect("compile plugin proto");
 }

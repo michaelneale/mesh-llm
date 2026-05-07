@@ -160,7 +160,7 @@ For the repo's CI design rules and workflow responsibilities, see [`docs/CI_GUID
 
 | Changed paths                                                                                           | `linux` / `macos` | `linux_cuda` / `linux_rocm` / `linux_vulkan` / `windows` |
 | ------------------------------------------------------------------------------------------------------- | ----------------- | -------------------------------------------------------- |
-| `crates/mesh-llm/src/**`, `Cargo.*`, `Justfile`, `scripts/**`, `crates/mesh-llm/build.rs`, `crates/mesh-llm-plugin/**`, `crates/mesh-llm/tests/**`, `crates/mesh-llm/proto/**`, `crates/mesh-llm-protocol/proto/**` | ✅ runs           | ✅ runs                                                  |
+| `crates/mesh-llm/src/**`, `Cargo.*`, `Justfile`, `scripts/**`, `crates/mesh-llm/build.rs`, `crates/mesh-llm-plugin/**`, `crates/mesh-llm/tests/**`, `crates/mesh-llm-protocol/proto/**` | ✅ runs           | ✅ runs                                                  |
 | `crates/mesh-llm-ui/**`                                                                                        | ✅ runs           | ⏭ skipped                                               |
 | `**/*.md`, `docs/**`, anything else                                                                     | ⏭ skipped        | ⏭ skipped                                               |
 | Manual `workflow_dispatch`                                                                              | ✅ runs           | ✅ runs                                                  |
