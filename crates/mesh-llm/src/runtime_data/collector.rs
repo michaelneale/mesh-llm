@@ -108,6 +108,12 @@ impl RuntimeDataCollector {
         self.runtime_status_snapshot().llama_runtime_by_model
     }
 
+    pub(crate) fn runtime_llama_snapshots_by_instance(
+        &self,
+    ) -> BTreeMap<String, RuntimeLlamaRuntimeSnapshot> {
+        self.runtime_status_snapshot().llama_runtime_by_instance
+    }
+
     pub(crate) fn routing_snapshot(&self) -> RoutingCollectorSnapshot {
         self.snapshots().routing
     }
@@ -154,6 +160,14 @@ impl RuntimeDataCollector {
                     changed = true;
                 }
             }
+            for runtime in runtime_status.llama_runtime_by_instance.values_mut() {
+                let next_items = build_llama_runtime_items(&snapshot, &runtime.slots);
+                if runtime.metrics != snapshot || runtime.items != next_items {
+                    runtime.metrics = snapshot.clone();
+                    runtime.items = next_items;
+                    changed = true;
+                }
+            }
 
             let selected = select_runtime_llama_projection(runtime_status);
             if runtime_status.llama_runtime != selected {
@@ -170,11 +184,24 @@ impl RuntimeDataCollector {
                 build_llama_runtime_snapshot(&runtime_status.llama_runtime.metrics, snapshot);
             let mut changed = false;
 
+            if let Some(instance_id) = next_runtime.slots.instance_id.clone() {
+                if runtime_status.llama_runtime_by_instance.get(&instance_id) != Some(&next_runtime)
+                {
+                    runtime_status
+                        .llama_runtime_by_instance
+                        .insert(instance_id, next_runtime.clone());
+                    changed = true;
+                }
+            }
+
             if let Some(model) = next_runtime.slots.model.clone() {
-                if runtime_status.llama_runtime_by_model.get(&model) != Some(&next_runtime) {
+                if should_replace_model_runtime_projection(
+                    runtime_status.llama_runtime_by_model.get(&model),
+                    &next_runtime,
+                ) {
                     runtime_status
                         .llama_runtime_by_model
-                        .insert(model, next_runtime);
+                        .insert(model, next_runtime.clone());
                     changed = true;
                 }
 
@@ -725,9 +752,43 @@ fn build_llama_runtime_snapshot(
     }
 }
 
+fn should_replace_model_runtime_projection(
+    current: Option<&RuntimeLlamaRuntimeSnapshot>,
+    next: &RuntimeLlamaRuntimeSnapshot,
+) -> bool {
+    let Some(current) = current else {
+        return true;
+    };
+    if current == next {
+        return false;
+    }
+    if current.slots.instance_id == next.slots.instance_id {
+        return true;
+    }
+    matches!(
+        (current.slots.status, next.slots.status),
+        (
+            super::RuntimeLlamaEndpointStatus::Unavailable,
+            super::RuntimeLlamaEndpointStatus::Ready
+        )
+    )
+}
+
 fn select_runtime_llama_projection(
     runtime_status: &RuntimeStatusSnapshot,
 ) -> RuntimeLlamaRuntimeSnapshot {
+    if let Some(primary_ready) = runtime_status.primary_model.as_ref().and_then(|model| {
+        runtime_status
+            .llama_runtime_by_instance
+            .values()
+            .find(|snapshot| {
+                snapshot.slots.model.as_deref() == Some(model.as_str())
+                    && snapshot.slots.status == super::RuntimeLlamaEndpointStatus::Ready
+            })
+    }) {
+        return primary_ready.clone();
+    }
+
     if let Some(primary_ready) = runtime_status
         .primary_model
         .as_ref()
@@ -735,6 +796,14 @@ fn select_runtime_llama_projection(
         .filter(|snapshot| snapshot.slots.status == super::RuntimeLlamaEndpointStatus::Ready)
     {
         return primary_ready.clone();
+    }
+
+    if let Some((_, ready)) = runtime_status
+        .llama_runtime_by_instance
+        .iter()
+        .find(|(_, snapshot)| snapshot.slots.status == super::RuntimeLlamaEndpointStatus::Ready)
+    {
+        return ready.clone();
     }
 
     if let Some((_, ready)) = runtime_status
@@ -751,6 +820,19 @@ fn select_runtime_llama_projection(
         .and_then(|model| runtime_status.llama_runtime_by_model.get(model))
     {
         return primary.clone();
+    }
+
+    if let Some(primary) = runtime_status.primary_model.as_ref().and_then(|model| {
+        runtime_status
+            .llama_runtime_by_instance
+            .values()
+            .find(|snapshot| snapshot.slots.model.as_deref() == Some(model.as_str()))
+    }) {
+        return primary.clone();
+    }
+
+    if let Some((_, snapshot)) = runtime_status.llama_runtime_by_instance.iter().next() {
+        return snapshot.clone();
     }
 
     runtime_status

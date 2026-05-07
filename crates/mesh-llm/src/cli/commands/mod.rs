@@ -48,6 +48,7 @@ pub(crate) async fn dispatch(cli: &Cli) -> Result<bool> {
         Command::Status { port } => run_status(*port).await,
         Command::Stop => run_stop(),
         Command::Discover {
+            name,
             model,
             min_vram,
             region,
@@ -55,6 +56,7 @@ pub(crate) async fn dispatch(cli: &Cli) -> Result<bool> {
             relay,
         } => {
             run_discover(
+                name.clone(),
                 model.clone(),
                 *min_vram,
                 region.clone(),

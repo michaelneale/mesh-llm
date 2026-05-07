@@ -28,14 +28,15 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Mutex};
 use url::Url;
 
-pub(crate) use self::config::validate_config;
 #[allow(unused_imports)]
 pub use self::config::ExternalPluginSpec;
 #[allow(unused_imports)]
 pub use self::config::{
     config_path, load_config, resolve_plugins, GpuAssignment, GpuConfig, MeshConfig,
-    ModelConfigEntry, PluginConfigEntry, PluginHostMode, ResolvedPlugins,
+    ModelConfigEntry, PluginConfigEntry, PluginHostMode, ResolvedPlugins, TelemetryConfig,
+    TelemetryMetricsConfig,
 };
+pub(crate) use self::config::{telemetry_plugin_enabled, validate_config};
 use self::runtime::ExternalPlugin;
 pub(crate) use self::support::parse_optional_json;
 use self::support::{format_args_for_log, format_slice_for_log, format_tool_names_for_log};
@@ -50,6 +51,8 @@ use mesh_llm_plugin::MeshVisibility;
 pub const BLACKBOARD_PLUGIN_ID: &str = "blackboard";
 pub const BLOBSTORE_PLUGIN_ID: &str = "blobstore";
 pub const OPENAI_ENDPOINT_PLUGIN_ID: &str = "openai-endpoint";
+pub const TELEMETRY_PLUGIN_ID: &str = "telemetry";
+pub const TELEMETRY_CAPABILITY: &str = "telemetry.metrics.v1";
 #[allow(dead_code)]
 pub const BLACKBOARD_CAPABILITY: &str = "blackboard.v1";
 pub(crate) const PROTOCOL_VERSION: u32 = mesh_llm_plugin::PROTOCOL_VERSION;
@@ -1716,6 +1719,7 @@ pub async fn run_plugin_process(name: String) -> Result<()> {
         BLACKBOARD_PLUGIN_ID => crate::plugins::blackboard::run_plugin(name).await,
         BLOBSTORE_PLUGIN_ID => crate::plugins::blobstore::run_plugin(name).await,
         OPENAI_ENDPOINT_PLUGIN_ID => crate::plugins::openai_endpoint::run_plugin(name).await,
+        TELEMETRY_PLUGIN_ID => crate::plugins::telemetry::run_plugin(name).await,
         _ => bail!("Unknown built-in plugin '{}'", name),
     }
 }
@@ -1764,9 +1768,10 @@ mod tests {
     #[test]
     fn resolves_default_blackboard_plugin() {
         let resolved = resolve_plugins(&MeshConfig::default(), private_host_mode()).unwrap();
-        assert_eq!(resolved.externals.len(), 2);
+        assert_eq!(resolved.externals.len(), 3);
         assert_eq!(resolved.externals[0].name, BLACKBOARD_PLUGIN_ID);
-        assert_eq!(resolved.externals[1].name, BLOBSTORE_PLUGIN_ID);
+        assert_eq!(resolved.externals[1].name, TELEMETRY_PLUGIN_ID);
+        assert_eq!(resolved.externals[2].name, BLOBSTORE_PLUGIN_ID);
         assert!(resolved.inactive.is_empty());
     }
 
@@ -1783,8 +1788,9 @@ mod tests {
             ..MeshConfig::default()
         };
         let resolved = resolve_plugins(&config, private_host_mode()).unwrap();
-        assert_eq!(resolved.externals.len(), 1);
-        assert_eq!(resolved.externals[0].name, BLOBSTORE_PLUGIN_ID);
+        assert_eq!(resolved.externals.len(), 2);
+        assert_eq!(resolved.externals[0].name, TELEMETRY_PLUGIN_ID);
+        assert_eq!(resolved.externals[1].name, BLOBSTORE_PLUGIN_ID);
         assert!(resolved.inactive.is_empty());
     }
 
@@ -1801,9 +1807,56 @@ mod tests {
             ..MeshConfig::default()
         };
         let resolved = resolve_plugins(&config, private_host_mode()).unwrap();
-        assert_eq!(resolved.externals.len(), 1);
+        assert_eq!(resolved.externals.len(), 2);
         assert_eq!(resolved.externals[0].name, BLACKBOARD_PLUGIN_ID);
+        assert_eq!(resolved.externals[1].name, TELEMETRY_PLUGIN_ID);
         assert!(resolved.inactive.is_empty());
+    }
+
+    #[test]
+    fn telemetry_plugin_is_opt_out_builtin() {
+        let resolved = resolve_plugins(&MeshConfig::default(), private_host_mode()).unwrap();
+        assert_eq!(resolved.externals.len(), 3);
+        assert_eq!(resolved.externals[0].name, BLACKBOARD_PLUGIN_ID);
+        assert_eq!(resolved.externals[1].name, TELEMETRY_PLUGIN_ID);
+        assert_eq!(resolved.externals[2].name, BLOBSTORE_PLUGIN_ID);
+        assert!(resolved.externals[1].args.contains(&"--plugin".to_string()));
+        assert!(resolved.externals[1]
+            .args
+            .contains(&TELEMETRY_PLUGIN_ID.to_string()));
+
+        let config = MeshConfig {
+            plugins: vec![PluginConfigEntry {
+                name: TELEMETRY_PLUGIN_ID.into(),
+                enabled: Some(false),
+                command: None,
+                args: Vec::new(),
+                url: None,
+            }],
+            ..MeshConfig::default()
+        };
+
+        let resolved = resolve_plugins(&config, private_host_mode()).unwrap();
+        assert_eq!(resolved.externals.len(), 2);
+        assert_eq!(resolved.externals[0].name, BLACKBOARD_PLUGIN_ID);
+        assert_eq!(resolved.externals[1].name, BLOBSTORE_PLUGIN_ID);
+    }
+
+    #[test]
+    fn telemetry_plugin_rejects_custom_runtime_fields() {
+        let config = MeshConfig {
+            plugins: vec![PluginConfigEntry {
+                name: TELEMETRY_PLUGIN_ID.into(),
+                enabled: Some(true),
+                command: Some("/tmp/telemetry".into()),
+                args: Vec::new(),
+                url: None,
+            }],
+            ..MeshConfig::default()
+        };
+
+        let result = resolve_plugins(&config, private_host_mode());
+        assert!(result.is_err());
     }
 
     #[test]
@@ -1819,11 +1872,12 @@ mod tests {
             ..MeshConfig::default()
         };
         let resolved = resolve_plugins(&config, private_host_mode()).unwrap();
-        assert_eq!(resolved.externals.len(), 3);
+        assert_eq!(resolved.externals.len(), 4);
         assert_eq!(resolved.externals[0].name, BLACKBOARD_PLUGIN_ID);
-        assert_eq!(resolved.externals[1].name, OPENAI_ENDPOINT_PLUGIN_ID);
-        assert_eq!(resolved.externals[2].name, BLOBSTORE_PLUGIN_ID);
-        let spec = &resolved.externals[1];
+        assert_eq!(resolved.externals[1].name, TELEMETRY_PLUGIN_ID);
+        assert_eq!(resolved.externals[2].name, OPENAI_ENDPOINT_PLUGIN_ID);
+        assert_eq!(resolved.externals[3].name, BLOBSTORE_PLUGIN_ID);
+        let spec = &resolved.externals[2];
         assert!(spec.args.contains(&"openai-endpoint".to_string()));
         assert_eq!(spec.url.as_deref(), Some("http://gpu-box:8000/v1"));
     }
@@ -1841,12 +1895,13 @@ mod tests {
             ..MeshConfig::default()
         };
         let resolved = resolve_plugins(&config, private_host_mode()).unwrap();
-        assert_eq!(resolved.externals.len(), 3);
+        assert_eq!(resolved.externals.len(), 4);
         assert_eq!(resolved.externals[0].name, BLACKBOARD_PLUGIN_ID);
-        assert_eq!(resolved.externals[1].name, OPENAI_ENDPOINT_PLUGIN_ID);
-        assert_eq!(resolved.externals[2].name, BLOBSTORE_PLUGIN_ID);
+        assert_eq!(resolved.externals[1].name, TELEMETRY_PLUGIN_ID);
+        assert_eq!(resolved.externals[2].name, OPENAI_ENDPOINT_PLUGIN_ID);
+        assert_eq!(resolved.externals[3].name, BLOBSTORE_PLUGIN_ID);
         // Verify the spec args dispatch to the right plugin binary
-        let spec = &resolved.externals[1];
+        let spec = &resolved.externals[2];
         assert!(spec.args.contains(&"--plugin".to_string()));
         assert!(spec.args.contains(&"openai-endpoint".to_string()));
     }
@@ -1876,9 +1931,10 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(resolved.externals.len(), 2);
+        assert_eq!(resolved.externals.len(), 3);
         assert_eq!(resolved.externals[0].name, BLACKBOARD_PLUGIN_ID);
-        assert_eq!(resolved.externals[1].name, BLOBSTORE_PLUGIN_ID);
+        assert_eq!(resolved.externals[1].name, TELEMETRY_PLUGIN_ID);
+        assert_eq!(resolved.externals[2].name, BLOBSTORE_PLUGIN_ID);
         assert!(resolved.inactive.is_empty());
     }
 
@@ -1895,10 +1951,11 @@ mod tests {
             ..MeshConfig::default()
         };
         let resolved = resolve_plugins(&config, private_host_mode()).unwrap();
-        assert_eq!(resolved.externals.len(), 3);
+        assert_eq!(resolved.externals.len(), 4);
         assert_eq!(resolved.externals[0].name, BLACKBOARD_PLUGIN_ID);
-        assert_eq!(resolved.externals[1].name, "demo");
-        assert_eq!(resolved.externals[2].name, BLOBSTORE_PLUGIN_ID);
+        assert_eq!(resolved.externals[1].name, TELEMETRY_PLUGIN_ID);
+        assert_eq!(resolved.externals[2].name, "demo");
+        assert_eq!(resolved.externals[3].name, BLOBSTORE_PLUGIN_ID);
         assert!(resolved.inactive.is_empty());
     }
 

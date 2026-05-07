@@ -40,18 +40,32 @@ impl Serialize for PublicationState {
 pub enum RuntimeControlRequest {
     Load {
         spec: String,
-        resp: tokio::sync::oneshot::Sender<anyhow::Result<String>>,
+        resp: tokio::sync::oneshot::Sender<anyhow::Result<RuntimeLoadResponse>>,
     },
     Unload {
-        model: String,
-        resp: tokio::sync::oneshot::Sender<anyhow::Result<()>>,
+        target: String,
+        resp: tokio::sync::oneshot::Sender<anyhow::Result<RuntimeUnloadResponse>>,
     },
     Shutdown,
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct RuntimeLoadResponse {
+    pub model: String,
+    pub instance_id: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct RuntimeUnloadResponse {
+    pub model: String,
+    pub instance_id: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct RuntimeModelPayload {
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instance_id: Option<String>,
     pub backend: String,
     pub status: String,
     pub port: Option<u16>,
@@ -60,6 +74,8 @@ pub struct RuntimeModelPayload {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct RuntimeProcessPayload {
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instance_id: Option<String>,
     pub backend: String,
     pub status: String,
     pub port: u16,

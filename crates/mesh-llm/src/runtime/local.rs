@@ -1,3 +1,6 @@
+use super::context_planning::{
+    plan_runtime_resources, RuntimeResourcePlan, RuntimeResourcePlanInput,
+};
 use crate::api;
 use crate::inference::{election, skippy};
 use crate::mesh::{self, NodeRole};
@@ -24,7 +27,11 @@ const RUNTIME_MODEL_FIT_HEADROOM_NUMERATOR: u64 = 11;
 const RUNTIME_MODEL_FIT_HEADROOM_DENOMINATOR: u64 = 10;
 
 pub(super) enum RuntimeEvent {
-    Exited { model: String, port: u16 },
+    Exited {
+        instance_id: String,
+        model: String,
+        port: u16,
+    },
 }
 
 pub(super) enum LocalRuntimeBackendHandle {
@@ -61,6 +68,7 @@ impl LocalRuntimeModelHandle {
     pub(super) fn llama_slots_snapshot(
         &self,
         model_name: &str,
+        instance_id: Option<&str>,
     ) -> Option<RuntimeLlamaSlotsSnapshot> {
         match &self.inner {
             LocalRuntimeBackendHandle::Skippy { model, .. } => {
@@ -70,6 +78,7 @@ impl LocalRuntimeModelHandle {
                 Some(RuntimeLlamaSlotsSnapshot {
                     status: RuntimeLlamaEndpointStatus::Ready,
                     model: Some(model_name.to_string()),
+                    instance_id: instance_id.map(str::to_string),
                     last_attempt_unix_ms: Some(now),
                     last_success_unix_ms: Some(now),
                     error: None,
@@ -116,6 +125,7 @@ fn current_time_unix_ms() -> u64 {
 }
 
 pub(super) struct ManagedModelController {
+    pub(super) model_name: String,
     pub(super) stop_tx: tokio::sync::watch::Sender<bool>,
     pub(super) task: tokio::task::JoinHandle<()>,
 }
@@ -132,6 +142,7 @@ pub(super) struct LocalRuntimeModelStartSpec<'a> {
     pub(super) n_ubatch_override: Option<u32>,
     pub(super) flash_attention_override: FlashAttentionType,
     pub(super) slots: usize,
+    pub(super) parallel_override: Option<usize>,
 }
 
 pub(super) enum SplitRuntimeStart {
@@ -226,7 +237,9 @@ pub(super) fn add_runtime_local_target(
 ) {
     let mut targets = target_tx.borrow().clone();
     let entry = targets.targets.entry(model_name.to_string()).or_default();
-    entry.retain(|target| !matches!(target, election::InferenceTarget::Local(_)));
+    entry.retain(
+        |target| !matches!(target, election::InferenceTarget::Local(local_port) if *local_port == port),
+    );
     entry.insert(0, election::InferenceTarget::Local(port));
     target_tx.send_replace(targets);
 }
@@ -347,7 +360,29 @@ pub(super) async fn start_runtime_local_model(
         format_gb(my_vram)
     );
 
-    start_runtime_skippy_model(spec, model_name).await
+    let kv_cache = skippy::KvCachePolicy::for_model_size(model_bytes);
+    let effective_cache_type_k = spec
+        .cache_type_k_override
+        .unwrap_or(kv_cache.cache_type_k());
+    let effective_cache_type_v = spec
+        .cache_type_v_override
+        .unwrap_or(kv_cache.cache_type_v());
+    let kv_cache_quant = models::gguf::GgufKvCacheQuant::from_llama_args(
+        effective_cache_type_k,
+        effective_cache_type_v,
+    )
+    .unwrap_or_else(models::gguf::GgufKvCacheQuant::f16);
+    let compact_meta = models::gguf::scan_gguf_compact_meta(spec.model_path);
+    let plan = plan_runtime_resources(RuntimeResourcePlanInput {
+        ctx_size_override: spec.ctx_size_override,
+        parallel_override: spec.parallel_override,
+        model_bytes,
+        vram_bytes: my_vram,
+        metadata: compact_meta.as_ref(),
+        kv_cache_quant,
+    });
+
+    start_runtime_skippy_model(spec, model_name, plan).await
 }
 
 pub(super) fn startup_runtime_plan(
@@ -1631,13 +1666,14 @@ fn now_unix_nanos() -> i64 {
 async fn start_runtime_skippy_model(
     spec: LocalRuntimeModelStartSpec<'_>,
     model_name: String,
+    plan: RuntimeResourcePlan,
 ) -> Result<(
     String,
     LocalRuntimeModelHandle,
     tokio::sync::oneshot::Receiver<()>,
 )> {
     let port = alloc_local_port().await?;
-    let context_length = spec.ctx_size_override.unwrap_or(4096);
+    let context_length = plan.context_length;
     let model_bytes = election::total_model_bytes(spec.model_path);
     let kv_cache = skippy::KvCachePolicy::for_model_size(model_bytes);
     let effective_cache_type_k = spec
@@ -1660,7 +1696,7 @@ async fn start_runtime_skippy_model(
         .filter(|path| path.exists());
     let mut options = skippy::SkippyModelLoadOptions::for_direct_gguf(&model_name, spec.model_path)
         .with_ctx_size(context_length)
-        .with_generation_concurrency(spec.slots)
+        .with_generation_concurrency(plan.slots)
         .with_cache_types(effective_cache_type_k, effective_cache_type_v)
         .with_flash_attn_type(resolved_flash_attn_type);
     if spec.n_batch_override.is_some() || spec.n_ubatch_override.is_some() {
@@ -1690,7 +1726,7 @@ async fn start_runtime_skippy_model(
             port: http.port(),
             backend: "skippy".into(),
             context_length,
-            slots: spec.slots,
+            slots: plan.slots,
             inner: LocalRuntimeBackendHandle::Skippy {
                 model: skippy_model,
                 http,
@@ -1703,17 +1739,28 @@ async fn start_runtime_skippy_model(
 
 pub(super) fn local_process_payload(
     model_name: &str,
+    instance_id: Option<&str>,
     backend: &str,
     port: u16,
     pid: u32,
     slots: usize,
     context_length: u32,
 ) -> api::RuntimeProcessPayload {
-    local_process_snapshot(model_name, backend, port, pid, slots, context_length).to_payload()
+    local_process_snapshot(
+        model_name,
+        instance_id,
+        backend,
+        port,
+        pid,
+        slots,
+        context_length,
+    )
+    .to_payload()
 }
 
 pub(super) fn local_process_snapshot(
     model_name: &str,
+    instance_id: Option<&str>,
     backend: &str,
     port: u16,
     pid: u32,
@@ -1722,6 +1769,7 @@ pub(super) fn local_process_snapshot(
 ) -> crate::runtime_data::RuntimeProcessSnapshot {
     crate::runtime_data::RuntimeProcessSnapshot {
         model: model_name.to_string(),
+        instance_id: instance_id.map(str::to_string),
         backend: backend.into(),
         pid,
         slots,
@@ -1757,6 +1805,26 @@ mod tests {
             activation_width: 2048,
             tensor_count: 100,
         }
+    }
+
+    #[test]
+    fn runtime_local_targets_keep_duplicate_same_model_ports() {
+        let (target_tx, _target_rx) =
+            tokio::sync::watch::channel(election::ModelTargets::default());
+        let target_tx = std::sync::Arc::new(target_tx);
+
+        add_runtime_local_target(&target_tx, "Qwen", 41001);
+        add_runtime_local_target(&target_tx, "Qwen", 41002);
+        add_runtime_local_target(&target_tx, "Qwen", 41002);
+
+        let targets = target_tx.borrow().candidates("Qwen");
+        assert_eq!(
+            targets,
+            vec![
+                election::InferenceTarget::Local(41002),
+                election::InferenceTarget::Local(41001),
+            ]
+        );
     }
 
     #[test]

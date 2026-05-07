@@ -41,6 +41,7 @@ pub(crate) struct RuntimeLlamaSlotSnapshot {
 pub(crate) struct RuntimeLlamaSlotsSnapshot {
     pub status: RuntimeLlamaEndpointStatus,
     pub model: Option<String>,
+    pub instance_id: Option<String>,
     pub last_attempt_unix_ms: Option<u64>,
     pub last_success_unix_ms: Option<u64>,
     pub error: Option<String>,

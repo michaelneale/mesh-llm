@@ -1,4 +1,5 @@
 use anyhow::Result;
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 use crate::plugin::{load_config, validate_config, MeshConfig};
@@ -38,7 +39,7 @@ pub(crate) struct ConfigState {
     config_hash: [u8; 32],
     config: MeshConfig,
     config_path: PathBuf,
-    last_write_hash: [u8; 32],
+    last_write_config_hash: [u8; 32],
 }
 
 fn revision_sidecar_path(config_path: &Path) -> PathBuf {
@@ -106,6 +107,16 @@ fn atomic_write(target: &Path, contents: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+fn local_config_write_hash(config: &MeshConfig) -> [u8; 32] {
+    let bytes = serde_json::to_vec(config)
+        .or_else(|_| toml::to_string(config).map(String::into_bytes))
+        .unwrap_or_default();
+    let digest = Sha256::digest(bytes);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    out
+}
+
 impl Default for ConfigState {
     fn default() -> Self {
         let config = crate::plugin::MeshConfig::default();
@@ -116,7 +127,7 @@ impl Default for ConfigState {
             config_hash,
             config,
             config_path: std::path::PathBuf::from("config.toml"),
-            last_write_hash: [0xFF; 32],
+            last_write_config_hash: [0xFF; 32],
         }
     }
 }
@@ -127,8 +138,8 @@ impl ConfigState {
         let revision = read_revision(&revision_sidecar_path(path));
         let proto = mesh_config_to_proto(&config);
         let config_hash = canonical_config_hash(&proto);
-        let last_write_hash = if path.exists() {
-            config_hash
+        let last_write_config_hash = if path.exists() {
+            local_config_write_hash(&config)
         } else {
             [0xFF; 32]
         };
@@ -137,7 +148,7 @@ impl ConfigState {
             config_hash,
             config,
             config_path: path.to_path_buf(),
-            last_write_hash,
+            last_write_config_hash,
         })
     }
 
@@ -166,8 +177,9 @@ impl ConfigState {
 
         let proto = mesh_config_to_proto(&new_config);
         let new_hash = canonical_config_hash(&proto);
+        let new_write_hash = local_config_write_hash(&new_config);
 
-        if new_hash == self.last_write_hash {
+        if new_write_hash == self.last_write_config_hash {
             return ApplyResult::Applied {
                 revision: self.revision,
                 hash: self.config_hash,
@@ -189,6 +201,7 @@ impl ConfigState {
         if let Err(e) = atomic_write(&sidecar, new_revision.to_string().as_bytes()) {
             self.config = new_config;
             self.config_hash = new_hash;
+            self.last_write_config_hash = new_write_hash;
             self.revision = new_revision;
             return ApplyResult::PersistedWithRevisionTrackingError {
                 revision: self.revision,
@@ -201,7 +214,7 @@ impl ConfigState {
 
         self.config = new_config;
         self.config_hash = new_hash;
-        self.last_write_hash = new_hash;
+        self.last_write_config_hash = new_write_hash;
         self.revision = new_revision;
 
         ApplyResult::Applied {
@@ -231,6 +244,7 @@ mod tests {
                 assignment: GpuAssignment::Auto,
                 parallel: None,
             },
+            telemetry: Default::default(),
             models: vec![],
             plugins: vec![],
         }
@@ -349,6 +363,7 @@ mod tests {
                 assignment: GpuAssignment::Auto,
                 parallel: None,
             },
+            telemetry: Default::default(),
             models: vec![crate::plugin::ModelConfigEntry {
                 model: model.to_string(),
                 mmproj: None,
@@ -388,6 +403,7 @@ mod tests {
                 assignment: GpuAssignment::Auto,
                 parallel: None,
             },
+            telemetry: Default::default(),
             models: vec![crate::plugin::ModelConfigEntry {
                 model: "test.gguf".to_string(),
                 mmproj: None,
@@ -434,6 +450,7 @@ mod tests {
                 assignment: GpuAssignment::Auto,
                 parallel: None,
             },
+            telemetry: Default::default(),
             models: vec![crate::plugin::ModelConfigEntry {
                 model: "noop-test.gguf".to_string(),
                 mmproj: None,
@@ -485,6 +502,53 @@ mod tests {
             }
             other => panic!("expected Applied with Noop apply_mode, got {other:?}"),
         }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn config_sync_telemetry_only_change_is_persisted_locally() {
+        let dir = test_dir();
+        let config_path = dir.join("config.toml");
+        let mut state = ConfigState::load(&config_path).expect("load");
+
+        let base = minimal_valid_config();
+        let r1 = state.apply(base.clone(), 0);
+        let rev_after_first = match r1 {
+            ApplyResult::Applied {
+                revision,
+                apply_mode,
+                ..
+            } => {
+                assert_eq!(apply_mode, ConfigApplyMode::Staged);
+                revision
+            }
+            other => panic!("expected Applied, got {other:?}"),
+        };
+
+        let mut telemetry_only = base;
+        telemetry_only.telemetry.enabled = Some(true);
+        telemetry_only.telemetry.endpoint = Some("https://otel.example.com".to_string());
+
+        let r2 = state.apply(telemetry_only, rev_after_first);
+        match r2 {
+            ApplyResult::Applied {
+                revision,
+                apply_mode,
+                ..
+            } => {
+                assert_eq!(
+                    apply_mode,
+                    ConfigApplyMode::Staged,
+                    "local-only telemetry changes must still be written to config.toml"
+                );
+                assert_eq!(revision, rev_after_first + 1);
+            }
+            other => panic!("expected Applied with Staged apply_mode, got {other:?}"),
+        }
+
+        let persisted = std::fs::read_to_string(&config_path).expect("persisted config");
+        assert!(persisted.contains("https://otel.example.com"));
 
         std::fs::remove_dir_all(&dir).ok();
     }

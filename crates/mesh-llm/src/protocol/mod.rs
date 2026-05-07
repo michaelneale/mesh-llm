@@ -1575,6 +1575,7 @@ mod tests {
                 assignment: GpuAssignment::Auto,
                 parallel: None,
             },
+            telemetry: Default::default(),
             models: vec![ModelConfigEntry {
                 model: "Qwen3-8B.gguf".to_string(),
                 mmproj: Some("mm.gguf".to_string()),
@@ -1631,6 +1632,7 @@ mod tests {
                 assignment: GpuAssignment::Auto,
                 parallel: None,
             },
+            telemetry: Default::default(),
             models: vec![ModelConfigEntry {
                 model: "test.gguf".to_string(),
                 mmproj: None,
@@ -1657,6 +1659,7 @@ mod tests {
                 assignment: GpuAssignment::Auto,
                 parallel: None,
             },
+            telemetry: Default::default(),
             models: vec![ModelConfigEntry {
                 model: "other.gguf".to_string(),
                 mmproj: None,
@@ -1686,6 +1689,7 @@ mod tests {
                 assignment: GpuAssignment::Pinned,
                 parallel: None,
             },
+            telemetry: Default::default(),
             models: vec![ModelConfigEntry {
                 model: "Qwen3-8B-Q4_K_M".to_string(),
                 mmproj: Some("mmproj-f16.gguf".to_string()),
