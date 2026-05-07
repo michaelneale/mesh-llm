@@ -407,10 +407,9 @@ jobs:
       LLAMA_STAGE_BACKEND: cuda
       LLAMA_STAGE_CUDA_ARCHITECTURES: "89"
       MESH_LLM_SKIP_UI: "1"
-      # CI containers have no GPU driver (libcuda.so.1). Disable VMM and NCCL
-      # to avoid linking libraries that require the CUDA driver at runtime.
+      # CI containers have no GPU driver (libcuda.so.1). Disable VMM to avoid
+      # linking the CUDA driver library, which isn't needed for validation builds.
       GGML_CUDA_NO_VMM: "1"
-      LLAMA_STAGE_SKIP_NCCL: "1"
     outputs:
       benchmark_artifact_ready: ${{ steps.benchmark_gate.outputs.ready }}
     steps:
