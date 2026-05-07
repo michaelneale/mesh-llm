@@ -476,6 +476,9 @@ pub(crate) enum Command {
     },
     /// Discover meshes on Nostr and optionally auto-join one.
     Discover {
+        /// Filter by mesh name (case-insensitive exact match)
+        #[arg(long)]
+        name: Option<String>,
         /// Filter by model name (substring match)
         #[arg(long)]
         model: Option<String>,

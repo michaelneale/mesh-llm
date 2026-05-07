@@ -212,14 +212,6 @@ pub async fn resolve_model_spec_with_progress(input: &Path, progress: bool) -> R
 
     if !raw.contains('/') {
         let installed_name = raw.strip_suffix(".gguf").unwrap_or(&raw);
-        let installed_path = find_model_path(installed_name);
-        if installed_path.exists() {
-            let model_ref = huggingface_identity_for_path(&installed_path)
-                .map(|identity| identity.canonical_ref)
-                .unwrap_or_else(|| installed_name.to_string());
-            record_resolved_model_usage(&installed_path, Some(&model_ref));
-            return Ok(installed_path);
-        }
         // Prefer the remote meshllm/catalog on HuggingFace. It can be updated
         // independently of mesh-llm releases and is the source of truth for new
         // curated models and layer-package metadata.
@@ -241,6 +233,14 @@ pub async fn resolve_model_spec_with_progress(input: &Path, progress: bool) -> R
                 progress,
             )
             .await;
+        }
+        let installed_path = find_model_path(installed_name);
+        if installed_path.exists() {
+            let model_ref = huggingface_identity_for_path(&installed_path)
+                .map(|identity| identity.canonical_ref)
+                .unwrap_or_else(|| installed_name.to_string());
+            record_resolved_model_usage(&installed_path, Some(&model_ref));
+            return Ok(installed_path);
         }
         if let Ok(canonical) = canonicalize_model_ref_input(&raw).await {
             if canonical != raw {
