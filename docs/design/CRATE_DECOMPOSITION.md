@@ -10,7 +10,7 @@ parse CLI, configure logging, assemble runtime dependencies, and call `run()`.
 
 ## Implemented slices
 
-Five slices are already extracted:
+The app crate is now decomposed into the following owned crates:
 
 - `mesh-llm-ui` owns the React console source, package metadata, build output,
   embedded asset helpers, and UI README.
@@ -24,6 +24,14 @@ Five slices are already extracted:
   compatibility, and canonical config hashing.
 - `mesh-llm-routing` owns shared inference targets, per-model routing tables,
   round-robin/sticky candidate selection, and split-GGUF size accounting.
+- `mesh-llm-system` owns local-machine concerns: hardware discovery, backend
+  flavor/device helpers, process liveness validation, benchmark fingerprinting,
+  benchmark prompt import support, release target modeling, and self-update
+  plumbing.
+- `mesh-llm-host-runtime` owns the remaining host runtime implementation behind
+  the binary: CLI, management API, mesh orchestration, host-local protocol
+  conversion, gateway/proxy glue, plugin host, runtime-data aggregation, and
+  embedded skippy coordination.
 - `openai-frontend` now owns the OpenAI request/response adapter pieces that
   were previously duplicated under the host network module: request
   normalization, stream-chunk parsing, response stream usage conversion, and
@@ -37,7 +45,9 @@ flowchart TD
     types["mesh-llm-types"]
     client["mesh-client"]
     identity["mesh-llm-identity"]
-    host["mesh-llm"]
+    host_runtime["mesh-llm-host-runtime"]
+    app["mesh-llm"]
+    system["mesh-llm-system"]
     protocol["mesh-llm-protocol"]
     routing["mesh-llm-routing"]
     openai["openai-frontend"]
@@ -46,18 +56,20 @@ flowchart TD
     api_assets["mesh-llm API asset routes"]
 
     types --> client
-    types --> host
+    types --> host_runtime
     identity --> client
-    identity --> host
+    identity --> host_runtime
     protocol --> client
-    protocol --> host
+    protocol --> host_runtime
     routing --> client
-    routing --> host
-    openai --> host
+    routing --> host_runtime
+    system --> host_runtime
+    openai --> host_runtime
     artifact --> client
-    artifact --> host
+    artifact --> host_runtime
     ui --> api_assets
-    api_assets --> host
+    api_assets --> host_runtime
+    host_runtime --> app
 ```
 
 ## Target dependency graph
@@ -130,8 +142,7 @@ flowchart TD
 | Plugin protobuf schema | `mesh-llm-plugin` | The plugin wire schema now lives beside the plugin author/runtime API crate instead of under the host binary crate. |
 | `plugins/blobstore`, `plugins/blackboard`, telemetry, OpenAI endpoint plugin | Initially submodules of `mesh-llm-plugin-host`; later first-party plugin crates if needed | These do not all need crates yet. Extract only when boundaries harden. |
 | `runtime_data/` | New `mesh-llm-runtime-data` | Shared by runtime, API, plugins, and CLI dashboard. |
-| `system/hardware.rs`, backend detection, benchmark primitives | New `mesh-llm-system` | Local-machine concerns should stay out of mesh/protocol crates. |
-| `system/autoupdate.rs`, `release_target.rs` | Keep in root app or move to `mesh-llm-cli` | App distribution behavior, not core system modeling. |
+| `system/hardware.rs`, backend detection, benchmark primitives, process validation, prompt benchmark import, release target modeling, self-update plumbing | `mesh-llm-system` | Implemented so local-machine concerns stay out of mesh/protocol/runtime crates. |
 | `models/resolve`, `catalog`, `remote_catalog`, `search`, download code | Existing `model-resolver` and `model-hf` | Avoid creating `mesh-llm-models` for code that already belongs to model infrastructure. |
 | `models/capabilities.rs`, `models/topology.rs`, `models/gguf.rs` | Existing `model-artifact`, `model-ref`, or `model-resolver` depending on final ownership | GGUF scanner ownership has moved to `model-artifact`; remaining capability/topology helpers should keep moving into existing model infrastructure instead of a new host-owned model crate. |
 | `inference/skippy/*` | Existing `skippy-*` crates where possible | The host should orchestrate Skippy rather than own Skippy package, topology, and runtime internals. |
@@ -139,7 +150,7 @@ flowchart TD
 | React console | `mesh-llm-ui` | The console owns its package metadata, build, generated assets, Rust embedding surface, and UI conventions instead of living under the host binary crate. |
 | `api/` | New `mesh-llm-api-server` | Management API routes can depend on `mesh-llm-runtime-data` and serve assets produced by `mesh-llm-ui`, but should not own the console source. |
 | `cli/` | New `mesh-llm-cli` | Large dependency surface: Clap, Ratatui, terminal progress, dashboard output. Extract late. |
-| `runtime/` | New `mesh-llm-host-runtime` | Extract late because it coordinates almost every subsystem today. |
+| Remaining host implementation: `api/`, `cli/`, `mesh/`, `network/`, `plugin/`, `plugins/`, `runtime/`, `runtime_data/`, host-local `models/`, and host-local protocol conversion | `mesh-llm-host-runtime` | Implemented as the host runtime crate behind the now-thin `mesh-llm` app assembly package. |
 
 ## Expected benefits
 

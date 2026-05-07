@@ -773,7 +773,7 @@ Current branch status:
 
 ### 5. Add `inference/skippy`
 
-Create a mesh-owned backend module under `crates/mesh-llm/src/inference/skippy/`.
+Create a mesh-owned backend module under `crates/mesh-llm-host-runtime/src/inference/skippy/`.
 Start with single-node serving and make this the path that grows to full
 replacement parity.
 

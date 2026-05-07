@@ -1867,11 +1867,18 @@ pub(crate) async fn run() -> Result<()> {
         return plugin::run_plugin_process(name).await;
     }
 
-    let checked_updates = autoupdate::maybe_auto_update(&cli).await?;
+    let checked_updates = autoupdate::maybe_auto_update(autoupdate::AutoUpdateOptions {
+        auto_update: cli.auto_update,
+        plugin_requested: cli.plugin.is_some(),
+        command_is_update: matches!(cli.command, Some(Command::Update { .. })),
+        llama_flavor: cli.llama_flavor,
+        current_version: crate::VERSION,
+    })
+    .await?;
 
     // Finish the release check before startup continues.
     if !checked_updates && !matches!(cli.command, Some(Command::Update { .. })) {
-        autoupdate::check_for_update().await;
+        autoupdate::check_for_update(crate::VERSION).await;
     }
 
     if should_short_circuit_after_dispatch(crate::cli::commands::dispatch(&cli).await?) {

@@ -6,10 +6,8 @@ use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-use crate::cli::{Cli, Command};
-use crate::system::backend;
-use crate::system::release_target::{CanonicalArch, CanonicalOs, ReleaseTarget};
-use crate::VERSION;
+use crate::backend;
+use crate::release_target::{CanonicalArch, CanonicalOs, ReleaseTarget};
 
 const DEFAULT_RELEASE_REPO: &str = "Mesh-LLM/mesh-llm";
 #[cfg(not(windows))]
@@ -47,18 +45,34 @@ struct UpdateTarget {
     bundle_flavor: backend::BinaryFlavor,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct AutoUpdateOptions {
+    pub auto_update: bool,
+    pub plugin_requested: bool,
+    pub command_is_update: bool,
+    pub llama_flavor: Option<backend::BinaryFlavor>,
+    pub current_version: &'static str,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct UpdateCommandOptions<'a> {
+    pub llama_flavor: Option<backend::BinaryFlavor>,
+    pub requested_version: Option<&'a str>,
+    pub current_version: &'static str,
+}
+
 #[derive(Clone, Copy)]
 enum ReleaseAssetPreference {
     StableFirst,
     VersionedFirst,
 }
 
-pub(crate) async fn check_for_update() {
+pub async fn check_for_update(current_version: &str) {
     if !platform_has_release_assets() {
         return;
     }
     if let Some(release) = latest_release_info().await {
-        if !version_newer(&release.version, VERSION) {
+        if !version_newer(&release.version, current_version) {
             return;
         }
         // Determine whether this is a bundle install and, if so, whether the
@@ -72,7 +86,7 @@ pub(crate) async fn check_for_update() {
         match bundle_asset {
             Some(ref asset) if release.assets.iter().any(|a| a == asset) => {
                 eprintln!(
-                    "✨ New version: v{VERSION} -> v{}. Run 'mesh-llm update'.",
+                    "✨ New version: v{current_version} -> v{}. Run 'mesh-llm update'.",
                     release.version
                 );
             }
@@ -86,7 +100,7 @@ pub(crate) async fn check_for_update() {
                     std::env::consts::ARCH,
                 ) {
                     eprintln!(
-                        "✨ New version: v{VERSION} -> v{}. Reinstall with: curl -fsSL {INSTALL_SCRIPT_URL} | bash",
+                        "✨ New version: v{current_version} -> v{}. Reinstall with: curl -fsSL {INSTALL_SCRIPT_URL} | bash",
                         release.version
                     );
                 }
@@ -97,7 +111,7 @@ pub(crate) async fn check_for_update() {
                     std::env::consts::ARCH,
                 ) {
                     eprintln!(
-                        "✨ New version: v{VERSION} -> v{}. Download from {RELEASES_URL}",
+                        "✨ New version: v{current_version} -> v{}. Download from {RELEASES_URL}",
                         release.version
                     );
                 }
@@ -118,27 +132,32 @@ fn platform_has_release_assets_for(os: &str, arch: &str) -> bool {
     })
 }
 
-pub(crate) async fn maybe_auto_update(cli: &Cli) -> Result<bool> {
-    if !should_attempt_auto_update(cli) {
+pub async fn maybe_auto_update(options: AutoUpdateOptions) -> Result<bool> {
+    if !should_attempt_auto_update(options) {
         return Ok(false);
     }
-    let Some(target) = discover_update_target(cli) else {
+    let Some(target) = discover_update_target(options.llama_flavor) else {
         return Ok(false);
     };
-    apply_update_if_available(target, PostInstallAction::RestartCurrentProcess).await
+    apply_update_if_available(
+        target,
+        PostInstallAction::RestartCurrentProcess,
+        options.current_version,
+    )
+    .await
 }
 
-pub(crate) async fn run_update_command(cli: &Cli) -> Result<()> {
-    let target = require_update_target(cli)?;
-    let requested_version = match &cli.command {
-        Some(Command::Update { version }) => version.as_deref(),
-        _ => None,
-    };
+pub async fn run_update_command(options: UpdateCommandOptions<'_>) -> Result<()> {
+    let target = require_update_target(options.llama_flavor)?;
+    let requested_version = options.requested_version;
     let Some(release) = resolve_release_info(requested_version).await? else {
         bail!("Could not check for a release right now. Try again shortly.");
     };
-    if requested_version.is_none() && !version_newer(&release.version, VERSION) {
-        eprintln!("mesh-llm is already up to date (v{VERSION}).");
+    if requested_version.is_none() && !version_newer(&release.version, options.current_version) {
+        eprintln!(
+            "mesh-llm is already up to date (v{}).",
+            options.current_version
+        );
         return Ok(());
     }
     let asset_preference = if requested_version.is_some() {
@@ -161,8 +180,13 @@ pub(crate) async fn run_update_command(cli: &Cli) -> Result<()> {
     }
 
     eprintln!(
-        "⬇️ {} mesh-llm v{VERSION} -> v{} ({})...",
-        describe_requested_update(&release.version, requested_version.is_some()),
+        "⬇️ {} mesh-llm v{} -> v{} ({})...",
+        describe_requested_update(
+            &release.version,
+            options.current_version,
+            requested_version.is_some()
+        ),
+        options.current_version,
         release.version,
         target.bundle_flavor.suffix()
     );
@@ -195,7 +219,7 @@ pub(crate) async fn run_update_command(cli: &Cli) -> Result<()> {
     }
 }
 
-pub(crate) async fn latest_release_version() -> Option<String> {
+pub async fn latest_release_version() -> Option<String> {
     latest_release_info().await.map(|release| release.version)
 }
 
@@ -222,23 +246,23 @@ async fn fetch_release_info(url: &str) -> Option<ReleaseInfo> {
     release_info_from_json(&body)
 }
 
-pub(crate) fn version_newer(a: &str, b: &str) -> bool {
+pub fn version_newer(a: &str, b: &str) -> bool {
     match (semver::Version::parse(a), semver::Version::parse(b)) {
         (Ok(a), Ok(b)) => a > b,
         _ => false,
     }
 }
 
-fn should_attempt_auto_update(cli: &Cli) -> bool {
-    cli.auto_update
-        && cli.plugin.is_none()
-        && !matches!(cli.command, Some(Command::Update { .. }))
+fn should_attempt_auto_update(options: AutoUpdateOptions) -> bool {
+    options.auto_update
+        && !options.plugin_requested
+        && !options.command_is_update
         && std::env::var_os(SELF_UPDATE_ATTEMPTED_ENV).is_none()
 }
 
-fn discover_update_target(cli: &Cli) -> Option<UpdateTarget> {
+fn discover_update_target(llama_flavor: Option<backend::BinaryFlavor>) -> Option<UpdateTarget> {
     let exe = std::env::current_exe().ok()?;
-    let (install_dir, bundle_flavor) = bundle_install_dir(&exe, cli.llama_flavor)?;
+    let (install_dir, bundle_flavor) = bundle_install_dir(&exe, llama_flavor)?;
     let release_target = current_release_target(bundle_flavor)?;
     Some(UpdateTarget {
         exe,
@@ -248,7 +272,7 @@ fn discover_update_target(cli: &Cli) -> Option<UpdateTarget> {
     })
 }
 
-fn require_update_target(cli: &Cli) -> Result<UpdateTarget> {
+fn require_update_target(llama_flavor: Option<backend::BinaryFlavor>) -> Result<UpdateTarget> {
     if !platform_has_release_assets() {
         bail!(
             "`mesh-llm update` is not supported on this platform. Download the latest release from {RELEASES_URL}."
@@ -256,7 +280,7 @@ fn require_update_target(cli: &Cli) -> Result<UpdateTarget> {
     }
 
     let exe = std::env::current_exe().context("Cannot determine mesh-llm executable path")?;
-    let Some((install_dir, bundle_flavor)) = bundle_install_dir(&exe, cli.llama_flavor) else {
+    let Some((install_dir, bundle_flavor)) = bundle_install_dir(&exe, llama_flavor) else {
         bail!(
             "`mesh-llm update` only works for release-bundle installs. Current executable: {}",
             exe.display()
@@ -280,11 +304,12 @@ fn require_update_target(cli: &Cli) -> Result<UpdateTarget> {
 async fn apply_update_if_available(
     target: UpdateTarget,
     action: PostInstallAction,
+    current_version: &str,
 ) -> Result<bool> {
     let Some(release) = latest_release_info().await else {
         return Ok(true);
     };
-    if !version_newer(&release.version, VERSION) {
+    if !version_newer(&release.version, current_version) {
         return Ok(true);
     }
     let Some(asset_name) = resolve_release_asset_name(
@@ -303,7 +328,7 @@ async fn apply_update_if_available(
     }
 
     eprintln!(
-        "⬇️ Updating mesh-llm v{VERSION} -> v{} ({})...",
+        "⬇️ Updating mesh-llm v{current_version} -> v{} ({})...",
         release.version,
         target.bundle_flavor.suffix()
     );
@@ -504,14 +529,18 @@ fn normalize_release_tag(raw: &str) -> Result<String> {
     Ok(format!("v{version}"))
 }
 
-fn describe_requested_update(target_version: &str, exact: bool) -> &'static str {
+fn describe_requested_update(
+    target_version: &str,
+    current_version: &str,
+    exact: bool,
+) -> &'static str {
     if !exact {
         return "Updating";
     }
 
     match (
         semver::Version::parse(target_version),
-        semver::Version::parse(VERSION),
+        semver::Version::parse(current_version),
     ) {
         (Ok(target), Ok(current)) if target < current => "Downgrading",
         (Ok(target), Ok(current)) if target == current => "Reinstalling",
@@ -583,11 +612,7 @@ async fn install_latest_bundle(
         .with_context(|| format!("Failed to create update workspace {}", workspace.display()))?;
 
     let result = async {
-        crate::models::catalog::download_url(
-            &release_asset_url(&release.tag, asset_name),
-            &archive,
-        )
-        .await?;
+        download_url(&release_asset_url(&release.tag, asset_name), &archive).await?;
         extract_bundle_archive(&archive, &extracted)?;
         let staged_files = collect_bundle_files(&extracted, expected_flavor)?;
         finish_bundle_install(
@@ -607,6 +632,27 @@ async fn install_latest_bundle(
         let _ = std::fs::remove_dir_all(&workspace);
     }
     result
+}
+
+async fn download_url(url: &str, path: &Path) -> Result<()> {
+    let response = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .context("Build release download HTTP client")?
+        .get(url)
+        .header("User-Agent", "mesh-llm")
+        .send()
+        .await
+        .with_context(|| format!("Download release asset {url}"))?
+        .error_for_status()
+        .with_context(|| format!("Release asset request failed for {url}"))?;
+    let bytes = response
+        .bytes()
+        .await
+        .with_context(|| format!("Read release asset body from {url}"))?;
+    std::fs::write(path, &bytes)
+        .with_context(|| format!("Write release asset {}", path.display()))?;
+    Ok(())
 }
 
 fn extract_bundle_archive(archive: &Path, extracted: &Path) -> Result<()> {
@@ -1076,7 +1122,6 @@ fn exec_current_binary(_exe: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::Parser;
     use serial_test::serial;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1157,10 +1202,22 @@ mod tests {
 
     #[test]
     fn test_describe_requested_update() {
-        assert_eq!(describe_requested_update("0.60.0", false), "Updating");
-        assert_eq!(describe_requested_update(VERSION, true), "Reinstalling");
-        assert_eq!(describe_requested_update("0.0.1", true), "Downgrading");
-        assert_eq!(describe_requested_update("999.0.0", true), "Installing");
+        assert_eq!(
+            describe_requested_update("0.60.0", "0.65.1", false),
+            "Updating"
+        );
+        assert_eq!(
+            describe_requested_update("0.65.1", "0.65.1", true),
+            "Reinstalling"
+        );
+        assert_eq!(
+            describe_requested_update("0.0.1", "0.65.1", true),
+            "Downgrading"
+        );
+        assert_eq!(
+            describe_requested_update("999.0.0", "0.65.1", true),
+            "Installing"
+        );
     }
 
     #[test]
@@ -1383,22 +1440,42 @@ mod tests {
     #[serial]
     fn test_should_attempt_auto_update_only_when_flag_is_set() {
         std::env::remove_var(SELF_UPDATE_ATTEMPTED_ENV);
-        let cli = Cli::parse_from(["mesh-llm", "--auto-update", "--auto"]);
-        assert!(should_attempt_auto_update(&cli));
+        assert!(should_attempt_auto_update(AutoUpdateOptions {
+            auto_update: true,
+            plugin_requested: false,
+            command_is_update: false,
+            llama_flavor: None,
+            current_version: "0.65.1",
+        }));
 
-        let cli = Cli::parse_from(["mesh-llm", "download"]);
-        assert!(!should_attempt_auto_update(&cli));
+        assert!(!should_attempt_auto_update(AutoUpdateOptions {
+            auto_update: false,
+            plugin_requested: false,
+            command_is_update: false,
+            llama_flavor: None,
+            current_version: "0.65.1",
+        }));
 
-        let cli = Cli::parse_from(["mesh-llm", "--auto-update", "update"]);
-        assert!(!should_attempt_auto_update(&cli));
+        assert!(!should_attempt_auto_update(AutoUpdateOptions {
+            auto_update: true,
+            plugin_requested: false,
+            command_is_update: true,
+            llama_flavor: None,
+            current_version: "0.65.1",
+        }));
     }
 
     #[test]
     #[serial]
     fn test_should_attempt_auto_update_respects_restart_guard() {
         std::env::set_var(SELF_UPDATE_ATTEMPTED_ENV, "1");
-        let cli = Cli::parse_from(["mesh-llm", "--auto-update", "--auto"]);
-        assert!(!should_attempt_auto_update(&cli));
+        assert!(!should_attempt_auto_update(AutoUpdateOptions {
+            auto_update: true,
+            plugin_requested: false,
+            command_is_update: false,
+            llama_flavor: None,
+            current_version: "0.65.1",
+        }));
         std::env::remove_var(SELF_UPDATE_ATTEMPTED_ENV);
     }
 

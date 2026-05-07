@@ -16,6 +16,7 @@ pub(crate) async fn dispatch_benchmark_command(command: &BenchmarkCommand) -> Re
                 limit: *limit,
                 max_tokens: *max_tokens,
                 output: output.clone(),
+                user_agent_version: crate::VERSION,
             };
             benchmark_prompts::import_prompt_corpus(args).await
         }

@@ -7,22 +7,23 @@ use std::path::{Path, PathBuf};
 const DATASETS_SERVER_BASE: &str = "https://datasets-server.huggingface.co";
 
 #[derive(Clone, Debug)]
-pub(crate) struct ImportPromptsArgs {
+pub struct ImportPromptsArgs {
     pub source: PromptImportSource,
     pub limit: usize,
     pub max_tokens: Option<u32>,
     pub output: PathBuf,
+    pub user_agent_version: &'static str,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PromptImportSource {
+pub enum PromptImportSource {
     MtBench,
     Gsm8k,
     Humaneval,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub(crate) struct PromptCorpusEntry {
+pub struct PromptCorpusEntry {
     pub id: String,
     pub source: String,
     pub category: String,
@@ -42,13 +43,13 @@ pub(crate) struct PromptCorpusEntry {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub(crate) struct PromptMessage {
+pub struct PromptMessage {
     pub role: String,
     pub content: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
-pub(crate) struct PromptCorpusSummary {
+pub struct PromptCorpusSummary {
     pub path: String,
     pub prompt_count: usize,
     pub multi_turn_prompt_count: usize,
@@ -77,13 +78,13 @@ struct DatasetSplit {
     split: String,
 }
 
-pub(crate) async fn import_prompt_corpus(args: ImportPromptsArgs) -> Result<()> {
+pub async fn import_prompt_corpus(args: ImportPromptsArgs) -> Result<()> {
     if args.limit == 0 {
         bail!("--limit must be at least 1");
     }
 
     let client = reqwest::Client::builder()
-        .user_agent(format!("mesh-llm/{}", crate::VERSION))
+        .user_agent(format!("mesh-llm/{}", args.user_agent_version))
         .build()
         .context("Build prompt import HTTP client")?;
 
@@ -133,7 +134,7 @@ pub(crate) async fn import_prompt_corpus(args: ImportPromptsArgs) -> Result<()> 
     Ok(())
 }
 
-pub(crate) fn summarize_prompts(prompts: &[PromptCorpusEntry], path: &Path) -> PromptCorpusSummary {
+pub fn summarize_prompts(prompts: &[PromptCorpusEntry], path: &Path) -> PromptCorpusSummary {
     let mut categories = BTreeMap::new();
     let mut sources = BTreeMap::new();
     let mut multi_turn_prompt_count = 0;

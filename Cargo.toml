@@ -1,9 +1,11 @@
 [workspace]
 members = [
     "crates/mesh-llm",
+    "crates/mesh-llm-host-runtime",
     "crates/mesh-llm-identity",
     "crates/mesh-llm-protocol",
     "crates/mesh-llm-routing",
+    "crates/mesh-llm-system",
     "crates/mesh-llm-types",
     "crates/mesh-llm-ui",
     "crates/mesh-llm-plugin",

@@ -3,10 +3,10 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::system::hardware::HardwareSurvey;
+use crate::hardware::HardwareSurvey;
 
 #[cfg(test)]
-use crate::system::hardware::GpuFacts;
+use crate::hardware::GpuFacts;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BenchmarkOutput {

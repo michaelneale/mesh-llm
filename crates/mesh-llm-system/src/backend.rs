@@ -39,10 +39,10 @@ impl BinaryFlavor {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct BinaryBackendDeviceProbe {
-    pub(crate) path: PathBuf,
-    pub(crate) flavor: Option<BinaryFlavor>,
-    pub(crate) available_devices: Vec<String>,
+pub struct BinaryBackendDeviceProbe {
+    pub path: PathBuf,
+    pub flavor: Option<BinaryFlavor>,
+    pub available_devices: Vec<String>,
 }
 
 static RUNTIME_SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
@@ -55,7 +55,7 @@ pub fn clear_runtime_shutting_down() {
     RUNTIME_SHUTTING_DOWN.store(false, Ordering::SeqCst);
 }
 
-pub(crate) fn platform_bin_name(name: &str) -> String {
+pub fn platform_bin_name(name: &str) -> String {
     #[cfg(windows)]
     {
         if Path::new(name)
@@ -75,10 +75,7 @@ pub(crate) fn platform_bin_name(name: &str) -> String {
     }
 }
 
-pub(crate) fn backend_device_for_flavor(
-    index: usize,
-    binary_flavor: BinaryFlavor,
-) -> Option<String> {
+pub fn backend_device_for_flavor(index: usize, binary_flavor: BinaryFlavor) -> Option<String> {
     match binary_flavor {
         BinaryFlavor::Cpu => None,
         BinaryFlavor::Cuda | BinaryFlavor::CudaBlackwell => Some(format!("CUDA{index}")),
@@ -88,7 +85,7 @@ pub(crate) fn backend_device_for_flavor(
     }
 }
 
-pub(crate) fn resolve_requested_device_from_available(
+pub fn resolve_requested_device_from_available(
     available: &[String],
     binary: &Path,
     requested: &str,
@@ -135,7 +132,7 @@ enum SignalOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TerminationOutcome {
+pub enum TerminationOutcome {
     NotRunning,
     Graceful,
     Killed,
@@ -143,7 +140,7 @@ pub(crate) enum TerminationOutcome {
 }
 
 impl TerminationOutcome {
-    pub(crate) fn is_success(self) -> bool {
+    pub fn is_success(self) -> bool {
         !matches!(self, TerminationOutcome::Failed)
     }
 }
@@ -152,7 +149,7 @@ pub fn is_safe_kill_target(pid: u32) -> bool {
     pid > 1 && pid <= i32::MAX as u32
 }
 
-pub(crate) fn terminate_process_blocking(
+pub fn terminate_process_blocking(
     pid: u32,
     expected_comm: &str,
     expected_start_time: Option<i64>,
@@ -170,9 +167,7 @@ pub(crate) fn terminate_process_blocking(
 
     for _ in 0..20 {
         std::thread::sleep(Duration::from_millis(250));
-        if crate::runtime::instance::validate::process_liveness(pid)
-            == crate::runtime::instance::validate::Liveness::Dead
-        {
+        if crate::process::process_liveness(pid) == crate::process::Liveness::Dead {
             return TerminationOutcome::Graceful;
         }
     }
@@ -198,14 +193,12 @@ fn send_signal_if_matches(
     #[cfg(not(windows))]
     {
         let matches = if let Some(expected_t) = expected_start_time {
-            crate::runtime::instance::validate::validate_pid_matches(pid, expected_comm, expected_t)
+            crate::process::validate_pid_matches(pid, expected_comm, expected_t)
         } else {
-            crate::runtime::instance::validate::process_name_matches(pid, expected_comm)
+            crate::process::process_name_matches(pid, expected_comm)
         };
         if !matches {
-            if crate::runtime::instance::validate::process_liveness(pid)
-                == crate::runtime::instance::validate::Liveness::Dead
-            {
+            if crate::process::process_liveness(pid) == crate::process::Liveness::Dead {
                 return SignalOutcome::AlreadyDead;
             }
             tracing::warn!("pid {pid} no longer matches {expected_comm}, skipping signal");

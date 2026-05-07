@@ -68,7 +68,7 @@ Why:
 ## Supported Family Matrix
 
 This is the current mesh-llm capability matrix, based on the inference logic in
-`crates/mesh-llm/src/models/capabilities.rs`.
+`crates/mesh-llm-host-runtime/src/models/capabilities.rs`.
 
 Important:
 

@@ -1,14 +1,14 @@
-use crate::system::backend::BinaryFlavor;
+use crate::backend::BinaryFlavor;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CanonicalOs {
+pub enum CanonicalOs {
     Macos,
     Linux,
     Windows,
 }
 
 impl CanonicalOs {
-    pub(crate) fn parse(raw: &str) -> Option<Self> {
+    pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "macos" | "darwin" => Some(Self::Macos),
             "linux" => Some(Self::Linux),
@@ -19,14 +19,14 @@ impl CanonicalOs {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CanonicalArch {
+pub enum CanonicalArch {
     X86_64,
     Aarch64,
     Arm,
 }
 
 impl CanonicalArch {
-    pub(crate) fn parse(raw: &str) -> Option<Self> {
+    pub fn parse(raw: &str) -> Option<Self> {
         let normalized = raw.trim().to_ascii_lowercase();
         match normalized.as_str() {
             "x86_64" | "amd64" => Some(Self::X86_64),
@@ -41,13 +41,13 @@ impl CanonicalArch {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ArchiveKind {
+pub enum ArchiveKind {
     TarGz,
     Zip,
 }
 
 impl ArchiveKind {
-    pub(crate) fn extension(self) -> &'static str {
+    pub fn extension(self) -> &'static str {
         match self {
             Self::TarGz => "tar.gz",
             Self::Zip => "zip",
@@ -56,20 +56,20 @@ impl ArchiveKind {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum SupportStatus {
+pub enum SupportStatus {
     Supported,
     RecognizedUnsupported,
     Unknown,
 }
 
 impl SupportStatus {
-    pub(crate) fn is_supported(self) -> bool {
+    pub fn is_supported(self) -> bool {
         self == Self::Supported
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum ReleaseTargetParseError {
+pub enum ReleaseTargetParseError {
     UnknownOs(String),
     UnknownArch(String),
 }
@@ -86,18 +86,18 @@ impl std::fmt::Display for ReleaseTargetParseError {
 impl std::error::Error for ReleaseTargetParseError {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ReleaseTarget {
+pub struct ReleaseTarget {
     os: CanonicalOs,
     arch: CanonicalArch,
     flavor: BinaryFlavor,
 }
 
 impl ReleaseTarget {
-    pub(crate) fn new(os: CanonicalOs, arch: CanonicalArch, flavor: BinaryFlavor) -> Self {
+    pub fn new(os: CanonicalOs, arch: CanonicalArch, flavor: BinaryFlavor) -> Self {
         Self { os, arch, flavor }
     }
 
-    pub(crate) fn from_raw(
+    pub fn from_raw(
         os: &str,
         arch: &str,
         flavor: BinaryFlavor,
@@ -109,7 +109,7 @@ impl ReleaseTarget {
         Ok(Self::new(os, arch, flavor))
     }
 
-    pub(crate) fn support_status(self) -> SupportStatus {
+    pub fn support_status(self) -> SupportStatus {
         match (self.os, self.arch, self.flavor) {
             (CanonicalOs::Macos, CanonicalArch::Aarch64, BinaryFlavor::Metal)
             | (CanonicalOs::Linux, CanonicalArch::X86_64, BinaryFlavor::Cpu)
@@ -148,11 +148,11 @@ impl ReleaseTarget {
         }
     }
 
-    pub(crate) fn stable_asset_name(self) -> Option<String> {
+    pub fn stable_asset_name(self) -> Option<String> {
         self.asset_name(None)
     }
 
-    pub(crate) fn versioned_asset_name(self, release_tag: &str) -> Option<String> {
+    pub fn versioned_asset_name(self, release_tag: &str) -> Option<String> {
         self.asset_name(Some(release_tag))
     }
 

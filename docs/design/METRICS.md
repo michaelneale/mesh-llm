@@ -42,7 +42,7 @@ The dangerous mistake is letting a local heuristic accidentally become mesh-wide
 
 ## Implemented Metrics
 
-The metrics described in this section are the current implementation. The code-level registry in [`src/network/metrics.rs`](../../crates/mesh-llm/src/network/metrics.rs) is the authoritative classification source: it defines `MetricLayer`, `MetricScope`, `MetricGroupMetadata`, and the `ROUTING_METRIC_GROUPS` array that enumerates all five exported groups.
+The metrics described in this section are the current implementation. The code-level registry in [`src/network/metrics.rs`](../../crates/mesh-llm-host-runtime/src/network/metrics.rs) is the authoritative classification source: it defines `MetricLayer`, `MetricScope`, `MetricGroupMetadata`, and the `ROUTING_METRIC_GROUPS` array that enumerates all five exported groups.
 
 Storage is bounded: 1-hour TTL, maximum 128 tracked models, maximum 16 targets per model. Stale entries are pruned on snapshot. When bounds are exceeded, the least-recently-updated entries are evicted first.
 

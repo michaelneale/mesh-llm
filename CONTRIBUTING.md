@@ -160,7 +160,7 @@ For the repo's CI design rules and workflow responsibilities, see [`docs/CI_GUID
 
 | Changed paths                                                                                           | `linux` / `macos` | `linux_cuda` / `linux_rocm` / `linux_vulkan` / `windows` |
 | ------------------------------------------------------------------------------------------------------- | ----------------- | -------------------------------------------------------- |
-| `crates/mesh-llm/src/**`, `Cargo.*`, `Justfile`, `scripts/**`, `crates/mesh-llm/build.rs`, `crates/mesh-llm-plugin/**`, `crates/mesh-llm/tests/**`, `crates/mesh-llm-protocol/proto/**` | ✅ runs           | ✅ runs                                                  |
+| `crates/mesh-llm-host-runtime/**`, `crates/mesh-llm-system/**`, `Cargo.*`, `Justfile`, `scripts/**`, `crates/mesh-llm/build.rs`, `crates/mesh-llm-plugin/**`, `crates/mesh-llm/tests/**`, `crates/mesh-llm-protocol/proto/**` | ✅ runs           | ✅ runs                                                  |
 | `crates/mesh-llm-ui/**`                                                                                        | ✅ runs           | ⏭ skipped                                               |
 | `**/*.md`, `docs/**`, anything else                                                                     | ⏭ skipped        | ⏭ skipped                                               |
 | Manual `workflow_dispatch`                                                                              | ✅ runs           | ✅ runs                                                  |
@@ -221,7 +221,7 @@ On Windows release packaging, any `membench-fingerprint*.exe` binaries present i
 
 ## Protocol Backward Compatibility
 
-Any change to `crates/mesh-llm/src/protocol/` or `crates/mesh-client/src/protocol/` requires backward-compatibility tests before merging.
+Any change to `crates/mesh-llm-host-runtime/src/protocol/` or `crates/mesh-client/src/protocol/` requires backward-compatibility tests before merging.
 
 Embedded clients (iOS, macOS, Android) are permanently supported. Protocol changes that break embedded client compatibility are breaking changes.
 

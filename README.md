@@ -152,7 +152,7 @@ Line-oriented pretty sessions accept these commands after startup is ready:
 - `i` prints the current mesh status snapshot
 - `q` quits cleanly
 
-For the full event taxonomy and field reference, see [crates/mesh-llm/src/cli/output/EVENTS.md](crates/mesh-llm/src/cli/output/EVENTS.md).
+For the full event taxonomy and field reference, see [crates/mesh-llm-host-runtime/src/cli/output/EVENTS.md](crates/mesh-llm-host-runtime/src/cli/output/EVENTS.md).
 
 ## How it works
 

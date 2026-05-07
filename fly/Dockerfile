@@ -26,11 +26,14 @@ COPY crates/mesh-llm-ui/ crates/mesh-llm-ui/
 COPY crates/mesh-llm-identity/ crates/mesh-llm-identity/
 COPY crates/mesh-llm-protocol/ crates/mesh-llm-protocol/
 COPY crates/mesh-llm-routing/ crates/mesh-llm-routing/
+COPY crates/mesh-llm-system/ crates/mesh-llm-system/
 COPY crates/mesh-llm-types/ crates/mesh-llm-types/
+COPY crates/mesh-llm-host-runtime/Cargo.toml crates/mesh-llm-host-runtime/Cargo.toml
 COPY crates/mesh-llm/Cargo.toml crates/mesh-llm/Cargo.toml
 COPY crates/mesh-llm/build.rs crates/mesh-llm/build.rs
 COPY crates/mesh-llm-plugin/Cargo.toml crates/mesh-llm-plugin/Cargo.toml
 COPY crates/mesh-llm-plugin/build.rs crates/mesh-llm-plugin/build.rs
+COPY crates/mesh-llm-host-runtime/ crates/mesh-llm-host-runtime/
 COPY crates/mesh-llm/ crates/mesh-llm/
 COPY crates/mesh-llm-plugin/ crates/mesh-llm-plugin/
 COPY crates/mesh-client/ crates/mesh-client/

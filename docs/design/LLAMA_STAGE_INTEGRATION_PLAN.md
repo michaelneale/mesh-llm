@@ -130,7 +130,7 @@ gossip, with fallback to the current external RPC split path.
 
 ## Proposed Architecture
 
-Introduce an inference backend abstraction owned by `crates/mesh-llm/src/inference/`.
+Introduce an inference backend abstraction owned by `crates/mesh-llm-host-runtime/src/inference/`.
 
 ```text
 InferenceBackend

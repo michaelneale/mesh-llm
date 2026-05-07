@@ -117,7 +117,7 @@ Six methods. `start` returns an `InviteToken` that the host app can share with c
 
 ## Extraction Map
 
-Code from `crates/mesh-llm/src/` falls into three categories.
+Code from `crates/mesh-llm-host-runtime/src/` falls into three categories.
 
 | Category | Modules | Notes |
 |---|---|---|
