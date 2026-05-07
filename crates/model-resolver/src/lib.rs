@@ -4,7 +4,10 @@ pub mod refs;
 pub mod resolve;
 pub mod types;
 
-pub use catalog::{CatalogEntry, CatalogPackage, CatalogSource, CatalogVariant, CuratedMeta};
+pub use catalog::{
+    CatalogEntry, CatalogPackage, CatalogSidecarAsset, CatalogSidecarRef, CatalogSource,
+    CatalogVariant, CuratedMeta,
+};
 pub use hf_catalog::HfCatalogProvider;
 pub use refs::{
     file_basename, format_huggingface_display_ref, format_huggingface_exact_ref,

@@ -1597,9 +1597,7 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
         } else if session_reuse.outcome == "disabled" {
             session_reuse.outcome = "miss";
         }
-        session_reuse.reused_tokens = if prefix_match {
-            live.resident_tokens.len()
-        } else if session_reuse.outcome == "partial" {
+        session_reuse.reused_tokens = if prefix_match || session_reuse.outcome == "partial" {
             live.resident_tokens.len()
         } else {
             0
@@ -1646,11 +1644,9 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
         )
         .with_context(|| stage_chain_error_context(args))?;
         let hit_stage_count = stage_mask_count(restore.stats.kv_hit_stage_mask);
-        let cached_prompt_tokens_est = if hit_stage_count > 0 {
-            restore.stats.kv_imported_tokens.max(0) as u64 / hit_stage_count
-        } else {
-            0
-        };
+        let cached_prompt_tokens_est = (restore.stats.kv_imported_tokens.max(0) as u64)
+            .checked_div(hit_stage_count)
+            .unwrap_or(0);
         let restored_full_prefix = restore.stats.kv_lookup_hits > 0
             && restore.stats.kv_lookup_misses == 0
             && restore.stats.kv_lookup_errors == 0
@@ -2000,7 +1996,7 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
         (decode_ms - first_decode_ms.unwrap_or(0.0)) / (generated_tokens - 1) as f64
     };
     let mut resident_tokens_after = 0usize;
-    if let Some(live) = live_session.as_deref_mut() {
+    if let Some(live) = live_session {
         live.messages = live_messages;
         if let Some(last) = live.messages.last_mut() {
             if last.role == "user" {
@@ -2628,11 +2624,9 @@ fn print_stats(stats: Stats) {
             0.0
         };
         let hit_stage_count = stage_mask_count(stats.reply_stats.kv_hit_stage_mask);
-        let cached_prompt_tokens_est = if hit_stage_count > 0 {
-            stats.reply_stats.kv_imported_tokens.max(0) as u64 / hit_stage_count
-        } else {
-            0
-        };
+        let cached_prompt_tokens_est = (stats.reply_stats.kv_imported_tokens.max(0) as u64)
+            .checked_div(hit_stage_count)
+            .unwrap_or(0);
         let exact_prefix_reuse = if stats.reply_stats.kv_lookup_hits > 0 {
             "hit"
         } else if stats.reply_stats.kv_lookup_misses > 0 {
@@ -3360,7 +3354,7 @@ impl PromptHistory {
 }
 
 enum PromptInput {
-    Interactive(DefaultEditor),
+    Interactive(Box<DefaultEditor>),
     Stdin(io::Lines<BufReader<io::Stdin>>),
 }
 
@@ -3374,7 +3368,7 @@ impl PromptInput {
 
 fn prompt_input(history: &PromptHistory) -> Result<PromptInput> {
     if io::stdin().is_terminal() {
-        return Ok(PromptInput::Interactive(prompt_editor(history)?));
+        return Ok(PromptInput::Interactive(Box::new(prompt_editor(history)?)));
     }
     Ok(PromptInput::Stdin(BufReader::new(io::stdin()).lines()))
 }
@@ -3712,12 +3706,14 @@ fn estimate_prompt_stage_cache_max_bytes(
     let key_elems = u64::from(key_width).checked_mul(u64::from(kv_heads))?;
     let value_elems = u64::from(value_width).checked_mul(u64::from(kv_heads))?;
     estimate_prompt_stage_cache_max_bytes_for_elements(
-        layer_start,
-        layer_end,
-        ctx_size,
-        lane_count,
-        cache_type_k,
-        cache_type_v,
+        PromptStageCacheShape {
+            layer_start,
+            layer_end,
+            ctx_size,
+            lane_count,
+            cache_type_k,
+            cache_type_v,
+        },
         key_elems,
         value_elems,
     )
@@ -3734,38 +3730,44 @@ fn estimate_prompt_stage_cache_max_bytes_from_width(
 ) -> Option<u64> {
     let elements = u64::from(activation_width);
     estimate_prompt_stage_cache_max_bytes_for_elements(
-        layer_start,
-        layer_end,
-        ctx_size,
-        lane_count,
-        cache_type_k,
-        cache_type_v,
+        PromptStageCacheShape {
+            layer_start,
+            layer_end,
+            ctx_size,
+            lane_count,
+            cache_type_k,
+            cache_type_v,
+        },
         elements,
         elements,
     )
 }
 
-fn estimate_prompt_stage_cache_max_bytes_for_elements(
+struct PromptStageCacheShape<'a> {
     layer_start: u32,
     layer_end: u32,
     ctx_size: u32,
     lane_count: u32,
-    cache_type_k: &str,
-    cache_type_v: &str,
+    cache_type_k: &'a str,
+    cache_type_v: &'a str,
+}
+
+fn estimate_prompt_stage_cache_max_bytes_for_elements(
+    shape: PromptStageCacheShape<'_>,
     key_elems_per_token: u64,
     value_elems_per_token: u64,
 ) -> Option<u64> {
-    let stage_layers = layer_end.checked_sub(layer_start)?;
+    let stage_layers = shape.layer_end.checked_sub(shape.layer_start)?;
     if stage_layers == 0 {
         return None;
     }
-    let key_bytes = prompt_dtype_bytes(key_elems_per_token, cache_type_k)?;
-    let value_bytes = prompt_dtype_bytes(value_elems_per_token, cache_type_v)?;
+    let key_bytes = prompt_dtype_bytes(key_elems_per_token, shape.cache_type_k)?;
+    let value_bytes = prompt_dtype_bytes(value_elems_per_token, shape.cache_type_v)?;
     key_bytes
         .checked_add(value_bytes)?
         .checked_mul(u64::from(stage_layers))?
-        .checked_mul(u64::from(ctx_size.max(1)))?
-        .checked_mul(u64::from(lane_count.max(1)))
+        .checked_mul(u64::from(shape.ctx_size.max(1)))?
+        .checked_mul(u64::from(shape.lane_count.max(1)))
         .filter(|bytes| *bytes > 0)
 }
 

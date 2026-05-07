@@ -4,9 +4,9 @@ use std::{
 };
 
 use anyhow::Result;
-use model_ref::ModelRef;
+use model_ref::{gguf_matches_quant_selector, ModelRef};
 
-use crate::catalog::{CatalogEntry, CatalogSource};
+use crate::catalog::{CatalogEntry, CatalogSource, CatalogVariant};
 use crate::types::{
     LocalGguf, LocalLayerPackage, ModelArtifactCandidate, RemoteGguf, RemoteLayerPackage,
 };
@@ -94,15 +94,21 @@ impl<C: CatalogProvider> ModelResolver<C> {
         }
 
         // 3. Search catalog
+        let parsed_model_ref = ModelRef::parse(input).ok();
         let query_lower = input.to_lowercase();
         for entry in self.catalog.entries() {
             let mut variants: Vec<_> = entry.variants.iter().collect();
             variants.sort_by_key(|(name, _)| *name);
 
             for (variant_name, variant) in variants {
-                let matches = variant_name.to_lowercase().contains(&query_lower)
-                    || variant.curated.name.to_lowercase().contains(&query_lower)
-                    || entry.source_repo.to_lowercase().contains(&query_lower);
+                let matches = catalog_variant_matches_input(
+                    input,
+                    &query_lower,
+                    parsed_model_ref.as_ref(),
+                    entry,
+                    variant_name,
+                    variant,
+                );
 
                 if !matches {
                     continue;
@@ -142,7 +148,7 @@ impl<C: CatalogProvider> ModelResolver<C> {
         }
 
         // 4. Try parsing as a ModelRef (org/repo:selector)
-        if let Ok(model_ref) = ModelRef::parse(input) {
+        if let Some(model_ref) = parsed_model_ref {
             candidates.push(ModelArtifactCandidate::RemoteGguf(RemoteGguf {
                 source: CatalogSource {
                     repo: model_ref.repo,
@@ -185,6 +191,89 @@ fn catalog_source_with_default_file(source: &CatalogSource, variant_name: &str) 
             .clone()
             .or_else(|| Some(format!("{variant_name}.gguf"))),
     }
+}
+
+fn catalog_variant_matches_input(
+    input: &str,
+    query_lower: &str,
+    parsed_model_ref: Option<&ModelRef>,
+    entry: &CatalogEntry,
+    variant_name: &str,
+    variant: &CatalogVariant,
+) -> bool {
+    if let Some(model_ref) = parsed_model_ref {
+        return catalog_variant_matches_model_ref(model_ref, entry, variant_name, variant);
+    }
+
+    variant_name.to_lowercase().contains(query_lower)
+        || variant.curated.name.to_lowercase().contains(query_lower)
+        || entry.source_repo.to_lowercase().contains(query_lower)
+        || variant.source.repo.to_lowercase().contains(query_lower)
+        || variant
+            .source
+            .file
+            .as_deref()
+            .is_some_and(|file| file.to_lowercase().contains(query_lower))
+        || input.eq_ignore_ascii_case(variant_name)
+}
+
+fn catalog_variant_matches_model_ref(
+    model_ref: &ModelRef,
+    entry: &CatalogEntry,
+    variant_name: &str,
+    variant: &CatalogVariant,
+) -> bool {
+    let repo_matches = entry.source_repo.eq_ignore_ascii_case(&model_ref.repo)
+        || variant.source.repo.eq_ignore_ascii_case(&model_ref.repo);
+    if !repo_matches {
+        return false;
+    }
+
+    if let Some(revision) = model_ref.revision.as_deref() {
+        let variant_revision = variant.source.revision.as_deref().unwrap_or("main");
+        if !variant_revision.eq_ignore_ascii_case(revision) {
+            return false;
+        }
+    }
+
+    match model_ref.selector.as_deref() {
+        Some(selector) => catalog_variant_matches_selector(selector, variant_name, variant),
+        None => true,
+    }
+}
+
+fn catalog_variant_matches_selector(
+    selector: &str,
+    variant_name: &str,
+    variant: &CatalogVariant,
+) -> bool {
+    if variant_name.eq_ignore_ascii_case(selector) {
+        return true;
+    }
+
+    let default_variant_file = format!("{variant_name}.gguf");
+    if selector_matches_catalog_file(&default_variant_file, selector) {
+        return true;
+    }
+
+    let source_file = variant.source.file.clone().unwrap_or(default_variant_file);
+    selector_matches_catalog_file(&source_file, selector)
+}
+
+fn selector_matches_catalog_file(file: &str, selector: &str) -> bool {
+    if file.eq_ignore_ascii_case(selector) {
+        return true;
+    }
+
+    if Path::new(file)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .is_some_and(|stem| stem.eq_ignore_ascii_case(selector))
+    {
+        return true;
+    }
+
+    gguf_matches_quant_selector(file, selector)
 }
 
 #[cfg(test)]
@@ -278,6 +367,93 @@ mod tests {
             &candidates[1],
             ModelArtifactCandidate::RemoteGguf(_)
         ));
+    }
+
+    #[test]
+    fn resolves_exact_repo_selector_to_catalog_layer_package_first() {
+        let entry = make_entry(
+            "unsloth/Qwen3-8B-GGUF",
+            "Qwen3-8B-Q4_K_M",
+            "Qwen3 8B Q4",
+            &[(
+                "meshllm/Qwen3-8B-Q4_K_M-layers",
+                Some(36),
+                Some(8_000_000_000),
+            )],
+        );
+        let catalog = MemoryCatalog::new(vec![entry]);
+        let resolver = ModelResolver::new(catalog, vec![]);
+
+        let candidates = resolver.resolve("unsloth/Qwen3-8B-GGUF:Q4_K_M").unwrap();
+
+        assert_eq!(candidates.len(), 2);
+        match &candidates[0] {
+            ModelArtifactCandidate::RemoteLayerPackage(package) => {
+                assert_eq!(package.package_repo, "meshllm/Qwen3-8B-Q4_K_M-layers");
+                assert_eq!(package.source.repo, "unsloth/Qwen3-8B-GGUF");
+                assert_eq!(package.source.file.as_deref(), Some("Qwen3-8B-Q4_K_M.gguf"));
+            }
+            other => panic!("expected RemoteLayerPackage, got {other:?}"),
+        }
+        assert!(matches!(
+            &candidates[1],
+            ModelArtifactCandidate::RemoteGguf(remote)
+                if remote.source.repo == "unsloth/Qwen3-8B-GGUF"
+                    && remote.source.file.as_deref() == Some("Qwen3-8B-Q4_K_M.gguf")
+        ));
+    }
+
+    #[test]
+    fn exact_repo_quant_selector_does_not_match_substring_quant_variants() {
+        let mut variants = HashMap::new();
+        for (variant_name, package_repo) in [
+            ("Qwen3-8B-IQ4_K_M", "meshllm/Qwen3-8B-IQ4_K_M-layers"),
+            ("Qwen3-8B-Q4_K_M", "meshllm/Qwen3-8B-Q4_K_M-layers"),
+        ] {
+            variants.insert(
+                variant_name.to_string(),
+                CatalogVariant {
+                    source: CatalogSource {
+                        repo: "unsloth/Qwen3-8B-GGUF".to_string(),
+                        revision: Some("main".to_string()),
+                        file: Some(format!("{variant_name}.gguf")),
+                    },
+                    curated: CuratedMeta {
+                        name: variant_name.to_string(),
+                        size: None,
+                        description: None,
+                        draft: None,
+                        moe: None,
+                        extra_files: Vec::new(),
+                        mmproj: None,
+                    },
+                    packages: vec![CatalogPackage {
+                        package_type: "layer-package".to_string(),
+                        repo: package_repo.to_string(),
+                        layer_count: Some(36),
+                        total_bytes: None,
+                    }],
+                },
+            );
+        }
+        let resolver = ModelResolver::new(
+            MemoryCatalog::new(vec![CatalogEntry {
+                schema_version: 1,
+                source_repo: "unsloth/Qwen3-8B-GGUF".to_string(),
+                variants,
+            }]),
+            vec![],
+        );
+
+        let candidates = resolver.resolve("unsloth/Qwen3-8B-GGUF:Q4_K_M").unwrap();
+
+        match &candidates[0] {
+            ModelArtifactCandidate::RemoteLayerPackage(package) => {
+                assert_eq!(package.package_repo, "meshllm/Qwen3-8B-Q4_K_M-layers");
+                assert_eq!(package.source.file.as_deref(), Some("Qwen3-8B-Q4_K_M.gguf"));
+            }
+            other => panic!("expected RemoteLayerPackage, got {other:?}"),
+        }
     }
 
     #[test]

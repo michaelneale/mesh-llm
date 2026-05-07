@@ -19,8 +19,9 @@ use hf_hub::{RepoDownloadFileParams, RepoInfo, RepoInfoParams};
 
 use anyhow::{bail, Context, Result};
 use model_resolver::{
-    CatalogProvider, CatalogVariant as ResolverCatalogVariant, HfCatalogProvider,
-    ModelArtifactCandidate, ModelResolver,
+    CatalogProvider, CatalogSidecarAsset, CatalogSidecarRef,
+    CatalogVariant as ResolverCatalogVariant, HfCatalogProvider, ModelArtifactCandidate,
+    ModelResolver,
 };
 
 // ---------------------------------------------------------------------------
@@ -30,7 +31,9 @@ use model_resolver::{
 pub use model_resolver::CatalogEntry;
 #[cfg(test)]
 pub use model_resolver::{
-    CatalogPackage, CatalogSource, CatalogVariant, CuratedMeta as CatalogCurated,
+    CatalogPackage, CatalogSidecarAsset as CatalogSidecarAssetRef,
+    CatalogSidecarRef as CatalogSidecar, CatalogSource, CatalogVariant,
+    CuratedMeta as CatalogCurated,
 };
 
 // ---------------------------------------------------------------------------
@@ -535,12 +538,12 @@ fn remote_model_from_variant(
         source_file,
         size: variant.curated.size.clone(),
         description: variant.curated.description.clone(),
-        draft: None,
+        draft: variant.curated.draft.clone(),
         extra_files: parse_extra_file_assets(&variant.curated.extra_files)?,
         mmproj: variant
             .curated
             .mmproj
-            .as_deref()
+            .as_ref()
             .map(parse_sidecar_ref)
             .transpose()?
             .flatten(),
@@ -584,7 +587,14 @@ fn parse_extra_file_assets(values: &[serde_json::Value]) -> Result<Vec<RemoteCat
         .collect()
 }
 
-fn parse_sidecar_ref(value: &str) -> Result<Option<RemoteCatalogAsset>> {
+fn parse_sidecar_ref(value: &CatalogSidecarRef) -> Result<Option<RemoteCatalogAsset>> {
+    match value {
+        CatalogSidecarRef::Ref(value) => parse_sidecar_string_ref(value),
+        CatalogSidecarRef::Asset(asset) => parse_sidecar_asset_ref(asset),
+    }
+}
+
+fn parse_sidecar_string_ref(value: &str) -> Result<Option<RemoteCatalogAsset>> {
     let (repo, revision, source_file) = model_resolver::parse_huggingface_file_ref(value)
         .or_else(|| model_resolver::parse_hf_resolve_url(value))
         .with_context(|| format!("catalog sidecar ref is not a Hugging Face file ref: {value}"))?;
@@ -598,6 +608,24 @@ fn parse_sidecar_ref(value: &str) -> Result<Option<RemoteCatalogAsset>> {
         repo,
         revision,
         source_file,
+    }))
+}
+
+fn parse_sidecar_asset_ref(asset: &CatalogSidecarAsset) -> Result<Option<RemoteCatalogAsset>> {
+    let file = asset
+        .file
+        .rsplit('/')
+        .next()
+        .unwrap_or(asset.file.as_str())
+        .to_string();
+    Ok(Some(RemoteCatalogAsset {
+        file,
+        repo: asset.repo.clone(),
+        revision: asset.revision.clone(),
+        source_file: asset
+            .source_file
+            .clone()
+            .unwrap_or_else(|| asset.file.clone()),
     }))
 }
 
@@ -630,7 +658,7 @@ fn catalog_entry_cache_path(cache_dir: &Path, entry_file: &str) -> Result<PathBu
         }
     }
 
-    if !saw_child || !dest.extension().is_some_and(|ext| ext == "json") {
+    if !saw_child || dest.extension().is_none_or(|ext| ext != "json") {
         bail!("invalid catalog entry path: {entry_file}");
     }
 
@@ -687,7 +715,7 @@ mod tests {
             "variants": {
                 "Qwen3-Coder-480B-A35B-Instruct-UD-Q4_K_XL": {
                     "source": { "repo": "unsloth/Qwen3-Coder-480B-A35B-Instruct-GGUF", "revision": "main", "file": "Qwen3-Coder-480B-A35B-Instruct-UD-Q4_K_XL.gguf" },
-                    "curated": { "name": "Qwen3 Coder 480B Q4_K_XL", "size": "294GB", "description": "Large MoE coding model", "draft": null, "moe": "480B/35B", "extra_files": [], "mmproj": null },
+                    "curated": { "name": "Qwen3 Coder 480B Q4_K_XL", "size": "294GB", "description": "Large MoE coding model", "draft": "Qwen3-Coder-Draft-Q4_K_M", "moe": "480B/35B", "extra_files": [], "mmproj": { "file": "mmproj-BF16.gguf", "repo": "unsloth/Qwen3-Coder-480B-A35B-Instruct-GGUF", "revision": "main" } },
                     "packages": [
                         { "type": "layer-package", "repo": "meshllm/Qwen3-Coder-480B-A35B-Instruct-UD-Q4_K_XL-layers", "layer_count": 62, "total_bytes": 315680000000 }
                     ]
@@ -708,7 +736,18 @@ mod tests {
             .get("Qwen3-Coder-480B-A35B-Instruct-UD-Q4_K_XL")
             .unwrap();
         assert_eq!(variant.curated.name, "Qwen3 Coder 480B Q4_K_XL");
+        assert_eq!(
+            variant.curated.draft.as_deref(),
+            Some("Qwen3-Coder-Draft-Q4_K_M")
+        );
         assert_eq!(variant.curated.moe.as_deref(), Some("480B/35B"));
+        assert!(matches!(
+            variant.curated.mmproj.as_ref(),
+            Some(CatalogSidecar::Asset(asset))
+                if asset.file == "mmproj-BF16.gguf"
+                    && asset.repo == "unsloth/Qwen3-Coder-480B-A35B-Instruct-GGUF"
+                    && asset.revision.as_deref() == Some("main")
+        ));
         assert_eq!(variant.packages.len(), 1);
         assert_eq!(variant.packages[0].package_type, "layer-package");
         assert_eq!(
@@ -754,6 +793,38 @@ mod tests {
     }
 
     #[test]
+    fn remote_models_preserve_draft_and_structured_mmproj() {
+        let mut variant = test_variant("Vision Draft", "example/vision-source", &[]);
+        variant.curated.draft = Some("Vision-Draft-Q4_K_M".to_string());
+        variant.curated.mmproj = Some(CatalogSidecar::Asset(CatalogSidecarAssetRef {
+            file: "mmproj-BF16.gguf".to_string(),
+            repo: "example/vision-source".to_string(),
+            revision: Some("main".to_string()),
+            source_file: None,
+        }));
+
+        let entry = CatalogEntry {
+            schema_version: 1,
+            source_repo: "example/vision-source".to_string(),
+            variants: HashMap::from([("vision-q4".to_string(), variant)]),
+        };
+
+        let models = remote_models_from_entry(&entry).unwrap();
+
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].draft.as_deref(), Some("Vision-Draft-Q4_K_M"));
+        assert_eq!(
+            models[0].mmproj,
+            Some(RemoteCatalogAsset {
+                file: "mmproj-BF16.gguf".to_string(),
+                repo: "example/vision-source".to_string(),
+                revision: Some("main".to_string()),
+                source_file: "mmproj-BF16.gguf".to_string(),
+            })
+        );
+    }
+
+    #[test]
     #[serial]
     fn layer_package_lookup_uses_deterministic_variant_and_package_order() {
         let previous = CATALOG_ENTRIES.write().unwrap().take();
@@ -783,6 +854,33 @@ mod tests {
         assert_eq!(
             find_layer_package("shared"),
             Some("hf://meshllm/a-package".to_string())
+        );
+
+        *CATALOG_ENTRIES.write().unwrap() = previous;
+    }
+
+    #[test]
+    #[serial]
+    fn layer_package_lookup_matches_exact_repo_selector_refs() {
+        let previous = CATALOG_ENTRIES.write().unwrap().take();
+        let mut variants = HashMap::new();
+        variants.insert(
+            "Qwen3-8B-Q4_K_M".to_string(),
+            test_variant(
+                "Qwen3 8B Q4",
+                "unsloth/Qwen3-8B-GGUF",
+                &["meshllm/Qwen3-8B-Q4_K_M-layers"],
+            ),
+        );
+        *CATALOG_ENTRIES.write().unwrap() = Some(vec![CatalogEntry {
+            schema_version: 1,
+            source_repo: "unsloth/Qwen3-8B-GGUF".to_string(),
+            variants,
+        }]);
+
+        assert_eq!(
+            find_layer_package("unsloth/Qwen3-8B-GGUF:Q4_K_M"),
+            Some("hf://meshllm/Qwen3-8B-Q4_K_M-layers".to_string())
         );
 
         *CATALOG_ENTRIES.write().unwrap() = previous;

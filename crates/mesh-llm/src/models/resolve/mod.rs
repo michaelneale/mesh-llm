@@ -49,7 +49,7 @@ pub enum ShowVariantsProgress {
 
 #[derive(Clone, Debug)]
 enum ExactModelRef {
-    Catalog(remote_catalog::RemoteCatalogModel),
+    Catalog(Box<remote_catalog::RemoteCatalogModel>),
     HuggingFace {
         repo: String,
         revision: Option<String>,
@@ -444,7 +444,7 @@ pub fn installed_model_capabilities(model_name: &str) -> ModelCapabilities {
 }
 
 pub fn installed_model_display_name(model_name: &str) -> String {
-    find_remote_catalog_model_exact(model_name)
+    find_loaded_remote_catalog_model_exact(model_name)
         .map(|model| model.name.clone())
         .unwrap_or_else(|| model_name.to_string())
 }
@@ -539,7 +539,7 @@ fn parse_huggingface_repo_url(input: &str) -> Option<(String, Option<String>, Op
 
 fn parse_exact_model_ref(input: &str) -> Result<ExactModelRef> {
     if let Some(model) = find_remote_catalog_model_exact(input) {
-        return Ok(ExactModelRef::Catalog(model));
+        return Ok(ExactModelRef::Catalog(Box::new(model)));
     }
     if let Some((repo, revision, file)) = parse_huggingface_ref(input) {
         return Ok(ExactModelRef::HuggingFace {

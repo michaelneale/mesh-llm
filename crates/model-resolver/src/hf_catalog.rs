@@ -104,7 +104,9 @@ fn parse_catalog_entry(path: &Path) -> Result<CatalogEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CatalogSource, CatalogVariant, CuratedMeta};
+    use crate::{
+        CatalogSidecarAsset, CatalogSidecarRef, CatalogSource, CatalogVariant, CuratedMeta,
+    };
     use std::collections::HashMap;
 
     fn entry_json(source_repo: &str, variant_name: &str) -> String {
@@ -125,10 +127,15 @@ mod tests {
                             name: variant_name.to_string(),
                             size: None,
                             description: None,
-                            draft: None,
+                            draft: Some(format!("{variant_name}-draft")),
                             moe: None,
                             extra_files: Vec::new(),
-                            mmproj: None,
+                            mmproj: Some(CatalogSidecarRef::Asset(CatalogSidecarAsset {
+                                file: "mmproj-BF16.gguf".to_string(),
+                                repo: source_repo.to_string(),
+                                revision: Some("main".to_string()),
+                                source_file: None,
+                            })),
                         },
                         packages: Vec::new(),
                     },

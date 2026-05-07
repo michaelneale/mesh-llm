@@ -60,7 +60,9 @@ fn remote_catalog_entry_with_mmproj(
 ) -> crate::models::remote_catalog::CatalogEntry {
     let mut entry = remote_catalog_entry(variant_name, curated_name, source_repo, source_file);
     let variant = entry.variants.get_mut(variant_name).unwrap();
-    variant.curated.mmproj = Some(mmproj.to_string());
+    variant.curated.mmproj = Some(crate::models::remote_catalog::CatalogSidecar::Ref(
+        mmproj.to_string(),
+    ));
     entry
 }
 
