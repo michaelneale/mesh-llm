@@ -524,7 +524,7 @@ mesh-llm client --join <token>
 mesh-llm serve --auto --model GLM-4.7-Flash-Q4_K_M --mesh-name "poker-night" --publish
 ```
 
-Everyone runs the same command. The first node creates the mesh, the rest discover and join it automatically. Use `--publish` so your named mesh appears in Nostr discovery; without it you must share the invite token manually.
+Everyone runs the same command. The first node creates the mesh, the rest discover and join it automatically. Others can also join with `mesh-llm serve --discover "poker-night"` or `mesh-llm client --discover "poker-night"`. Use `--publish` so your named mesh appears in Nostr discovery; without it you must share the invite token manually.
 
 ### 5. Serve more than one model
 
