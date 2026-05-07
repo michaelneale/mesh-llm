@@ -171,26 +171,31 @@ impl HfJobsClient {
             anyhow::bail!("HF Jobs API returned {status}: {body}");
         }
 
+        // Buffer partial lines across chunk boundaries so SSE `data:` lines
+        // that span two HTTP chunks are reconstructed before parsing.
         use futures::StreamExt;
         let stream = resp.bytes_stream();
+        let mut partial = String::new();
         let lines = stream.flat_map(
             move |chunk: std::result::Result<bytes::Bytes, reqwest::Error>| {
                 let lines: Vec<Result<String>> = match chunk {
                     Ok(bytes) => {
-                        let text = String::from_utf8_lossy(&bytes);
-                        text.lines()
-                            .filter_map(|line| {
-                                let line = line.trim();
-                                if let Some(json_str) = line.strip_prefix("data: ") {
-                                    match serde_json::from_str::<LogEntry>(json_str) {
-                                        Ok(entry) => Some(Ok(entry.data)),
-                                        Err(_) => Some(Ok(json_str.to_string())),
-                                    }
-                                } else {
-                                    None
+                        partial.push_str(&String::from_utf8_lossy(&bytes));
+                        let mut results = Vec::new();
+
+                        // Process all complete lines; keep the last fragment.
+                        while let Some(newline_pos) = partial.find('\n') {
+                            let line = partial[..newline_pos].trim().to_string();
+                            partial = partial[newline_pos + 1..].to_string();
+
+                            if let Some(json_str) = line.strip_prefix("data: ") {
+                                match serde_json::from_str::<LogEntry>(json_str) {
+                                    Ok(entry) => results.push(Ok(entry.data)),
+                                    Err(_) => results.push(Ok(json_str.to_string())),
                                 }
-                            })
-                            .collect()
+                            }
+                        }
+                        results
                     }
                     Err(e) => vec![Err(anyhow::anyhow!("log stream error: {e}"))],
                 };

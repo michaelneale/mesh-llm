@@ -628,7 +628,7 @@ pub(crate) enum Command {
         #[arg(long, default_value = "3h")]
         timeout: String,
 
-        /// Git ref of mesh-llm to build in the job [default: main].
+        /// Branch or tag of mesh-llm to build in the job [default: main].
         #[arg(long, default_value = "main")]
         mesh_llm_ref: String,
 
