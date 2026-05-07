@@ -352,6 +352,36 @@ pub fn verify_layer_package_integrity(
     Ok(select_layer_package_parts_with_integrity(request, integrity_options)?.integrity)
 }
 
+pub fn verify_layer_package_metadata_integrity(
+    package_ref: &str,
+    integrity_options: &PackageIntegrityOptions,
+) -> Result<PackageIntegrityReport> {
+    let package_dir = resolve_package_dir(package_ref)?;
+    let manifest_path = package_dir.join("model-package.json");
+    let manifest_contents = fs::read(&manifest_path)
+        .with_context(|| format!("read package manifest {}", manifest_path.display()))?;
+    let manifest_sha256 = sha256_bytes(&manifest_contents);
+    let manifest = load_manifest(&manifest_path, &manifest_contents)?;
+    validate_manifest_identity(&manifest)?;
+    validate_layer_manifest(&manifest)?;
+
+    let mut parts = Vec::new();
+    push_part(
+        &mut parts,
+        "metadata",
+        None,
+        &manifest.shared.metadata,
+        &package_dir,
+    )?;
+    verify_package_artifacts(
+        &package_dir,
+        &manifest_sha256,
+        &parts,
+        &[],
+        integrity_options,
+    )
+}
+
 pub fn inspect_layer_package(package_ref: &str) -> Result<LayerPackageInfo> {
     let package_dir = resolve_package_dir(package_ref)?;
     let manifest_path = package_dir.join("model-package.json");
@@ -1238,6 +1268,45 @@ mod tests {
 
         assert!(error.contains("checksum mismatch"), "{error}");
         assert!(error.contains("layers/00000.gguf"), "{error}");
+    }
+
+    #[test]
+    fn verify_layer_package_metadata_integrity_allows_metadata_only_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        write_package_fixture(dir.path());
+        fs::write(dir.path().join("layers/00000.gguf"), b"wrong0").unwrap();
+        fs::write(
+            dir.path().join("projectors/mmproj.gguf"),
+            b"wrong-projector",
+        )
+        .unwrap();
+
+        let report = verify_layer_package_metadata_integrity(
+            &dir.path().to_string_lossy(),
+            &PackageIntegrityOptions::verify_without_cache(),
+        )
+        .expect("metadata-only verification should not require a stage layer range");
+
+        assert_eq!(report.artifacts, 1);
+        assert_eq!(report.verified_artifacts, 1);
+        assert_eq!(report.cached_artifacts, 0);
+    }
+
+    #[test]
+    fn verify_layer_package_metadata_integrity_checks_metadata_sha() {
+        let dir = tempfile::tempdir().unwrap();
+        write_package_fixture(dir.path());
+        fs::write(dir.path().join("metadata.gguf"), b"metadota").unwrap();
+
+        let error = verify_layer_package_metadata_integrity(
+            &dir.path().to_string_lossy(),
+            &PackageIntegrityOptions::verify_without_cache(),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("checksum mismatch"), "{error}");
+        assert!(error.contains("metadata.gguf"), "{error}");
     }
 
     #[test]

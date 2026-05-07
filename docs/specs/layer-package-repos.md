@@ -309,6 +309,11 @@ Consumers MUST verify SHA-256 checksums for selected artifacts before using an
 directories MAY keep checksum verification behind `SKIPPY_VERIFY_PACKAGE_SHA`
 for development workflows.
 
+Metadata-only inspection for inventory, identity discovery, or prepare planning
+MAY validate only the manifest and shared metadata artifact, and must not
+require a non-empty stage layer range. A real stage load still requires the
+non-empty range and selected-artifact checks above.
+
 Implementations MAY cache successful checksum verification results. Cache keys
 and records should be derived from manifest and artifact identity plus file
 metadata, and should not store raw local package paths.

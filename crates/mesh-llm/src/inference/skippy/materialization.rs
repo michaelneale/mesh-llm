@@ -230,6 +230,15 @@ fn package_integrity_cache_dir() -> PathBuf {
     crate::models::mesh_llm_cache_dir().join("skippy-package-integrity")
 }
 
+fn is_metadata_only_package_inspection(
+    layer_start: u32,
+    layer_end: u32,
+    include_embeddings: bool,
+    include_output: bool,
+) -> bool {
+    layer_start == layer_end && !include_embeddings && !include_output
+}
+
 fn verify_resolved_hf_package_files(
     package_dir: &Path,
     layer_start: u32,
@@ -244,26 +253,35 @@ fn verify_resolved_hf_package_files(
         include_embeddings,
         include_output,
     )?;
-    let request = PackageStageRequest {
-        model_id: "hf-layer-package".to_string(),
-        topology_id: "hf-layer-package-resolver".to_string(),
-        package_ref: local_ref.clone(),
-        stage_id: format!("layers-{layer_start}-{layer_end}"),
+    let metadata_only = is_metadata_only_package_inspection(
         layer_start,
         layer_end,
         include_embeddings,
         include_output,
-    };
-    let report = package::verify_layer_package_integrity(
-        &request,
-        &PackageIntegrityOptions::verify_with_cache(package_integrity_cache_dir()),
-    )
+    );
+    let options = PackageIntegrityOptions::verify_with_cache(package_integrity_cache_dir());
+    let report = if metadata_only {
+        package::verify_layer_package_metadata_integrity(&local_ref, &options)
+    } else {
+        let request = PackageStageRequest {
+            model_id: "hf-layer-package".to_string(),
+            topology_id: "hf-layer-package-resolver".to_string(),
+            package_ref: local_ref.clone(),
+            stage_id: format!("layers-{layer_start}-{layer_end}"),
+            layer_start,
+            layer_end,
+            include_embeddings,
+            include_output,
+        };
+        package::verify_layer_package_integrity(&request, &options)
+    }
     .map_err(|error| anyhow::anyhow!("verify resolved HF layer package artifacts: {error:#}"))?;
     tracing::debug!(
         artifacts = report.artifacts,
         verified_artifacts = report.verified_artifacts,
         cached_artifacts = report.cached_artifacts,
         manifest_sha256 = %report.manifest_sha256,
+        metadata_only,
         "verified resolved HF layer package artifacts"
     );
     Ok(local_ref)
@@ -1078,6 +1096,53 @@ mod tests {
         restore_env("HF_HOME", prev_hf_home);
         restore_env("HF_HUB_CACHE", prev_hf_cache);
         restore_env("HUGGINGFACE_HUB_CACHE", prev_huggingface_cache);
+    }
+
+    #[test]
+    #[serial]
+    fn hf_package_metadata_only_cache_resolution_uses_metadata_integrity_scope() {
+        let prev_hf_home = std::env::var_os("HF_HOME");
+        let prev_hf_cache = std::env::var_os("HF_HUB_CACHE");
+        let prev_huggingface_cache = std::env::var_os("HUGGINGFACE_HUB_CACHE");
+        let prev_xdg_cache = std::env::var_os("XDG_CACHE_HOME");
+
+        let temp = tempfile::tempdir().unwrap();
+        std::env::set_var("HF_HOME", temp.path().join("hf"));
+        std::env::set_var("XDG_CACHE_HOME", temp.path().join("mesh-cache"));
+        std::env::remove_var("HF_HUB_CACHE");
+        std::env::remove_var("HUGGINGFACE_HUB_CACHE");
+
+        let snapshot = temp
+            .path()
+            .join("hf")
+            .join("hub")
+            .join("models--owner--repo")
+            .join("snapshots")
+            .join("abc123");
+        write_cached_package_snapshot(
+            &snapshot,
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+        );
+
+        let resolved =
+            resolve_hf_package_to_local("hf://owner/repo@abc123", 0, 0, false, false).unwrap();
+        assert_eq!(PathBuf::from(resolved), snapshot);
+
+        let info = inspect_stage_package("hf://owner/repo@abc123").unwrap();
+        assert_eq!(info.model_id, "model-a");
+        assert_eq!(info.layer_count, 1);
+
+        fs::write(snapshot.join("shared/metadata.gguf"), b"metadota").unwrap();
+        let error = resolve_hf_package_to_local("hf://owner/repo@abc123", 0, 0, false, false)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("checksum mismatch"), "{error}");
+        assert!(error.contains("shared/metadata.gguf"), "{error}");
+
+        restore_env("HF_HOME", prev_hf_home);
+        restore_env("HF_HUB_CACHE", prev_hf_cache);
+        restore_env("HUGGINGFACE_HUB_CACHE", prev_huggingface_cache);
+        restore_env("XDG_CACHE_HOME", prev_xdg_cache);
     }
 
     #[test]
