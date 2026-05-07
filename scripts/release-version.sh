@@ -101,6 +101,7 @@ done < <(
         'crates/mesh-llm-identity/Cargo.toml' \
         'crates/mesh-llm-plugin/Cargo.toml' \
         'crates/mesh-llm-protocol/Cargo.toml' \
+        'crates/mesh-llm-routing/Cargo.toml' \
         'crates/mesh-llm-types/Cargo.toml' \
         'crates/mesh-llm-ui/Cargo.toml' \
         'crates/mesh-api/Cargo.toml' \

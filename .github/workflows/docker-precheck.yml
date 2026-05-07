@@ -65,6 +65,7 @@ jobs:
             crates/mesh-llm/ \
             crates/mesh-llm-identity/ \
             crates/mesh-llm-protocol/ \
+            crates/mesh-llm-routing/ \
             crates/mesh-llm-types/ \
             crates/mesh-llm-plugin/ \
             crates/mesh-client/ \

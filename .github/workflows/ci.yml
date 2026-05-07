@@ -66,6 +66,7 @@ jobs:
               - 'crates/mesh-client/**'
               - 'crates/mesh-llm-identity/**'
               - 'crates/mesh-llm-protocol/**'
+              - 'crates/mesh-llm-routing/**'
               - 'crates/mesh-llm-types/**'
               - 'sdk/**'
               - 'Package.swift'

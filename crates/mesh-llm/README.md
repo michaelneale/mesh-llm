@@ -40,6 +40,11 @@ Shared protobuf message types and frame helpers live in
 [`../mesh-llm-protocol`](../mesh-llm-protocol). Host-local protocol conversion
 stays in `src/protocol/` until mesh control-plane/runtime ownership is smaller.
 
+Shared routing target primitives live in
+[`../mesh-llm-routing`](../mesh-llm-routing). The host re-exports those through
+`src/inference/election.rs` while higher-level affinity, request parsing, and
+OpenAI transport behavior remain in host-owned networking modules.
+
 Notable built-ins under `src/plugins/` today:
 
 ```text

@@ -10,7 +10,7 @@ parse CLI, configure logging, assemble runtime dependencies, and call `run()`.
 
 ## Implemented slices
 
-Three slices are already extracted:
+Five slices are already extracted:
 
 - `mesh-llm-ui` owns the React console source, package metadata, build output,
   embedded asset helpers, and UI README.
@@ -22,6 +22,8 @@ Three slices are already extracted:
 - `mesh-llm-protocol` owns generated protobuf message types, mesh ALPN/stream
   constants, control-frame validation, frame helpers, v0 tunnel-map
   compatibility, and canonical config hashing.
+- `mesh-llm-routing` owns shared inference targets, per-model routing tables,
+  round-robin/sticky candidate selection, and split-GGUF size accounting.
 
 ```mermaid
 flowchart TD
@@ -30,6 +32,7 @@ flowchart TD
     identity["mesh-llm-identity"]
     host["mesh-llm"]
     protocol["mesh-llm-protocol"]
+    routing["mesh-llm-routing"]
     ui["mesh-llm-ui"]
     api_assets["mesh-llm API asset routes"]
 
@@ -39,6 +42,8 @@ flowchart TD
     identity --> host
     protocol --> client
     protocol --> host
+    routing --> client
+    routing --> host
     ui --> api_assets
     api_assets --> host
 ```
@@ -117,7 +122,7 @@ flowchart TD
 | `models/resolve`, `catalog`, `remote_catalog`, `search`, download code | Existing `model-resolver` and `model-hf` | Avoid creating `mesh-llm-models` for code that already belongs to model infrastructure. |
 | `models/capabilities.rs`, `models/topology.rs`, `models/gguf.rs` | Existing `model-artifact`, `model-ref`, or `model-resolver` depending on final ownership | These are model metadata concerns, not host runtime concerns. |
 | `inference/skippy/*` | Existing `skippy-*` crates where possible | The host should orchestrate Skippy rather than own Skippy package, topology, and runtime internals. |
-| `inference/election.rs`, split planning | `mesh-llm-routing`, or existing shared client inference modules if needed by embedded clients | Election is placement logic rather than process runtime. |
+| `inference/election.rs`, split planning | `mesh-llm-routing`, or existing shared client inference modules if needed by embedded clients | Shared target/table primitives and split-GGUF size accounting are implemented in `mesh-llm-routing`; higher-level split planning still needs further extraction. |
 | React console | `mesh-llm-ui` | The console owns its package metadata, build, generated assets, Rust embedding surface, and UI conventions instead of living under the host binary crate. |
 | `api/` | New `mesh-llm-api-server` | Management API routes can depend on `mesh-llm-runtime-data` and serve assets produced by `mesh-llm-ui`, but should not own the console source. |
 | `cli/` | New `mesh-llm-cli` | Large dependency surface: Clap, Ratatui, terminal progress, dashboard output. Extract late. |
@@ -159,13 +164,13 @@ The crate split should include the documentation migration as part of the same s
 
 ## Extraction order
 
-1. Extract the first `mesh-llm-types`, `mesh-llm-identity`, and `mesh-llm-protocol` slices.
+1. Extract the first `mesh-llm-types`, `mesh-llm-identity`, `mesh-llm-protocol`, and `mesh-llm-routing` slices.
 2. Move model metadata, resolve, search, and download code into existing `model-*` crates.
 3. Move OpenAI adapter and schema code into `openai-frontend`.
 4. Push Skippy-owned logic into existing `skippy-*` crates.
 5. Extract `mesh-llm-runtime-data`.
 6. Decouple `mesh/` from CLI, system, and runtime, then extract `mesh-llm-control-plane`.
-7. Extract routing and election logic into `mesh-llm-routing`.
+7. Continue extracting routing, affinity, and election logic into `mesh-llm-routing`.
 8. Keep the React console and asset embedding surface in `mesh-llm-ui`.
 9. Extract plugin host, gateway, and API server crates.
 10. Extract `mesh-llm-cli`.

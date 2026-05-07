@@ -4029,6 +4029,7 @@ dependencies = [
  "mesh-llm-identity",
  "mesh-llm-plugin",
  "mesh-llm-protocol",
+ "mesh-llm-routing",
  "mesh-llm-types",
  "mesh-llm-ui",
  "model-artifact",
@@ -4085,6 +4086,7 @@ dependencies = [
  "iroh",
  "mesh-llm-identity",
  "mesh-llm-protocol",
+ "mesh-llm-routing",
  "mesh-llm-types",
  "nostr-sdk",
  "prost",
@@ -4139,6 +4141,13 @@ dependencies = [
  "prost",
  "serde_json",
  "sha2 0.10.9",
+]
+
+[[package]]
+name = "mesh-llm-routing"
+version = "0.65.1"
+dependencies = [
+ "iroh",
 ]
 
 [[package]]

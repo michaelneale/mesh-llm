@@ -34,3 +34,5 @@ Shared owner identity and envelope crypto lives at
 [../crates/mesh-llm-identity/README.md](../crates/mesh-llm-identity/README.md).
 Shared wire protocol ownership lives at
 [../crates/mesh-llm-protocol/README.md](../crates/mesh-llm-protocol/README.md).
+Shared routing target ownership lives at
+[../crates/mesh-llm-routing/README.md](../crates/mesh-llm-routing/README.md).
