@@ -505,6 +505,14 @@ pub struct MediaPrefillFrame {
     pub chunks: Vec<MediaPrefillChunkFrame>,
 }
 
+type MediaFrameEval = (
+    usize,
+    u64,
+    Vec<i32>,
+    ActivationFrame,
+    Vec<MediaPrefillChunkFrame>,
+);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StageSessionCheckpoint {
     token_count: u64,
@@ -959,13 +967,7 @@ impl StageModel {
         session: &mut StageSession,
         prompt: &str,
         media: &[MediaInput],
-    ) -> Result<(
-        usize,
-        u64,
-        Vec<i32>,
-        ActivationFrame,
-        Vec<MediaPrefillChunkFrame>,
-    )> {
+    ) -> Result<MediaFrameEval> {
         let projector = self
             .media
             .as_ref()
@@ -1198,7 +1200,7 @@ impl StageModel {
                     ));
                 }
             } else {
-                output_desc = Some(frame.desc.clone());
+                output_desc = Some(frame.desc);
             }
             copied_tokens = copied_tokens
                 .checked_add(chunk_tokens)
