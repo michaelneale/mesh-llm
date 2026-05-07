@@ -101,14 +101,16 @@ merged into per-stage GGUF materializations.
 ## Peer Cache Transfer
 
 For split Skippy runs, a worker may fetch missing Hugging Face package artifacts
-from the coordinating mesh node over the admitted mesh connection before falling
-back to normal local/HF package resolution. This transfer path is an optimization
-for already-selected split participants, not a package discovery protocol.
+from the coordinating mesh node over admitted `skippy-stage/1` transport before
+falling back to normal local/HF package resolution. This transfer path is an
+optimization for already-selected split participants, not a package discovery
+protocol.
 
 Privacy and compatibility boundaries:
 
-- Nodes advertise only a boolean `artifact_transfer_supported` capability. They
-  do not gossip local package inventory, artifact paths, cache roots, or tokens.
+- Nodes advertise only `skippy-stage/1` subprotocol feature support, including
+  `artifact-transfer`. They do not gossip local package inventory, artifact
+  paths, cache roots, or tokens.
 - Only `hf://namespace/repo@revision` package refs are eligible for peer
   transfer.
 - The serving node checks the active split topology and only serves artifacts

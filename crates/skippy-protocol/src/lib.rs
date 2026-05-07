@@ -9,18 +9,27 @@ pub mod proto {
 
 pub const SCHEMA_VERSION: u32 = 1;
 pub const STAGE_ALPN_V1: &[u8] = b"skippy-stage/1";
+pub const STAGE_SUBPROTOCOL_NAME: &str = "skippy-stage";
+pub const STAGE_SUBPROTOCOL_MAJOR: u32 = 1;
+pub const STAGE_SUBPROTOCOL_FEATURE_STAGE_CONTROL: &str = "stage-control";
+pub const STAGE_SUBPROTOCOL_FEATURE_ARTIFACT_TRANSFER: &str = "artifact-transfer";
 pub const STAGE_PROTOCOL_GENERATION: u32 = 2;
 pub const STAGE_STREAM_CONTROL: u8 = 0x01;
 pub const STAGE_STREAM_TRANSPORT: u8 = 0x02;
+pub const STAGE_STREAM_ARTIFACT_TRANSFER: u8 = 0x03;
 pub const MAX_STAGE_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StageFrameError {
     BadGeneration { got: u32 },
     InvalidEndpointId { got: usize },
+    InvalidArtifactDigestLength { got: usize },
+    InvalidArtifactPath,
+    InvalidArtifactOffset,
     MissingStageControlCommand,
     MissingStageControlResponse,
     MissingStageTransportTarget,
+    MissingStageArtifactTarget,
 }
 
 impl std::fmt::Display for StageFrameError {
@@ -34,6 +43,16 @@ impl std::fmt::Display for StageFrameError {
             StageFrameError::InvalidEndpointId { got } => {
                 write!(f, "invalid endpoint_id length: expected 32, got {got}")
             }
+            StageFrameError::InvalidArtifactDigestLength { got } => write!(
+                f,
+                "invalid artifact sha256 length: expected 64 hex chars, got {got}"
+            ),
+            StageFrameError::InvalidArtifactPath => {
+                write!(f, "artifact relative_path must be a safe relative path")
+            }
+            StageFrameError::InvalidArtifactOffset => {
+                write!(f, "artifact offset exceeds expected artifact size")
+            }
             StageFrameError::MissingStageControlCommand => {
                 write!(f, "stage control command is required but missing")
             }
@@ -42,6 +61,9 @@ impl std::fmt::Display for StageFrameError {
             }
             StageFrameError::MissingStageTransportTarget => {
                 write!(f, "stage transport target is required but missing")
+            }
+            StageFrameError::MissingStageArtifactTarget => {
+                write!(f, "stage artifact transfer target is required but missing")
             }
         }
     }
@@ -81,9 +103,68 @@ pub fn validate_stage_transport_open(
     Ok(())
 }
 
+pub fn validate_stage_artifact_transfer_request(
+    frame: &proto::stage::StageArtifactTransferRequest,
+) -> Result<(), StageFrameError> {
+    validate_generation(frame.gen)?;
+    validate_endpoint_id(frame.requester_id.len())?;
+    if frame.topology_id.is_empty()
+        || frame.run_id.is_empty()
+        || frame.stage_id.is_empty()
+        || !frame.package_ref.starts_with("hf://")
+    {
+        return Err(StageFrameError::MissingStageArtifactTarget);
+    }
+    validate_artifact_digest(&frame.manifest_sha256)?;
+    if let Some(expected_sha) = frame.expected_sha256.as_deref() {
+        validate_artifact_digest(expected_sha)?;
+    }
+    if frame.expected_size.is_some_and(|size| frame.offset > size) {
+        return Err(StageFrameError::InvalidArtifactOffset);
+    }
+    validate_safe_relative_artifact_path(&frame.relative_path)?;
+    Ok(())
+}
+
+pub fn validate_stage_artifact_transfer_response(
+    frame: &proto::stage::StageArtifactTransferResponse,
+) -> Result<(), StageFrameError> {
+    validate_generation(frame.gen)?;
+    if let Some(sha256) = frame.sha256.as_deref() {
+        validate_artifact_digest(sha256)?;
+    }
+    Ok(())
+}
+
 fn validate_generation(gen: u32) -> Result<(), StageFrameError> {
     if gen != STAGE_PROTOCOL_GENERATION {
         return Err(StageFrameError::BadGeneration { got: gen });
+    }
+    Ok(())
+}
+
+fn validate_artifact_digest(value: &str) -> Result<(), StageFrameError> {
+    if value.len() != 64 || !value.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err(StageFrameError::InvalidArtifactDigestLength { got: value.len() });
+    }
+    Ok(())
+}
+
+fn validate_safe_relative_artifact_path(path: &str) -> Result<(), StageFrameError> {
+    use std::path::{Component, Path};
+
+    if path.trim().is_empty() {
+        return Err(StageFrameError::InvalidArtifactPath);
+    }
+    let path = Path::new(path);
+    let mut components = path.components();
+    let Some(first) = components.next() else {
+        return Err(StageFrameError::InvalidArtifactPath);
+    };
+    if !matches!(first, Component::Normal(_))
+        || !components.all(|component| matches!(component, Component::Normal(_)))
+    {
+        return Err(StageFrameError::InvalidArtifactPath);
     }
     Ok(())
 }
@@ -557,11 +638,13 @@ mod tests {
     use super::proto::stage::{
         stage_control_request, stage_control_response, CancelPrepareStage, GetLayerInventory,
         GetStageStatus, LayerInventory, LayerRange, LoadStage, PrepareStage, PrepareStageAccepted,
-        SourceModelKind, StageControlRequest, StageControlResponse, StagePreparationState,
-        StagePreparationStatus, StageReady, StageRuntimeState, StageStatus, StageStatusAck,
-        StageStatusUpdate, StageTransportOpen, StageWireDType, StopStage,
+        SourceModelKind, StageArtifactTransferRequest, StageArtifactTransferResponse,
+        StageControlRequest, StageControlResponse, StagePreparationState, StagePreparationStatus,
+        StageReady, StageRuntimeState, StageStatus, StageStatusAck, StageStatusUpdate,
+        StageTransportOpen, StageWireDType, StopStage,
     };
     use super::{
+        validate_stage_artifact_transfer_request, validate_stage_artifact_transfer_response,
         validate_stage_control_request, validate_stage_control_response,
         validate_stage_transport_open, StageFrameError, STAGE_PROTOCOL_GENERATION,
     };
@@ -843,6 +926,68 @@ mod tests {
         assert!(matches!(
             validate_stage_transport_open(&wrong_gen),
             Err(StageFrameError::BadGeneration { got: 1 })
+        ));
+    }
+
+    #[test]
+    fn stage_artifact_transfer_frames_validate_skippy_owned_contract() {
+        let request = StageArtifactTransferRequest {
+            gen: STAGE_PROTOCOL_GENERATION,
+            requester_id: vec![7u8; 32],
+            topology_id: "topology-a".to_string(),
+            run_id: "run-a".to_string(),
+            stage_id: "stage-0".to_string(),
+            package_ref: "hf://meshllm/demo-layers@abc123".to_string(),
+            manifest_sha256: "a".repeat(64),
+            relative_path: "layers/layer-000.gguf".to_string(),
+            offset: 0,
+            expected_size: Some(8),
+            expected_sha256: Some("b".repeat(64)),
+        };
+        let decoded =
+            StageArtifactTransferRequest::decode(request.encode_to_vec().as_slice()).unwrap();
+        validate_stage_artifact_transfer_request(&decoded).unwrap();
+        assert_eq!(decoded.stage_id, "stage-0");
+
+        let mut unsafe_path = request.clone();
+        unsafe_path.relative_path = "../layer.gguf".to_string();
+        assert!(matches!(
+            validate_stage_artifact_transfer_request(&unsafe_path),
+            Err(StageFrameError::InvalidArtifactPath)
+        ));
+
+        let mut bad_offset = request.clone();
+        bad_offset.offset = 9;
+        assert!(matches!(
+            validate_stage_artifact_transfer_request(&bad_offset),
+            Err(StageFrameError::InvalidArtifactOffset)
+        ));
+
+        let mut missing_target = request.clone();
+        missing_target.topology_id.clear();
+        assert!(matches!(
+            validate_stage_artifact_transfer_request(&missing_target),
+            Err(StageFrameError::MissingStageArtifactTarget)
+        ));
+
+        let response = StageArtifactTransferResponse {
+            gen: STAGE_PROTOCOL_GENERATION,
+            accepted: true,
+            total_size: 8,
+            sha256: Some("b".repeat(64)),
+            error: None,
+        };
+        let decoded =
+            StageArtifactTransferResponse::decode(response.encode_to_vec().as_slice()).unwrap();
+        validate_stage_artifact_transfer_response(&decoded).unwrap();
+
+        let bad_response_sha = StageArtifactTransferResponse {
+            sha256: Some("not-a-sha".to_string()),
+            ..response
+        };
+        assert!(matches!(
+            validate_stage_artifact_transfer_response(&bad_response_sha),
+            Err(StageFrameError::InvalidArtifactDigestLength { .. })
         ));
     }
 }

@@ -20,11 +20,9 @@ pub const STREAM_PLUGIN_CHANNEL: u8 = 0x08;
 pub const STREAM_PLUGIN_BULK_TRANSFER: u8 = 0x09;
 pub const STREAM_CONFIG_SUBSCRIBE: u8 = 0x0b;
 pub const STREAM_CONFIG_PUSH: u8 = 0x0c;
-pub const STREAM_ARTIFACT_TRANSFER: u8 = 0x0d;
 const _: () = {
     let _ = STREAM_CONFIG_SUBSCRIBE;
     let _ = STREAM_CONFIG_PUSH;
-    let _ = STREAM_ARTIFACT_TRANSFER;
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -42,9 +40,7 @@ pub enum ControlFrameError {
     MissingHttpPort,
     MissingOwnerId,
     InvalidConfigHashLength { got: usize },
-    InvalidArtifactDigestLength { got: usize },
-    InvalidArtifactPath,
-    InvalidArtifactOffset,
+    InvalidSubprotocol,
     InvalidPublicKeyLength { got: usize },
     MissingSignature,
     InvalidSignatureLength { got: usize },
@@ -80,17 +76,8 @@ impl std::fmt::Display for ControlFrameError {
             ControlFrameError::InvalidConfigHashLength { got } => {
                 write!(f, "invalid config_hash length: expected 32, got {}", got)
             }
-            ControlFrameError::InvalidArtifactDigestLength { got } => {
-                write!(
-                    f,
-                    "invalid artifact sha256 length: expected 64 hex chars, got {got}"
-                )
-            }
-            ControlFrameError::InvalidArtifactPath => {
-                write!(f, "artifact relative_path must be a safe relative path")
-            }
-            ControlFrameError::InvalidArtifactOffset => {
-                write!(f, "artifact offset exceeds expected artifact size")
+            ControlFrameError::InvalidSubprotocol => {
+                write!(f, "subprotocol entries require a non-empty name and major")
             }
             ControlFrameError::InvalidPublicKeyLength { got } => {
                 write!(f, "invalid public key length: expected 32, got {}", got)
@@ -212,39 +199,6 @@ impl ValidateControlFrame for crate::proto::node::PeerLeaving {
     }
 }
 
-impl ValidateControlFrame for crate::proto::node::ArtifactTransferRequest {
-    fn validate_frame(&self) -> Result<(), ControlFrameError> {
-        if self.gen != NODE_PROTOCOL_GENERATION {
-            return Err(ControlFrameError::BadGeneration { got: self.gen });
-        }
-        validate_endpoint_id_length(self.requester_id.len())?;
-        if !self.package_ref.starts_with("hf://") {
-            return Err(ControlFrameError::InvalidArtifactPath);
-        }
-        validate_artifact_digest(&self.manifest_sha256)?;
-        if let Some(expected_sha) = self.expected_sha256.as_deref() {
-            validate_artifact_digest(expected_sha)?;
-        }
-        if self.expected_size.is_some_and(|size| self.offset > size) {
-            return Err(ControlFrameError::InvalidArtifactOffset);
-        }
-        validate_safe_relative_artifact_path(&self.relative_path)?;
-        Ok(())
-    }
-}
-
-impl ValidateControlFrame for crate::proto::node::ArtifactTransferResponse {
-    fn validate_frame(&self) -> Result<(), ControlFrameError> {
-        if self.gen != NODE_PROTOCOL_GENERATION {
-            return Err(ControlFrameError::BadGeneration { got: self.gen });
-        }
-        if let Some(sha256) = self.sha256.as_deref() {
-            validate_artifact_digest(sha256)?;
-        }
-        Ok(())
-    }
-}
-
 impl ValidateControlFrame for crate::proto::node::ConfigSubscribe {
     fn validate_frame(&self) -> Result<(), ControlFrameError> {
         if self.gen != NODE_PROTOCOL_GENERATION {
@@ -344,6 +298,11 @@ pub fn validate_peer_announcement(
     if pa.role == crate::proto::node::NodeRole::Host as i32 && pa.http_port.is_none() {
         return Err(ControlFrameError::MissingHttpPort);
     }
+    for subprotocol in &pa.subprotocols {
+        if subprotocol.name.trim().is_empty() || subprotocol.major == 0 {
+            return Err(ControlFrameError::InvalidSubprotocol);
+        }
+    }
     Ok(())
 }
 
@@ -357,32 +316,6 @@ fn validate_endpoint_id_length(len: usize) -> Result<(), ControlFrameError> {
 fn validate_config_hash_length(len: usize) -> Result<(), ControlFrameError> {
     if len != 32 {
         return Err(ControlFrameError::InvalidConfigHashLength { got: len });
-    }
-    Ok(())
-}
-
-fn validate_artifact_digest(value: &str) -> Result<(), ControlFrameError> {
-    if value.len() != 64 || !value.chars().all(|ch| ch.is_ascii_hexdigit()) {
-        return Err(ControlFrameError::InvalidArtifactDigestLength { got: value.len() });
-    }
-    Ok(())
-}
-
-fn validate_safe_relative_artifact_path(path: &str) -> Result<(), ControlFrameError> {
-    use std::path::{Component, Path};
-
-    if path.trim().is_empty() {
-        return Err(ControlFrameError::InvalidArtifactPath);
-    }
-    let path = Path::new(path);
-    let mut components = path.components();
-    let Some(first) = components.next() else {
-        return Err(ControlFrameError::InvalidArtifactPath);
-    };
-    if !matches!(first, Component::Normal(_))
-        || !components.all(|component| matches!(component, Component::Normal(_)))
-    {
-        return Err(ControlFrameError::InvalidArtifactPath);
     }
     Ok(())
 }

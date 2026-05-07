@@ -63,6 +63,9 @@ fn current_time_unix_ms() -> u64 {
 const MIN_PINNED_GPU_CONFIG_PEER_VERSION: &str = "0.59.0";
 pub(super) const PEER_CONNECT_AND_GOSSIP_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(15);
+const ARTIFACT_TRANSFER_OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const ARTIFACT_TRANSFER_READ_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const ARTIFACT_TRANSFER_BUFFER_BYTES: usize = 1024 * 1024;
 
 fn quic_bind_addr(bind_port: Option<u16>) -> Option<std::net::SocketAddr> {
     if let Some(port) = bind_port {
@@ -124,6 +127,50 @@ fn partial_artifact_path(destination: &std::path::Path) -> std::path::PathBuf {
     ))
 }
 
+struct PartialArtifactGuard {
+    path: std::path::PathBuf,
+    armed: bool,
+}
+
+impl PartialArtifactGuard {
+    fn new(path: std::path::PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PartialArtifactGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+async fn read_artifact_transfer_chunk<R>(
+    reader: &mut R,
+    buffer: &mut [u8],
+    idle_timeout: std::time::Duration,
+) -> Result<usize>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let read = tokio::time::timeout(idle_timeout, tokio::io::AsyncReadExt::read(reader, buffer))
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!("artifact transfer body read idle timeout after {idle_timeout:?}")
+        })?
+        .context("read artifact transfer bytes")?;
+    anyhow::ensure!(
+        read > 0,
+        "artifact transfer ended before expected byte count"
+    );
+    Ok(read)
+}
+
 async fn write_artifact_transfer_response(
     send: &mut iroh::endpoint::SendStream,
     accepted: bool,
@@ -131,15 +178,14 @@ async fn write_artifact_transfer_response(
     sha256: Option<&str>,
     error: Option<&str>,
 ) -> Result<()> {
-    let response = crate::proto::node::ArtifactTransferResponse {
-        gen: NODE_PROTOCOL_GENERATION,
+    let response = skippy_stage_proto::StageArtifactTransferResponse {
+        gen: skippy_protocol::STAGE_PROTOCOL_GENERATION,
         accepted,
         total_size,
         sha256: sha256.map(str::to_string),
         error: error.map(str::to_string),
     };
-    response
-        .validate_frame()
+    skippy_protocol::validate_stage_artifact_transfer_response(&response)
         .map_err(|error| anyhow::anyhow!("invalid artifact transfer response: {error}"))?;
     write_len_prefixed(send, &response.encode_to_vec()).await?;
     if !accepted {
@@ -152,14 +198,16 @@ fn artifact_transfer_allowed_by_topology(
     topologies: &[StageTopologyInstance],
     remote: EndpointId,
     package_dir: &std::path::Path,
-    request: &crate::proto::node::ArtifactTransferRequest,
+    request: &skippy_stage_proto::StageArtifactTransferRequest,
 ) -> Result<bool> {
     let relative_path =
         crate::models::artifact_transfer::safe_relative_artifact_path(&request.relative_path)?;
     let manifest_path =
         std::path::PathBuf::from(crate::models::artifact_transfer::PACKAGE_MANIFEST_FILE);
     for topology in topologies {
-        if topology.package_ref != request.package_ref
+        if topology.topology_id != request.topology_id
+            || topology.run_id != request.run_id
+            || topology.package_ref != request.package_ref
             || !topology
                 .manifest_sha256
                 .eq_ignore_ascii_case(&request.manifest_sha256)
@@ -170,7 +218,7 @@ fn artifact_transfer_allowed_by_topology(
         for assignment in topology
             .stages
             .iter()
-            .filter(|stage| stage.node_id == remote)
+            .filter(|stage| stage.node_id == remote && stage.stage_id == request.stage_id)
         {
             if relative_path == manifest_path {
                 return Ok(true);
@@ -1531,6 +1579,16 @@ impl Drop for InflightRequestGuard {
     }
 }
 
+#[async_trait::async_trait]
+impl crate::inference::skippy::StagePackagePrefetcher for Node {
+    async fn prefetch_stage_package(
+        &self,
+        request: &crate::inference::skippy::StagePrepareRequest,
+    ) -> Result<()> {
+        self.prefetch_stage_package_from_coordinator(request).await
+    }
+}
+
 impl Node {
     pub(crate) fn set_routing_telemetry_sink(
         &self,
@@ -1830,8 +1888,8 @@ impl Node {
             | crate::inference::skippy::StageControlRequest::StatusUpdate(_) => {
                 std::time::Duration::from_secs(30)
             }
-            crate::inference::skippy::StageControlRequest::Prepare(_) => {
-                std::time::Duration::from_secs(30)
+            crate::inference::skippy::StageControlRequest::Prepare(prepare) => {
+                crate::inference::skippy::stage_load_timeout(&prepare.load)
             }
         }
     }
@@ -3755,6 +3813,20 @@ impl Node {
                         tracing::warn!("Stage transport channel closed, dropping stream");
                     }
                 }
+                skippy_protocol::STAGE_STREAM_ARTIFACT_TRANSFER => {
+                    let node = self.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = node
+                            .handle_artifact_transfer_stream(remote, send, recv)
+                            .await
+                        {
+                            tracing::debug!(
+                                "artifact transfer stream error from {}: {e}",
+                                remote.fmt_short()
+                            );
+                        }
+                    });
+                }
                 other => {
                     tracing::warn!(
                         "Unknown skippy stage stream type {other:#04x} from {}",
@@ -4200,20 +4272,6 @@ impl Node {
                         }
                     });
                 }
-                STREAM_ARTIFACT_TRANSFER => {
-                    let node = self.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = node
-                            .handle_artifact_transfer_stream(remote, send, recv)
-                            .await
-                        {
-                            tracing::debug!(
-                                "artifact transfer stream error from {}: {e}",
-                                remote.fmt_short()
-                            );
-                        }
-                    });
-                }
                 STREAM_CONFIG_SUBSCRIBE => {
                     let node = self.clone();
                     tokio::spawn(async move {
@@ -4345,13 +4403,7 @@ impl Node {
                     .await?;
                 downstream.endpoint = bridge_addr;
             }
-            crate::inference::skippy::StageControlRequest::Prepare(prepare) => {
-                let node = self.clone();
-                let prepare = prepare.clone();
-                tokio::spawn(async move {
-                    node.prefetch_stage_package_from_coordinator(&prepare).await;
-                });
-            }
+            crate::inference::skippy::StageControlRequest::Prepare(_) => {}
             crate::inference::skippy::StageControlRequest::Stop(stop) => {
                 self.stop_stage_transport_bridge(&stop.topology_id, &stop.run_id, &stop.stage_id)
                     .await;
@@ -4367,19 +4419,19 @@ impl Node {
     async fn prefetch_stage_package_from_coordinator(
         &self,
         prepare: &crate::inference::skippy::StagePrepareRequest,
-    ) {
+    ) -> Result<()> {
         let load = &prepare.load;
         if load.load_mode != skippy_protocol::LoadMode::LayerPackage {
-            return;
+            return Ok(());
         }
         if !crate::models::artifact_transfer::artifact_transfer_enabled() {
-            return;
+            return Ok(());
         }
         let Some(coordinator_id) = prepare.coordinator_id else {
-            return;
+            return Ok(());
         };
         if coordinator_id == self.endpoint.id() {
-            return;
+            return Ok(());
         }
         let supported = {
             let state = self.state.lock().await;
@@ -4389,18 +4441,10 @@ impl Node {
                 .is_some_and(|peer| peer.artifact_transfer_supported)
         };
         if !supported {
-            return;
+            return Ok(());
         }
-        if let Err(error) = self
-            .fetch_stage_package_artifacts_from_peer(coordinator_id, load)
+        self.fetch_stage_package_artifacts_from_peer(coordinator_id, load)
             .await
-        {
-            tracing::debug!(
-                peer = %coordinator_id.fmt_short(),
-                stage_id = %load.stage_id,
-                "peer artifact prefetch failed, falling back to local/HF resolver: {error}"
-            );
-        }
     }
 
     async fn fetch_stage_package_artifacts_from_peer(
@@ -4421,7 +4465,7 @@ impl Node {
             &manifest_request,
             true,
         )? {
-            self.fetch_artifact_from_peer(peer_id, &manifest_request, &manifest_path)
+            self.fetch_artifact_from_peer(peer_id, load, &manifest_request, &manifest_path)
                 .await
                 .context("fetch package manifest from peer")?;
         }
@@ -4448,7 +4492,7 @@ impl Node {
             }
             let destination =
                 crate::models::artifact_transfer::local_artifact_path(&package_dir, &artifact);
-            self.fetch_artifact_from_peer(peer_id, &artifact, &destination)
+            self.fetch_artifact_from_peer(peer_id, load, &artifact, &destination)
                 .await
                 .with_context(|| {
                     format!(
@@ -4463,6 +4507,7 @@ impl Node {
     async fn fetch_artifact_from_peer(
         &self,
         peer_id: EndpointId,
+        load: &crate::inference::skippy::StageLoadRequest,
         artifact: &crate::models::artifact_transfer::PackageArtifactRequest,
         destination: &std::path::Path,
     ) -> Result<()> {
@@ -4478,11 +4523,15 @@ impl Node {
             destination,
         )?;
         let temp_path = partial_artifact_path(destination);
+        let mut partial_guard = PartialArtifactGuard::new(temp_path.clone());
         let offset = 0;
 
-        let frame = crate::proto::node::ArtifactTransferRequest {
-            gen: NODE_PROTOCOL_GENERATION,
+        let frame = skippy_stage_proto::StageArtifactTransferRequest {
+            gen: skippy_protocol::STAGE_PROTOCOL_GENERATION,
             requester_id: self.endpoint.id().as_bytes().to_vec(),
+            topology_id: load.topology_id.clone(),
+            run_id: load.run_id.clone(),
+            stage_id: load.stage_id.clone(),
             package_ref: artifact.package_ref.clone(),
             manifest_sha256: artifact.manifest_sha256.clone(),
             relative_path: artifact.relative_path.to_string_lossy().to_string(),
@@ -4490,29 +4539,30 @@ impl Node {
             expected_size: artifact.expected_size,
             expected_sha256: artifact.expected_sha256.clone(),
         };
-        frame
-            .validate_frame()
+        skippy_protocol::validate_stage_artifact_transfer_request(&frame)
             .map_err(|error| anyhow::anyhow!("invalid artifact transfer request: {error}"))?;
 
-        let conn = self.connection_to_peer(peer_id).await?;
-        let response = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        let conn = self.stage_connection_to_peer(peer_id).await?;
+        let response = tokio::time::timeout(ARTIFACT_TRANSFER_OPEN_TIMEOUT, async {
             let (mut send, mut recv) = conn.open_bi().await?;
-            send.write_all(&[STREAM_ARTIFACT_TRANSFER]).await?;
+            send.write_all(&[skippy_protocol::STAGE_STREAM_ARTIFACT_TRANSFER])
+                .await?;
             write_len_prefixed(&mut send, &frame.encode_to_vec()).await?;
+            let _ = send.finish();
             let response_buf = read_len_prefixed(&mut recv).await?;
             let response =
-                crate::proto::node::ArtifactTransferResponse::decode(response_buf.as_slice())
+                skippy_stage_proto::StageArtifactTransferResponse::decode(response_buf.as_slice())
                     .map_err(|error| {
-                        anyhow::anyhow!("ArtifactTransferResponse decode error: {error}")
+                        anyhow::anyhow!("StageArtifactTransferResponse decode error: {error}")
                     })?;
-            response.validate_frame().map_err(|error| {
-                anyhow::anyhow!("ArtifactTransferResponse validation error: {error}")
-            })?;
-            Ok::<_, anyhow::Error>((send, recv, response))
+            skippy_protocol::validate_stage_artifact_transfer_response(&response).map_err(
+                |error| anyhow::anyhow!("StageArtifactTransferResponse validation error: {error}"),
+            )?;
+            Ok::<_, anyhow::Error>((recv, response))
         })
         .await
         .map_err(|_| anyhow::anyhow!("timeout opening artifact transfer stream"))??;
-        let (mut send, mut recv, response) = response;
+        let (mut recv, response) = response;
         if !response.accepted {
             anyhow::bail!(
                 "peer artifact transfer rejected: {}",
@@ -4558,18 +4608,15 @@ impl Node {
                 .await
                 .context("open partial artifact")?;
             let mut remaining = response.total_size.saturating_sub(offset);
-            let mut buffer = vec![0u8; 1024 * 1024];
+            let mut buffer = vec![0u8; ARTIFACT_TRANSFER_BUFFER_BYTES];
             while remaining > 0 {
                 let limit = buffer.len().min(remaining as usize);
-                let read = recv
-                    .read(&mut buffer[..limit])
-                    .await
-                    .context("read artifact transfer bytes")?
-                    .context("artifact transfer ended before expected byte count")?;
-                anyhow::ensure!(
-                    read > 0,
-                    "artifact transfer ended before expected byte count"
-                );
+                let read = read_artifact_transfer_chunk(
+                    &mut recv,
+                    &mut buffer[..limit],
+                    ARTIFACT_TRANSFER_READ_IDLE_TIMEOUT,
+                )
+                .await?;
                 file.write_all(&buffer[..read])
                     .await
                     .context("write partial artifact")?;
@@ -4614,7 +4661,7 @@ impl Node {
             let _ = tokio::fs::remove_file(&temp_path).await;
             return Err(error);
         }
-        let _ = send.finish();
+        partial_guard.disarm();
         Ok(())
     }
 
@@ -4627,10 +4674,12 @@ impl Node {
         use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
         let buf = read_len_prefixed(&mut recv).await?;
-        let request = crate::proto::node::ArtifactTransferRequest::decode(buf.as_slice())
-            .map_err(|error| anyhow::anyhow!("ArtifactTransferRequest decode error: {error}"))?;
-        request.validate_frame().map_err(|error| {
-            anyhow::anyhow!("ArtifactTransferRequest validation error: {error}")
+        let request = skippy_stage_proto::StageArtifactTransferRequest::decode(buf.as_slice())
+            .map_err(|error| {
+                anyhow::anyhow!("StageArtifactTransferRequest decode error: {error}")
+            })?;
+        skippy_protocol::validate_stage_artifact_transfer_request(&request).map_err(|error| {
+            anyhow::anyhow!("StageArtifactTransferRequest validation error: {error}")
         })?;
         if request.requester_id.as_slice() != remote.as_bytes() {
             anyhow::bail!("artifact transfer requester_id does not match QUIC peer identity");
@@ -4750,7 +4799,7 @@ impl Node {
         file.seek(std::io::SeekFrom::Start(request.offset))
             .await
             .context("seek artifact for transfer")?;
-        let mut buffer = vec![0u8; 1024 * 1024];
+        let mut buffer = vec![0u8; ARTIFACT_TRANSFER_BUFFER_BYTES];
         let mut remaining = artifact.size.saturating_sub(request.offset);
         while remaining > 0 {
             let limit = buffer.len().min(remaining as usize);

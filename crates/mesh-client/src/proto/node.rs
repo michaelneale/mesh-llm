@@ -105,9 +105,21 @@ pub struct PeerAnnouncement {
     /// Advisory canonical refs this node wants the mesh to consider
     #[prost(string, repeated, tag = "35")]
     pub explicit_model_interests: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    /// Supports admitted peer-to-peer model/package artifact transfer
-    #[prost(bool, optional, tag = "36")]
-    pub artifact_transfer_supported: ::core::option::Option<bool>,
+    /// Additive feature discovery for admitted subsystem protocols
+    #[prost(message, repeated, tag = "37")]
+    pub subprotocols: ::prost::alloc::vec::Vec<MeshSubprotocol>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct MeshSubprotocol {
+    /// e.g. "skippy-stage"
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    /// subprotocol major version
+    #[prost(uint32, tag = "2")]
+    pub major: u32,
+    /// e.g. "artifact-transfer"
+    #[prost(string, repeated, tag = "3")]
+    pub features: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct HardwareInfo {
@@ -375,47 +387,6 @@ pub struct PeerLeaving {
     /// must equal NODE_PROTOCOL_GENERATION; rejected otherwise
     #[prost(uint32, tag = "2")]
     pub r#gen: u32,
-}
-/// Stream 0x0d — Artifact Transfer
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ArtifactTransferRequest {
-    /// must equal NODE_PROTOCOL_GENERATION
-    #[prost(uint32, tag = "1")]
-    pub r#gen: u32,
-    /// exactly 32 bytes; must match QUIC peer identity
-    #[prost(bytes = "vec", tag = "2")]
-    pub requester_id: ::prost::alloc::vec::Vec<u8>,
-    /// hf://namespace/repo@revision package ref
-    #[prost(string, tag = "3")]
-    pub package_ref: ::prost::alloc::string::String,
-    /// expected model-package.json SHA-256
-    #[prost(string, tag = "4")]
-    pub manifest_sha256: ::prost::alloc::string::String,
-    /// manifest-relative artifact path
-    #[prost(string, tag = "5")]
-    pub relative_path: ::prost::alloc::string::String,
-    /// resume offset
-    #[prost(uint64, tag = "6")]
-    pub offset: u64,
-    /// expected total artifact bytes when known
-    #[prost(uint64, optional, tag = "7")]
-    pub expected_size: ::core::option::Option<u64>,
-    #[prost(string, optional, tag = "8")]
-    pub expected_sha256: ::core::option::Option<::prost::alloc::string::String>,
-}
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ArtifactTransferResponse {
-    /// must equal NODE_PROTOCOL_GENERATION
-    #[prost(uint32, tag = "1")]
-    pub r#gen: u32,
-    #[prost(bool, tag = "2")]
-    pub accepted: bool,
-    #[prost(uint64, tag = "3")]
-    pub total_size: u64,
-    #[prost(string, optional, tag = "4")]
-    pub sha256: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(string, optional, tag = "5")]
-    pub error: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct NodeConfigSnapshot {

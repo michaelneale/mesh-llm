@@ -44,10 +44,10 @@ pub(crate) use package::{
 pub(crate) use stage::{
     spawn_stage_control_loop, stage_load_timeout, LayerRange, SourceModelKind,
     StageCancelPrepareRequest, StageControlCommand, StageControlRequest, StageControlResponse,
-    StageInventoryRequest, StageLayerInventory, StageLoadRequest, StagePeerDescriptor,
-    StagePreparationState, StagePreparationStatus, StagePrepareAcceptedResponse,
-    StagePrepareRequest, StageReadyResponse, StageRuntimeState, StageStatusAck, StageStatusFilter,
-    StageStatusSnapshot, StageStopRequest, StageWireDType,
+    StageInventoryRequest, StageLayerInventory, StageLoadRequest, StagePackagePrefetcher,
+    StagePeerDescriptor, StagePreparationState, StagePreparationStatus,
+    StagePrepareAcceptedResponse, StagePrepareRequest, StageReadyResponse, StageRuntimeState,
+    StageStatusAck, StageStatusFilter, StageStatusSnapshot, StageStopRequest, StageWireDType,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

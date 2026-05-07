@@ -32,6 +32,28 @@ message StageControlResponse {
   }
 }
 
+message StageArtifactTransferRequest {
+  uint32 gen = 1;
+  bytes requester_id = 2;
+  string topology_id = 3;
+  string run_id = 4;
+  string stage_id = 5;
+  string package_ref = 6;
+  string manifest_sha256 = 7;
+  string relative_path = 8;
+  uint64 offset = 9;
+  optional uint64 expected_size = 10;
+  optional string expected_sha256 = 11;
+}
+
+message StageArtifactTransferResponse {
+  uint32 gen = 1;
+  bool accepted = 2;
+  uint64 total_size = 3;
+  optional string sha256 = 4;
+  optional string error = 5;
+}
+
 message LoadStage {
   string topology_id = 1;
   string run_id = 2;

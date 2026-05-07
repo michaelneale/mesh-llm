@@ -24,13 +24,12 @@ Each QUIC connection carries multiple logical streams, distinguished by a 1-byte
 | 0x09 | PLUGIN_BULK_TRANSFER | send | plugin protocol bulk data |
 | 0x0b | CONFIG_SUBSCRIBE | bidirectional | protobuf `ConfigSubscribe` / `ConfigSnapshotResponse` |
 | 0x0c | CONFIG_PUSH | bidirectional | protobuf `ConfigPush` / `ConfigPushResponse` |
-| 0x0d | ARTIFACT_TRANSFER | bidirectional | protobuf request/response header plus raw artifact bytes |
 
 Streams 0x02 and 0x04 are raw TCP relay tunnels. They carry llama.cpp RPC and HTTP traffic respectively and are not subject to protobuf framing or generation validation.
 
 ## Framing
 
-All protobuf control-plane streams except artifact byte payloads use the same framing:
+All protobuf control-plane streams use the same framing:
 
 ```
 [1 byte stream type][4 bytes LE length][N bytes protobuf body]
@@ -38,7 +37,7 @@ All protobuf control-plane streams except artifact byte payloads use the same fr
 
 Maximum frame size: 8 MiB (`MAX_CONTROL_FRAME_BYTES`). Frames exceeding this limit are rejected.
 
-`ARTIFACT_TRANSFER` opens with the same 1-byte stream type and then uses length-prefixed protobuf `ArtifactTransferRequest` and `ArtifactTransferResponse` headers. If the response is accepted, the remaining bytes on the QUIC stream are raw artifact bytes starting at the requested offset. This keeps large model artifacts outside the 8 MiB control-frame limit while preserving protobuf validation for the transfer metadata.
+Skippy layer-package artifact transfer is not a mesh control stream. Gossip advertises `skippy-stage/1` feature support through `PeerAnnouncement.subprotocols`; the request/response schema and artifact byte framing are owned by `skippy-protocol` on the `skippy-stage/1` ALPN.
 
 ## Protocol Generation
 
@@ -55,8 +54,6 @@ Every protobuf message that carries a `gen` field must have `gen == 1`. Frames w
 - `ConfigSnapshotResponse.gen`
 - `ConfigPush.gen`
 - `ConfigPushResponse.gen`
-- `ArtifactTransferRequest.gen`
-- `ArtifactTransferResponse.gen`
 
 ## Admission (Quarantine-Until-Gossip)
 
@@ -245,27 +242,40 @@ message PeerLeaving {
 
 `peer_id` must match the QUIC connection identity. Forged `PeerLeaving` frames (where `peer_id` names a different node) are rejected without any state change.
 
-## Stream 0x0d — Artifact Transfer (`ArtifactTransferRequest` / `ArtifactTransferResponse`)
+## Skippy Stage Artifact Transfer
 
-Used by a Skippy worker to fetch missing Hugging Face layer-package artifacts from the coordinating node before falling back to normal local/HF package resolution.
+Used by a Skippy worker to fetch missing Hugging Face layer-package artifacts from the coordinating node before falling back to normal local/HF package resolution. Mesh gossip only advertises support:
+
+```proto
+message MeshSubprotocol {
+  string name = 1;              // "skippy-stage"
+  uint32 major = 2;             // 1
+  repeated string features = 3; // includes "artifact-transfer"
+}
+```
+
+The transfer itself uses `skippy-stage/1` stream type `0x03`, followed by a length-prefixed `StageArtifactTransferRequest`, a length-prefixed `StageArtifactTransferResponse`, and raw artifact bytes when accepted.
 
 **Request:**
 ```proto
-message ArtifactTransferRequest {
+message StageArtifactTransferRequest {
   uint32 gen = 1;
   bytes requester_id = 2;
-  string package_ref = 3;
-  string manifest_sha256 = 4;
-  string relative_path = 5;
-  uint64 offset = 6;
-  optional uint64 expected_size = 7;
-  optional string expected_sha256 = 8;
+  string topology_id = 3;
+  string run_id = 4;
+  string stage_id = 5;
+  string package_ref = 6;
+  string manifest_sha256 = 7;
+  string relative_path = 8;
+  uint64 offset = 9;
+  optional uint64 expected_size = 10;
+  optional string expected_sha256 = 11;
 }
 ```
 
 **Response:**
 ```proto
-message ArtifactTransferResponse {
+message StageArtifactTransferResponse {
   uint32 gen = 1;
   bool accepted = 2;
   uint64 total_size = 3;
@@ -283,6 +293,8 @@ Privacy and safety properties:
 - Absolute paths, parent-directory traversal, and symlink escapes outside the managed Hugging Face repo cache are rejected.
 - Transfers are streamed in bounded chunks; the protocol carries an offset, and
   the current client installs only freshly verified complete artifacts.
+- Body reads use an idle timeout so a stalled peer cannot hang stage
+  preparation indefinitely.
 
 ## Out-of-Scope Streams
 
@@ -298,4 +310,5 @@ The following are explicitly NOT protobuf and are not described here:
 `mesh-llm/1` is the only supported control-plane protocol.
 
 - Nodes advertise `mesh-llm/1` on accept.
-- Scoped control-plane streams (0x01, 0x03, 0x05, 0x06, 0x07, 0x0b, 0x0c) use protobuf framing. Artifact transfer (0x0d) uses protobuf metadata followed by raw bytes.
+- Scoped `mesh-llm/1` control-plane streams (0x01, 0x03, 0x05, 0x06, 0x07, 0x0b, 0x0c) use protobuf framing.
+- Skippy artifact transfer uses the separate `skippy-stage/1` subprotocol and stream type `0x03`; only its request/response metadata is protobuf-framed, followed by raw artifact bytes when accepted.

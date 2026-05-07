@@ -212,7 +212,7 @@ pub(crate) fn local_artifact_satisfies(
 }
 
 pub(crate) fn servable_artifact_from_request(
-    request: &crate::proto::node::ArtifactTransferRequest,
+    request: &skippy_protocol::proto::stage::StageArtifactTransferRequest,
 ) -> Result<ServableArtifact> {
     let package_ref = parse_hf_package_ref(&request.package_ref)?;
     validate_sha256(&request.manifest_sha256).context("invalid manifest sha256")?;
@@ -636,9 +636,12 @@ mod tests {
         std::env::set_var("HF_HUB_CACHE", temp.path());
         let (_package_dir, package_ref, manifest_sha) = write_package_fixture(temp.path());
 
-        let request = crate::proto::node::ArtifactTransferRequest {
-            gen: crate::protocol::NODE_PROTOCOL_GENERATION,
+        let request = skippy_protocol::proto::stage::StageArtifactTransferRequest {
+            gen: skippy_protocol::STAGE_PROTOCOL_GENERATION,
             requester_id: vec![1; 32],
+            topology_id: "topology-a".to_string(),
+            run_id: "run-a".to_string(),
+            stage_id: "stage-0".to_string(),
             package_ref,
             manifest_sha256: manifest_sha,
             relative_path: "layers/layer-000.gguf".to_string(),
@@ -675,9 +678,12 @@ mod tests {
         )
         .unwrap();
 
-        let request = crate::proto::node::ArtifactTransferRequest {
-            gen: crate::protocol::NODE_PROTOCOL_GENERATION,
+        let request = skippy_protocol::proto::stage::StageArtifactTransferRequest {
+            gen: skippy_protocol::STAGE_PROTOCOL_GENERATION,
             requester_id: vec![1; 32],
+            topology_id: "topology-a".to_string(),
+            run_id: "run-a".to_string(),
+            stage_id: "stage-0".to_string(),
             package_ref,
             manifest_sha256: manifest_sha,
             relative_path: "layers/layer-000.gguf".to_string(),

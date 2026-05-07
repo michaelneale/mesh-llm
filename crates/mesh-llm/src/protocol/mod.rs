@@ -27,11 +27,9 @@ pub(crate) const STREAM_PLUGIN_CHANNEL: u8 = 0x08;
 pub(crate) const STREAM_PLUGIN_BULK_TRANSFER: u8 = 0x09;
 pub(crate) const STREAM_CONFIG_SUBSCRIBE: u8 = 0x0b;
 pub(crate) const STREAM_CONFIG_PUSH: u8 = 0x0c;
-pub(crate) const STREAM_ARTIFACT_TRANSFER: u8 = 0x0d;
 const _: () = {
     let _ = STREAM_CONFIG_SUBSCRIBE;
     let _ = STREAM_CONFIG_PUSH;
-    let _ = STREAM_ARTIFACT_TRANSFER;
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -58,11 +56,7 @@ pub(crate) enum ControlFrameError {
     InvalidConfigHashLength {
         got: usize,
     },
-    InvalidArtifactDigestLength {
-        got: usize,
-    },
-    InvalidArtifactPath,
-    InvalidArtifactOffset,
+    InvalidSubprotocol,
     InvalidPublicKeyLength {
         got: usize,
     },
@@ -107,17 +101,8 @@ impl std::fmt::Display for ControlFrameError {
             ControlFrameError::InvalidConfigHashLength { got } => {
                 write!(f, "invalid config_hash length: expected 32, got {}", got)
             }
-            ControlFrameError::InvalidArtifactDigestLength { got } => {
-                write!(
-                    f,
-                    "invalid artifact sha256 length: expected 64 hex chars, got {got}"
-                )
-            }
-            ControlFrameError::InvalidArtifactPath => {
-                write!(f, "artifact relative_path must be a safe relative path")
-            }
-            ControlFrameError::InvalidArtifactOffset => {
-                write!(f, "artifact offset exceeds expected artifact size")
+            ControlFrameError::InvalidSubprotocol => {
+                write!(f, "subprotocol entries require a non-empty name and major")
             }
             ControlFrameError::InvalidPublicKeyLength { got } => {
                 write!(f, "invalid public key length: expected 32, got {}", got)
@@ -241,42 +226,6 @@ impl ValidateControlFrame for crate::proto::node::PeerLeaving {
     }
 }
 
-impl ValidateControlFrame for crate::proto::node::ArtifactTransferRequest {
-    fn validate_frame(&self) -> Result<(), ControlFrameError> {
-        if self.gen != NODE_PROTOCOL_GENERATION {
-            return Err(ControlFrameError::BadGeneration { got: self.gen });
-        }
-        validate_endpoint_id_length(self.requester_id.len())?;
-        if self.package_ref.trim().is_empty() || !self.package_ref.starts_with("hf://") {
-            return Err(ControlFrameError::InvalidArtifactPath);
-        }
-        validate_artifact_digest(&self.manifest_sha256)?;
-        if let Some(digest) = self.expected_sha256.as_deref() {
-            validate_artifact_digest(digest)?;
-        }
-        if let Some(expected_size) = self.expected_size {
-            if self.offset > expected_size {
-                return Err(ControlFrameError::InvalidArtifactOffset);
-            }
-        }
-        crate::models::artifact_transfer::safe_relative_artifact_path(&self.relative_path)
-            .map_err(|_| ControlFrameError::InvalidArtifactPath)?;
-        Ok(())
-    }
-}
-
-impl ValidateControlFrame for crate::proto::node::ArtifactTransferResponse {
-    fn validate_frame(&self) -> Result<(), ControlFrameError> {
-        if self.gen != NODE_PROTOCOL_GENERATION {
-            return Err(ControlFrameError::BadGeneration { got: self.gen });
-        }
-        if let Some(digest) = self.sha256.as_deref() {
-            validate_artifact_digest(digest)?;
-        }
-        Ok(())
-    }
-}
-
 impl ValidateControlFrame for crate::proto::node::ConfigSubscribe {
     fn validate_frame(&self) -> Result<(), ControlFrameError> {
         if self.gen != NODE_PROTOCOL_GENERATION {
@@ -364,6 +313,11 @@ pub(crate) fn validate_peer_announcement(
     if pa.role == crate::proto::node::NodeRole::Host as i32 && pa.http_port.is_none() {
         return Err(ControlFrameError::MissingHttpPort);
     }
+    for subprotocol in &pa.subprotocols {
+        if subprotocol.name.trim().is_empty() || subprotocol.major == 0 {
+            return Err(ControlFrameError::InvalidSubprotocol);
+        }
+    }
     Ok(())
 }
 
@@ -377,13 +331,6 @@ fn validate_endpoint_id_length(len: usize) -> Result<(), ControlFrameError> {
 fn validate_config_hash_length(len: usize) -> Result<(), ControlFrameError> {
     if len != 32 {
         return Err(ControlFrameError::InvalidConfigHashLength { got: len });
-    }
-    Ok(())
-}
-
-fn validate_artifact_digest(value: &str) -> Result<(), ControlFrameError> {
-    if value.len() != 64 || !value.chars().all(|ch| ch.is_ascii_hexdigit()) {
-        return Err(ControlFrameError::InvalidArtifactDigestLength { got: value.len() });
     }
     Ok(())
 }
@@ -519,10 +466,10 @@ mod tests {
     use crate::crypto::OwnershipSummary;
     use crate::mesh::{resolve_peer_down, resolve_peer_leaving, PeerInfo};
     use crate::proto::node::{
-        ArtifactTransferRequest, ArtifactTransferResponse, ConfigPush, ConfigPushResponse,
-        ConfigSnapshotResponse, ConfigSubscribe, ConfigUpdateNotification, ConfiguredModelRef,
-        GossipFrame, NodeConfigSnapshot, NodeGpuConfig, NodeModelEntry, NodePluginEntry, NodeRole,
-        PeerAnnouncement, RouteTableRequest,
+        ConfigPush, ConfigPushResponse, ConfigSnapshotResponse, ConfigSubscribe,
+        ConfigUpdateNotification, ConfiguredModelRef, GossipFrame, NodeConfigSnapshot,
+        NodeGpuConfig, NodeModelEntry, NodePluginEntry, NodeRole, PeerAnnouncement,
+        RouteTableRequest,
     };
     use iroh::{EndpointAddr, EndpointId, SecretKey};
     use std::collections::{HashMap, HashSet};
@@ -637,61 +584,6 @@ mod tests {
         assert_eq!(decoded.peers.len(), 1);
         assert_eq!(decoded.peers[0].endpoint_id, vec![0u8; 32]);
         assert_eq!(decoded.peers[0].role, NodeRole::Worker as i32);
-    }
-
-    #[test]
-    fn artifact_transfer_frames_roundtrip_and_validate_paths() {
-        let artifact_sha = "a".repeat(64);
-        let request = ArtifactTransferRequest {
-            gen: NODE_PROTOCOL_GENERATION,
-            requester_id: vec![0x42; 32],
-            package_ref: "hf://meshllm/demo-layers@abc123".to_string(),
-            manifest_sha256: "b".repeat(64),
-            relative_path: "layers/layer-000.gguf".to_string(),
-            offset: 0,
-            expected_size: Some(8),
-            expected_sha256: Some(artifact_sha.clone()),
-        };
-
-        let encoded = encode_control_frame(STREAM_ARTIFACT_TRANSFER, &request);
-        let decoded: ArtifactTransferRequest =
-            decode_control_frame(STREAM_ARTIFACT_TRANSFER, &encoded)
-                .expect("valid artifact transfer request must decode");
-        assert_eq!(decoded.requester_id, vec![0x42; 32]);
-        assert_eq!(
-            decoded.expected_sha256.as_deref(),
-            Some(artifact_sha.as_str())
-        );
-
-        let mut bad_path = request.clone();
-        bad_path.relative_path = "../model.gguf".to_string();
-        let encoded = encode_control_frame(STREAM_ARTIFACT_TRANSFER, &bad_path);
-        let err =
-            decode_control_frame::<ArtifactTransferRequest>(STREAM_ARTIFACT_TRANSFER, &encoded)
-                .expect_err("unsafe relative paths must be rejected");
-        assert!(matches!(err, ControlFrameError::InvalidArtifactPath));
-
-        let mut bad_offset = request;
-        bad_offset.offset = 9;
-        let encoded = encode_control_frame(STREAM_ARTIFACT_TRANSFER, &bad_offset);
-        let err =
-            decode_control_frame::<ArtifactTransferRequest>(STREAM_ARTIFACT_TRANSFER, &encoded)
-                .expect_err("offset beyond expected artifact size must be rejected");
-        assert!(matches!(err, ControlFrameError::InvalidArtifactOffset));
-
-        let response = ArtifactTransferResponse {
-            gen: NODE_PROTOCOL_GENERATION,
-            accepted: true,
-            total_size: 8,
-            sha256: Some(artifact_sha),
-            error: None,
-        };
-        let encoded = encode_control_frame(STREAM_ARTIFACT_TRANSFER, &response);
-        let decoded: ArtifactTransferResponse =
-            decode_control_frame(STREAM_ARTIFACT_TRANSFER, &encoded)
-                .expect("valid artifact transfer response must decode");
-        assert!(decoded.accepted);
-        assert_eq!(decoded.total_size, 8);
     }
 
     #[test]
@@ -1352,7 +1244,19 @@ mod tests {
             artifact_transfer_supported: true,
         };
         let proto_pa = local_ann_to_proto_ann(&ann);
-        assert_eq!(proto_pa.artifact_transfer_supported, Some(true));
+        let skippy = proto_pa
+            .subprotocols
+            .iter()
+            .find(|subprotocol| subprotocol.name == skippy_protocol::STAGE_SUBPROTOCOL_NAME)
+            .expect("skippy-stage subprotocol should be advertised");
+        assert_eq!(skippy.major, skippy_protocol::STAGE_SUBPROTOCOL_MAJOR);
+        assert!(
+            skippy
+                .features
+                .iter()
+                .any(|feature| feature
+                    == skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_ARTIFACT_TRANSFER)
+        );
         assert_eq!(
             proto_pa
                 .owner_attestation

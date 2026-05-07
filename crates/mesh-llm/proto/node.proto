@@ -44,7 +44,15 @@ message PeerAnnouncement {
   optional HardwareInfo hardware = 33;              // Introduced in v0.60.0; preferred structured hardware inventory
   optional uint64 first_joined_mesh_ts = 34;
   repeated string explicit_model_interests = 35;    // Advisory canonical refs this node wants the mesh to consider
-  optional bool artifact_transfer_supported = 36;   // Supports admitted peer-to-peer model/package artifact transfer
+  reserved 36;
+  reserved "artifact_transfer_supported";
+  repeated MeshSubprotocol subprotocols = 37;       // Additive feature discovery for admitted subsystem protocols
+}
+
+message MeshSubprotocol {
+  string name = 1;             // e.g. "skippy-stage"
+  uint32 major = 2;            // subprotocol major version
+  repeated string features = 3; // e.g. "artifact-transfer"
 }
 
 message HardwareInfo {
@@ -219,26 +227,6 @@ message PeerDown {
 message PeerLeaving {
   bytes peer_id = 1;   // exactly 32 bytes; must match the QUIC sender identity
   uint32 gen = 2;      // must equal NODE_PROTOCOL_GENERATION; rejected otherwise
-}
-
-// Stream 0x0d — Artifact Transfer
-message ArtifactTransferRequest {
-  uint32 gen = 1;                    // must equal NODE_PROTOCOL_GENERATION
-  bytes requester_id = 2;            // exactly 32 bytes; must match QUIC peer identity
-  string package_ref = 3;            // hf://namespace/repo@revision package ref
-  string manifest_sha256 = 4;        // expected model-package.json SHA-256
-  string relative_path = 5;          // manifest-relative artifact path
-  uint64 offset = 6;                 // resume offset
-  optional uint64 expected_size = 7; // expected total artifact bytes when known
-  optional string expected_sha256 = 8;
-}
-
-message ArtifactTransferResponse {
-  uint32 gen = 1;                    // must equal NODE_PROTOCOL_GENERATION
-  bool accepted = 2;
-  uint64 total_size = 3;
-  optional string sha256 = 4;
-  optional string error = 5;
 }
 
 // Shared enum

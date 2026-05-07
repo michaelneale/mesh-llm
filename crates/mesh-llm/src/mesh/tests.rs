@@ -6,6 +6,7 @@ use super::heartbeat::{
 use super::*;
 use crate::proto::node::{GossipFrame, NodeRole, PeerAnnouncement, RouteTableRequest};
 use serial_test::serial;
+use skippy_protocol::proto::stage as skippy_stage_proto;
 use std::collections::HashSet;
 use tokio::sync::watch;
 
@@ -74,7 +75,10 @@ async fn make_test_node(role: super::NodeRole) -> Result<Node> {
         .build();
     let endpoint = Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(SecretKey::generate())
-        .alpns(vec![ALPN_V1.to_vec()])
+        .alpns(vec![
+            ALPN_V1.to_vec(),
+            skippy_protocol::STAGE_ALPN_V1.to_vec(),
+        ])
         .transport_config(transport_config)
         .bind_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))?
         .bind()
@@ -327,6 +331,20 @@ fn stage_control_request_timeout_uses_stage_load_floor() {
         Node::stage_control_request_timeout(&crate::inference::skippy::StageControlRequest::Load(
             load
         )),
+        std::time::Duration::from_secs(1360)
+    );
+
+    let mut prepare_load = stage_load_request();
+    prepare_load.source_model_bytes = Some(170 * 1024 * 1024 * 1024);
+    assert_eq!(
+        Node::stage_control_request_timeout(
+            &crate::inference::skippy::StageControlRequest::Prepare(
+                crate::inference::skippy::StagePrepareRequest {
+                    load: prepare_load,
+                    coordinator_id: None,
+                },
+            )
+        ),
         std::time::Duration::from_secs(1360)
     );
 }
@@ -933,9 +951,12 @@ fn artifact_transfer_authorization_is_limited_to_stage_assignment() {
         ],
     };
     let request = |relative_path: &str, expected_size: u64, expected_sha256: String| {
-        crate::proto::node::ArtifactTransferRequest {
-            gen: NODE_PROTOCOL_GENERATION,
+        skippy_stage_proto::StageArtifactTransferRequest {
+            gen: skippy_protocol::STAGE_PROTOCOL_GENERATION,
             requester_id: stage0.as_bytes().to_vec(),
+            topology_id: "topology-a".to_string(),
+            run_id: "run-a".to_string(),
+            stage_id: "stage-0".to_string(),
             package_ref: package_ref.clone(),
             manifest_sha256: manifest_sha256.clone(),
             relative_path: relative_path.to_string(),
@@ -951,6 +972,16 @@ fn artifact_transfer_authorization_is_limited_to_stage_assignment() {
         stage0,
         package.path(),
         &layer0,
+    )
+    .unwrap());
+
+    let mut wrong_topology = layer0.clone();
+    wrong_topology.topology_id = "other-topology".to_string();
+    assert!(!artifact_transfer_allowed_by_topology(
+        std::slice::from_ref(&topology),
+        stage0,
+        package.path(),
+        &wrong_topology,
     )
     .unwrap());
 
@@ -972,9 +1003,12 @@ fn artifact_transfer_authorization_is_limited_to_stage_assignment() {
     )
     .unwrap());
 
-    let manifest = crate::proto::node::ArtifactTransferRequest {
-        gen: NODE_PROTOCOL_GENERATION,
+    let manifest = skippy_stage_proto::StageArtifactTransferRequest {
+        gen: skippy_protocol::STAGE_PROTOCOL_GENERATION,
         requester_id: stage1.as_bytes().to_vec(),
+        topology_id: "topology-a".to_string(),
+        run_id: "run-a".to_string(),
+        stage_id: "stage-1".to_string(),
         package_ref,
         manifest_sha256,
         relative_path: "model-package.json".to_string(),
@@ -1037,17 +1071,13 @@ async fn artifact_transfer_stream_serves_authorized_stage_artifact() -> Result<(
         })
         .await;
 
-    let conn = {
-        let state = client.state.lock().await;
-        state
-            .connections
-            .get(&server_id)
-            .cloned()
-            .expect("connection to server must exist after join")
-    };
-    let request = crate::proto::node::ArtifactTransferRequest {
-        gen: NODE_PROTOCOL_GENERATION,
+    let conn = client.stage_connection_to_peer(server_id).await?;
+    let request = skippy_stage_proto::StageArtifactTransferRequest {
+        gen: skippy_protocol::STAGE_PROTOCOL_GENERATION,
         requester_id: client_id.as_bytes().to_vec(),
+        topology_id: "topology-artifact".to_string(),
+        run_id: "run-artifact".to_string(),
+        stage_id: "stage-0".to_string(),
         package_ref,
         manifest_sha256,
         relative_path: "layers/layer-000.gguf".to_string(),
@@ -1057,11 +1087,13 @@ async fn artifact_transfer_stream_serves_authorized_stage_artifact() -> Result<(
     };
 
     let (mut send, mut recv) = conn.open_bi().await?;
-    send.write_all(&[STREAM_ARTIFACT_TRANSFER]).await?;
+    send.write_all(&[skippy_protocol::STAGE_STREAM_ARTIFACT_TRANSFER])
+        .await?;
     write_len_prefixed(&mut send, &request.encode_to_vec()).await?;
     send.finish()?;
     let response_buf = read_len_prefixed(&mut recv).await?;
-    let response = crate::proto::node::ArtifactTransferResponse::decode(response_buf.as_slice())?;
+    let response =
+        skippy_stage_proto::StageArtifactTransferResponse::decode(response_buf.as_slice())?;
     assert!(response.accepted, "artifact response: {:?}", response.error);
     assert_eq!(response.total_size, 8);
     let expected_sha = sha256_hex(b"layer000");
@@ -1072,6 +1104,51 @@ async fn artifact_transfer_stream_serves_authorized_stage_artifact() -> Result<(
     assert!(package_dir.join("model-package.json").is_file());
 
     Ok(())
+}
+
+#[tokio::test]
+async fn artifact_transfer_body_read_has_idle_timeout() {
+    let (_writer, mut reader) = tokio::io::duplex(8);
+    let mut buffer = [0u8; 4];
+
+    let error = read_artifact_transfer_chunk(
+        &mut reader,
+        &mut buffer,
+        std::time::Duration::from_millis(10),
+    )
+    .await
+    .expect_err("stalled body read must time out");
+
+    assert!(error
+        .to_string()
+        .contains("artifact transfer body read idle timeout"));
+}
+
+#[test]
+fn partial_artifact_guard_removes_armed_partial_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join(".artifact.part");
+    std::fs::write(&path, b"partial").unwrap();
+
+    {
+        let _guard = PartialArtifactGuard::new(path.clone());
+    }
+
+    assert!(!path.exists());
+}
+
+#[test]
+fn partial_artifact_guard_preserves_disarmed_installed_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join(".artifact.part");
+    std::fs::write(&path, b"partial").unwrap();
+
+    {
+        let mut guard = PartialArtifactGuard::new(path.clone());
+        guard.disarm();
+    }
+
+    assert!(path.exists());
 }
 
 #[test]
@@ -1340,7 +1417,6 @@ fn incoming_peer_rejected_on_legacy_or_malformed_gossip() {
         STREAM_PEER_LEAVING,
         STREAM_PLUGIN_CHANNEL,
         STREAM_PLUGIN_BULK_TRANSFER,
-        STREAM_ARTIFACT_TRANSFER,
     ] {
         assert!(
             !stream_allowed_before_admission(stream_type),
@@ -1389,7 +1465,6 @@ fn passive_route_table_request_does_not_admit_peer() {
         STREAM_PEER_LEAVING,
         STREAM_PLUGIN_CHANNEL,
         STREAM_PLUGIN_BULK_TRANSFER,
-        STREAM_ARTIFACT_TRANSFER,
     ] {
         assert!(
             !stream_allowed_before_admission(gated),
