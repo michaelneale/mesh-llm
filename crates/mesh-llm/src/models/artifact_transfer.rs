@@ -40,6 +40,15 @@ struct ManifestArtifact {
     sha256: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct StageArtifactSelection {
+    pub(crate) layer_start: u32,
+    pub(crate) layer_end: u32,
+    pub(crate) include_embeddings: bool,
+    pub(crate) include_output: bool,
+    pub(crate) include_projectors: bool,
+}
+
 pub(crate) fn artifact_transfer_enabled() -> bool {
     std::env::var("MESH_LLM_ARTIFACT_TRANSFER")
         .ok()
@@ -70,7 +79,7 @@ pub(crate) fn safe_relative_artifact_path(path: &str) -> Result<PathBuf> {
 pub(crate) fn package_cache_dir_for_ref(package_ref: &str) -> Result<PathBuf> {
     let parsed = parse_hf_package_ref(package_ref)?;
     let revision_path = safe_relative_artifact_path(&parsed.revision)
-        .with_context(|| format!("unsupported package revision for peer transfer"))?;
+        .context("unsupported package revision for peer transfer")?;
     Ok(hf_repo_cache_root(&parsed.repo)
         .join("snapshots")
         .join(revision_path))
@@ -94,11 +103,7 @@ pub(crate) fn required_stage_package_artifacts(
     package_dir: &Path,
     package_ref: &str,
     manifest_sha256: &str,
-    layer_start: u32,
-    layer_end: u32,
-    include_embeddings: bool,
-    include_output: bool,
-    include_projectors: bool,
+    selection: StageArtifactSelection,
 ) -> Result<Vec<PackageArtifactRequest>> {
     validate_sha256(manifest_sha256).context("invalid package manifest sha256")?;
     let manifest_contents = read_bounded_package_manifest(package_dir)?;
@@ -121,7 +126,7 @@ pub(crate) fn required_stage_package_artifacts(
             .pointer("/shared/metadata")
             .context("manifest missing shared metadata")?,
     )?;
-    if include_embeddings {
+    if selection.include_embeddings {
         if let Some(embeddings) = manifest.pointer("/shared/embeddings") {
             push_manifest_artifact(
                 &mut out,
@@ -132,7 +137,7 @@ pub(crate) fn required_stage_package_artifacts(
             )?;
         }
     }
-    if include_output {
+    if selection.include_output {
         if let Some(output) = manifest.pointer("/shared/output") {
             push_manifest_artifact(&mut out, &mut seen, package_ref, manifest_sha256, output)?;
         }
@@ -143,12 +148,12 @@ pub(crate) fn required_stage_package_artifacts(
                 .get("layer_index")
                 .and_then(Value::as_u64)
                 .unwrap_or(index as u64) as u32;
-            if layer_index >= layer_start && layer_index < layer_end {
+            if layer_index >= selection.layer_start && layer_index < selection.layer_end {
                 push_manifest_artifact(&mut out, &mut seen, package_ref, manifest_sha256, layer)?;
             }
         }
     }
-    if include_projectors {
+    if selection.include_projectors {
         if let Some(projectors) = manifest.get("projectors").and_then(Value::as_array) {
             for projector in projectors {
                 push_manifest_artifact(
@@ -220,7 +225,7 @@ pub(crate) fn servable_artifact_from_request(
     let path = package_dir.join(&relative_path);
     ensure_path_inside_repo_root(&repo_root, &path)?;
 
-    if relative_path == PathBuf::from(PACKAGE_MANIFEST_FILE) {
+    if relative_path.as_path() == Path::new(PACKAGE_MANIFEST_FILE) {
         let metadata = fs::metadata(&path).context("artifact is not cached")?;
         anyhow::ensure!(metadata.is_file(), "artifact is not a file");
         anyhow::ensure!(
@@ -566,11 +571,13 @@ mod tests {
             &package_dir,
             &package_ref,
             &manifest_sha,
-            1,
-            2,
-            false,
-            true,
-            true,
+            StageArtifactSelection {
+                layer_start: 1,
+                layer_end: 2,
+                include_embeddings: false,
+                include_output: true,
+                include_projectors: true,
+            },
         )
         .unwrap();
         let paths = artifacts
@@ -608,11 +615,13 @@ mod tests {
             &package_dir,
             &package_ref,
             &manifest_sha,
-            0,
-            1,
-            true,
-            false,
-            false,
+            StageArtifactSelection {
+                layer_start: 0,
+                layer_end: 1,
+                include_embeddings: true,
+                include_output: false,
+                include_projectors: false,
+            },
         )
         .is_err());
 

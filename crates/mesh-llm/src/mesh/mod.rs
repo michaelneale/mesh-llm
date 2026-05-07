@@ -180,11 +180,13 @@ fn artifact_transfer_allowed_by_topology(
                 package_dir,
                 &topology.package_ref,
                 &topology.manifest_sha256,
-                assignment.layer_start,
-                assignment.layer_end,
-                assignment.layer_start == 0,
-                include_output,
-                assignment.layer_start == 0,
+                crate::models::artifact_transfer::StageArtifactSelection {
+                    layer_start: assignment.layer_start,
+                    layer_end: assignment.layer_end,
+                    include_embeddings: assignment.layer_start == 0,
+                    include_output,
+                    include_projectors: assignment.layer_start == 0,
+                },
             )?;
             if allowed.iter().any(|artifact| {
                 artifact.relative_path == relative_path
@@ -4428,11 +4430,13 @@ impl Node {
             &package_dir,
             &load.package_ref,
             &load.manifest_sha256,
-            load.layer_start,
-            load.layer_end,
-            load.layer_start == 0,
-            load.downstream.is_none(),
-            load.layer_start == 0,
+            crate::models::artifact_transfer::StageArtifactSelection {
+                layer_start: load.layer_start,
+                layer_end: load.layer_end,
+                include_embeddings: load.layer_start == 0,
+                include_output: load.downstream.is_none(),
+                include_projectors: load.layer_start == 0,
+            },
         )?;
         for artifact in artifacts {
             if crate::models::artifact_transfer::local_artifact_satisfies(
@@ -4522,8 +4526,8 @@ impl Node {
                 response.total_size == expected_size,
                 "peer artifact size mismatch"
             );
-        } else if artifact.relative_path
-            == std::path::PathBuf::from(crate::models::artifact_transfer::PACKAGE_MANIFEST_FILE)
+        } else if artifact.relative_path.as_path()
+            == std::path::Path::new(crate::models::artifact_transfer::PACKAGE_MANIFEST_FILE)
         {
             anyhow::ensure!(
                 response.total_size <= crate::models::artifact_transfer::MAX_PACKAGE_MANIFEST_BYTES,
