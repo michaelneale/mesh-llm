@@ -1,6 +1,6 @@
 use crate::models::{
-    capabilities, catalog, huggingface_hub_cache_dir, ModelCapabilities, ModelDetails,
-    SearchArtifactFilter, SearchHit, SearchSort,
+    capabilities, catalog, huggingface_hub_cache_dir, remote_catalog, ModelCapabilities,
+    ModelDetails, SearchArtifactFilter, SearchHit, SearchSort,
 };
 use crate::models::{DeleteResult as CliDeleteResult, ResolvedModel as CliResolvedModel};
 use crate::system::hardware;
@@ -21,7 +21,7 @@ pub(crate) trait SearchFormatter {
         &self,
         query: &str,
         filter: SearchArtifactFilter,
-        results: &[&'static catalog::CatalogModel],
+        results: &[remote_catalog::RemoteCatalogModel],
         limit: usize,
         sort: SearchSort,
     ) -> Result<()>;
@@ -50,14 +50,14 @@ pub(crate) struct InstalledRow {
     pub(crate) path: PathBuf,
     pub(crate) size: Option<u64>,
     pub(crate) layer_count: Option<usize>,
-    pub(crate) catalog_model: Option<&'static catalog::CatalogModel>,
+    pub(crate) catalog_model: Option<remote_catalog::RemoteCatalogModel>,
     pub(crate) capabilities: ModelCapabilities,
     pub(crate) managed_by_mesh: bool,
     pub(crate) last_used_at: Option<String>,
 }
 
 pub(crate) trait ModelsFormatter: SearchFormatter {
-    fn render_recommended(&self, models: &[&'static catalog::CatalogModel]) -> Result<()>;
+    fn render_recommended(&self, models: &[remote_catalog::RemoteCatalogModel]) -> Result<()>;
     fn render_installed(&self, rows: &[InstalledRow]) -> Result<()>;
     fn render_show(&self, details: &ModelDetails, variants: Option<&[ModelDetails]>) -> Result<()>;
     fn render_download(
@@ -261,17 +261,14 @@ pub(crate) fn variant_selector_label(exact_ref: &str) -> String {
         .to_string()
 }
 
-pub(crate) fn catalog_model_is_mlx(model: &catalog::CatalogModel) -> bool {
-    model
-        .source_file()
-        .map(|file| {
-            file.ends_with("model.safetensors") || file.ends_with("model.safetensors.index.json")
-        })
-        .unwrap_or(false)
-        || model.url.contains("model.safetensors")
+pub(crate) fn catalog_model_is_mlx(model: &remote_catalog::RemoteCatalogModel) -> bool {
+    model.source_file().ends_with("model.safetensors")
+        || model
+            .source_file()
+            .ends_with("model.safetensors.index.json")
 }
 
-pub(crate) fn catalog_model_kind(model: &catalog::CatalogModel) -> &'static str {
+pub(crate) fn catalog_model_kind(model: &remote_catalog::RemoteCatalogModel) -> &'static str {
     if catalog_model_is_mlx(model) {
         "🍎 MLX"
     } else {
@@ -291,12 +288,14 @@ pub(crate) fn installed_model_kind_code(path: &Path) -> &'static str {
     model_kind_code(installed_model_kind(path))
 }
 
-pub(crate) fn catalog_model_kind_code(model: &catalog::CatalogModel) -> &'static str {
+pub(crate) fn catalog_model_kind_code(model: &remote_catalog::RemoteCatalogModel) -> &'static str {
     model_kind_code(catalog_model_kind(model))
 }
 
-pub(crate) fn catalog_model_capabilities(model: &catalog::CatalogModel) -> ModelCapabilities {
-    capabilities::infer_catalog_capabilities(model)
+pub(crate) fn catalog_model_capabilities(
+    model: &remote_catalog::RemoteCatalogModel,
+) -> ModelCapabilities {
+    capabilities::infer_remote_catalog_capabilities(model)
 }
 
 pub(crate) fn huggingface_cache_dir() -> PathBuf {

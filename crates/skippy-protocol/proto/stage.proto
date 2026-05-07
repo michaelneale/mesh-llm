@@ -61,6 +61,7 @@ message LoadStage {
   optional uint32 n_batch = 26;
   optional uint32 n_ubatch = 27;
   StageFlashAttnType flash_attn_type = 28;
+  optional uint64 source_model_bytes = 29;
 }
 
 message StopStage {

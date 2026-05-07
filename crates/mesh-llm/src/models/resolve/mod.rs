@@ -2,15 +2,14 @@ use super::local::HuggingFaceModelIdentity;
 use super::ModelCapabilities;
 use super::{
     capabilities, catalog, find_model_path, format_size_bytes, huggingface_identity_for_path,
-    track_model_usage,
+    remote_catalog, track_model_usage,
 };
 use crate::cli::terminal_progress::start_spinner;
 use crate::models::usage::ModelUsageRecord;
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use hf_hub::{ListModelsParams, RepoInfo, RepoInfoParams};
 use model_artifact::{select_primary_artifact_file, ModelArtifactFile};
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::HashSet;
 // std imports kept minimal; filesystem ops via std::fs::read_dir used in helper
@@ -50,15 +49,11 @@ pub enum ShowVariantsProgress {
 
 #[derive(Clone, Debug)]
 enum ExactModelRef {
-    Catalog(&'static catalog::CatalogModel),
+    Catalog(Box<remote_catalog::RemoteCatalogModel>),
     HuggingFace {
         repo: String,
         revision: Option<String>,
         file: String,
-    },
-    Url {
-        url: String,
-        filename: String,
     },
 }
 
@@ -86,14 +81,14 @@ pub(super) fn merge_capabilities(
     }
 }
 
-pub fn find_catalog_model_exact(query: &str) -> Option<&'static catalog::CatalogModel> {
-    let q = query.to_lowercase();
-    catalog::MODEL_CATALOG.iter().find(|model| {
-        model.name.to_lowercase() == q
-            || catalog_model_ref(model).to_lowercase() == q
-            || model.file.to_lowercase() == q
-            || model.file.trim_end_matches(".gguf").to_lowercase() == q
-    })
+pub fn find_remote_catalog_model_exact(query: &str) -> Option<remote_catalog::RemoteCatalogModel> {
+    remote_catalog::find_model_exact(query)
+}
+
+pub fn find_loaded_remote_catalog_model_exact(
+    query: &str,
+) -> Option<remote_catalog::RemoteCatalogModel> {
+    remote_catalog::find_loaded_model_exact(query)
 }
 
 pub fn canonicalize_interest_model_ref(input: &str) -> Result<String> {
@@ -105,72 +100,48 @@ pub fn canonicalize_interest_model_ref(input: &str) -> Result<String> {
         bail!("Invalid 'model_ref'. Use a canonical ref returned by /api/search, not a direct URL");
     }
 
-    if let Some(model) = find_catalog_model_exact(trimmed) {
-        return Ok(catalog_model_ref(model));
+    if let Some(model) = find_loaded_remote_catalog_model_exact(trimmed) {
+        return Ok(remote_catalog_model_ref(&model));
     }
 
-    match parse_exact_model_ref(trimmed)? {
-        ExactModelRef::Catalog(model) => Ok(catalog_model_ref(model)),
-        ExactModelRef::HuggingFace {
-            repo,
-            revision,
-            file,
-        } => {
-            if is_quant_like_selector(&file) {
-                return Ok(format_repo_selector_ref(&repo, revision.as_deref(), &file));
-            }
-            Ok(format_huggingface_display_ref(
-                &repo,
-                revision.as_deref(),
-                &file,
-            ))
-        }
-        ExactModelRef::Url { .. } => bail!(
-            "Invalid 'model_ref'. Use a canonical ref returned by /api/search, not a direct URL"
-        ),
+    if let Some((repo, revision, file)) = parse_huggingface_ref(trimmed) {
+        return Ok(canonicalize_huggingface_interest_ref(
+            &repo,
+            revision.as_deref(),
+            &file,
+        ));
     }
-}
-
-pub fn catalog_model_ref(model: &catalog::CatalogModel) -> String {
-    if let (Some(repo), _revision, Some(file)) = (
-        model.source_repo(),
-        model.source_revision(),
-        model.source_file(),
-    ) {
-        return format_huggingface_display_ref(repo, None, file);
+    if let Some((repo, revision, selector)) = parse_huggingface_repo_ref(trimmed) {
+        let file = selector.unwrap_or_default();
+        return Ok(canonicalize_huggingface_interest_ref(
+            &repo,
+            revision.as_deref(),
+            &file,
+        ));
     }
 
-    let mut repo_name = String::with_capacity(model.name.len());
-    for ch in model.name.chars() {
-        if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
-            repo_name.push(ch);
-        } else {
-            repo_name.push('-');
-        }
-    }
-    let repo_name = repo_name.trim_matches('-');
-    let repo_name = if repo_name.is_empty() {
-        "model"
-    } else {
-        repo_name
-    };
-
-    let mut hasher = Sha256::new();
-    hasher.update(model.url.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(model.file.as_bytes());
-    let digest = format!("{:x}", hasher.finalize());
-    model_ref::format_model_ref(
-        &format!("catalog-gguf/{repo_name}"),
-        None,
-        Some(&format!("sha256-{}", &digest[..12])),
+    bail!(
+        "Expected an exact model ref. Use a catalog id or a Hugging Face ref like org/repo, org/repo@rev:QUANT, org/repo/file.gguf, org/repo/file-stem for split GGUFs, org/repo/model.safetensors, or org/repo/model-00001-of-00048.safetensors."
     )
 }
 
-pub fn catalog_model_draft_ref(model: &catalog::CatalogModel) -> Option<String> {
+fn canonicalize_huggingface_interest_ref(repo: &str, revision: Option<&str>, file: &str) -> String {
+    if is_quant_like_selector(file) {
+        return format_repo_selector_ref(repo, revision, file);
+    }
+    format_huggingface_display_ref(repo, revision, file)
+}
+
+pub fn remote_catalog_model_ref(model: &remote_catalog::RemoteCatalogModel) -> String {
+    model.exact_ref()
+}
+
+pub fn remote_catalog_model_draft_ref(
+    model: &remote_catalog::RemoteCatalogModel,
+) -> Option<String> {
     model.draft.as_deref().map(|draft| {
-        find_catalog_model_exact(draft)
-            .map(catalog_model_ref)
+        find_remote_catalog_model_exact(draft)
+            .map(|draft_model| remote_catalog_model_ref(&draft_model))
             .unwrap_or_else(|| draft.to_string())
     })
 }
@@ -198,9 +169,7 @@ pub async fn download_model_ref_with_progress_details(
 pub async fn download_exact_ref_with_progress(input: &str, progress: bool) -> Result<PathBuf> {
     let input = canonicalize_model_ref_input(input).await?;
     match parse_exact_model_ref(&input)? {
-        ExactModelRef::Catalog(model) => {
-            catalog::download_model_with_progress(model, progress).await
-        }
+        ExactModelRef::Catalog(model) => download_remote_catalog_model(&model, progress).await,
         ExactModelRef::HuggingFace {
             repo,
             revision,
@@ -208,9 +177,9 @@ pub async fn download_exact_ref_with_progress(input: &str, progress: bool) -> Re
         } => {
             let file = resolve_huggingface_file(&repo, revision.as_deref(), &file).await?;
             if let Some(model) =
-                matching_catalog_primary_for_huggingface(&repo, revision.as_deref(), &file)
+                matching_remote_catalog_primary_for_huggingface(&repo, revision.as_deref(), &file)
             {
-                return catalog::download_model_with_progress(model, progress).await;
+                return download_remote_catalog_model(&model, progress).await;
             }
             catalog::download_hf_repo_file_with_progress_label(
                 &repo,
@@ -220,19 +189,6 @@ pub async fn download_exact_ref_with_progress(input: &str, progress: bool) -> Re
                 progress,
             )
             .await
-        }
-        ExactModelRef::Url { url, filename } => {
-            if let Some(model) = matching_catalog_primary_for_url(&url) {
-                return catalog::download_model_with_progress(model, progress).await;
-            }
-            let dest = catalog::models_dir().join(&filename);
-            if existing_download(&dest).await {
-                return Ok(dest);
-            }
-            if progress {
-                eprintln!("📥 Downloading {}...", dest.display());
-            }
-            catalog::download_hf_split_gguf(&url, &filename).await
         }
     }
 }
@@ -249,12 +205,35 @@ pub async fn resolve_model_spec_with_progress(input: &Path, progress: bool) -> R
     }
 
     if input.exists() {
-        record_resolved_model_usage(input, Some(raw.as_ref()));
-        return Ok(input.to_path_buf());
+        let resolved = input.canonicalize().unwrap_or_else(|_| input.to_path_buf());
+        record_resolved_model_usage(&resolved, Some(raw.as_ref()));
+        return Ok(resolved);
     }
 
     if !raw.contains('/') {
         let installed_name = raw.strip_suffix(".gguf").unwrap_or(&raw);
+        // Prefer the remote meshllm/catalog on HuggingFace. It can be updated
+        // independently of mesh-llm releases and is the source of truth for new
+        // curated models and layer-package metadata.
+        let raw_owned = raw.to_string();
+        if let Some(hf_ref) = tokio::task::spawn_blocking(move || {
+            super::remote_catalog::resolve_model_download(&raw_owned)
+        })
+        .await
+        .context("join remote catalog resolve task")?
+        {
+            if progress {
+                eprintln!("📥 Found in remote catalog: {}", hf_ref.name);
+            }
+            return catalog::download_hf_repo_file_with_progress_label(
+                &hf_ref.repo,
+                hf_ref.revision.as_deref(),
+                &hf_ref.file,
+                &hf_ref.name,
+                progress,
+            )
+            .await;
+        }
         let installed_path = find_model_path(installed_name);
         if installed_path.exists() {
             let model_ref = huggingface_identity_for_path(&installed_path)
@@ -262,9 +241,6 @@ pub async fn resolve_model_spec_with_progress(input: &Path, progress: bool) -> R
                 .unwrap_or_else(|| installed_name.to_string());
             record_resolved_model_usage(&installed_path, Some(&model_ref));
             return Ok(installed_path);
-        }
-        if let Some(entry) = find_catalog_model_exact(&raw).or_else(|| catalog::find_model(&raw)) {
-            return catalog::download_model_with_progress(entry, progress).await;
         }
         if let Ok(canonical) = canonicalize_model_ref_input(&raw).await {
             if canonical != raw {
@@ -295,26 +271,17 @@ pub async fn show_exact_model(input: &str) -> Result<ModelDetails> {
     let input = canonicalize_model_ref_input(input).await?;
     match parse_exact_model_ref(&input)? {
         ExactModelRef::Catalog(model) => {
-            let exact_ref = catalog_model_ref(model);
+            let exact_ref = remote_catalog_model_ref(&model);
             Ok(ModelDetails {
                 display_name: exact_ref.clone(),
                 exact_ref,
                 source: "catalog",
-                kind: catalog_model_kind(model),
-                download_url: match (
-                    model.source_repo(),
-                    model.source_revision(),
-                    model.source_file(),
-                ) {
-                    (Some(repo), revision, Some(file)) => {
-                        huggingface_resolve_url(repo, revision, file)
-                    }
-                    _ => model.url.to_string(),
-                },
-                size_label: Some(model.size.to_string()),
-                description: Some(model.description.to_string()),
-                draft: catalog_model_draft_ref(model),
-                capabilities: capabilities::infer_catalog_capabilities(model),
+                kind: remote_catalog_model_kind(&model),
+                download_url: model.resolve_url(),
+                size_label: model.size.clone(),
+                description: model.description.clone(),
+                draft: remote_catalog_model_draft_ref(&model),
+                capabilities: capabilities::infer_remote_catalog_capabilities(&model),
             })
         }
         ExactModelRef::HuggingFace {
@@ -324,15 +291,16 @@ pub async fn show_exact_model(input: &str) -> Result<ModelDetails> {
         } => {
             let file = resolve_huggingface_file(&repo, revision.as_deref(), &file).await?;
             let exact_ref = format_huggingface_display_ref(&repo, revision.as_deref(), &file);
-            let catalog = matching_catalog_model_for_huggingface(&repo, revision.as_deref(), &file);
+            let catalog =
+                matching_remote_catalog_model_for_huggingface(&repo, revision.as_deref(), &file);
             let download_url = huggingface_resolve_url(&repo, revision.as_deref(), &file);
             let size_label = match catalog {
-                Some(model) => Some(model.size.to_string()),
+                Some(ref model) => model.size.clone(),
                 None => remote_size_label(&download_url).await,
             };
             let capabilities = match catalog {
-                Some(model) => {
-                    let base = capabilities::infer_catalog_capabilities(model);
+                Some(ref model) => {
+                    let base = capabilities::infer_remote_catalog_capabilities(model);
                     let remote = capabilities::infer_remote_hf_capabilities(
                         &repo,
                         revision.as_deref(),
@@ -363,29 +331,9 @@ pub async fn show_exact_model(input: &str) -> Result<ModelDetails> {
                 kind: artifact_kind_for_file(&file),
                 download_url,
                 size_label,
-                description: catalog.map(|model| model.description.to_string()),
-                draft: catalog.and_then(catalog_model_draft_ref),
+                description: catalog.as_ref().and_then(|model| model.description.clone()),
+                draft: catalog.as_ref().and_then(remote_catalog_model_draft_ref),
                 capabilities,
-            })
-        }
-        ExactModelRef::Url { url, filename } => {
-            let catalog = matching_catalog_model_for_url(&url);
-            let size_label = match catalog {
-                Some(model) => Some(model.size.to_string()),
-                None => remote_size_label(&url).await,
-            };
-            Ok(ModelDetails {
-                display_name: filename,
-                exact_ref: url.clone(),
-                source: "url",
-                kind: artifact_kind_for_file(&url),
-                download_url: url,
-                size_label,
-                description: catalog.map(|model| model.description.to_string()),
-                draft: catalog.and_then(catalog_model_draft_ref),
-                capabilities: catalog
-                    .map(capabilities::infer_catalog_capabilities)
-                    .unwrap_or_default(),
             })
         }
     }
@@ -475,16 +423,7 @@ fn format_repo_selector_ref(repo: &str, revision: Option<&str>, selector: &str) 
 }
 
 fn format_huggingface_display_ref(repo: &str, revision: Option<&str>, file: &str) -> String {
-    if let Some(selector) = quant_selector_from_gguf_file(file) {
-        return format_repo_selector_ref(repo, revision, &selector);
-    }
-    if is_primary_mlx_weight_file(file) {
-        return match revision {
-            Some(revision) => format!("{repo}@{revision}"),
-            None => repo.to_string(),
-        };
-    }
-    format_huggingface_exact_ref(repo, revision, file)
+    model_resolver::format_huggingface_display_ref(repo, revision, file)
 }
 
 fn artifact_kind_for_file(file: &str) -> &'static str {
@@ -495,29 +434,17 @@ fn artifact_kind_for_file(file: &str) -> &'static str {
     }
 }
 
-fn catalog_model_kind(model: &catalog::CatalogModel) -> &'static str {
-    if model
-        .source_file()
-        .map(|file| {
-            file.ends_with("model.safetensors") || file.ends_with("model.safetensors.index.json")
-        })
-        .unwrap_or(false)
-        || model.url.contains("model.safetensors")
-    {
-        "🍎 MLX"
-    } else {
-        "🦙 GGUF"
-    }
+fn remote_catalog_model_kind(model: &remote_catalog::RemoteCatalogModel) -> &'static str {
+    artifact_kind_for_file(model.source_file())
 }
 
 pub fn installed_model_capabilities(model_name: &str) -> ModelCapabilities {
     let path = find_model_path(model_name);
-    let catalog = find_catalog_model_exact(model_name);
-    capabilities::infer_local_model_capabilities(model_name, &path, catalog)
+    capabilities::infer_local_model_capabilities(model_name, &path)
 }
 
 pub fn installed_model_display_name(model_name: &str) -> String {
-    find_catalog_model_exact(model_name)
+    find_loaded_remote_catalog_model_exact(model_name)
         .map(|model| model.name.clone())
         .unwrap_or_else(|| model_name.to_string())
 }
@@ -539,7 +466,7 @@ pub(crate) async fn parse_delete_model_ref(input: &str) -> Result<DeleteModelRef
         bail!("Delete does not support filesystem paths. Use a model stem or Hugging Face ref.");
     }
 
-    if let Some(model) = find_catalog_model_exact(input) {
+    if let Some(model) = find_remote_catalog_model_exact(input) {
         let stem = model.file.trim_end_matches(".gguf");
         if find_model_path(stem).exists() {
             return Ok(DeleteModelRef::LocalStem(stem.to_string()));
@@ -567,205 +494,52 @@ pub(crate) async fn parse_delete_model_ref(input: &str) -> Result<DeleteModelRef
             revision,
             file,
         }),
-        ExactModelRef::Url { .. } => {
-            bail!("Delete does not support direct URLs. Use a model stem or Hugging Face ref.")
-        }
     }
 }
 
-pub(super) fn catalog_hf_asset_ref(
-    model: &'static catalog::CatalogModel,
-    file_name: &str,
-) -> Option<(String, Option<String>, String)> {
-    if model.file == file_name {
-        return Some((
-            model.source_repo()?.to_string(),
-            model.source_revision().map(str::to_string),
-            model.source_file()?.to_string(),
-        ));
-    }
-
-    let source_url = if let Some(asset) = model
-        .extra_files
-        .iter()
-        .find(|asset| asset.file == file_name)
-    {
-        asset.url.as_str()
-    } else if let Some(asset) = model.mmproj.as_ref() {
-        if asset.file == file_name {
-            asset.url.as_str()
-        } else {
-            return None;
-        }
-    } else {
-        return None;
-    };
-
-    parse_hf_resolve_url(source_url)
-}
-
-pub(super) fn matching_catalog_model_for_huggingface(
+pub(super) fn matching_remote_catalog_model_for_huggingface(
     repo: &str,
     revision: Option<&str>,
     file: &str,
-) -> Option<&'static catalog::CatalogModel> {
-    let repo = repo.to_lowercase();
-    let revision = revision.map(|value| value.to_lowercase());
-    let file = file.to_lowercase();
-
-    catalog::MODEL_CATALOG
-        .iter()
-        .find(|model| {
-            std::iter::once(model.file.as_str())
-                .chain(model.extra_files.iter().map(|asset| asset.file.as_str()))
-                .chain(model.mmproj.iter().map(|asset| asset.file.as_str()))
-                .any(|asset_name| {
-                    let Some((asset_repo, asset_revision, asset_file)) =
-                        catalog_hf_asset_ref(model, asset_name)
-                    else {
-                        return false;
-                    };
-                    if asset_repo.to_lowercase() != repo || asset_file.to_lowercase() != file {
-                        return false;
-                    }
-                    match &revision {
-                        Some(revision) => {
-                            asset_revision.map(|value| value.to_lowercase())
-                                == Some(revision.clone())
-                        }
-                        None => true,
-                    }
-                })
-        })
-        .or_else(|| {
-            if revision.is_some() {
-                None
-            } else {
-                matching_catalog_model_by_basename(file.as_str())
-            }
-        })
+) -> Option<remote_catalog::RemoteCatalogModel> {
+    remote_catalog::matching_model_for_huggingface(repo, revision, file)
 }
 
-fn matching_catalog_model_for_url(url: &str) -> Option<&'static catalog::CatalogModel> {
-    catalog::MODEL_CATALOG
-        .iter()
-        .find(|model| model.url.eq_ignore_ascii_case(url))
-        .or_else(|| matching_catalog_model_by_basename(url))
-}
-
-fn matching_catalog_primary_for_huggingface(
+fn matching_remote_catalog_primary_for_huggingface(
     repo: &str,
     revision: Option<&str>,
     file: &str,
-) -> Option<&'static catalog::CatalogModel> {
-    let model = matching_catalog_model_for_huggingface(repo, revision, file)?;
-    match catalog_hf_asset_ref(model, model.file.as_str()) {
-        Some((asset_repo, asset_revision, asset_file))
-            if asset_repo.eq_ignore_ascii_case(repo)
-                && asset_file.eq_ignore_ascii_case(file)
-                && match revision {
-                    Some(revision) => asset_revision
-                        .as_deref()
-                        .map(|value| value.eq_ignore_ascii_case(revision))
-                        .unwrap_or(false),
-                    None => true,
-                } =>
-        {
-            Some(model)
-        }
-        _ => None,
-    }
+) -> Option<remote_catalog::RemoteCatalogModel> {
+    remote_catalog::matching_primary_for_huggingface(repo, revision, file)
 }
 
-fn matching_catalog_primary_for_url(url: &str) -> Option<&'static catalog::CatalogModel> {
-    let model = matching_catalog_model_for_url(url)?;
-    if model.url.eq_ignore_ascii_case(url) {
-        Some(model)
-    } else {
-        None
-    }
+#[cfg(test)]
+fn matching_remote_catalog_primary_for_url(
+    url: &str,
+) -> Option<remote_catalog::RemoteCatalogModel> {
+    remote_catalog::matching_primary_for_url(url)
 }
 
-fn matching_catalog_model_by_basename(repo_file: &str) -> Option<&'static catalog::CatalogModel> {
-    let basename = Path::new(repo_file)
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or(repo_file)
-        .to_lowercase();
-    catalog::MODEL_CATALOG.iter().find(|model| {
-        model.file.to_lowercase() == basename
-            || model.file.trim_end_matches(".gguf").to_lowercase()
-                == basename.trim_end_matches(".gguf")
-    })
-}
-
+#[cfg(test)]
 pub(super) fn parse_hf_resolve_url(url: &str) -> Option<(String, Option<String>, String)> {
-    let tail = url
-        .strip_prefix("https://huggingface.co/")
-        .or_else(|| url.strip_prefix("http://huggingface.co/"))?;
-    let parts: Vec<&str> = tail.split('/').collect();
-    if parts.len() < 5 || parts.get(2) != Some(&"resolve") {
-        return None;
-    }
-    Some((
-        format!("{}/{}", parts[0], parts[1]),
-        parts.get(3).map(|value| value.to_string()),
-        parts[4..].join("/"),
-    ))
+    model_resolver::parse_hf_resolve_url(url)
 }
 
 pub(super) fn parse_huggingface_ref(input: &str) -> Option<(String, Option<String>, String)> {
-    if let Some(parsed) = parse_hf_resolve_url(input) {
-        return Some(parsed);
-    }
-
-    let parts: Vec<&str> = input.splitn(3, '/').collect();
-    if parts.len() != 3 {
-        return None;
-    }
-    if parts[0].is_empty() || parts[1].is_empty() || parts[0].contains(':') {
-        return None;
-    }
-    let (repo_tail, revision) = match parts[1].split_once('@') {
-        Some((repo, revision)) => (repo, Some(revision.to_string())),
-        None => (parts[1], None),
-    };
-    if repo_tail.is_empty() {
-        return None;
-    }
-    Some((
-        format!("{}/{}", parts[0], repo_tail),
-        revision,
-        parts[2].to_string(),
-    ))
+    model_resolver::parse_huggingface_file_ref(input)
 }
 
 fn parse_huggingface_repo_ref(input: &str) -> Option<(String, Option<String>, Option<String>)> {
-    if input.starts_with("http://") || input.starts_with("https://") {
-        return None;
-    }
-    parse_model_ref_tuple(input)
+    model_resolver::parse_huggingface_repo_ref(input)
 }
 
 fn parse_huggingface_repo_url(input: &str) -> Option<(String, Option<String>, Option<String>)> {
-    if !input.starts_with("https://huggingface.co/") && !input.starts_with("http://huggingface.co/")
-    {
-        return None;
-    }
-    parse_model_ref_tuple(input)
-}
-
-fn parse_model_ref_tuple(input: &str) -> Option<(String, Option<String>, Option<String>)> {
-    let parsed = model_ref::ModelRef::parse(input).ok()?;
-    if parsed.repo.split('/').count() != 2 {
-        return None;
-    }
-    Some((parsed.repo, parsed.revision, parsed.selector))
+    model_resolver::parse_huggingface_repo_url(input)
 }
 
 fn parse_exact_model_ref(input: &str) -> Result<ExactModelRef> {
-    if let Some(model) = find_catalog_model_exact(input) {
-        return Ok(ExactModelRef::Catalog(model));
+    if let Some(model) = find_remote_catalog_model_exact(input) {
+        return Ok(ExactModelRef::Catalog(Box::new(model)));
     }
     if let Some((repo, revision, file)) = parse_huggingface_ref(input) {
         return Ok(ExactModelRef::HuggingFace {
@@ -788,14 +562,8 @@ fn parse_exact_model_ref(input: &str) -> Result<ExactModelRef> {
             file: selector.unwrap_or_default(),
         });
     }
-    if input.starts_with("http://") || input.starts_with("https://") {
-        return Ok(ExactModelRef::Url {
-            url: input.to_string(),
-            filename: remote_filename(input)?,
-        });
-    }
     bail!(
-        "Expected an exact model ref. Use a catalog id, a Hugging Face ref like org/repo, org/repo@rev:QUANT, org/repo/file.gguf, org/repo/file-stem for split GGUFs, org/repo/model.safetensors, or org/repo/model-00001-of-00048.safetensors, or a direct URL."
+        "Expected an exact model ref. Use a catalog id or a Hugging Face ref like org/repo, org/repo@rev:QUANT, org/repo/file.gguf, org/repo/file-stem for split GGUFs, org/repo/model.safetensors, or org/repo/model-00001-of-00048.safetensors."
     )
 }
 
@@ -859,7 +627,7 @@ async fn discover_hf_repo_for_bare_name(name: &str) -> Result<Option<String>> {
 }
 
 async fn canonicalize_model_ref_input(input: &str) -> Result<String> {
-    if parse_exact_model_ref(input).is_ok() || find_catalog_model_exact(input).is_some() {
+    if parse_exact_model_ref(input).is_ok() {
         return Ok(input.to_string());
     }
     if input.contains('/') || input.starts_with("http://") || input.starts_with("https://") {
@@ -877,21 +645,7 @@ async fn canonicalize_model_ref_input(input: &str) -> Result<String> {
 }
 
 fn is_split_mlx_first_shard(file: &str) -> bool {
-    let Some(rest) = file.strip_prefix("model-") else {
-        return false;
-    };
-    let Some(rest) = rest.strip_suffix(".safetensors") else {
-        return false;
-    };
-    let Some((left, right)) = rest.split_once("-of-") else {
-        return false;
-    };
-    left == "00001" && right.len() == 5 && right.bytes().all(|byte| byte.is_ascii_digit())
-}
-
-fn is_primary_mlx_weight_file(file: &str) -> bool {
-    let basename = file.rsplit('/').next().unwrap_or(file);
-    basename.eq_ignore_ascii_case("model.safetensors") || is_split_mlx_first_shard(basename)
+    model_resolver::is_split_mlx_first_shard(file)
 }
 
 fn select_default_hf_file_from_siblings(siblings: &[String]) -> Option<String> {
@@ -1332,31 +1086,7 @@ async fn resolve_huggingface_file(
 }
 
 pub(super) fn huggingface_resolve_url(repo: &str, revision: Option<&str>, file: &str) -> String {
-    let revision = revision.unwrap_or("main");
-    format!("https://huggingface.co/{repo}/resolve/{revision}/{file}")
-}
-
-fn format_huggingface_exact_ref(repo: &str, revision: Option<&str>, file: &str) -> String {
-    match revision {
-        Some(revision) => format!("{repo}@{revision}/{file}"),
-        None => format!("{repo}/{file}"),
-    }
-}
-
-fn remote_filename(input: &str) -> Result<String> {
-    input
-        .rsplit('/')
-        .next()
-        .filter(|name| !name.is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| anyhow!("Cannot extract filename from URL: {input}"))
-}
-
-async fn existing_download(path: &Path) -> bool {
-    tokio::fs::metadata(path)
-        .await
-        .map(|meta| meta.len() > 1_000_000)
-        .unwrap_or(false)
+    model_resolver::huggingface_resolve_url(repo, revision, file)
 }
 
 pub(super) fn file_preference_score(file: &str) -> usize {
@@ -1376,6 +1106,20 @@ pub(super) fn file_preference_score(file: &str) -> usize {
 async fn remote_size_label(url: &str) -> Option<String> {
     let size = remote_size_bytes(url).await?;
     Some(format_size_bytes(size))
+}
+
+async fn download_remote_catalog_model(
+    model: &remote_catalog::RemoteCatalogModel,
+    progress: bool,
+) -> Result<PathBuf> {
+    catalog::download_hf_repo_file_with_progress_label(
+        &model.repo,
+        model.revision.as_deref(),
+        &model.source_file,
+        &model.name,
+        progress,
+    )
+    .await
 }
 
 pub(super) async fn remote_hf_size_label_with_api(

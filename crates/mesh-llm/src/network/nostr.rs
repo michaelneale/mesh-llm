@@ -1033,14 +1033,20 @@ fn parse_size_gb(s: &str) -> f64 {
 /// Each entry is (model_ref, min_vram_gb) where min_vram = file_size * 1.1.
 /// Excludes draft models (< 1GB).
 fn model_tiers() -> Vec<(String, f64)> {
-    let mut tiers: Vec<_> = crate::models::catalog::MODEL_CATALOG
-        .iter()
-        .filter(|m| parse_size_gb(&m.size) >= 1.0) // skip drafts
-        .map(|m| {
+    let _ = crate::models::remote_catalog::ensure_catalog();
+    let mut tiers: Vec<_> = crate::models::remote_catalog::loaded_models()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|m| {
+            let size = m.size.as_deref()?;
+            if parse_size_gb(size) < 1.0 {
+                return None;
+            }
             (
-                crate::models::catalog_model_ref(m),
-                parse_size_gb(&m.size) * 1.1,
+                crate::models::remote_catalog_model_ref(&m),
+                parse_size_gb(size) * 1.1,
             )
+                .into()
         })
         .collect();
     tiers.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -1071,7 +1077,7 @@ pub fn auto_model_pack(vram_gb: f64) -> Vec<String> {
             .iter()
             .find(|(n, _)| *n == name)
             .map(|(_, s)| *s)
-            .unwrap_or(f64::MAX)
+            .unwrap_or(0.0)
     };
     let usable = vram_gb * 0.85; // 15% headroom for KV cache
 
@@ -1082,8 +1088,8 @@ pub fn auto_model_pack(vram_gb: f64) -> Vec<String> {
         models: Vec<String>,
     }
     let catalog_ref = |name: &str| {
-        crate::models::find_catalog_model_exact(name)
-            .map(crate::models::catalog_model_ref)
+        crate::models::find_remote_catalog_model_exact(name)
+            .map(|model| crate::models::remote_catalog_model_ref(&model))
             .unwrap_or_else(|| name.to_string())
     };
     let packs: Vec<Pack> = vec![
@@ -1154,8 +1160,8 @@ pub fn demand_seed_models() -> Vec<String> {
     ]
     .into_iter()
     .map(|name| {
-        crate::models::find_catalog_model_exact(name)
-            .map(crate::models::catalog_model_ref)
+        crate::models::find_remote_catalog_model_exact(name)
+            .map(|model| crate::models::remote_catalog_model_ref(&model))
             .unwrap_or_else(|| name.to_string())
     })
     .collect()
@@ -1178,8 +1184,8 @@ mod auto_pack_tests {
     use super::*;
 
     fn catalog_ref(name: &str) -> String {
-        crate::models::find_catalog_model_exact(name)
-            .map(crate::models::catalog_model_ref)
+        crate::models::find_remote_catalog_model_exact(name)
+            .map(|model| crate::models::remote_catalog_model_ref(&model))
             .unwrap_or_else(|| name.to_string())
     }
 

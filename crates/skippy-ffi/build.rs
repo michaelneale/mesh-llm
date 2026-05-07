@@ -152,18 +152,22 @@ fn link_linux_cuda_libs(cmake_cache: &std::path::Path) {
         link_linux_lib_from_cache(cmake_cache, cache_key, lib);
     }
     // NCCL is conditionally linked by CMake when found on the system.
-    // Check CMakeCache for NCCL_LIBRARY to detect this and extract the search path.
+    // Check CMakeCache for NCCL_FOUND or NCCL_LIBRARY to detect this and extract the search path.
     if let Ok(contents) = std::fs::read_to_string(cmake_cache) {
+        let mut nccl_found = cmake_cache_bool(&contents, "NCCL_FOUND");
         if let Some(nccl_path) = cmake_cache_value(&contents, "NCCL_LIBRARY") {
-            if !nccl_path.contains("NOTFOUND") {
+            if !nccl_path.contains("NOTFOUND") && !nccl_path.contains("-NOTFOUND") {
+                nccl_found = true;
                 let path = std::path::PathBuf::from(&nccl_path);
                 if let Some(parent) = path.parent() {
                     if parent.is_dir() {
                         println!("cargo:rustc-link-search=native={}", parent.display());
                     }
                 }
-                println!("cargo:rustc-link-lib=dylib=nccl");
             }
+        }
+        if nccl_found {
+            println!("cargo:rustc-link-lib=dylib=nccl");
         }
     }
 }
@@ -178,7 +182,8 @@ fn link_linux_hip_libs() {
     for lib in ["amdhip64", "rocblas", "hipblas"] {
         println!("cargo:rustc-link-lib=dylib={lib}");
     }
-    // RCCL (ROCm Collective Communications Library) provides the NCCL interface.
+    // RCCL (ROCm Collective Communications Library) provides the NCCL interface
+    // for multi-GPU communication. Link it if available on the system.
     if std::path::Path::new("/opt/rocm/lib/librccl.so").exists() {
         println!("cargo:rustc-link-lib=dylib=rccl");
     }
