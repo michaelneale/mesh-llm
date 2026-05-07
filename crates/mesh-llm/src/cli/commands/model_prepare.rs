@@ -259,7 +259,18 @@ async fn run_status(client: &HfJobsClient, job_id: &str) -> Result<()> {
 }
 
 async fn run_logs(client: &HfJobsClient, job_id: &str) -> Result<()> {
+    use model_prepare::jobs::JobStage;
+
     let (namespace, id) = parse_job_id(job_id).await?;
+
+    // Check job status — warn if still running (logs will stream indefinitely).
+    let info = client.inspect(&namespace, &id).await?;
+    if matches!(info.status.stage, JobStage::Running) {
+        eprintln!("⚠ Job is still running — logs will stream until interrupted (Ctrl+C).");
+        eprintln!("  Use --follow for submit-and-wait, or --status to check state.");
+        eprintln!();
+    }
+
     let mut stream = std::pin::pin!(client.stream_logs(&namespace, &id).await?);
     while let Some(line) = stream.next().await {
         match line {

@@ -165,10 +165,14 @@ try:
     entry = json.load(open(existing_path))
 except Exception:
     # Create new entry
-    entry = {"schema_version": 1, "variants": []}
+    entry = {"schema_version": 1, "source_repo": source_repo, "variants": {}}
 
-# Build variant name from source file path
-variant_name = model_id or source_file.split('/')[-1].replace('.gguf', '')
+# Build variant name from source file stem (not MODEL_ID).
+# For "UD-Q4_K_XL/Qwen3-32B-UD-Q4_K_XL-00001-of-00002.gguf" → "Qwen3-32B-UD-Q4_K_XL"
+import re
+file_stem = source_file.split('/')[-1].replace('.gguf', '')
+# Strip shard suffix like "-00001-of-00002"
+variant_name = re.sub(r'-\d{5}-of-\d{5}$', '', file_stem)
 
 package_entry = {
     "type": "layer-package",
