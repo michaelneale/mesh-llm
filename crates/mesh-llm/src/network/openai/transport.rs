@@ -1711,7 +1711,7 @@ async fn route_remote_attempt(
                     .as_ref()
                     .expect("encryption_session implies known_host_pub");
                 return handle_encrypted_response(
-                    &mut quic_recv,
+                    quic_recv,
                     tcp_stream,
                     session,
                     host_pub,
@@ -3255,16 +3255,17 @@ pub async fn pipeline_proxy_local(
 ///
 /// The remote tunnel sends an encrypted stream header followed by
 /// length-prefixed encrypted chunks. This function verifies the advertised
-/// sender key against gossip, decrypts chunks into an in-memory pipe, then
-/// reuses the normal HTTP response relay path. Reusing `relay_probed_response`
-/// keeps response translation (`/v1/responses` adapters), context-overflow
-/// retry detection, error remapping, and token accounting consistent with the
-/// plaintext tunnel path.
+/// sender key against gossip, decrypts chunks into a bounded async pipe as they
+/// arrive, then reuses the normal HTTP response relay path. Reusing
+/// `relay_probed_response` keeps response translation (`/v1/responses`
+/// adapters), context-overflow retry detection, error remapping, and token
+/// accounting consistent with the plaintext tunnel path while preserving live
+/// token/SSE streaming to the downstream client.
 ///
 /// `known_host_pub` is the host's gossiped inference public key — we use it to
 /// verify the response sender, NOT the self-declared key in the response stream.
 async fn handle_encrypted_response(
-    quic_recv: &mut iroh::endpoint::RecvStream,
+    mut quic_recv: iroh::endpoint::RecvStream,
     tcp_stream: &mut TcpStream,
     session: &crate::crypto::inference_encryption::EphemeralSession,
     known_host_pub: &crypto_box::PublicKey,
@@ -3307,36 +3308,49 @@ async fn handle_encrypted_response(
         return RouteAttemptResult::RetryableUnavailable;
     }
 
-    // Decrypt the whole encrypted response into a buffer and then let the
-    // normal plaintext response relay consume it. This keeps response adapters,
-    // context-overflow retries, error remapping, and completion-token metrics
-    // consistent with the plaintext tunnel path. The encrypted response still
-    // streams over QUIC from the host; buffering here is intentionally bounded
-    // by chunk size validation in `read_encrypted_chunk` and avoids committing
-    // subtly divergent adapter behavior on this security-sensitive path.
+    // Decrypt encrypted response chunks into a bounded pipe and let the normal
+    // plaintext relay consume that pipe. This preserves true SSE/token
+    // streaming while keeping adapter/error/retry/metrics behavior aligned with
+    // the plaintext tunnel path. The bounded pipe also provides backpressure
+    // from the downstream client all the way back to the QUIC receiver.
     let resp_box =
         crate::crypto::inference_encryption::make_salsa_box(&session.secret, known_host_pub);
-    let mut decrypted_response = Vec::with_capacity(64 * 1024);
-    loop {
-        match crate::crypto::inference_encryption::read_encrypted_chunk(quic_recv, &resp_box).await
-        {
-            Ok(None) => break,
-            Ok(Some(plaintext)) => decrypted_response.extend_from_slice(&plaintext),
-            Err(e) => {
-                tracing::warn!(
-                    "API proxy: failed to decrypt chunk from {}: {e}",
-                    host_id.fmt_short()
-                );
-                return RouteAttemptResult::RetryableUnavailable;
+    let (mut plaintext_writer, mut plaintext_reader) = tokio::io::duplex(256 * 1024);
+    let decrypt_host_id = host_id;
+    let decrypt_task = tokio::spawn(async move {
+        use tokio::io::AsyncWriteExt;
+
+        let mut total: u64 = 0;
+        loop {
+            match crate::crypto::inference_encryption::read_encrypted_chunk(
+                &mut quic_recv,
+                &resp_box,
+            )
+            .await
+            {
+                Ok(None) => break,
+                Ok(Some(plaintext)) => {
+                    total += plaintext.len() as u64;
+                    if let Err(err) = plaintext_writer.write_all(&plaintext).await {
+                        tracing::debug!(
+                            "API proxy: decrypted response pipe closed for {} after {} bytes: {err}",
+                            decrypt_host_id.fmt_short(),
+                            total
+                        );
+                        return Ok::<u64, crate::crypto::CryptoError>(total);
+                    }
+                }
+                Err(err) => return Err(err),
             }
         }
-    }
+        plaintext_writer.shutdown().await?;
+        Ok(total)
+    });
 
-    let total = decrypted_response.len();
-    let mut plaintext_reader = std::io::Cursor::new(decrypted_response);
     let probe = match probe_http_response(&mut plaintext_reader).await {
         Ok(probe) => probe,
         Err(err) => {
+            decrypt_task.abort();
             tracing::warn!(
                 "API proxy: failed to parse decrypted response from {}: {err}",
                 host_id.fmt_short()
@@ -3360,6 +3374,7 @@ async fn handle_encrypted_response(
     {
         Ok(result) => result,
         Err(err) => {
+            decrypt_task.abort();
             if is_client_disconnect_error(&err) {
                 tracing::info!(
                     "API proxy: downstream client disconnected during encrypted relay from {}",
@@ -3378,11 +3393,33 @@ async fn handle_encrypted_response(
         }
     };
 
-    tracing::debug!(
-        "Decrypted response from {} ({} bytes plaintext)",
-        host_id.fmt_short(),
-        total
-    );
+    match decrypt_task.await {
+        Ok(Ok(total)) => tracing::debug!(
+            "Decrypted streaming response from {} ({} bytes plaintext)",
+            host_id.fmt_short(),
+            total
+        ),
+        Ok(Err(err)) => {
+            tracing::warn!(
+                "API proxy: encrypted response decrypt task failed for {}: {err}",
+                host_id.fmt_short()
+            );
+            return RouteAttemptResult::RetryableUnavailable;
+        }
+        Err(err) if err.is_cancelled() => {
+            tracing::debug!(
+                "API proxy: encrypted response decrypt task cancelled for {}",
+                host_id.fmt_short()
+            );
+        }
+        Err(err) => {
+            tracing::warn!(
+                "API proxy: encrypted response decrypt task join failed for {}: {err}",
+                host_id.fmt_short()
+            );
+            return RouteAttemptResult::RetryableUnavailable;
+        }
+    }
 
     result
 }
