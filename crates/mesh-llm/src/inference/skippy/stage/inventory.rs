@@ -133,9 +133,7 @@ async fn prefetch_stage_package_if_needed(
     if load.load_mode != LoadMode::LayerPackage && !is_layer_package_ref(&load.package_ref) {
         return None;
     }
-    let Some(prefetcher) = package_prefetcher else {
-        return None;
-    };
+    let prefetcher = package_prefetcher?;
     update_preparation(
         preparations,
         key,
