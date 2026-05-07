@@ -70,9 +70,11 @@ For full build details, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 mesh-llm serve --auto
 mesh-llm serve --model Qwen2.5-32B
 mesh-llm serve --join <token>
+mesh-llm serve --discover "my-mesh"
 mesh-llm client --auto
 mesh-llm gpus
 mesh-llm discover
+mesh-llm discover --name "my-mesh"
 ```
 
 If you run `mesh-llm` with no arguments, it prints `--help` and exits. It does not start the console or bind ports until you choose a mode.

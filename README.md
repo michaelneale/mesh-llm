@@ -195,11 +195,19 @@ mesh-llm serve --auto --model GLM-4.7-Flash-Q4_K_M --mesh-name "poker-night" --p
 ```
 Everyone runs the same command. First person creates it, everyone else discovers "poker-night" and joins automatically. Use `--publish` to make your named mesh discoverable on Nostr; without it the mesh is private but still joinable via invite token.
 
+You can also join a named mesh explicitly:
+```bash
+mesh-llm serve --discover "poker-night"    # discover by name, join, and serve
+mesh-llm client --discover "poker-night"   # discover by name, join as client
+```
+
 ### Auto-discover
 ```bash
 mesh-llm serve --auto                      # discover, join, and serve a model
 mesh-llm client --auto                     # join as API-only client (no GPU)
+mesh-llm serve --discover "my-mesh"        # discover a named mesh and join it
 mesh-llm discover                          # browse available meshes
+mesh-llm discover --name "poker-night"     # search for a specific mesh by name
 mesh-llm gpus                              # inspect local GPUs and stable IDs
 ```
 
