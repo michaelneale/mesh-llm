@@ -40,6 +40,7 @@ COPY crates/model-hf/ crates/model-hf/
 COPY crates/model-prepare/ crates/model-prepare/
 COPY crates/skippy-protocol/ crates/skippy-protocol/
 COPY crates/skippy-topology/ crates/skippy-topology/
+COPY crates/skippy-cache/ crates/skippy-cache/
 COPY crates/skippy-metrics/ crates/skippy-metrics/
 COPY crates/openai-frontend/ crates/openai-frontend/
 COPY crates/skippy-ffi/ crates/skippy-ffi/
