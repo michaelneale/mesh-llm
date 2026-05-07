@@ -14,6 +14,12 @@ pub(crate) async fn run_plugin_command(command: &PluginCommand, cli: &Cli) -> Re
             eprintln!("Blobstore is auto-registered by mesh-llm. Nothing to install.");
             eprintln!("Disable it with [[plugin]] name = \"blobstore\" enabled = false in the config if needed.");
         }
+        PluginCommand::Install { name } if name == plugin::TELEMETRY_PLUGIN_ID => {
+            eprintln!("Telemetry is built into mesh-llm. Nothing to install.");
+            eprintln!(
+                "Configure [telemetry] to export metrics, or disable it with [[plugin]] name = \"telemetry\" enabled = false."
+            );
+        }
         PluginCommand::Install { name } => {
             let config = plugin::config_path(cli.config.as_deref())?;
             anyhow::bail!(

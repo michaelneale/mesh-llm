@@ -976,6 +976,8 @@ pub struct Node {
     inflight_requests: Arc<std::sync::atomic::AtomicUsize>,
     inflight_change_tx: watch::Sender<u64>,
     routing_metrics: crate::network::metrics::RoutingMetrics,
+    routing_telemetry:
+        Arc<std::sync::Mutex<Option<Arc<dyn crate::network::metrics::RoutingTelemetrySink>>>>,
     local_request_metrics: Arc<LocalRequestMetricsSampler>,
     runtime_data_producer: crate::runtime_data::RuntimeDataProducer,
     tunnel_tx: tokio::sync::mpsc::Sender<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)>,
@@ -1395,6 +1397,7 @@ pub struct InflightRequestGuard {
     local_request_metrics: Arc<LocalRequestMetricsSampler>,
     started_at: std::time::Instant,
     routing_metrics: crate::network::metrics::RoutingMetrics,
+    routing_telemetry: Option<Arc<dyn crate::network::metrics::RoutingTelemetrySink>>,
     runtime_data_producer: crate::runtime_data::RuntimeDataProducer,
 }
 
@@ -1414,6 +1417,9 @@ impl Drop for InflightRequestGuard {
         let current_inflight_requests =
             self.inflight_requests
                 .load(std::sync::atomic::Ordering::Relaxed) as u64;
+        if let Some(routing_telemetry) = &self.routing_telemetry {
+            routing_telemetry.observe_inflight_requests(current_inflight_requests);
+        }
         self.runtime_data_producer.publish_routing_snapshot(
             self.routing_metrics
                 .collector_snapshot(current_inflight_requests),
@@ -1422,6 +1428,25 @@ impl Drop for InflightRequestGuard {
 }
 
 impl Node {
+    pub(crate) fn set_routing_telemetry_sink(
+        &self,
+        sink: Option<Arc<dyn crate::network::metrics::RoutingTelemetrySink>>,
+    ) {
+        *self
+            .routing_telemetry
+            .lock()
+            .expect("routing telemetry sink lock poisoned") = sink;
+    }
+
+    fn routing_telemetry_sink(
+        &self,
+    ) -> Option<Arc<dyn crate::network::metrics::RoutingTelemetrySink>> {
+        self.routing_telemetry
+            .lock()
+            .expect("routing telemetry sink lock poisoned")
+            .clone()
+    }
+
     fn publish_routing_runtime_snapshot(&self) {
         self.runtime_data_producer.publish_routing_snapshot(
             self.routing_metrics
@@ -1438,6 +1463,10 @@ impl Node {
             .load(std::sync::atomic::Ordering::Relaxed) as u64;
         let _ = self.inflight_change_tx.send(current);
         self.routing_metrics.observe_inflight(current);
+        let routing_telemetry = self.routing_telemetry_sink();
+        if let Some(sink) = &routing_telemetry {
+            sink.observe_inflight_requests(current);
+        }
         self.publish_routing_runtime_snapshot();
         InflightRequestGuard {
             inflight_requests: self.inflight_requests.clone(),
@@ -1445,6 +1474,7 @@ impl Node {
             local_request_metrics: self.local_request_metrics.clone(),
             started_at: std::time::Instant::now(),
             routing_metrics: self.routing_metrics.clone(),
+            routing_telemetry,
             runtime_data_producer: self.runtime_data_producer.clone(),
         }
     }
@@ -1819,12 +1849,15 @@ impl Node {
         };
         self.routing_metrics.record_attempt(
             model,
-            attempt_target,
+            attempt_target.clone(),
             queue_wait,
             attempt_time,
             outcome,
             completion_tokens,
         );
+        if let Some(sink) = self.routing_telemetry_sink() {
+            sink.record_route_attempt(model, &attempt_target, outcome);
+        }
         self.publish_routing_runtime_snapshot();
     }
 
@@ -1838,14 +1871,18 @@ impl Node {
         completion_tokens: Option<u64>,
     ) {
         let model_ref = model.map(canonical_demand_model_ref);
+        let attempt_target = crate::network::metrics::AttemptTarget::Endpoint(endpoint.to_string());
         self.routing_metrics.record_attempt(
             model_ref.as_deref(),
-            crate::network::metrics::AttemptTarget::Endpoint(endpoint.to_string()),
+            attempt_target.clone(),
             queue_wait,
             attempt_time,
             outcome,
             completion_tokens,
         );
+        if let Some(sink) = self.routing_telemetry_sink() {
+            sink.record_route_attempt(model_ref.as_deref(), &attempt_target, outcome);
+        }
         self.publish_routing_runtime_snapshot();
     }
 
@@ -1858,6 +1895,9 @@ impl Node {
         let model_ref = model.map(canonical_demand_model_ref);
         self.routing_metrics
             .record_request(model_ref.as_deref(), attempts, outcome);
+        if let Some(sink) = self.routing_telemetry_sink() {
+            sink.record_model_request(model_ref.as_deref(), attempts, outcome);
+        }
         self.publish_routing_runtime_snapshot();
     }
 
@@ -2106,6 +2146,7 @@ impl Node {
             inflight_requests: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             inflight_change_tx,
             routing_metrics: crate::network::metrics::RoutingMetrics::default(),
+            routing_telemetry: Arc::new(std::sync::Mutex::new(None)),
             local_request_metrics: Arc::new(LocalRequestMetricsSampler::default()),
             runtime_data_producer,
             tunnel_tx,
@@ -2225,6 +2266,7 @@ impl Node {
             inflight_requests: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             inflight_change_tx,
             routing_metrics: crate::network::metrics::RoutingMetrics::default(),
+            routing_telemetry: Arc::new(std::sync::Mutex::new(None)),
             local_request_metrics: Arc::new(LocalRequestMetricsSampler::default()),
             runtime_data_producer,
             tunnel_tx,

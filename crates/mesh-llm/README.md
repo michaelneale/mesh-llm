@@ -32,7 +32,9 @@ Notable built-ins under `src/plugins/` today:
 ```text
 plugins/
 ├── blackboard/            shared mesh message feed + MCP surface
-└── lemonade/              external OpenAI-compatible inference endpoint bridge
+├── blobstore/             request-scoped media object storage for multimodal
+├── openai_endpoint/       external OpenAI-compatible inference endpoint bridge
+└── telemetry/             opt-in OTLP metrics-only local runtime telemetry
 ```
 
 ## Runtime model

@@ -1,4 +1,7 @@
-use super::{PluginSummary, BLACKBOARD_PLUGIN_ID, BLOBSTORE_PLUGIN_ID, OPENAI_ENDPOINT_PLUGIN_ID};
+use super::{
+    PluginSummary, BLACKBOARD_PLUGIN_ID, BLOBSTORE_PLUGIN_ID, OPENAI_ENDPOINT_PLUGIN_ID,
+    TELEMETRY_PLUGIN_ID,
+};
 use anyhow::{bail, Context, Result};
 use mesh_llm_plugin::MeshVisibility;
 use serde::{Deserialize, Serialize};
@@ -12,6 +15,8 @@ pub struct MeshConfig {
     pub version: Option<u32>,
     #[serde(default)]
     pub gpu: GpuConfig,
+    #[serde(default)]
+    pub telemetry: TelemetryConfig,
     #[serde(default)]
     pub models: Vec<ModelConfigEntry>,
     #[serde(rename = "plugin", default)]
@@ -55,6 +60,32 @@ pub struct ModelConfigEntry {
     pub ubatch: Option<u32>,
     #[serde(default)]
     pub flash_attention: Option<FlashAttentionType>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct TelemetryConfig {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub service_name: Option<String>,
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+    #[serde(default)]
+    pub export_interval_secs: Option<u64>,
+    #[serde(default)]
+    pub queue_size: Option<usize>,
+    #[serde(default)]
+    pub prompt_shape_metrics: bool,
+    #[serde(default)]
+    pub metrics: TelemetryMetricsConfig,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct TelemetryMetricsConfig {
+    #[serde(default)]
+    pub endpoint: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -126,6 +157,7 @@ pub(crate) fn validate_config(config: &MeshConfig) -> Result<()> {
             bail!("gpu.parallel must be at least 1, got {parallel}");
         }
     }
+    validate_telemetry_config(&config.telemetry)?;
     for (index, model) in config.models.iter().enumerate() {
         if model.model.trim().is_empty() {
             bail!("models[{index}].model must not be empty");
@@ -175,6 +207,52 @@ pub(crate) fn validate_config(config: &MeshConfig) -> Result<()> {
     Ok(())
 }
 
+fn validate_telemetry_config(config: &TelemetryConfig) -> Result<()> {
+    if let Some(service_name) = &config.service_name {
+        if service_name.trim().is_empty() {
+            bail!("telemetry.service_name must not be empty when set");
+        }
+    }
+    if let Some(endpoint) = &config.endpoint {
+        if endpoint.trim().is_empty() {
+            bail!("telemetry.endpoint must not be empty when set");
+        }
+    }
+    if let Some(endpoint) = &config.metrics.endpoint {
+        if endpoint.trim().is_empty() {
+            bail!("telemetry.metrics.endpoint must not be empty when set");
+        }
+    }
+    for key in config.headers.keys() {
+        if key.trim().is_empty() {
+            bail!("telemetry.headers keys must not be empty");
+        }
+    }
+    if let Some(export_interval_secs) = config.export_interval_secs {
+        if export_interval_secs < 1 {
+            bail!("telemetry.export_interval_secs must be at least 1");
+        }
+    }
+    if let Some(queue_size) = config.queue_size {
+        if queue_size < 1 {
+            bail!("telemetry.queue_size must be at least 1");
+        }
+    }
+    if config.prompt_shape_metrics {
+        bail!("telemetry.prompt_shape_metrics is not supported yet and must remain false");
+    }
+    Ok(())
+}
+
+pub(crate) fn telemetry_plugin_enabled(config: &MeshConfig) -> bool {
+    config
+        .plugins
+        .iter()
+        .find(|entry| entry.name == TELEMETRY_PLUGIN_ID)
+        .map(|entry| entry.enabled.unwrap_or(true))
+        .unwrap_or(true)
+}
+
 pub fn resolve_plugins(config: &MeshConfig, _host_mode: PluginHostMode) -> Result<ResolvedPlugins> {
     let mut externals = Vec::new();
     let inactive = Vec::new();
@@ -183,6 +261,7 @@ pub fn resolve_plugins(config: &MeshConfig, _host_mode: PluginHostMode) -> Resul
     let mut blobstore_enabled = true;
     let mut openai_endpoint_enabled = false;
     let mut openai_endpoint_url: Option<String> = None;
+    let mut telemetry_enabled = true;
     for entry in &config.plugins {
         if names.insert(entry.name.clone(), ()).is_some() {
             bail!("Duplicate plugin entry '{}'", entry.name);
@@ -221,6 +300,16 @@ pub fn resolve_plugins(config: &MeshConfig, _host_mode: PluginHostMode) -> Resul
             }
             continue;
         }
+        if entry.name == TELEMETRY_PLUGIN_ID {
+            if entry.command.is_some() || !entry.args.is_empty() || entry.url.is_some() {
+                bail!(
+                    "Plugin '{}' is served by mesh-llm itself; only `enabled` may be set",
+                    TELEMETRY_PLUGIN_ID
+                );
+            }
+            telemetry_enabled = enabled;
+            continue;
+        }
         if !enabled {
             continue;
         }
@@ -238,6 +327,10 @@ pub fn resolve_plugins(config: &MeshConfig, _host_mode: PluginHostMode) -> Resul
 
     if blackboard_enabled {
         externals.insert(0, blackboard_plugin_spec()?);
+    }
+    if telemetry_enabled {
+        let insert_at = usize::from(blackboard_enabled).min(externals.len());
+        externals.insert(insert_at, telemetry_plugin_spec()?);
     }
     if openai_endpoint_enabled {
         let mut spec = openai_endpoint_plugin_spec()?;
@@ -308,6 +401,24 @@ pub fn openai_endpoint_plugin_spec() -> Result<ExternalPluginSpec> {
     })
 }
 
+pub fn telemetry_plugin_spec() -> Result<ExternalPluginSpec> {
+    let command = std::env::current_exe()
+        .context("Cannot determine mesh-llm executable path")?
+        .display()
+        .to_string();
+    Ok(ExternalPluginSpec {
+        name: TELEMETRY_PLUGIN_ID.to_string(),
+        command,
+        args: vec![
+            "--log-format".into(),
+            "json".into(),
+            "--plugin".into(),
+            TELEMETRY_PLUGIN_ID.into(),
+        ],
+        url: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,6 +465,90 @@ command = "/tmp/demo"
         assert_eq!(config.models[1].gpu_id, None);
         assert_eq!(config.plugins.len(), 1);
         assert_eq!(config.plugins[0].name, "demo");
+    }
+
+    #[test]
+    fn telemetry_config_deserializes_standard_metrics_settings() {
+        let config: MeshConfig = toml::from_str(
+            r#"
+version = 1
+
+[telemetry]
+enabled = true
+service_name = "mesh-llm"
+endpoint = "https://otel.example.com"
+headers = { "authorization" = "Bearer TOKEN" }
+export_interval_secs = 15
+queue_size = 2048
+prompt_shape_metrics = false
+
+[telemetry.metrics]
+endpoint = "https://otel.example.com/v1/metrics"
+
+[[plugin]]
+name = "telemetry"
+enabled = true
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.telemetry.enabled, Some(true));
+        assert_eq!(config.telemetry.service_name.as_deref(), Some("mesh-llm"));
+        assert_eq!(
+            config.telemetry.endpoint.as_deref(),
+            Some("https://otel.example.com")
+        );
+        assert_eq!(
+            config.telemetry.metrics.endpoint.as_deref(),
+            Some("https://otel.example.com/v1/metrics")
+        );
+        assert_eq!(
+            config
+                .telemetry
+                .headers
+                .get("authorization")
+                .map(String::as_str),
+            Some("Bearer TOKEN")
+        );
+        assert_eq!(config.telemetry.export_interval_secs, Some(15));
+        assert_eq!(config.telemetry.queue_size, Some(2048));
+        assert!(!config.telemetry.prompt_shape_metrics);
+    }
+
+    #[test]
+    fn telemetry_config_rejects_zero_queue_size() {
+        let config: MeshConfig = toml::from_str(
+            r#"
+[telemetry]
+queue_size = 0
+"#,
+        )
+        .unwrap();
+
+        let err = validate_config(&config).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("telemetry.queue_size must be at least 1"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn telemetry_config_rejects_prompt_shape_metrics_until_reviewed() {
+        let config: MeshConfig = toml::from_str(
+            r#"
+[telemetry]
+prompt_shape_metrics = true
+"#,
+        )
+        .unwrap();
+
+        let err = validate_config(&config).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("telemetry.prompt_shape_metrics is not supported yet"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

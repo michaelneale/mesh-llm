@@ -277,6 +277,8 @@ Precedence rules:
 - Explicit `--ctx-size` overrides configured `ctx_size` for the selected startup models.
 - Plugin entries still live in the same file.
 
+Telemetry metrics export is available through the built-in `telemetry` plugin. Configure a `[telemetry]` endpoint to export metrics; no collector is hard-coded, and the plugin can be opted out with `[[plugin]] name = "telemetry" enabled = false`. See [docs/plugins/telemetry.md](docs/plugins/telemetry.md).
+
 Pinned startup notes:
 
 - `assignment = "pinned"` requires every configured `[[models]]` entry to include a `gpu_id`.

@@ -5,6 +5,7 @@ pub mod instance;
 mod interactive;
 mod local;
 mod proxy;
+mod survey;
 pub(crate) mod wakeable;
 
 use self::discovery::{nostr_rediscovery, start_new_mesh};
@@ -1030,6 +1031,8 @@ struct StartupLocalModelTask {
     slots: usize,
     parallel_override: Option<usize>,
     split: bool,
+    survey_telemetry: survey::SurveyTelemetry,
+    survey_launch_kind: survey::SurveyLaunchKind,
     stop_rx: tokio::sync::watch::Receiver<bool>,
     dashboard_processes: Arc<tokio::sync::Mutex<Vec<api::RuntimeProcessPayload>>>,
     dashboard_context_usage: DashboardContextUsage,
@@ -1065,6 +1068,8 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         slots,
         parallel_override,
         split,
+        survey_telemetry,
+        survey_launch_kind,
         mut stop_rx,
         dashboard_processes,
         dashboard_context_usage,
@@ -1106,6 +1111,16 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         .unwrap_or_else(|| node.vram_bytes());
     let model_bytes = election::total_model_bytes(&model_path);
     let runtime_plan = startup_runtime_plan(split, local_capacity, model_bytes);
+    let launch_kind = match runtime_plan {
+        StartupRuntimePlan::Local => survey_launch_kind,
+        StartupRuntimePlan::Split {
+            reason: SplitRuntimeReason::Forced,
+        } => survey::SurveyLaunchKind::MoeShard,
+        StartupRuntimePlan::Split {
+            reason: SplitRuntimeReason::LocalCapacity,
+        } => survey::SurveyLaunchKind::MoeFallback,
+    };
+    let launch_started = Instant::now();
     let (
         mut loaded_name,
         mut handle,
@@ -1154,6 +1169,18 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                     return;
                 }
                 Err(err) => {
+                    survey_telemetry.record_launch_failure(
+                        survey::SurveyModelSpec {
+                            model: &model_name,
+                            model_path: Some(&model_path),
+                            launch_kind,
+                            pinned_gpu: pinned_gpu.as_ref(),
+                            backend: None,
+                            context_length: ctx_size.map(u64::from),
+                        },
+                        launch_started.elapsed(),
+                        survey::classify_launch_failure(&err),
+                    );
                     let _ = emit_event(OutputEvent::Error {
                         message: format!("Failed to start model {model_name}: {err:#}"),
                         context: Some(format!("model={model_name}")),
@@ -1171,6 +1198,18 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                 (loaded_name, handle, death_rx, None, None, None)
             }
             Err(err) => {
+                survey_telemetry.record_launch_failure(
+                    survey::SurveyModelSpec {
+                        model: &model_name,
+                        model_path: Some(&model_path),
+                        launch_kind,
+                        pinned_gpu: pinned_gpu.as_ref(),
+                        backend: None,
+                        context_length: ctx_size.map(u64::from),
+                    },
+                    launch_started.elapsed(),
+                    survey::classify_launch_failure(&err),
+                );
                 let _ = emit_event(OutputEvent::Error {
                     message: format!("Failed to start model {model_name}: {err:#}"),
                     context: Some(format!("model={model_name}")),
@@ -1184,6 +1223,16 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         },
     };
     drop(startup_load_guard);
+
+    let mut survey_loaded_model = survey_telemetry.model(survey::SurveyModelSpec {
+        model: &loaded_name,
+        model_path: Some(&model_path),
+        launch_kind,
+        pinned_gpu: pinned_gpu.as_ref(),
+        backend: Some(&handle.backend),
+        context_length: Some(u64::from(handle.context_length)),
+    });
+    survey_telemetry.record_launch_success(&survey_loaded_model, launch_started.elapsed());
 
     add_runtime_local_target(&target_tx, &loaded_name, handle.port);
     tunnel_mgr.set_http_port(api_port);
@@ -1250,6 +1299,7 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
 
     let mut context_usage_tick = tokio::time::interval(DASHBOARD_CONTEXT_USAGE_REFRESH_INTERVAL);
     context_usage_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut survey_exited_unexpectedly = false;
 
     loop {
         tokio::select! {
@@ -1263,6 +1313,8 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                 );
             }
             _ = &mut death_rx => {
+                survey_exited_unexpectedly = true;
+                survey_telemetry.record_unexpected_exit(&survey_loaded_model);
                 let _ = emit_event(OutputEvent::Warning {
                     message: format!("Startup model '{loaded_name}' exited unexpectedly"),
                     context: Some(format!("model={loaded_name} port={}", handle.port)),
@@ -1332,7 +1384,20 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                     &old_handle,
                 )
                 .await;
+                survey_telemetry.record_unload(&survey_loaded_model);
                 loaded_name = next.loaded_name;
+                survey_loaded_model = survey_telemetry.model(survey::SurveyModelSpec {
+                    model: &loaded_name,
+                    model_path: Some(&model_path),
+                    launch_kind,
+                    pinned_gpu: pinned_gpu.as_ref(),
+                    backend: Some(&handle.backend),
+                    context_length: Some(u64::from(handle.context_length)),
+                });
+                survey_telemetry.record_launch_success(
+                    &survey_loaded_model,
+                    Duration::from_secs(0),
+                );
                 refresh_dashboard_context_usage(&dashboard_context_usage, &loaded_name, &handle)
                     .await;
                 publish_runtime_llama_slots(
@@ -1366,6 +1431,9 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
     if let Some(task) = coordinator_task.take() {
         task.abort();
         let _ = task.await;
+    }
+    if !survey_exited_unexpectedly {
+        survey_telemetry.record_unload(&survey_loaded_model);
     }
     let port = handle.port;
     remove_runtime_local_target(&target_tx, &loaded_name, port);
@@ -3681,6 +3749,25 @@ async fn run_auto(
             .await?;
     node.set_plugin_manager(plugin_manager.clone()).await;
     node.start_plugin_channel_forwarder(plugin_mesh_rx);
+    let survey_hardware = if is_client {
+        hardware::HardwareSurvey::default()
+    } else {
+        hardware::query(&[
+            hardware::Metric::GpuName,
+            hardware::Metric::GpuCount,
+            hardware::Metric::IsSoc,
+            hardware::Metric::GpuFacts,
+        ])
+    };
+    let survey_telemetry = survey::SurveyTelemetry::start(
+        &config,
+        survey_hardware,
+        survey::SurveyTelemetrySource {
+            node_id: node.id().fmt_short().to_string(),
+            node_role: if is_client { "client" } else { "worker" }.into(),
+        },
+    );
+    node.set_routing_telemetry_sink(survey_telemetry.routing_sink());
 
     // Advertise what we have on disk and what we want the mesh to serve
     node.set_available_models(local_models.clone()).await;
@@ -4049,6 +4136,7 @@ async fn run_auto(
     let (runtime_event_tx, mut runtime_event_rx) =
         tokio::sync::mpsc::unbounded_channel::<RuntimeEvent>();
     let mut runtime_models: HashMap<String, RuntimeModelHandleEntry> = HashMap::new();
+    let mut runtime_survey_models: HashMap<String, survey::SurveyLoadedModel> = HashMap::new();
     let mut managed_models: HashMap<String, ManagedModelController> = HashMap::new();
     let runtime_instance_registry: RuntimeInstanceRegistry =
         Arc::new(tokio::sync::Mutex::new(HashMap::new()));
@@ -4273,6 +4361,7 @@ async fn run_auto(
     let console_state_for_election = console_state.clone();
     let interactive_console_state = console_state.clone();
     let interactive_control_tx = control_tx.clone();
+    let survey_telemetry_for_primary = survey_telemetry.clone();
 
     let primary_model_name_for_advertise = model_name.clone();
     let startup_model_names: Vec<String> = startup_models
@@ -4347,6 +4436,8 @@ async fn run_auto(
             slots: primary_slots,
             parallel_override: primary_parallel_override,
             split: startup_split,
+            survey_telemetry: survey_telemetry_for_primary,
+            survey_launch_kind: survey::SurveyLaunchKind::Startup,
             stop_rx: primary_stop_rx,
             dashboard_processes: dashboard_processes_for_primary_task,
             dashboard_context_usage: dashboard_context_usage_for_primary_task,
@@ -4418,6 +4509,7 @@ async fn run_auto(
             let dashboard_context_usage_for_extra_task = dashboard_context_usage.clone();
             let runtime_instance_registry_for_extra_task = runtime_instance_registry.clone();
             let extra_control_tx = control_tx.clone();
+            let extra_survey_telemetry = survey_telemetry.clone();
             let extra_task = tokio::spawn(async move {
                 startup_local_model_loop(StartupLocalModelTask {
                     node: extra_node,
@@ -4439,6 +4531,8 @@ async fn run_auto(
                     slots: extra_slots,
                     parallel_override: extra_parallel_override,
                     split: startup_split,
+                    survey_telemetry: extra_survey_telemetry,
+                    survey_launch_kind: survey::SurveyLaunchKind::MultiModel,
                     stop_rx: extra_stop_rx,
                     dashboard_processes: dashboard_processes_for_extra_task,
                     dashboard_context_usage: dashboard_context_usage_for_extra_task,
@@ -4583,7 +4677,11 @@ async fn run_auto(
 
                             let instance_id =
                                 next_runtime_instance_id(&mut next_runtime_instance_sequence);
-                            let (loaded_name, handle, death_rx) = start_runtime_local_model(
+                            let requested_model = spec.clone();
+                            add_serving_assignment(&node, &primary_model_name, &requested_model)
+                                .await;
+                            let launch_started = Instant::now();
+                            let (loaded_name, handle, death_rx) = match start_runtime_local_model(
                                 LocalRuntimeModelStartSpec {
                                     node: &node,
                                     model_path: &model_path,
@@ -4603,7 +4701,37 @@ async fn run_auto(
                                     parallel_override,
                                 },
                             )
-                            .await?;
+                            .await
+                            {
+                                Ok(result) => result,
+                                Err(err) => {
+                                    remove_serving_assignment(&node, &requested_model).await;
+                                    survey_telemetry.record_launch_failure(
+                                        survey::SurveyModelSpec {
+                                            model: &requested_model,
+                                            model_path: Some(&model_path),
+                                            launch_kind: survey::SurveyLaunchKind::RuntimeLoad,
+                                            pinned_gpu: None,
+                                            backend: None,
+                                            context_length: cli.ctx_size.map(u64::from),
+                                        },
+                                        launch_started.elapsed(),
+                                        survey::classify_launch_failure(&err),
+                                    );
+                                    return Err(err);
+                                }
+                            };
+                            let survey_loaded_model =
+                                survey_telemetry.model(survey::SurveyModelSpec {
+                                    model: &loaded_name,
+                                    model_path: Some(&model_path),
+                                    launch_kind: survey::SurveyLaunchKind::RuntimeLoad,
+                                    pinned_gpu: None,
+                                    backend: Some(&handle.backend),
+                                    context_length: Some(u64::from(handle.context_length)),
+                                });
+                            survey_telemetry
+                                .record_launch_success(&survey_loaded_model, launch_started.elapsed());
 
                             add_runtime_local_target(&target_tx, &loaded_name, handle.port);
                             register_runtime_instance(
@@ -4665,6 +4793,8 @@ async fn run_auto(
                                 Some(&instance_id),
                                 &handle,
                             );
+                            runtime_survey_models
+                                .insert(instance_id.clone(), survey_loaded_model);
                             runtime_models.insert(
                                 instance_id.clone(),
                                 RuntimeModelHandleEntry {
@@ -4698,6 +4828,11 @@ async fn run_auto(
                                     let model = entry.model_name;
                                     let handle = entry.handle;
                                     let port = handle.port;
+                                    if let Some(survey_model) =
+                                        runtime_survey_models.remove(&unload.instance_id)
+                                    {
+                                        survey_telemetry.record_unload(&survey_model);
+                                    }
                                     remove_runtime_local_target(&target_tx, &model, port);
                                     if unregister_runtime_instance(
                                         &runtime_instance_registry,
@@ -4816,6 +4951,11 @@ async fn run_auto(
                         if matches {
                             if let Some(entry) = runtime_models.remove(&instance_id) {
                                 let handle = entry.handle;
+                                if let Some(survey_model) =
+                                    runtime_survey_models.remove(&instance_id)
+                                {
+                                    survey_telemetry.record_unexpected_exit(&survey_model);
+                                }
                                 if unregister_runtime_instance(
                                     &runtime_instance_registry,
                                     &node,
@@ -4900,6 +5040,9 @@ async fn run_auto(
     for (instance_id, entry) in runtime_models.drain() {
         let name = entry.model_name;
         let handle = entry.handle;
+        if let Some(survey_model) = runtime_survey_models.remove(&instance_id) {
+            survey_telemetry.record_unload(&survey_model);
+        }
         let shutting_down_payload = runtime_process_payload_with_status(
             &name,
             Some(&instance_id),

@@ -282,6 +282,19 @@ pub(crate) enum RequestOutcome {
     Unavailable,
 }
 
+pub(crate) trait RoutingTelemetrySink: Send + Sync {
+    fn observe_inflight_requests(&self, current: u64);
+
+    fn record_model_request(&self, model: Option<&str>, attempts: usize, outcome: RequestOutcome);
+
+    fn record_route_attempt(
+        &self,
+        model: Option<&str>,
+        target: &AttemptTarget,
+        outcome: AttemptOutcome,
+    );
+}
+
 #[derive(Clone)]
 pub struct RoutingMetrics {
     globals: Arc<GlobalMetrics>,

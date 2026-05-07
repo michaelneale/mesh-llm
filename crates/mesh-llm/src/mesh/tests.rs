@@ -95,6 +95,7 @@ async fn make_test_node(role: super::NodeRole) -> Result<Node> {
         inflight_requests: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         inflight_change_tx,
         routing_metrics: crate::network::metrics::RoutingMetrics::default(),
+        routing_telemetry: Arc::new(std::sync::Mutex::new(None)),
         local_request_metrics: Arc::new(LocalRequestMetricsSampler::default()),
         runtime_data_producer,
         tunnel_tx,
@@ -150,6 +151,118 @@ async fn local_request_metrics_snapshot_tracks_accepted_and_completed_requests()
     assert_eq!(snapshot.accepted_request_counts.len(), 24 * 60 * 60);
     assert_eq!(snapshot.accepted_request_counts.iter().sum::<u64>(), 1);
     assert_eq!(snapshot.latency_samples_ms.len(), 1);
+}
+
+#[derive(Default)]
+struct TestRoutingTelemetrySink {
+    inflight: std::sync::Mutex<Vec<u64>>,
+    requests: std::sync::Mutex<
+        Vec<(
+            Option<String>,
+            usize,
+            crate::network::metrics::RequestOutcome,
+        )>,
+    >,
+    attempts: std::sync::Mutex<
+        Vec<(
+            Option<String>,
+            String,
+            crate::network::metrics::AttemptOutcome,
+        )>,
+    >,
+}
+
+impl crate::network::metrics::RoutingTelemetrySink for TestRoutingTelemetrySink {
+    fn observe_inflight_requests(&self, current: u64) {
+        self.inflight.lock().unwrap().push(current);
+    }
+
+    fn record_model_request(
+        &self,
+        model: Option<&str>,
+        attempts: usize,
+        outcome: crate::network::metrics::RequestOutcome,
+    ) {
+        self.requests
+            .lock()
+            .unwrap()
+            .push((model.map(str::to_string), attempts, outcome));
+    }
+
+    fn record_route_attempt(
+        &self,
+        model: Option<&str>,
+        target: &crate::network::metrics::AttemptTarget,
+        outcome: crate::network::metrics::AttemptOutcome,
+    ) {
+        let target_kind = match target {
+            crate::network::metrics::AttemptTarget::Local(_) => "local",
+            crate::network::metrics::AttemptTarget::Remote(_) => "remote",
+            crate::network::metrics::AttemptTarget::Endpoint(_) => "endpoint",
+        };
+        self.attempts.lock().unwrap().push((
+            model.map(str::to_string),
+            target_kind.into(),
+            outcome,
+        ));
+    }
+}
+
+#[tokio::test]
+async fn routing_telemetry_sink_receives_request_pressure_and_attempt_events() {
+    let node = make_test_node(super::NodeRole::Client)
+        .await
+        .expect("test node should initialize");
+    let sink = Arc::new(TestRoutingTelemetrySink::default());
+    node.set_routing_telemetry_sink(Some(sink.clone()));
+
+    {
+        let _request = node.begin_inflight_request();
+        assert_eq!(sink.inflight.lock().unwrap().as_slice(), &[1]);
+    }
+    assert_eq!(sink.inflight.lock().unwrap().as_slice(), &[1, 0]);
+
+    node.record_routed_request(
+        Some("Qwen/Qwen3-8B-GGUF:Q4_K_M"),
+        2,
+        crate::network::metrics::RequestOutcome::Success(
+            crate::network::metrics::RequestService::Remote,
+        ),
+    );
+    node.record_inference_attempt(
+        Some("Qwen/Qwen3-8B-GGUF:Q4_K_M"),
+        &crate::inference::election::InferenceTarget::Remote(iroh::EndpointId::from(
+            SecretKey::from_bytes(&[0x45; 32]).public(),
+        )),
+        std::time::Duration::from_millis(3),
+        std::time::Duration::from_millis(5),
+        crate::network::metrics::AttemptOutcome::Success,
+        Some(16),
+    );
+
+    let requests = sink.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0],
+        (
+            Some("Qwen/Qwen3-8B-GGUF:Q4_K_M".into()),
+            2,
+            crate::network::metrics::RequestOutcome::Success(
+                crate::network::metrics::RequestService::Remote
+            )
+        )
+    );
+    drop(requests);
+
+    let attempts = sink.attempts.lock().unwrap();
+    assert_eq!(
+        attempts.as_slice(),
+        &[(
+            Some("Qwen/Qwen3-8B-GGUF:Q4_K_M".into()),
+            "remote".into(),
+            crate::network::metrics::AttemptOutcome::Success,
+        )]
+    );
 }
 
 #[test]
@@ -3248,6 +3361,7 @@ async fn make_test_node_with_owner(
         inflight_requests: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         inflight_change_tx,
         routing_metrics: crate::network::metrics::RoutingMetrics::default(),
+        routing_telemetry: Arc::new(std::sync::Mutex::new(None)),
         local_request_metrics: Arc::new(LocalRequestMetricsSampler::default()),
         runtime_data_producer,
         tunnel_tx,
@@ -3570,6 +3684,7 @@ async fn config_subscribe_rejects_pinned_snapshot_for_older_peer() -> Result<()>
                     assignment: crate::plugin::GpuAssignment::Pinned,
                     ..Default::default()
                 },
+                telemetry: Default::default(),
                 models: vec![crate::plugin::ModelConfigEntry {
                     model: "Qwen3-8B-Q4_K_M".into(),
                     mmproj: None,
@@ -3673,6 +3788,7 @@ async fn config_subscribe_rejects_pinned_snapshot_for_malformed_peer_version() -
                     assignment: crate::plugin::GpuAssignment::Pinned,
                     ..Default::default()
                 },
+                telemetry: Default::default(),
                 models: vec![crate::plugin::ModelConfigEntry {
                     model: "Qwen3-8B-Q4_K_M".into(),
                     mmproj: None,
@@ -3774,6 +3890,7 @@ async fn config_subscribe_allows_pinned_snapshot_for_same_release_prerelease_pee
                     assignment: crate::plugin::GpuAssignment::Pinned,
                     ..Default::default()
                 },
+                telemetry: Default::default(),
                 models: vec![crate::plugin::ModelConfigEntry {
                     model: "Qwen3-8B-Q4_K_M".into(),
                     mmproj: None,
@@ -3954,6 +4071,7 @@ async fn config_subscribe_closes_when_revision_becomes_pinned_for_malformed_peer
                     assignment: crate::plugin::GpuAssignment::Pinned,
                     ..Default::default()
                 },
+                telemetry: Default::default(),
                 models: vec![crate::plugin::ModelConfigEntry {
                     model: "Qwen3-8B-Q4_K_M".into(),
                     mmproj: None,
@@ -4059,6 +4177,7 @@ async fn config_subscribe_closes_when_revision_becomes_pinned_for_older_peer() -
                     assignment: crate::plugin::GpuAssignment::Pinned,
                     ..Default::default()
                 },
+                telemetry: Default::default(),
                 models: vec![crate::plugin::ModelConfigEntry {
                     model: "Qwen3-8B-Q4_K_M".into(),
                     mmproj: None,
@@ -4165,6 +4284,7 @@ async fn config_subscribe_keeps_stream_open_when_revision_becomes_pinned_for_sam
                     assignment: crate::plugin::GpuAssignment::Pinned,
                     ..Default::default()
                 },
+                telemetry: Default::default(),
                 models: vec![crate::plugin::ModelConfigEntry {
                     model: "Qwen3-8B-Q4_K_M".into(),
                     mmproj: None,
