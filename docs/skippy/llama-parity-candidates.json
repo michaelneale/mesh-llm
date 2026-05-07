@@ -750,8 +750,10 @@
     {
       "llama_model": "exaone-moe",
       "family": "exaone_moe",
-      "status": "no_public_gguf_candidate",
-      "notes": "HF GGUF search found exaone4 dense artifacts but no public exaone_moe GGUF artifact for this llama.cpp architecture"
+      "status": "package_or_remote_only",
+      "notes": "official public K-EXAONE GGUF package advertises llama.cpp architecture exaone-moe; package-sized candidate for remote/materialized certification; Q4_K_M file is the selected candidate",
+      "repo": "LGAI-EXAONE/K-EXAONE-236B-A23B-GGUF",
+      "include": "K-EXAONE-236B-A23B-Q4_K_M.gguf"
     },
     {
       "llama_model": "gemma-embedding",
@@ -812,11 +814,19 @@
     {
       "llama_model": "kimi-linear",
       "family": "kimi_linear",
-      "status": "package_or_remote_only",
-      "recurrent": "all",
+      "status": "certified",
       "repo": "bartowski/moonshotai_Kimi-Linear-48B-A3B-Instruct-GGUF",
       "include": "moonshotai_Kimi-Linear-48B-A3B-Instruct-IQ2_XXS.gguf",
-      "notes": "public kimi-linear GGUF exists but representative artifacts are remote/package-sized for local certification; certify through package materialization or remote split"
+      "notes": "text split, chain, f32/f16/q8 dtype matrix, and KvRecurrent handoff passed in llama-parity-kimi-linear-20260507h after fixing optional tensor filter accounting and sparse K-only MLA KV page export/import; KDA recurrent ranges plus sparse K-only MLA KV pages are required",
+      "recurrent_ranges": [
+        "0..3",
+        "4..7",
+        "8..11",
+        "12..15",
+        "16..19",
+        "20..23",
+        "24..26"
+      ]
     },
     {
       "llama_model": "lfm2moe",

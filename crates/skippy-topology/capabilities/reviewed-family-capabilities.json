@@ -1756,6 +1756,55 @@
     }
   },
   {
+    "model_id": "bartowski/moonshotai_Kimi-Linear-48B-A3B-Instruct-GGUF:IQ2_XXS",
+    "source_repo": "bartowski/moonshotai_Kimi-Linear-48B-A3B-Instruct-GGUF",
+    "source_revision": "228dbe476e5a02091624a19068f4c962caa8a1c5",
+    "source_file": "moonshotai_Kimi-Linear-48B-A3B-Instruct-IQ2_XXS.gguf",
+    "canonical_ref": "bartowski/moonshotai_Kimi-Linear-48B-A3B-Instruct-GGUF@228dbe476e5a02091624a19068f4c962caa8a1c5/moonshotai_Kimi-Linear-48B-A3B-Instruct-IQ2_XXS.gguf",
+    "distribution_id": "moonshotai_Kimi-Linear-48B-A3B-Instruct-IQ2_XXS",
+    "selector": "IQ2_XXS",
+    "capability": {
+      "family_id": "kimi_linear",
+      "layer_count": 27,
+      "activation_width": 2304,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "rejected_too_large",
+      "recurrent_ranges": [
+        {
+          "start": 0,
+          "end": 3
+        },
+        {
+          "start": 4,
+          "end": 7
+        },
+        {
+          "start": 8,
+          "end": 11
+        },
+        {
+          "start": 12,
+          "end": 15
+        },
+        {
+          "start": 16,
+          "end": 19
+        },
+        {
+          "start": 20,
+          "end": 23
+        },
+        {
+          "start": 24,
+          "end": 26
+        }
+      ],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
     "model_id": "noctrex/LFM2-8B-A1B-MXFP4_MOE-GGUF",
     "source_repo": "noctrex/LFM2-8B-A1B-MXFP4_MOE-GGUF",
     "source_revision": "7553ad711a661b2cf772f2122bc90094e9b116bd",

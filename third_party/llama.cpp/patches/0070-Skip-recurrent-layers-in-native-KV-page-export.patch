@@ -1,0 +1,107 @@
+From f1e43e4ee7cec6fc6c1dcd945617d8081c44d871 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Thu, 7 May 2026 17:40:58 +1000
+Subject: [PATCH] Skip recurrent layers in native KV page export
+
+---
+ src/llama-kv-cache.cpp | 42 ++++++++++++++++++++++++++----------------
+ 1 file changed, 26 insertions(+), 16 deletions(-)
+
+diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
+index 6bdbf42c..8467a433 100644
+--- a/src/llama-kv-cache.cpp
++++ b/src/llama-kv-cache.cpp
+@@ -1206,14 +1206,16 @@ bool llama_kv_cache::stage_export_kv_page(
+         if (il < static_cast<uint32_t>(layer_start) || il >= static_cast<uint32_t>(layer_end)) {
+             continue;
+         }
+-        if (layer.k_stream.size() <= strm || layer.v_stream.size() <= strm || layer.k_stream[strm] == nullptr || layer.v_stream[strm] == nullptr) {
+-            error = "KV layer stream is unavailable";
+-            return false;
++        if (layer.k_stream.size() <= strm || layer.k_stream[strm] == nullptr) {
++            continue;
+         }
++        const uint32_t n_embd_v = hparams.n_embd_v_gqa(il);
++        const bool has_v_stream = layer.v_stream.size() > strm && layer.v_stream[strm] != nullptr;
+ 
+         const size_t k_row = ggml_row_size(layer.k_stream[strm]->type, hparams.n_embd_k_gqa(il));
+-        const size_t v_row = !v_trans ? ggml_row_size(layer.v_stream[strm]->type, hparams.n_embd_v_gqa(il)) : 0;
+-        const size_t v_el  =  v_trans ? ggml_type_size(layer.v_stream[strm]->type) : 0;
++        const size_t v_row = has_v_stream && !v_trans ? ggml_row_size(layer.v_stream[strm]->type, n_embd_v) : 0;
++        const size_t v_el  = has_v_stream &&  v_trans ? ggml_type_size(layer.v_stream[strm]->type) : 0;
++        const uint32_t layer_v_type = has_v_stream ? static_cast<uint32_t>(layer.v_stream[strm]->type) : GGML_TYPE_F32;
+ 
+         if (k_row > std::numeric_limits<uint32_t>::max() ||
+                 v_row > std::numeric_limits<uint32_t>::max() ||
+@@ -1226,19 +1228,19 @@ bool llama_kv_cache::stage_export_kv_page(
+             v_row_bytes = static_cast<uint32_t>(v_row);
+             v_element_bytes = static_cast<uint32_t>(v_el);
+             k_type = static_cast<uint32_t>(layer.k_stream[strm]->type);
+-            v_type = static_cast<uint32_t>(layer.v_stream[strm]->type);
++            v_type = layer_v_type;
+         } else if (k_row_bytes != k_row ||
+                 v_row_bytes != v_row ||
+                 v_element_bytes != v_el ||
+                 k_type != static_cast<uint32_t>(layer.k_stream[strm]->type) ||
+-                v_type != static_cast<uint32_t>(layer.v_stream[strm]->type)) {
++                v_type != layer_v_type) {
+             error = "native KV page export requires uniform K/V types and row sizes across selected layers";
+             return false;
+         }
+ 
+-        const uint64_t v_bytes = v_trans ?
+-            static_cast<uint64_t>(hparams.n_embd_v_gqa(il)) * token_count * v_el :
+-            token_count * v_row;
++        const uint64_t v_bytes = has_v_stream ?
++            (v_trans ? static_cast<uint64_t>(n_embd_v) * token_count * v_el : token_count * v_row) :
++            0;
+         const uint64_t k_bytes = token_count * k_row;
+         if (payload_bytes > std::numeric_limits<uint64_t>::max() - k_bytes ||
+                 payload_bytes + k_bytes > std::numeric_limits<uint64_t>::max() - v_bytes) {
+@@ -1292,6 +1294,9 @@ bool llama_kv_cache::stage_export_kv_page(
+ 
+     if (!v_trans) {
+         for (const auto * layer : selected) {
++            if (v_row_bytes == 0) {
++                continue;
++            }
+             auto * v = layer->v_stream[strm];
+             for (uint32_t cell_idx : cell_idxs) {
+                 ggml_backend_tensor_get(v, dst, static_cast<size_t>(cell_idx) * v_row_bytes, v_row_bytes);
+@@ -1370,15 +1375,17 @@ bool llama_kv_cache::stage_import_kv_page(
+         if (il < static_cast<uint32_t>(desc.layer_start) || il >= static_cast<uint32_t>(desc.layer_end)) {
+             continue;
+         }
+-        if (layer.k_stream.size() <= strm || layer.v_stream.size() <= strm || layer.k_stream[strm] == nullptr || layer.v_stream[strm] == nullptr) {
+-            error = "KV layer stream is unavailable";
+-            return false;
++        if (layer.k_stream.size() <= strm || layer.k_stream[strm] == nullptr) {
++            continue;
+         }
++        const uint32_t n_embd_v = hparams.n_embd_v_gqa(il);
++        const bool has_v_stream = layer.v_stream.size() > strm && layer.v_stream[strm] != nullptr;
+         const size_t k_row = ggml_row_size(layer.k_stream[strm]->type, hparams.n_embd_k_gqa(il));
+-        const size_t v_row = !v_trans ? ggml_row_size(layer.v_stream[strm]->type, hparams.n_embd_v_gqa(il)) : 0;
+-        const size_t v_el  =  v_trans ? ggml_type_size(layer.v_stream[strm]->type) : 0;
++        const size_t v_row = has_v_stream && !v_trans ? ggml_row_size(layer.v_stream[strm]->type, n_embd_v) : 0;
++        const size_t v_el  = has_v_stream &&  v_trans ? ggml_type_size(layer.v_stream[strm]->type) : 0;
++        const uint32_t layer_v_type = has_v_stream ? static_cast<uint32_t>(layer.v_stream[strm]->type) : GGML_TYPE_F32;
+         if (desc.k_type != static_cast<uint32_t>(layer.k_stream[strm]->type) ||
+-                desc.v_type != static_cast<uint32_t>(layer.v_stream[strm]->type) ||
++                desc.v_type != layer_v_type ||
+                 desc.k_row_bytes != k_row ||
+                 desc.v_row_bytes != v_row ||
+                 desc.v_element_bytes != v_el) {
+@@ -1461,6 +1468,9 @@ bool llama_kv_cache::stage_import_kv_page(
+     auto & cells = v_cells[strm];
+     if (!v_trans) {
+         for (const auto * layer : selected) {
++            if (desc.v_row_bytes == 0) {
++                continue;
++            }
+             auto * v = layer->v_stream[strm];
+             for (uint32_t i = 0; i < n_tokens; ++i) {
+                 ggml_backend_tensor_set(v, src, static_cast<size_t>(sinfo.idxs[0][i]) * desc.v_row_bytes, desc.v_row_bytes);
+-- 
+2.50.1 (Apple Git-155)
+

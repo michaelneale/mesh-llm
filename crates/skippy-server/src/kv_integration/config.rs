@@ -117,6 +117,8 @@ fn infer_cache_payload(config: &StageConfig) -> StagePrefixCachePayload {
         || identity.contains("qwen3-next")
         || identity.contains("qwen3.6")
         || identity.contains("qwen3_6")
+        || identity.contains("kimi-linear")
+        || identity.contains("kimi_linear")
     {
         return StagePrefixCachePayload::KvRecurrent;
     }
@@ -229,6 +231,12 @@ mod tests {
     fn cache_payload_inference_selects_recurrent_and_dense_families() {
         assert_eq!(
             infer_cache_payload(&test_config("tiiuae/Falcon-H1-0.5B-Instruct-GGUF:Q4_K_M")),
+            StagePrefixCachePayload::KvRecurrent
+        );
+        assert_eq!(
+            infer_cache_payload(&test_config(
+                "bartowski/moonshotai_Kimi-Linear-48B-A3B-Instruct-GGUF:IQ2_XXS"
+            )),
             StagePrefixCachePayload::KvRecurrent
         );
         assert_eq!(

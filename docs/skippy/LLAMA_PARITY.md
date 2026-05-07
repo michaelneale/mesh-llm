@@ -215,19 +215,19 @@ available. Current classification:
 
 | Status | Count | Meaning |
 | --- | ---: | --- |
-| `certified` | 82 | Cheap representative passed the promoted text/cache evidence for this branch. |
+| `certified` | 83 | Cheap representative passed the promoted text/cache evidence for this branch. |
 | `certified_package_only` | 6 | Huge model has package/stage evidence rather than a monolithic local baseline. |
 | `candidate_multimodal` | 8 | Needs projector/media sideband certification before multimodal promotion. |
 | `needs_runtime_slice_support` | 1 | Causal llama.cpp family exists, but skippy's stage ABI does not yet support its graph/tensor filtering. |
 | `non_causal_aux` | 14 | Encoder, embedding, audio, or other non-causal serving lane. |
 | `implementation_base` | 4 | Shared implementation helper, not a standalone GGUF architecture. |
 | `package_or_remote_only` | 10 | No cheap local representative; certify on larger hardware or package artifacts. |
-| `no_public_gguf_candidate` | 6 | No public GGUF matching that llama.cpp architecture was found. |
+| `no_public_gguf_candidate` | 5 | No public GGUF matching that llama.cpp architecture was found. |
 
 The active P0/P1 queue has no `needs_candidate` rows. Remaining gaps are one
 explicit runtime-slice implementation blocker (`gemma3n`), multimodal
 projector/media sideband work, remaining package/remote certification for
-oversized models, and six exact-public-artifact gaps where HF re-audit still
+oversized models, and five exact-public-artifact gaps where HF re-audit still
 found no public GGUF.
 
 ## Family Board
@@ -267,6 +267,7 @@ or a blocker is discovered.
 | `command_r` | `command-r` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `cohere2` | `cohere2` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `jamba` | `jamba` | selected | yes | pass | pass | `KvRecurrent` | pass | recurrent cache restore ready; middle stage can be recurrent-only |
+| `kimi_linear` | `kimi-linear` | selected | yes | pass | rejected-too-large full state; `KvRecurrent` pass | `KvRecurrent` | pass | KDA recurrent ranges plus sparse K-only MLA KV pages split/cache ready; f16 and q8 wire validated |
 | `falcon` | `falcon` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `internlm2` | `internlm2` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `stablelm` | `stablelm` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
@@ -305,7 +306,7 @@ implementation.
 
 1. Finish P0 multimodal promotion for Qwen2-VL, Qwen3-VL, Qwen3-VL-MoE, and
    Hunyuan-VL by proving projector/media sideband split serving.
-2. Finish package or remote certification for MiMo-V2 and Kimi Linear.
+2. Finish package or remote certification for MiMo-V2 and Exaone-MoE.
 3. Add Gemma3n runtime-slice graph support before attempting text or multimodal
    promotion; its current graph carries 3D AltUp/per-layer state and has no
    stage-filter hooks.
@@ -356,6 +357,7 @@ themselves until the reviewed topology records are updated.
 | `granite_moe` | see `target/family-certify/llama-parity-granite-moe-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke passed on tiny random layout probe; fixed Granite-MoE ABI allowlist |
 | `hunyuan_dense` | see `target/family-certify/llama-parity-hunyuan-dense-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke passed; fixed Hunyuan-Dense graph stage filtering |
 | `hunyuan_moe` | see `target/family-certify/llama-parity-hunyuan-moe-runtime-slice-1` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke passed on real A13B MoE GGUF; fixed Hunyuan-MoE graph stage filtering |
+| `kimi_linear` | see `target/family-certify/llama-parity-kimi-linear-20260507h` | `single-step`, `chain`, and dtype matrix passed after sparse K-only MLA KV export/import support | validated | rejected-too-large for full-state | `KvRecurrent` handoff passed with source/target sequence remap, suffix prefill, repeated hit stability, 64,512 KV bytes, and 44,892,668 recurrent bytes |
 | `starcoder2` | see `target/family-certify/llama-parity-starcoder2-runtime-slice-1` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 198.10x cache-hit speedup |
 | `gpt2` | see `target/family-certify/llama-parity-gpt2-runtime-slice-1` | `single-step`, `chain`, and f16 dtype matrix passed | rejected | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 1535.17x cache-hit speedup |
 | `gemma` | see `target/family-certify/llama-parity-gemma-f32-wire-1` and `/tmp/skippy-cache-correctness-dense-gemma` | `single-step`, `chain`, and dtype matrix passed with `f32` only | rejected | accepted | `ResidentKv` cache smoke passed with `f32`; `f16` predicted token `0`, `q8` predicted token `107` |
@@ -459,8 +461,9 @@ rerun exited early during process startup before writing a report; the completed
 tranche reports are the current evidence.
 
 Negative policy regression tests now assert that Falcon-H1, Qwen3Next, Jamba,
-LFM2, Mamba, Mamba2, RWKV6, and RWKV7 select `KvRecurrent`, never `ResidentKv`,
-through mesh family policy and server-side auto-payload inference.
+Kimi Linear, LFM2, Mamba, Mamba2, RWKV6, and RWKV7 select `KvRecurrent`, never
+`ResidentKv`, through mesh family policy and server-side auto-payload
+inference.
 
 | Family | Model ref | Payload | Topology | Result | Seq remap | Source -> target seq | Suffix prefill | Payload bytes | Recurrent bytes | Repeated hits |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -543,6 +546,11 @@ through mesh family policy and server-side auto-payload inference.
   `KvRecurrent` cache smoke for one-stage, split-middle, and split-final
   restore into a different native sequence. Keep recurrent ownership sticky for
   normal staged decode; the cache proof is for exact prefix restore.
+- `kimi_linear` now passes split text, chained split, f32/f16/q8 wire, and
+  `KvRecurrent` restore into a different native sequence. The fixes were
+  llama.cpp-side: optional filtered tensor probes are counted once, and native
+  KV page export/import supports sparse K-only MLA pages alongside recurrent KDA
+  state.
 - `rwkv7` uses a wider activation-frame contract. Later RWKV7 layers depend on
   the layer-0 `v_first` tensor, so non-first stages receive hidden state plus a
   `v_first` activation sideband. The sampled 12-layer artifact now passes

@@ -763,6 +763,30 @@ fn infers_known_family_capabilities_from_model_identity() {
     assert_eq!(lfm2moe.q8_wire_validation, WireValidation::Validated);
     assert_eq!(lfm2moe.exact_state_mobility, ExactStateMobility::Accepted);
     assert_eq!(lfm2moe.recurrent_ranges.len(), 1);
+    let kimi = infer_family_capability(
+        "bartowski/moonshotai_Kimi-Linear-48B-A3B-Instruct-GGUF:IQ2_XXS",
+        27,
+        2304,
+    )
+    .expect("kimi_linear");
+    assert_eq!(kimi.family_id, "kimi_linear");
+    assert_eq!(kimi.q8_wire_validation, WireValidation::Validated);
+    assert_eq!(
+        kimi.exact_state_mobility,
+        ExactStateMobility::RejectedTooLarge
+    );
+    assert_eq!(
+        kimi.recurrent_ranges,
+        vec![
+            LayerRange { start: 0, end: 3 },
+            LayerRange { start: 4, end: 7 },
+            LayerRange { start: 8, end: 11 },
+            LayerRange { start: 12, end: 15 },
+            LayerRange { start: 16, end: 19 },
+            LayerRange { start: 20, end: 23 },
+            LayerRange { start: 24, end: 26 },
+        ]
+    );
     assert_eq!(
         infer_family_capability("meta/Llama-3.2-1B-Instruct", 16, 2048)
             .expect("llama")

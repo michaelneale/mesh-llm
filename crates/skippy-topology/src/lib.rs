@@ -1497,6 +1497,30 @@ pub fn qwen3next_capability(
     }
 }
 
+pub fn kimi_linear_capability(layer_count: u32, activation_width: u32) -> FamilyCapabilityRecord {
+    let mut recurrent_ranges = Vec::new();
+    let mut start = 0;
+    while start < layer_count {
+        let end = start.saturating_add(3).min(layer_count.saturating_sub(1));
+        if start < end {
+            recurrent_ranges.push(LayerRange { start, end });
+        }
+        start = start.saturating_add(4);
+    }
+
+    FamilyCapabilityRecord {
+        family_id: "kimi_linear".to_string(),
+        layer_count,
+        activation_width,
+        default_wire_dtype: WireDType::F16,
+        q8_wire_validation: WireValidation::Validated,
+        exact_state_mobility: ExactStateMobility::RejectedTooLarge,
+        recurrent_ranges,
+        split_constraints: Vec::new(),
+        sidebands: Vec::new(),
+    }
+}
+
 pub fn recurrent_family_capability(
     family_id: &str,
     layer_count: u32,
@@ -1755,6 +1779,9 @@ pub fn infer_family_capability(
                 end: layer_count,
             }],
         ));
+    }
+    if compact.contains("kimilinear") {
+        return Some(kimi_linear_capability(layer_count, activation_width));
     }
     if compact.contains("jamba") {
         return Some(recurrent_family_capability(

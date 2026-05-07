@@ -522,7 +522,7 @@ mod tests {
                 }
                 "qwen3next" | "falcon_h1" | "jamba" | "lfm2" | "mamba" | "mamba2" | "rwkv6"
                 | "rwkv7" | "granite_hybrid" | "qwen35" | "qwen35moe" | "plamo2" | "nemotron_h"
-                | "nemotron_h_moe" | "lfm2moe" => assert_eq!(
+                | "nemotron_h_moe" | "lfm2moe" | "kimi_linear" => assert_eq!(
                     policy.prefix_cache,
                     FamilyPrefixCachePolicy::Auto {
                         payload: FamilyPrefixCachePayload::KvRecurrent,

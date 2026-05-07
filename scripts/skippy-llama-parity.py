@@ -561,8 +561,14 @@ def run_certifications(args: argparse.Namespace, rows: list[dict[str, Any]]) -> 
             ),
             {},
         )
+        recurrent_ranges = entry.get("recurrent_ranges")
+        has_recurrent_state = entry.get("recurrent") == "all" or bool(recurrent_ranges)
         if entry.get("recurrent") == "all":
             cmd.append("--recurrent-all")
+        elif recurrent_ranges:
+            if isinstance(recurrent_ranges, list):
+                recurrent_ranges = ",".join(str(item) for item in recurrent_ranges)
+            cmd.extend(["--recurrent-ranges", str(recurrent_ranges)])
         if args.skip_build:
             cmd.append("--skip-build")
         if args.skip_state:
@@ -573,7 +579,7 @@ def run_certifications(args: argparse.Namespace, rows: list[dict[str, Any]]) -> 
         if not state_payload_kind and args.prefix_token_count:
             state_payload_kind = (
                 "kv-recurrent"
-                if entry.get("recurrent") == "all"
+                if has_recurrent_state
                 else defaults.get("state_payload_kind", "resident-kv")
             )
         if state_payload_kind:

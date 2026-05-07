@@ -8,7 +8,7 @@ Certification process lives in `docs/FAMILY_CERTIFY.md`. Payload measurements
 and topology constraints are summarized here so this file stays the only
 customer-facing source of truth.
 
-Last updated: 2026-05-06.
+Last updated: 2026-05-07.
 
 ## Customer Support Matrix
 
@@ -41,6 +41,7 @@ Last updated: 2026-05-06.
 | Hunyuan-MoE | Supported | `unsloth/Hunyuan-A13B-Instruct-GGUF:UD-IQ2_XXS` | `layer_end=32`, `splits=10,21`, activation width `4096` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Real A13B MoE GGUF passed runtime-slice and `ResidentKv` native sequence remap cache smoke. |
 | LFM2 | Supported | `meshllm/lfm2-350m-parity-q4_k_m-gguf:q4_k_m` | `layer_end=16`, `splits=5,10`, activation width `1024` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | Keep recurrent range `0..16` sticky for normal decode. | Use `KvRecurrent` for exact prefix cache restore; native sequence remap cache smoke passed. |
 | Jamba | Supported | `bartowski/ai21labs_AI21-Jamba2-3B-GGUF:Q4_K_M` | `layer_end=28`, `splits=9,18`, activation width `2560` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | Keep recurrent range `0..28` sticky for normal decode. | Use `KvRecurrent` for exact prefix cache restore; middle-stage recurrent-only slices are valid. |
+| Kimi Linear | Supported | `bartowski/moonshotai_Kimi-Linear-48B-A3B-Instruct-GGUF:IQ2_XXS` | `layer_end=27`, `splits=9,18`, activation width `2304` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | Keep recurrent KDA ranges `0..3`, `4..7`, `8..11`, `12..15`, `16..19`, `20..23`, and `24..26` sticky for normal decode. | Use `KvRecurrent`; sparse K-only MLA KV pages plus recurrent state are required for exact prefix restore. |
 | Mamba | Supported | `mradermacher/mamba-130m-hf-GGUF:Q4_K_M` | `layer_end=24`, `splits=8,16`, activation width `768` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | Keep recurrent range `0..24` sticky for normal decode. | Use `KvRecurrent`; cache restore can have zero native KV bytes. |
 | Mamba2 | Supported | `mradermacher/mamba-2.8b-hf-GGUF:Q4_K_M` | `layer_end=64`, `splits=21,42`, activation width `2560` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | Keep recurrent range `0..64` sticky for normal decode. | Use `KvRecurrent`; full-state mobility is rejected as too large. |
 | RWKV6 | Supported | `latestissue/rwkv-6-finch-1b6-gguf:Q4_K` | `layer_end=24`, `splits=8,16`, activation width `2048` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | Keep recurrent range `0..24` sticky for normal decode. | Use `KvRecurrent`; cache restore can have zero native KV bytes. |
@@ -98,6 +99,7 @@ Gemma text
 | Gemma text | The sampled `gemma` architecture artifact only passed stage parity with `f32` activation wire. `f16` and `q8` changed the next-token argmax. |
 | Gemma3n | Local text split is still blocked by llama.cpp reporting `runtime-slice execution is not supported for this model architecture yet`. Do not promote multimodal until Gemma3n graph filtering and media/projector handling have dedicated evidence. |
 | Jamba | Hybrid attention/SSM text lane and `KvRecurrent` cache smoke passed. Middle-stage cache records can have zero native KV bytes plus recurrent state; keep ownership sticky for normal decode. |
+| Kimi Linear | Hybrid KDA recurrent layers plus sparse K-only MLA KV pages require `KvRecurrent`. Keep recurrent KDA ranges sticky for normal decode; exact prefix restore is certified across a different native sequence. |
 | LFM2 | Recurrent text lane and `KvRecurrent` cache smoke passed. Keep ownership sticky for normal decode. |
 | Mamba | Recurrent text lane and `KvRecurrent` cache smoke passed with zero native KV bytes. Keep ownership sticky for normal decode. |
 | Mamba2 | Recurrent text lane and `KvRecurrent` cache smoke passed with zero native KV bytes. Keep ownership sticky for normal decode. |
@@ -130,6 +132,7 @@ OLMoE
 StarCoder2
 LFM2
 Jamba
+Kimi Linear
 Mamba
 Mamba2
 RWKV7
@@ -198,6 +201,7 @@ activation handoff sizes for the recommended split.
 | RWKV7 | 3,072 | Full-state mobility rejected by recurrent policy; `KvRecurrent` cache restore accepted, 21.09x Qwen recurrent state; activation handoff carries hidden state plus `v_first` |
 | LFM2 | 2,048 | Full-state mobility rejected by recurrent policy; `KvRecurrent` cache restore accepted, 0.82x Qwen recurrent state |
 | Jamba | 5,120 | Full-state mobility rejected by recurrent policy; `KvRecurrent` cache restore accepted, 87.69x Qwen recurrent state |
+| Kimi Linear | 4,608 | Full-state mobility rejected as too large; `KvRecurrent` cache restore accepted, 389.62x Qwen recurrent state, 64,512 KV bytes plus 44,892,668 recurrent bytes |
 | Mamba | 1,536 | Full-state mobility rejected by recurrent policy; `KvRecurrent` cache restore accepted, 24.29x Qwen recurrent state |
 | Mamba2 | 5,120 | Full-state rejected as too large; `KvRecurrent` cache restore accepted, 215.84x Qwen recurrent state |
 | OLMo | 8,192 | Accepted, 4.55x Qwen |
