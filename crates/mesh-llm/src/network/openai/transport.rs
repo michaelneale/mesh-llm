@@ -8,9 +8,6 @@ use crate::mesh;
 use crate::network::affinity::{
     prepare_remote_targets_for_request, AffinityRouter, PreparedTargets,
 };
-use crate::network::openai::adapter;
-use crate::network::openai::errors;
-use crate::network::openai::request_adapter;
 use crate::network::openai::response_adapter;
 use crate::network::router;
 use crate::plugin;
@@ -552,13 +549,13 @@ fn normalize_openai_compat_request(
     path: &str,
     body: &mut serde_json::Value,
 ) -> Result<RequestNormalization> {
-    let normalized = request_adapter::normalize_openai_compat_request(path, body)?;
+    let normalized = openai_frontend::normalize_openai_compat_request(path, body)?;
     let response_adapter = match normalized.response_adapter {
-        request_adapter::ResponseAdapterMode::None => ResponseAdapter::None,
-        request_adapter::ResponseAdapterMode::OpenAiResponsesJson => {
+        openai_frontend::ResponseAdapterMode::None => ResponseAdapter::None,
+        openai_frontend::ResponseAdapterMode::OpenAiResponsesJson => {
             ResponseAdapter::OpenAiResponsesJson
         }
-        request_adapter::ResponseAdapterMode::OpenAiResponsesStream => {
+        openai_frontend::ResponseAdapterMode::OpenAiResponsesStream => {
             ResponseAdapter::OpenAiResponsesStream
         }
     };
@@ -1036,7 +1033,8 @@ async fn relay_translated_responses_stream<R: AsyncRead + Unpin>(
                 continue;
             }
 
-            let chunk = adapter::parse_chat_stream_chunk(&data)?;
+            let chunk = openai_frontend::parse_chat_stream_chunk(&data)
+                .context("parse typed upstream chat stream chunk")?;
             if let Some(chunk_model) = chunk.model.as_deref() {
                 if model.is_empty() {
                     model = chunk_model.to_string();
@@ -1451,7 +1449,8 @@ fn remap_error_http_response(
     if status_code < 400 || header_end > full_response.len() {
         return None;
     }
-    let mapped_body = errors::map_upstream_error_body(status_code, &full_response[header_end..])?;
+    let mapped_body =
+        openai_frontend::map_upstream_error_body(status_code, &full_response[header_end..])?;
     let header = format!(
         "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         status_code,

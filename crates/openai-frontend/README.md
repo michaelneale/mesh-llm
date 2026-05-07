@@ -10,6 +10,11 @@ request/response JSON, OpenAI-style errors, `/v1/models`, chat completions, and
 streaming Server-Sent Events framing. Mesh uses this as the single OpenAI
 surface for embedded single-stage and stage-split serving.
 
+Mesh-local compatibility wrappers should stay thin. Request normalization,
+Responses API translation, stream-chunk parsing, stream usage conversion, and
+upstream error mapping are owned here so the host binary and staged runtimes do
+not grow separate OpenAI compatibility layers.
+
 The compatibility target is the mesh OpenAI surface, not llama-server process
 compatibility. Request fields such as tools, structured-output shape,
 logprobs, and `/v1/responses` are parsed and normalized here; backend support

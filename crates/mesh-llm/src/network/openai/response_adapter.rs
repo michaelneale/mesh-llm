@@ -1,12 +1,10 @@
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 
-use crate::network::openai::schema;
-
 pub(crate) use openai_frontend::{
     responses_stream_completed_event, responses_stream_created_event,
     responses_stream_delta_event_with_logprobs, responses_stream_text_done_event,
-    translate_chat_completion_to_responses,
+    stream_usage_to_responses_usage, translate_chat_completion_to_responses,
 };
 
 fn sse_frame(event: Option<&str>, data: &str) -> Vec<u8> {
@@ -40,12 +38,4 @@ pub(crate) async fn write_chunked_sse_event(
 ) -> std::io::Result<()> {
     let frame = sse_frame(event, data);
     write_chunked_bytes(stream, &frame).await
-}
-
-pub(crate) fn stream_usage_to_responses_usage(usage: &schema::StreamUsage) -> serde_json::Value {
-    serde_json::json!({
-        "input_tokens": usage.prompt_tokens.map(serde_json::Value::from).unwrap_or(serde_json::Value::Null),
-        "output_tokens": usage.completion_tokens.map(serde_json::Value::from).unwrap_or(serde_json::Value::Null),
-        "total_tokens": usage.total_tokens.map(serde_json::Value::from).unwrap_or(serde_json::Value::Null),
-    })
 }

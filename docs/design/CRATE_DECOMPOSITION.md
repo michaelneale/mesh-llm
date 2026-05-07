@@ -24,6 +24,10 @@ Five slices are already extracted:
   compatibility, and canonical config hashing.
 - `mesh-llm-routing` owns shared inference targets, per-model routing tables,
   round-robin/sticky candidate selection, and split-GGUF size accounting.
+- `openai-frontend` now owns the OpenAI request/response adapter pieces that
+  were previously duplicated under the host network module: request
+  normalization, stream-chunk parsing, response stream usage conversion, and
+  upstream error mapping.
 
 ```mermaid
 flowchart TD
@@ -33,6 +37,7 @@ flowchart TD
     host["mesh-llm"]
     protocol["mesh-llm-protocol"]
     routing["mesh-llm-routing"]
+    openai["openai-frontend"]
     ui["mesh-llm-ui"]
     api_assets["mesh-llm API asset routes"]
 
@@ -44,6 +49,7 @@ flowchart TD
     protocol --> host
     routing --> client
     routing --> host
+    openai --> host
     ui --> api_assets
     api_assets --> host
 ```
@@ -113,7 +119,7 @@ flowchart TD
 | `mesh/` gossip, heartbeat, membership, peer state, config sync | New `mesh-llm-control-plane` | This avoids the self-referential `mesh-llm-mesh` name and describes the subsystem's actual role: control-plane membership and coordination, not model execution. |
 | `network/router.rs`, `network/affinity.rs`, route scoring, request placement, election-adjacent logic | New `mesh-llm-routing` | Routing and placement should be reusable without pulling in process runtime or CLI UI. |
 | `network/proxy.rs`, `network/tunnel.rs`, HTTP ingress glue | New `mesh-llm-gateway` | This is the network edge around OpenAI/API traffic. |
-| `network/openai/*` | Existing `openai-frontend` | Adapters, schemas, and response translation fit the existing OpenAI frontend crate better than a new crate. |
+| `network/openai/*` | Existing `openai-frontend` | Request/response adapter shims, stream-chunk schema parsing, response stream usage conversion, and upstream error mapping now live in `openai-frontend`; host networking keeps ingress and mesh transport glue. |
 | `plugin/` host runtime, MCP bridge, transport, config support | New `mesh-llm-plugin-host` | Keep host-side plugin orchestration separate from `mesh-llm-plugin`, which should remain the plugin author API. |
 | `plugins/blobstore`, `plugins/blackboard`, telemetry, OpenAI endpoint plugin | Initially submodules of `mesh-llm-plugin-host`; later first-party plugin crates if needed | These do not all need crates yet. Extract only when boundaries harden. |
 | `runtime_data/` | New `mesh-llm-runtime-data` | Shared by runtime, API, plugins, and CLI dashboard. |
@@ -166,7 +172,7 @@ The crate split should include the documentation migration as part of the same s
 
 1. Extract the first `mesh-llm-types`, `mesh-llm-identity`, `mesh-llm-protocol`, and `mesh-llm-routing` slices.
 2. Move model metadata, resolve, search, and download code into existing `model-*` crates.
-3. Move OpenAI adapter and schema code into `openai-frontend`.
+3. Continue moving OpenAI adapter and schema code into `openai-frontend`.
 4. Push Skippy-owned logic into existing `skippy-*` crates.
 5. Extract `mesh-llm-runtime-data`.
 6. Decouple `mesh/` from CLI, system, and runtime, then extract `mesh-llm-control-plane`.
