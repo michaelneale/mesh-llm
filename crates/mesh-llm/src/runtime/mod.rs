@@ -17,7 +17,7 @@ use self::local::{
     set_advertised_model_context, start_runtime_local_model, start_runtime_split_model,
     startup_runtime_plan, stop_split_generation_cleanup, withdraw_advertised_model,
     LocalRuntimeModelHandle, LocalRuntimeModelStartSpec, ManagedModelController, RuntimeEvent,
-    SplitCoordinatorAck, SplitRuntimeReason, SplitRuntimeStart, StartupRuntimePlan,
+    SplitCoordinatorEvent, SplitRuntimeReason, SplitRuntimeStart, StartupRuntimePlan,
 };
 use self::proxy::{api_proxy, bootstrap_proxy};
 use crate::api;
@@ -1355,6 +1355,29 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                 let Some(event) = event else {
                     split_event_rx = None;
                     continue;
+                };
+                let event = match event {
+                    SplitCoordinatorEvent::Replace(event) => event,
+                    SplitCoordinatorEvent::Withdraw(event) => {
+                        let missing_stage_nodes = event
+                            .missing_stage_nodes
+                            .iter()
+                            .map(|node| node.fmt_short().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let _ = emit_event(OutputEvent::Warning {
+                            message: format!(
+                                "Split runtime topology '{}' lost required stage peer(s); withdrawing model '{}'",
+                                event.topology_id, loaded_name
+                            ),
+                            context: Some(format!(
+                                "reason={} generation={} missing_stage_nodes=[{}]",
+                                event.reason, event.generation, missing_stage_nodes
+                            )),
+                        });
+                        let _ = event.ack.send(SplitCoordinatorAck::Accepted);
+                        break;
+                    }
                 };
                 let mut next = event.loaded;
                 let old_loaded_name = loaded_name.clone();

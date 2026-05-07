@@ -171,10 +171,23 @@ pub(super) struct SplitRuntimeGenerationHandle {
     pub(super) coordinator_task: Option<tokio::task::JoinHandle<()>>,
 }
 
-pub(super) struct SplitCoordinatorEvent {
+pub(super) enum SplitCoordinatorEvent {
+    Replace(SplitCoordinatorReplaceEvent),
+    Withdraw(SplitCoordinatorWithdrawEvent),
+}
+
+pub(super) struct SplitCoordinatorReplaceEvent {
     pub(super) reason: &'static str,
     pub(super) generation: u64,
     pub(super) loaded: SplitRuntimeGenerationHandle,
+    pub(super) ack: tokio::sync::oneshot::Sender<SplitCoordinatorAck>,
+}
+
+pub(super) struct SplitCoordinatorWithdrawEvent {
+    pub(super) reason: &'static str,
+    pub(super) generation: u64,
+    pub(super) topology_id: String,
+    pub(super) missing_stage_nodes: Vec<iroh::EndpointId>,
     pub(super) ack: tokio::sync::oneshot::Sender<SplitCoordinatorAck>,
 }
 
@@ -920,16 +933,20 @@ impl SplitTopologyCoordinator {
                     while peer_rx.has_changed().unwrap_or(false) {
                         let _ = peer_rx.borrow_and_update();
                     }
-                    self.evaluate_replan("membership_changed").await;
+                    if !self.evaluate_replan("membership_changed").await {
+                        break;
+                    }
                 }
                 _ = health_tick.tick() => {
-                    self.evaluate_replan("periodic_check").await;
+                    if !self.evaluate_replan("periodic_check").await {
+                        break;
+                    }
                 }
             }
         }
     }
 
-    async fn evaluate_replan(&mut self, reason: &'static str) {
+    async fn evaluate_replan(&mut self, reason: &'static str) -> bool {
         let snapshot = collect_split_participants(
             &self.node,
             &self.model_name,
@@ -939,6 +956,8 @@ impl SplitTopologyCoordinator {
         )
         .await;
         if snapshot.participants.len() < SPLIT_DEFAULT_MIN_PARTICIPANTS {
+            let missing_stage_nodes =
+                split_missing_active_stage_nodes(&self.active, &snapshot.participants);
             tracing::debug!(
                 model_ref = self.model_ref,
                 reason,
@@ -946,7 +965,30 @@ impl SplitTopologyCoordinator {
                 excluded = ?split_participant_exclusion_labels(&snapshot.excluded),
                 "split topology replan skipped; quorum not met"
             );
-            return;
+            if !missing_stage_nodes.is_empty() {
+                tracing::warn!(
+                    model_ref = self.model_ref,
+                    reason,
+                    topology_id = self.active.topology_id,
+                    generation = self.active.generation,
+                    missing_stage_nodes = ?split_node_labels(&missing_stage_nodes),
+                    "split topology lost an active stage peer and cannot meet quorum; withdrawing active generation"
+                );
+                if let Err(err) = self
+                    .withdraw_active_generation(reason, missing_stage_nodes)
+                    .await
+                {
+                    tracing::warn!(
+                        model_ref = self.model_ref,
+                        reason,
+                        error = %err,
+                        "failed to publish split topology withdrawal"
+                    );
+                } else {
+                    return false;
+                }
+            }
+            return true;
         }
 
         let planned_participants = snapshot.participants.clone();
@@ -975,7 +1017,7 @@ impl SplitTopologyCoordinator {
                     excluded = ?split_participant_exclusion_labels(&snapshot.excluded),
                     "split topology replan candidate failed"
                 );
-                return;
+                return true;
             }
         };
         if candidate
@@ -989,7 +1031,7 @@ impl SplitTopologyCoordinator {
                 candidate_stages = ?split_stage_plan_labels(&candidate.stages),
                 "split topology replan skipped; stage 0 would move to another node"
             );
-            return;
+            return true;
         }
 
         match split_replan_decision(&self.active, &candidate) {
@@ -1026,6 +1068,7 @@ impl SplitTopologyCoordinator {
                 }
             }
         }
+        true
     }
 
     async fn load_and_publish_candidate(
@@ -1052,14 +1095,16 @@ impl SplitTopologyCoordinator {
         })
         .await?;
         let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
-        let event = SplitCoordinatorEvent {
+        let event = SplitCoordinatorEvent::Replace(SplitCoordinatorReplaceEvent {
             reason,
             generation: candidate.generation,
             loaded,
             ack: ack_tx,
-        };
+        });
         if let Err(err) = self.event_tx.send(event).await {
-            let event = err.0;
+            let SplitCoordinatorEvent::Replace(event) = err.0 else {
+                unreachable!("replace event send returned a non-replace event")
+            };
             event.loaded.handle.shutdown().await;
             stop_split_generation(&self.node, &candidate, candidate.generation).await;
             anyhow::bail!("publish split topology candidate to runtime loop: receiver closed");
@@ -1083,12 +1128,37 @@ impl SplitTopologyCoordinator {
             }
         }
     }
+
+    async fn withdraw_active_generation(
+        &mut self,
+        reason: &'static str,
+        missing_stage_nodes: Vec<iroh::EndpointId>,
+    ) -> Result<()> {
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        let event = SplitCoordinatorEvent::Withdraw(SplitCoordinatorWithdrawEvent {
+            reason,
+            generation: self.active.generation,
+            topology_id: self.active.topology_id.clone(),
+            missing_stage_nodes,
+            ack: ack_tx,
+        });
+        if self.event_tx.send(event).await.is_err() {
+            anyhow::bail!("publish split topology withdrawal to runtime loop: receiver closed");
+        }
+        match ack_rx.await {
+            Ok(SplitCoordinatorAck::Accepted) => Ok(()),
+            Err(_) => anyhow::bail!("runtime loop dropped split topology withdrawal ack"),
+        }
+    }
 }
 
 fn split_replan_decision(
     active: &SplitTopologyGeneration,
     candidate: &SplitTopologyGeneration,
 ) -> SplitReplanDecision {
+    if split_active_stage_participant_missing(active, &candidate.participants) {
+        return SplitReplanDecision::Candidate;
+    }
     if candidate.stages.len() > active.stages.len() {
         return SplitReplanDecision::Candidate;
     }
@@ -1103,6 +1173,31 @@ fn split_replan_decision(
         return SplitReplanDecision::Candidate;
     }
     SplitReplanDecision::Keep
+}
+
+fn split_active_stage_participant_missing(
+    active: &SplitTopologyGeneration,
+    current_participants: &[SplitParticipant],
+) -> bool {
+    !split_missing_active_stage_nodes(active, current_participants).is_empty()
+}
+
+fn split_missing_active_stage_nodes(
+    active: &SplitTopologyGeneration,
+    current_participants: &[SplitParticipant],
+) -> Vec<iroh::EndpointId> {
+    let mut missing = Vec::new();
+    for stage in &active.stages {
+        if current_participants
+            .iter()
+            .any(|participant| participant.node_id == stage.node_id)
+            || missing.contains(&stage.node_id)
+        {
+            continue;
+        }
+        missing.push(stage.node_id);
+    }
+    missing
 }
 
 async fn stop_split_generation(
@@ -1347,6 +1442,13 @@ fn split_participant_labels(participants: &[SplitParticipant]) -> Vec<String> {
                 participant.vram_bytes / 1_000_000_000
             )
         })
+        .collect()
+}
+
+fn split_node_labels(nodes: &[iroh::EndpointId]) -> Vec<String> {
+    nodes
+        .iter()
+        .map(|node| node.fmt_short().to_string())
         .collect()
 }
 
@@ -2067,6 +2169,30 @@ mod tests {
         .unwrap();
     }
 
+    fn participant(seed: u8) -> SplitParticipant {
+        SplitParticipant {
+            node_id: make_id(seed),
+            vram_bytes: 24_000_000_000,
+            first_joined_mesh_ts: None,
+        }
+    }
+
+    fn stage(
+        seed: u8,
+        stage_index: u32,
+        layer_start: u32,
+        layer_end: u32,
+    ) -> RuntimeSliceStagePlan {
+        RuntimeSliceStagePlan {
+            stage_id: format!("stage-{stage_index}"),
+            stage_index,
+            node_id: make_id(seed),
+            layer_start,
+            layer_end,
+            parameter_bytes: u64::from(layer_end.saturating_sub(layer_start)) * 1_000_000,
+        }
+    }
+
     #[test]
     fn runtime_local_targets_keep_duplicate_same_model_ports() {
         let (target_tx, _target_rx) =
@@ -2331,6 +2457,23 @@ mod tests {
     }
 
     #[test]
+    fn split_missing_active_stage_nodes_ignores_unused_lost_participants() {
+        let active = SplitTopologyGeneration::new(
+            "topology-a".into(),
+            "run-a".into(),
+            1,
+            vec![participant(1), participant(2), participant(3)],
+            vec![stage(1, 0, 0, 20), stage(2, 1, 20, 40)],
+        );
+        let current_participants = vec![participant(1)];
+
+        assert_eq!(
+            split_missing_active_stage_nodes(&active, &current_participants),
+            vec![make_id(2)]
+        );
+    }
+
+    #[test]
     fn split_replan_decision_accepts_more_stage_capacity() {
         let participants = vec![SplitParticipant {
             node_id: make_id(1),
@@ -2410,6 +2553,53 @@ mod tests {
             2,
             participants,
             stages,
+        );
+
+        assert_eq!(
+            split_replan_decision(&active, &candidate),
+            SplitReplanDecision::Keep
+        );
+    }
+
+    #[test]
+    fn split_replan_decision_accepts_degraded_topology_when_active_stage_peer_is_lost() {
+        let active = SplitTopologyGeneration::new(
+            "topology-a".into(),
+            "run-a".into(),
+            1,
+            vec![participant(1), participant(2), participant(3)],
+            vec![stage(1, 0, 0, 10), stage(2, 1, 10, 20), stage(3, 2, 20, 30)],
+        );
+        let candidate = SplitTopologyGeneration::new(
+            "topology-b".into(),
+            "run-b".into(),
+            2,
+            vec![participant(1), participant(3)],
+            vec![stage(1, 0, 0, 15), stage(3, 1, 15, 30)],
+        );
+
+        assert_eq!(
+            split_replan_decision(&active, &candidate),
+            SplitReplanDecision::Candidate
+        );
+    }
+
+    #[test]
+    fn split_replan_decision_keeps_topology_when_only_unused_participant_is_lost() {
+        let active_stages = vec![stage(1, 0, 0, 20), stage(2, 1, 20, 40)];
+        let active = SplitTopologyGeneration::new(
+            "topology-a".into(),
+            "run-a".into(),
+            1,
+            vec![participant(1), participant(2), participant(3)],
+            active_stages.clone(),
+        );
+        let candidate = SplitTopologyGeneration::new(
+            "topology-b".into(),
+            "run-b".into(),
+            2,
+            vec![participant(1), participant(2)],
+            active_stages,
         );
 
         assert_eq!(
