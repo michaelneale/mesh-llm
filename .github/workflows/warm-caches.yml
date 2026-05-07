@@ -5,6 +5,11 @@ on:
     branches: [main]
     paths:
       - 'third_party/llama.cpp/upstream.txt'
+      - 'third_party/llama.cpp/patches/**'
+      - '.github/workflows/warm-caches.yml'
+      - '.github/workflows/llama-cache-keys.yml'
+      - '.github/workflows/gpu-warm-cache-job.yml'
+      - 'scripts/**'
   workflow_dispatch:
     inputs:
       retention:
