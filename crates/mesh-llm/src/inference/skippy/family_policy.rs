@@ -150,6 +150,13 @@ fn family_policy_for_normalized_family_id(
     family_id: &str,
     activation_wire_dtype: StageWireDType,
 ) -> FamilyPolicy {
+    if matches!(family_id, "dream" | "llada" | "llada_moe") {
+        return disabled_family_policy(
+            activation_wire_dtype,
+            "non-causal diffusion family has no resident KV state to cache",
+        );
+    }
+
     if let Some(expected) = skippy_topology::STAGE_RUNTIME_LLAMA_FAMILY_EXPECTATIONS
         .iter()
         .find(|expected| expected.family_id == family_id)
@@ -168,11 +175,14 @@ fn family_policy_for_normalized_family_id(
         | "granite" | "granite_moe" | "hunyuan_dense" | "hunyuan_moe" | "hunyuan_vl"
         | "gptneox" | "bloom" | "stablelm" | "starcoder2" | "mpt" | "phi" | "phi2" | "phimoe"
         | "gpt2" | "mistral" | "internlm2" | "baichuan" | "exaone" | "exaone4" | "cohere2"
-        | "command_r" | "falcon" | "qwen2vl" | "qwen3vl" => {
+        | "command_r" | "falcon" | "qwen2vl" | "qwen3vl" | "deepseek2ocr" | "qwen3vlmoe"
+        | "openai_moe" | "ernie4_5_moe" | "llama4" | "mistral4" | "seed_oss" => {
             resident_kv_policy(activation_wire_dtype)
         }
         "qwen3next" | "falcon_h1" | "jamba" | "lfm2" | "mamba" | "mamba2" | "rwkv6" | "rwkv7"
-        | "granite_hybrid" | "qwen35" | "qwen35moe" => kv_recurrent_policy(activation_wire_dtype),
+        | "granite_hybrid" | "qwen35" | "qwen35moe" | "nemotron_h_moe" => {
+            kv_recurrent_policy(activation_wire_dtype)
+        }
         _ => unknown_family_policy_with_wire_dtype(activation_wire_dtype),
     }
 }
@@ -460,12 +470,33 @@ mod tests {
     }
 
     #[test]
+    fn apertus_reviewed_policy_uses_f32_activation_wire() {
+        let policy = family_policy_for_model_id("unsloth/Apertus-8B-Instruct-2509-GGUF:UD-IQ2_M");
+
+        assert_eq!(policy.activation_wire_dtype, StageWireDType::F32);
+        assert!(matches!(
+            policy.prefix_cache,
+            FamilyPrefixCachePolicy::Auto {
+                payload: FamilyPrefixCachePayload::ResidentKv,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn every_reviewed_family_has_an_explicit_cache_policy() {
         for record in reviewed_capability_records() {
             let policy = family_policy_for_capability(&record.capability);
             let family_id = record.capability.family_id.as_str();
 
             match family_id {
+                "dream" | "llada" | "llada_moe" => assert_eq!(
+                    policy.prefix_cache,
+                    FamilyPrefixCachePolicy::Disabled {
+                        reason: "non-causal diffusion family has no resident KV state to cache",
+                    },
+                    "{family_id}"
+                ),
                 "qwen2" | "qwen3_dense" | "llama" | "deepseek" | "deepseek2" | "deepseek3"
                 | "glm4" | "glm4_moe" | "olmo" | "olmo2" | "olmoe" | "gemma" | "gemma2"
                 | "gemma3" | "gemma4_a4b" | "gemma4_e4b" | "glm47_flash" | "minimax_m27"
@@ -473,9 +504,12 @@ mod tests {
                 | "hunyuan_moe" | "hunyuan_vl" | "gptneox" | "bloom" | "stablelm"
                 | "starcoder2" | "mpt" | "phi" | "phi2" | "phimoe" | "gpt2" | "mistral"
                 | "internlm2" | "baichuan" | "exaone" | "exaone4" | "cohere2" | "falcon"
-                | "qwen2vl" | "qwen3vl" | "maincoder" | "openelm" | "minicpm" | "minicpm3"
-                | "plamo3" | "plm" | "refact" | "smallthinker" | "smollm3" | "arcee"
-                | "chatglm" | "codeshell" | "deci" | "xverse" => {
+                | "openai_moe" | "qwen2vl" | "qwen3vl" | "deepseek2ocr" | "qwen3vlmoe"
+                | "maincoder" | "openelm" | "minicpm" | "minicpm3" | "plamo" | "plamo3" | "plm"
+                | "refact" | "smallthinker" | "smollm3" | "arcee" | "chatglm" | "codeshell"
+                | "deci" | "xverse" | "apertus" | "bitnet" | "command_r" | "starcoder"
+                | "ernie4_5" | "ernie4_5_moe" | "qwen" | "jais" | "jais2" | "nemotron"
+                | "llama4" | "mistral4" | "seed_oss" => {
                     assert_eq!(
                         policy.prefix_cache,
                         FamilyPrefixCachePolicy::Auto {
@@ -487,7 +521,8 @@ mod tests {
                     )
                 }
                 "qwen3next" | "falcon_h1" | "jamba" | "lfm2" | "mamba" | "mamba2" | "rwkv6"
-                | "rwkv7" | "granite_hybrid" | "qwen35" | "qwen35moe" => assert_eq!(
+                | "rwkv7" | "granite_hybrid" | "qwen35" | "qwen35moe" | "plamo2" | "nemotron_h"
+                | "nemotron_h_moe" | "lfm2moe" => assert_eq!(
                     policy.prefix_cache,
                     FamilyPrefixCachePolicy::Auto {
                         payload: FamilyPrefixCachePayload::KvRecurrent,
@@ -505,6 +540,19 @@ mod tests {
     fn every_stage_runtime_llama_architecture_has_cache_policy() {
         for expected in STAGE_RUNTIME_LLAMA_FAMILY_EXPECTATIONS {
             let policy = family_policy_for_model_id(expected.llama_architecture);
+            if matches!(expected.family_id, "dream" | "llada" | "llada_moe") {
+                assert_eq!(
+                    policy.prefix_cache,
+                    FamilyPrefixCachePolicy::Disabled {
+                        reason: "non-causal diffusion family has no resident KV state to cache",
+                    },
+                    "{} ({})",
+                    expected.llama_architecture,
+                    expected.family_id
+                );
+                continue;
+            }
+
             let expected_payload = if expected.recurrent_or_hybrid {
                 FamilyPrefixCachePayload::KvRecurrent
             } else {

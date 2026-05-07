@@ -1370,6 +1370,31 @@
     }
   },
   {
+    "model_id": "unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_XL",
+    "source_repo": "unsloth/Qwen3.6-35B-A3B-GGUF",
+    "source_revision": "9280dd353ab587157920d5bd391ada414d84e552",
+    "source_file": "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+    "canonical_ref": "unsloth/Qwen3.6-35B-A3B-GGUF@9280dd353ab587157920d5bd391ada414d84e552/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+    "distribution_id": "Qwen3.6-35B-A3B-UD-Q4_K_XL",
+    "selector": "UD-Q4_K_XL",
+    "capability": {
+      "family_id": "qwen35moe",
+      "layer_count": 40,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "untested",
+      "exact_state_mobility": "rejected_too_large",
+      "recurrent_ranges": [
+        {
+          "start": 0,
+          "end": 40
+        }
+      ],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
     "model_id": "xverse/XVERSE-7B-Chat-GGUF:q2_k",
     "source_repo": "xverse/XVERSE-7B-Chat-GGUF",
     "source_revision": "fabec6808fa2b0e7ba93a4f9c0743e9d637f2492",
@@ -1383,6 +1408,535 @@
       "activation_width": 4096,
       "default_wire_dtype": "f16",
       "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "unsloth/Apertus-8B-Instruct-2509-GGUF:UD-IQ2_M",
+    "source_repo": "unsloth/Apertus-8B-Instruct-2509-GGUF",
+    "source_revision": "61c32783830424ac7a6d0fd80d4166e29dbaee06",
+    "source_file": "Apertus-8B-Instruct-2509-UD-IQ2_M.gguf",
+    "canonical_ref": "unsloth/Apertus-8B-Instruct-2509-GGUF@61c32783830424ac7a6d0fd80d4166e29dbaee06/Apertus-8B-Instruct-2509-UD-IQ2_M.gguf",
+    "distribution_id": "Apertus-8B-Instruct-2509-UD-IQ2_M",
+    "selector": "UD-IQ2_M",
+    "capability": {
+      "family_id": "apertus",
+      "layer_count": 32,
+      "activation_width": 4096,
+      "default_wire_dtype": "f32",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "qwp4w3hyb/c4ai-command-r-v01-iMat-GGUF:IQ2_M",
+    "source_repo": "qwp4w3hyb/c4ai-command-r-v01-iMat-GGUF",
+    "source_revision": "5ab9ee38fd90920396e94256e0787f952340c264",
+    "source_file": "c4ai-command-r-v01-imat-IQ2_M.gguf",
+    "canonical_ref": "qwp4w3hyb/c4ai-command-r-v01-iMat-GGUF@5ab9ee38fd90920396e94256e0787f952340c264/c4ai-command-r-v01-imat-IQ2_M.gguf",
+    "distribution_id": "c4ai-command-r-v01-imat-IQ2_M",
+    "selector": "IQ2_M",
+    "capability": {
+      "family_id": "command_r",
+      "layer_count": 40,
+      "activation_width": 8192,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "mradermacher/ARWKV-7B-Preview-0.1-i1-GGUF:IQ2_M",
+    "source_repo": "mradermacher/ARWKV-7B-Preview-0.1-i1-GGUF",
+    "source_revision": "f4989c74677220becf81189449e28ee9a4176151",
+    "source_file": "ARWKV-7B-Preview-0.1.i1-IQ2_M.gguf",
+    "canonical_ref": "mradermacher/ARWKV-7B-Preview-0.1-i1-GGUF@f4989c74677220becf81189449e28ee9a4176151/ARWKV-7B-Preview-0.1.i1-IQ2_M.gguf",
+    "distribution_id": "ARWKV-7B-Preview-0.1.i1-IQ2_M",
+    "selector": "IQ2_M",
+    "capability": {
+      "family_id": "rwkv7",
+      "layer_count": 28,
+      "activation_width": 3584,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "rejected_too_large",
+      "recurrent_ranges": [
+        {
+          "start": 0,
+          "end": 28
+        }
+      ],
+      "split_constraints": [],
+      "sidebands": [
+        {
+          "kind": "rwkv7_v_first",
+          "first_required_layer": 28,
+          "reason": "ARWKV7 downstream slices require the RWKV7 v_first activation sideband in addition to the boundary hidden state"
+        }
+      ]
+    }
+  },
+  {
+    "model_id": "Sarverott/bitnet_b1_58-large-Q4_K_M-GGUF:Q4_K_M",
+    "source_repo": "Sarverott/bitnet_b1_58-large-Q4_K_M-GGUF",
+    "source_revision": "51f16bb0e549c9e006d92a4882474b496d3a4ac4",
+    "source_file": "bitnet_b1_58-large-q4_k_m.gguf",
+    "canonical_ref": "Sarverott/bitnet_b1_58-large-Q4_K_M-GGUF@51f16bb0e549c9e006d92a4882474b496d3a4ac4/bitnet_b1_58-large-q4_k_m.gguf",
+    "distribution_id": "bitnet_b1_58-large-q4_k_m",
+    "selector": "q4_k_m",
+    "capability": {
+      "family_id": "bitnet",
+      "layer_count": 24,
+      "activation_width": 1536,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "QuantFactory/plamo-13b-GGUF:Q2_K",
+    "source_repo": "QuantFactory/plamo-13b-GGUF",
+    "source_revision": "038285ab5d7692ddd8cc38efeea0d3a0abdff8e0",
+    "source_file": "plamo-13b.Q2_K.gguf",
+    "canonical_ref": "QuantFactory/plamo-13b-GGUF@038285ab5d7692ddd8cc38efeea0d3a0abdff8e0/plamo-13b.Q2_K.gguf",
+    "distribution_id": "plamo-13b.Q2_K",
+    "selector": "Q2_K",
+    "capability": {
+      "family_id": "plamo",
+      "layer_count": 40,
+      "activation_width": 5120,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "RichardErkhov/bigcode_-_tiny_starcoder_py-gguf:Q2_K",
+    "source_repo": "RichardErkhov/bigcode_-_tiny_starcoder_py-gguf",
+    "source_revision": "fa6f9fdbc134d86d78a3ff9ce08ab14ba33d4718",
+    "source_file": "tiny_starcoder_py.Q2_K.gguf",
+    "canonical_ref": "RichardErkhov/bigcode_-_tiny_starcoder_py-gguf@fa6f9fdbc134d86d78a3ff9ce08ab14ba33d4718/tiny_starcoder_py.Q2_K.gguf",
+    "distribution_id": "tiny_starcoder_py.Q2_K",
+    "selector": "Q2_K",
+    "capability": {
+      "family_id": "starcoder",
+      "layer_count": 20,
+      "activation_width": 768,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "mradermacher/LLaDA-1.5-Tiny-GGUF:Q2_K",
+    "source_repo": "mradermacher/LLaDA-1.5-Tiny-GGUF",
+    "source_revision": "752094b7115a2aa5097b6be66187b19a46ff97dc",
+    "source_file": "LLaDA-1.5-Tiny.Q2_K.gguf",
+    "canonical_ref": "mradermacher/LLaDA-1.5-Tiny-GGUF@752094b7115a2aa5097b6be66187b19a46ff97dc/LLaDA-1.5-Tiny.Q2_K.gguf",
+    "distribution_id": "LLaDA-1.5-Tiny.Q2_K",
+    "selector": "Q2_K",
+    "capability": {
+      "family_id": "llada",
+      "layer_count": 6,
+      "activation_width": 512,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "untested",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "mmnga/plamo-2-1b-gguf:Q4_K_M",
+    "source_repo": "mmnga/plamo-2-1b-gguf",
+    "source_revision": "aaaa8e55117b528f5633822bab0c5c41e5f09757",
+    "source_file": "plamo-2-1b-Q4_K_M.gguf",
+    "canonical_ref": "mmnga/plamo-2-1b-gguf@aaaa8e55117b528f5633822bab0c5c41e5f09757/plamo-2-1b-Q4_K_M.gguf",
+    "distribution_id": "plamo-2-1b-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "plamo2",
+      "layer_count": 16,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [
+        {
+          "start": 0,
+          "end": 16
+        }
+      ],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "lmstudio-community/ERNIE-4.5-0.3B-GGUF:Q4_K_M",
+    "source_repo": "lmstudio-community/ERNIE-4.5-0.3B-GGUF",
+    "source_revision": "6063d63c7c78625f9aa9afd527c8f19184fc9d61",
+    "source_file": "ERNIE-4.5-0.3B-Q4_K_M.gguf",
+    "canonical_ref": "lmstudio-community/ERNIE-4.5-0.3B-GGUF@6063d63c7c78625f9aa9afd527c8f19184fc9d61/ERNIE-4.5-0.3B-Q4_K_M.gguf",
+    "distribution_id": "ERNIE-4.5-0.3B-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "ernie4_5",
+      "layer_count": 18,
+      "activation_width": 1024,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "zhangtao103239/Qwen-1.8B-GGUF:q5_k_m",
+    "source_repo": "zhangtao103239/Qwen-1.8B-GGUF",
+    "source_revision": "a79f8933b783e5fb0210ae6acfd9651a02b08401",
+    "source_file": "qwen-1.8b-q5_k_m.gguf",
+    "canonical_ref": "zhangtao103239/Qwen-1.8B-GGUF@a79f8933b783e5fb0210ae6acfd9651a02b08401/qwen-1.8b-q5_k_m.gguf",
+    "distribution_id": "qwen-1.8b-q5_k_m",
+    "selector": "q5_k_m",
+    "capability": {
+      "family_id": "qwen",
+      "layer_count": 24,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "mradermacher/Jais-family-256m-GGUF:Q4_K_M",
+    "source_repo": "mradermacher/Jais-family-256m-GGUF",
+    "source_revision": "90ab788d01b970ade635a0deddecfe6395c307f0",
+    "source_file": "Jais-family-256m.Q4_K_M.gguf",
+    "canonical_ref": "mradermacher/Jais-family-256m-GGUF@90ab788d01b970ade635a0deddecfe6395c307f0/Jais-family-256m.Q4_K_M.gguf",
+    "distribution_id": "Jais-family-256m.Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "jais",
+      "layer_count": 14,
+      "activation_width": 1088,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF:Q4_K_M",
+    "source_repo": "nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF",
+    "source_revision": "ba223d14e45525f7fae81db77ea8cabeb2fc6c25",
+    "source_file": "NVIDIA-Nemotron3-Nano-4B-Q4_K_M.gguf",
+    "canonical_ref": "nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF@ba223d14e45525f7fae81db77ea8cabeb2fc6c25/NVIDIA-Nemotron3-Nano-4B-Q4_K_M.gguf",
+    "distribution_id": "NVIDIA-Nemotron3-Nano-4B-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "nemotron_h",
+      "layer_count": 42,
+      "activation_width": 3136,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "rejected_too_large",
+      "recurrent_ranges": [
+        {
+          "start": 0,
+          "end": 42
+        }
+      ],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "mradermacher/LLaDA-MoE-7B-A1B-Instruct-i1-GGUF:IQ2_XS",
+    "source_repo": "mradermacher/LLaDA-MoE-7B-A1B-Instruct-i1-GGUF",
+    "source_revision": "2ec29fbe69f07f382a864f93b40c4eecb45e6a0a",
+    "source_file": "LLaDA-MoE-7B-A1B-Instruct.i1-IQ2_XS.gguf",
+    "canonical_ref": "mradermacher/LLaDA-MoE-7B-A1B-Instruct-i1-GGUF@2ec29fbe69f07f382a864f93b40c4eecb45e6a0a/LLaDA-MoE-7B-A1B-Instruct.i1-IQ2_XS.gguf",
+    "distribution_id": "LLaDA-MoE-7B-A1B-Instruct.i1-IQ2_XS",
+    "selector": "IQ2_XS",
+    "capability": {
+      "family_id": "llada_moe",
+      "layer_count": 16,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "untested",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "mradermacher/JAIS2-IT-0.3-GGUF:Q4_K_M",
+    "source_repo": "mradermacher/JAIS2-IT-0.3-GGUF",
+    "source_revision": "45c2c47c230552f75b59581c33363e973c52ced5",
+    "source_file": "JAIS2-IT-0.3.Q4_K_M.gguf",
+    "canonical_ref": "mradermacher/JAIS2-IT-0.3-GGUF@45c2c47c230552f75b59581c33363e973c52ced5/JAIS2-IT-0.3.Q4_K_M.gguf",
+    "distribution_id": "JAIS2-IT-0.3.Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "jais2",
+      "layer_count": 32,
+      "activation_width": 3328,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "mradermacher/DreamOn-v0-7B-i1-GGUF:IQ2_XS",
+    "source_repo": "mradermacher/DreamOn-v0-7B-i1-GGUF",
+    "source_revision": "cb75a9486090e14eea5c4f3b326fcffffd754d8b",
+    "source_file": "DreamOn-v0-7B.i1-IQ2_XS.gguf",
+    "canonical_ref": "mradermacher/DreamOn-v0-7B-i1-GGUF@cb75a9486090e14eea5c4f3b326fcffffd754d8b/DreamOn-v0-7B.i1-IQ2_XS.gguf",
+    "distribution_id": "DreamOn-v0-7B.i1-IQ2_XS",
+    "selector": "IQ2_XS",
+    "capability": {
+      "family_id": "dream",
+      "layer_count": 28,
+      "activation_width": 3584,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "untested",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "mradermacher/nemotron-3-8b-chat-4k-sft-hf-i1-GGUF:IQ2_XS",
+    "source_repo": "mradermacher/nemotron-3-8b-chat-4k-sft-hf-i1-GGUF",
+    "source_revision": "80bcec1c0f998cf31c4ff49a8dface17db1a59f3",
+    "source_file": "nemotron-3-8b-chat-4k-sft-hf.i1-IQ2_XS.gguf",
+    "canonical_ref": "mradermacher/nemotron-3-8b-chat-4k-sft-hf-i1-GGUF@80bcec1c0f998cf31c4ff49a8dface17db1a59f3/nemotron-3-8b-chat-4k-sft-hf.i1-IQ2_XS.gguf",
+    "distribution_id": "nemotron-3-8b-chat-4k-sft-hf.i1-IQ2_XS",
+    "selector": "IQ2_XS",
+    "capability": {
+      "family_id": "nemotron",
+      "layer_count": 32,
+      "activation_width": 4096,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "noctrex/LFM2-8B-A1B-MXFP4_MOE-GGUF",
+    "source_repo": "noctrex/LFM2-8B-A1B-MXFP4_MOE-GGUF",
+    "source_revision": "7553ad711a661b2cf772f2122bc90094e9b116bd",
+    "source_file": "LFM2-8B-A1B-MXFP4_MOE.gguf",
+    "canonical_ref": "noctrex/LFM2-8B-A1B-MXFP4_MOE-GGUF@7553ad711a661b2cf772f2122bc90094e9b116bd/LFM2-8B-A1B-MXFP4_MOE.gguf",
+    "distribution_id": "LFM2-8B-A1B-MXFP4_MOE",
+    "capability": {
+      "family_id": "lfm2moe",
+      "layer_count": 24,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [
+        {
+          "start": 0,
+          "end": 24
+        }
+      ],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "ggml-org/gpt-oss-20b-GGUF",
+    "source_repo": "ggml-org/gpt-oss-20b-GGUF",
+    "source_revision": "e1dc459feff949ff451ce107337a2026daa80df8",
+    "source_file": "gpt-oss-20b-mxfp4.gguf",
+    "canonical_ref": "ggml-org/gpt-oss-20b-GGUF@e1dc459feff949ff451ce107337a2026daa80df8/gpt-oss-20b-mxfp4.gguf",
+    "distribution_id": "gpt-oss-20b-mxfp4",
+    "capability": {
+      "family_id": "openai_moe",
+      "layer_count": 24,
+      "activation_width": 2880,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "lmstudio-community/ERNIE-4.5-21B-A3B-PT-GGUF:Q4_K_M",
+    "source_repo": "lmstudio-community/ERNIE-4.5-21B-A3B-PT-GGUF",
+    "source_revision": "4a35788fdc83cd78e69cbdb759425606b3b28191",
+    "source_file": "ERNIE-4.5-21B-A3B-PT-Q4_K_M.gguf",
+    "canonical_ref": "lmstudio-community/ERNIE-4.5-21B-A3B-PT-GGUF@4a35788fdc83cd78e69cbdb759425606b3b28191/ERNIE-4.5-21B-A3B-PT-Q4_K_M.gguf",
+    "distribution_id": "ERNIE-4.5-21B-A3B-PT-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "ernie4_5_moe",
+      "layer_count": 28,
+      "activation_width": 2560,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "ggml-org/Llama-4-Scout-17B-16E-Instruct-GGUF:Q4_K_M",
+    "source_repo": "ggml-org/Llama-4-Scout-17B-16E-Instruct-GGUF",
+    "source_revision": "42675345da11ade9203a5187595da7b74d4ff2ac",
+    "source_file": "Llama-4-Scout-17B-16E-Instruct-Q4_K_M-00001-of-00002.gguf",
+    "canonical_ref": "ggml-org/Llama-4-Scout-17B-16E-Instruct-GGUF@42675345da11ade9203a5187595da7b74d4ff2ac/Llama-4-Scout-17B-16E-Instruct-Q4_K_M-00001-of-00002.gguf",
+    "distribution_id": "Llama-4-Scout-17B-16E-Instruct-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "llama4",
+      "layer_count": 48,
+      "activation_width": 5120,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "untested",
+      "exact_state_mobility": "untested",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "bartowski/mistralai_Mistral-Small-4-119B-2603-GGUF:IQ2_XXS",
+    "source_repo": "bartowski/mistralai_Mistral-Small-4-119B-2603-GGUF",
+    "source_revision": "f569d04efea9546de10ec040819908fa4e8f1c92",
+    "source_file": "mistralai_Mistral-Small-4-119B-2603-IQ2_XXS.gguf",
+    "canonical_ref": "bartowski/mistralai_Mistral-Small-4-119B-2603-GGUF@f569d04efea9546de10ec040819908fa4e8f1c92/mistralai_Mistral-Small-4-119B-2603-IQ2_XXS.gguf",
+    "distribution_id": "mistralai_Mistral-Small-4-119B-2603-IQ2_XXS",
+    "selector": "IQ2_XXS",
+    "capability": {
+      "family_id": "mistral4",
+      "layer_count": 36,
+      "activation_width": 4096,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "untested",
+      "exact_state_mobility": "untested",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "lmstudio-community/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-GGUF:Q4_K_M",
+    "source_repo": "lmstudio-community/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-GGUF",
+    "source_revision": "49a5b1ae335e30e775d4eb03f822b52a63ea4271",
+    "source_file": "Nemotron-3-Nano-Omni-30B-A3B-Reasoning-Q4_K_M.gguf",
+    "canonical_ref": "lmstudio-community/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-GGUF@49a5b1ae335e30e775d4eb03f822b52a63ea4271/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-Q4_K_M.gguf",
+    "distribution_id": "Nemotron-3-Nano-Omni-30B-A3B-Reasoning-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "nemotron_h_moe",
+      "layer_count": 52,
+      "activation_width": 2688,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "untested",
+      "exact_state_mobility": "rejected_too_large",
+      "recurrent_ranges": [
+        {
+          "start": 0,
+          "end": 52
+        }
+      ],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "lmstudio-community/Seed-OSS-36B-Instruct-GGUF:Q4_K_M",
+    "source_repo": "lmstudio-community/Seed-OSS-36B-Instruct-GGUF",
+    "source_revision": "8ef8d6ce74db3b4a46b762bc0d281bde364669ca",
+    "source_file": "Seed-OSS-36B-Instruct-Q4_K_M.gguf",
+    "canonical_ref": "lmstudio-community/Seed-OSS-36B-Instruct-GGUF@8ef8d6ce74db3b4a46b762bc0d281bde364669ca/Seed-OSS-36B-Instruct-Q4_K_M.gguf",
+    "distribution_id": "Seed-OSS-36B-Instruct-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "seed_oss",
+      "layer_count": 64,
+      "activation_width": 5120,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "untested",
+      "exact_state_mobility": "untested",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "ggml-org/DeepSeek-OCR-GGUF:Q8_0",
+    "source_repo": "ggml-org/DeepSeek-OCR-GGUF",
+    "source_revision": "7086620c3e417c744eb30dd3090fd053c6bb2e5e",
+    "source_file": "DeepSeek-OCR-Q8_0.gguf",
+    "canonical_ref": "ggml-org/DeepSeek-OCR-GGUF@7086620c3e417c744eb30dd3090fd053c6bb2e5e/DeepSeek-OCR-Q8_0.gguf",
+    "distribution_id": "DeepSeek-OCR-Q8_0",
+    "selector": "Q8_0",
+    "capability": {
+      "family_id": "deepseek2ocr",
+      "layer_count": 12,
+      "activation_width": 1280,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "noctrex/Qwen3-VL-30B-A3B-Instruct-1M-MXFP4_MOE-GGUF:MXFP4_MOE",
+    "source_repo": "noctrex/Qwen3-VL-30B-A3B-Instruct-1M-MXFP4_MOE-GGUF",
+    "source_revision": "4c7ec5381c64742c4a1606d3326b725346bcfdae",
+    "source_file": "Qwen3-VL-30B-A3B-Instruct-1M-MXFP4_MOE.gguf",
+    "canonical_ref": "noctrex/Qwen3-VL-30B-A3B-Instruct-1M-MXFP4_MOE-GGUF@4c7ec5381c64742c4a1606d3326b725346bcfdae/Qwen3-VL-30B-A3B-Instruct-1M-MXFP4_MOE.gguf",
+    "distribution_id": "Qwen3-VL-30B-A3B-Instruct-1M-MXFP4_MOE",
+    "selector": "MXFP4_MOE",
+    "capability": {
+      "family_id": "qwen3vlmoe",
+      "layer_count": 48,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
       "exact_state_mobility": "accepted",
       "recurrent_ranges": [],
       "split_constraints": [],

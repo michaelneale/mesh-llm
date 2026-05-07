@@ -107,6 +107,36 @@ def candidate_index(manifest: dict[str, Any]) -> dict[str, list[dict[str, Any]]]
     return index
 
 
+def priority_lookup(manifest: dict[str, Any]) -> dict[tuple[str, str], str]:
+    priorities = manifest.get("support_priority", {})
+    lookup: dict[tuple[str, str], str] = {}
+    for priority in ("p0", "p1", "p2"):
+        group = priorities.get(priority, {})
+        for llama_model in group.get("llama_models", []):
+            lookup[("llama_model", llama_model)] = priority
+        for family in group.get("families", []):
+            lookup[("family", family)] = priority
+    return lookup
+
+
+def row_priority(row: dict[str, Any], lookup: dict[tuple[str, str], str]) -> str:
+    return (
+        lookup.get(("family", str(row.get("family", ""))))
+        or lookup.get(("llama_model", str(row.get("llama_model", ""))))
+        or "p2"
+    )
+
+
+def filter_priority(
+    rows: list[dict[str, Any]],
+    priorities: list[str] | None,
+) -> list[dict[str, Any]]:
+    if not priorities:
+        return rows
+    requested = {priority.lower() for priority in priorities}
+    return [row for row in rows if str(row.get("priority", "p2")).lower() in requested]
+
+
 def resolve_candidate_file(candidate: dict[str, Any]) -> Path | None:
     repo = candidate.get("repo")
     include = candidate.get("include", "*.gguf")
@@ -120,7 +150,13 @@ def resolve_candidate_file(candidate: dict[str, Any]) -> Path | None:
     matches = [path for path in matches if path.exists()]
     if not matches:
         return None
-    matches.sort(key=lambda path: (path.stat().st_size, str(path)))
+    matches.sort(
+        key=lambda path: (
+            "mmproj" in path.name.lower(),
+            path.stat().st_size,
+            str(path),
+        )
+    )
     return matches[0]
 
 
@@ -272,20 +308,21 @@ def default_stage_build_dir() -> str | None:
 def inventory(args: argparse.Namespace) -> list[dict[str, Any]]:
     manifest = load_json(args.manifest)
     candidates = candidate_index(manifest)
+    priorities = priority_lookup(manifest)
     rows = []
     for model in pinned_llama_models(args.llama_src):
         entries = candidates.get(model, [])
         if not entries:
-            rows.append(
-                {
-                    "llama_model": model,
-                    "family": model.replace("-", "_"),
-                    "status": "missing_candidate",
-                    "repo": None,
-                    "local_path": None,
-                    "download": "",
-                }
-            )
+            row = {
+                "llama_model": model,
+                "family": model.replace("-", "_"),
+                "status": "missing_candidate",
+                "repo": None,
+                "local_path": None,
+                "download": "",
+            }
+            row["priority"] = row_priority(row, priorities)
+            rows.append(row)
             continue
         for entry in entries:
             path = resolve_candidate_file(entry)
@@ -298,7 +335,10 @@ def inventory(args: argparse.Namespace) -> list[dict[str, Any]]:
                 "local_path": str(path) if path else None,
                 "download": "" if path else download_command(entry),
                 "notes": entry.get("notes", ""),
+                "wire_dtype": entry.get("wire_dtype"),
+                "wire_dtypes": entry.get("wire_dtypes"),
             }
+            row["priority"] = row_priority(row, priorities)
             if path:
                 try:
                     if path.suffix == ".gguf":
@@ -322,15 +362,15 @@ def inventory(args: argparse.Namespace) -> list[dict[str, Any]]:
 
 
 def print_table(rows: list[dict[str, Any]]) -> None:
-    print("| llama model | family | status | local | candidate/download |")
-    print("| --- | --- | --- | --- | --- |")
+    print("| priority | llama model | family | status | local | candidate/download |")
+    print("| --- | --- | --- | --- | --- | --- |")
     for row in rows:
         local = "yes" if row.get("local_path") else "no"
         target = row.get("repo") or row.get("download") or ""
         if row.get("download"):
             target = f"`{row['download']}`"
         print(
-            f"| `{row['llama_model']}` | `{row['family']}` | {row['status']} | {local} | {target} |"
+            f"| `{row.get('priority', 'p2')}` | `{row['llama_model']}` | `{row['family']}` | {row['status']} | {local} | {target} |"
         )
 
 
@@ -352,6 +392,7 @@ def validate_inventory(rows: list[dict[str, Any]]) -> int:
         "implementation_base",
         "needs_candidate",
         "needs_runtime_slice_support",
+        "no_public_gguf_candidate",
         "non_causal_aux",
         "package_or_remote_only",
     }
@@ -414,6 +455,7 @@ def validate_stage_abi_allowlist() -> int:
     stage_hooked.update(
         {
             "gpt-oss",
+            "deepseek2-ocr",
             "mamba2",
             "granite_moe",
             "hunyuan_dense",
@@ -470,10 +512,17 @@ def run_certifications(args: argparse.Namespace, rows: list[dict[str, Any]]) -> 
         and (not args.family or row.get("family") in args.family)
         and (not args.llama_model or row.get("llama_model") in args.llama_model)
     ]
+    selected = filter_priority(selected, args.priority)
     if args.limit:
         selected = selected[: args.limit]
     for row in selected:
         stage_build_dir = default_stage_build_dir()
+        ctx_size = args.ctx_size or defaults.get("ctx_size", 128)
+        if args.prefix_token_count:
+            # ResidentKv checks keep the live source lane and a resident cache
+            # sequence in the same context before verifying suffix prefill.
+            ctx_size = max(ctx_size, args.prefix_token_count * 2 + 32)
+
         cmd = [
             str(ROOT / "scripts/family-certify.sh"),
             "--family",
@@ -491,13 +540,13 @@ def run_certifications(args: argparse.Namespace, rows: list[dict[str, Any]]) -> 
             "--activation-width",
             str(row["activation_width"]),
             "--ctx-size",
-            str(args.ctx_size or defaults.get("ctx_size", 128)),
+            str(ctx_size),
             "--n-gpu-layers",
             str(args.n_gpu_layers or defaults.get("n_gpu_layers", 999)),
             "--wire-dtype",
-            str(defaults.get("wire_dtype", "f16")),
+            str(row.get("wire_dtype") or defaults.get("wire_dtype", "f16")),
             "--wire-dtypes",
-            str(defaults.get("wire_dtypes", "f32,f16,q8")),
+            str(row.get("wire_dtypes") or defaults.get("wire_dtypes", "f32,f16,q8")),
             "--prompt",
             str(defaults.get("prompt", "Hello")),
             "--run-id",
@@ -520,8 +569,15 @@ def run_certifications(args: argparse.Namespace, rows: list[dict[str, Any]]) -> 
             cmd.append("--skip-state")
         if args.skip_dtype:
             cmd.append("--skip-dtype")
-        if args.state_payload_kind:
-            cmd.extend(["--state-payload-kind", args.state_payload_kind])
+        state_payload_kind = args.state_payload_kind
+        if not state_payload_kind and args.prefix_token_count:
+            state_payload_kind = (
+                "kv-recurrent"
+                if entry.get("recurrent") == "all"
+                else defaults.get("state_payload_kind", "resident-kv")
+            )
+        if state_payload_kind:
+            cmd.extend(["--state-payload-kind", state_payload_kind])
         if args.prefix_token_count:
             cmd.extend(["--prefix-token-count", str(args.prefix_token_count)])
         if args.cache_hit_repeats:
@@ -556,9 +612,11 @@ def main() -> int:
     inv.add_argument("--json", action="store_true")
     inv.add_argument("--missing-only", action="store_true")
     inv.add_argument("--local-only", action="store_true")
+    inv.add_argument("--priority", action="append", help="filter by p0/p1/p2 support priority")
 
     commands = sub.add_parser("download-commands", help="print hf download commands for missing candidates")
     commands.add_argument("--all", action="store_true", help="include non-candidate/package-only rows")
+    commands.add_argument("--priority", action="append", help="filter by p0/p1/p2 support priority")
 
     sub.add_parser("validate", help="fail if the pinned llama.cpp inventory is not fully classified")
 
@@ -566,6 +624,7 @@ def main() -> int:
     run_parser.add_argument("--status", action="append")
     run_parser.add_argument("--family", action="append")
     run_parser.add_argument("--llama-model", action="append")
+    run_parser.add_argument("--priority", action="append")
     run_parser.add_argument("--limit", type=int)
     run_parser.add_argument("--dry-run", action="store_true")
     run_parser.add_argument("--skip-build", action="store_true")
@@ -584,6 +643,7 @@ def main() -> int:
     args = parser.parse_args()
     rows = inventory(args)
     if args.command == "inventory":
+        rows = filter_priority(rows, args.priority)
         if args.missing_only:
             rows = [row for row in rows if not row.get("local_path")]
         if args.local_only:
@@ -594,11 +654,14 @@ def main() -> int:
             print_table(rows)
         return 0
     if args.command == "download-commands":
+        rows = filter_priority(rows, args.priority)
         statuses = {
             "candidate",
             "candidate_stateful",
             "candidate_multimodal",
             "certified",
+            "needs_candidate",
+            "package_or_remote_only",
         }
         seen = set()
         for row in rows:

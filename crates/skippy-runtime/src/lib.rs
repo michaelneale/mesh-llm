@@ -1363,6 +1363,16 @@ impl StageSession {
         Ok(())
     }
 
+    pub fn set_position(&mut self, token_count: u64) -> Result<()> {
+        let n_past = i32::try_from(token_count).context("session position exceeds i32")?;
+        let mut error = ptr::null_mut();
+        let status =
+            unsafe { skippy_ffi::skippy_session_set_position(self.raw, n_past, &mut error) };
+        ensure_ok(status, error)?;
+        self.token_count = token_count;
+        Ok(())
+    }
+
     pub fn save_prefix(&mut self, cache_seq_id: i32, token_count: u64) -> Result<()> {
         let mut error = ptr::null_mut();
         let status = unsafe {
@@ -2147,8 +2157,7 @@ impl StageSession {
         token_count: u64,
     ) -> Result<()> {
         self.import_recurrent_state(input)?;
-        self.token_count = self.token_count.max(token_count);
-        Ok(())
+        self.set_position(token_count)
     }
 }
 

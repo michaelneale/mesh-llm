@@ -40,8 +40,18 @@ work together.
 3. Run local candidates through the existing certification harness:
 
    ```bash
-   scripts/skippy-llama-parity.py run --limit 1
+   scripts/skippy-llama-parity.py run \
+     --limit 1 \
+     --prefix-token-count 8 \
+     --cache-hit-repeats 2 \
+     --borrow-resident-hits
    ```
+
+   Supplying `--prefix-token-count` makes the wrapper select the production
+   cache lane for the family: `ResidentKv` for dense families and
+   `KvRecurrent` for recurrent/hybrid families. Omitting those cache flags runs
+   only the split/debug lane and does not reproduce the production cache
+   evidence below.
 
 4. Promote passing rows into:
 
@@ -152,7 +162,7 @@ counters, repeated-hit stability, suffix-prefill result, and promotion decision.
 | `needs_runtime_slice_support` | Causal llama.cpp family exists, but skippy's stage ABI does not yet support its graph/tensor filtering. Add runtime-slice support before certification. |
 | `non_causal_aux` | Encoder, embedding, decoder-only audio, or other auxiliary path; do not certify as causal stage-split serving. |
 | `package_or_remote_only` | No cheap local representative exists; certification needs package/stage evidence on larger hardware. |
-| `needs_candidate` | No cheap representative has been selected yet. |
+| `needs_candidate` | No cheap representative has been selected yet; rows with a concrete `repo`/`include` should use `candidate`, `candidate_stateful`, `candidate_multimodal`, or `package_or_remote_only` so the download workflow includes them. |
 
 ## Policy
 
@@ -170,6 +180,32 @@ requires projector/token-sideband evidence.
 The candidate manifest lives at
 `docs/skippy/llama-parity-candidates.json`.
 
+## Popularity Priority
+
+The manifest keeps every pinned llama.cpp architecture classified, but the
+active support queue is filtered by popularity and real Mesh demand:
+
+| Priority | Meaning | Current Rows |
+| --- | --- | ---: |
+| `p0` | Must support: very popular GGUF ecosystems, current Mesh deployment targets, staged package families, and strategic multimodal/recurrent families. | 41 |
+| `p1` | Should support: common vendor, coding, recurrent, enterprise, and historically important GGUF families. | 39 |
+| `p2` | Best effort: long-tail or niche families that stay classified but are not release blockers unless demand appears. | 51 |
+
+The P0/P1 set is the parity gate. It is based on Hugging Face GGUF
+text-generation search sorted by downloads, current Mesh deployment demand, and
+the pinned llama.cpp architecture inventory. At the time of review, top GGUF
+download signals were dominated by Llama, Qwen, Gemma, MiniMax, GPT-OSS,
+Qwen3.5/Qwen3.6 MoE, Mistral, GLM, Phi, and related coder/VL variants.
+
+Use priority filters when working the active queue:
+
+```bash
+python3 scripts/skippy-llama-parity.py inventory --priority p0
+python3 scripts/skippy-llama-parity.py inventory --priority p1
+python3 scripts/skippy-llama-parity.py download-commands --priority p0
+scripts/download-skippy-parity-candidates.sh --dry-run
+```
+
 ## Current Coverage Summary
 
 `scripts/skippy-llama-parity.py validate` now requires every pinned
@@ -179,19 +215,20 @@ available. Current classification:
 
 | Status | Count | Meaning |
 | --- | ---: | --- |
-| `certified` | 63 | Cheap representative passed the promoted text/cache evidence for this branch. |
-| `certified_package_only` | 1 | Huge model has package/stage evidence rather than a monolithic local baseline. |
-| `needs_candidate` | 39 | Stage/runtime shape is known or already allowed, but we still need a real cheap representative. |
-| `candidate_multimodal` | 9 | Needs projector/media sideband certification before multimodal promotion. |
-| `needs_runtime_slice_support` | 0 | No currently tracked causal llama.cpp family is missing stage ABI graph/tensor-filtering support. |
+| `certified` | 82 | Cheap representative passed the promoted text/cache evidence for this branch. |
+| `certified_package_only` | 6 | Huge model has package/stage evidence rather than a monolithic local baseline. |
+| `candidate_multimodal` | 8 | Needs projector/media sideband certification before multimodal promotion. |
+| `needs_runtime_slice_support` | 1 | Causal llama.cpp family exists, but skippy's stage ABI does not yet support its graph/tensor filtering. |
 | `non_causal_aux` | 14 | Encoder, embedding, audio, or other non-causal serving lane. |
 | `implementation_base` | 4 | Shared implementation helper, not a standalone GGUF architecture. |
-| `package_or_remote_only` | 1 | No cheap local representative; certify on larger hardware or package artifacts. |
+| `package_or_remote_only` | 10 | No cheap local representative; certify on larger hardware or package artifacts. |
+| `no_public_gguf_candidate` | 6 | No public GGUF matching that llama.cpp architecture was found. |
 
-The immediate full-parity gap has moved out of runtime-slice support. The
-remaining `needs_candidate` and `candidate_multimodal` rows need one
-representative artifact and the normal split/cache certification run before
-promotion.
+The active P0/P1 queue has no `needs_candidate` rows. Remaining gaps are one
+explicit runtime-slice implementation blocker (`gemma3n`), multimodal
+projector/media sideband work, remaining package/remote certification for
+oversized models, and six exact-public-artifact gaps where HF re-audit still
+found no public GGUF.
 
 ## Family Board
 
@@ -203,9 +240,11 @@ or a blocker is discovered.
 | `qwen2` | `qwen2` | selected | yes | pass | pass | `ResidentKv` | pass | ready for reviewed promotion |
 | `deepseek` | `deepseek` | selected | yes | pass | pass | `ResidentKv` | pass | promoted |
 | `mistral` | `mistral3` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
+| `mistral4` | `mistral4` | package selected | yes | package validated | package validated | package-local `ResidentKv` target | package validated | `bartowski/mistralai_Mistral-Small-4-119B-2603-GGUF:IQ2_XXS` package-only certified; 36-layer package materialized and validated with all 579 tensors accounted for |
 | `lfm2` | `lfm2` | selected | yes | pass | pass | `KvRecurrent` | pass | recurrent cache restore ready; keep normal decode ownership sticky |
 | `gpt2` | `gpt2` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `gemma` | `gemma` | selected | yes | pass with `f32` wire | pass | `ResidentKv` | pass | cache restore ready with `f32`; `f16`/`q8` rejected |
+| `gemma3n` | `gemma3n` | selected | yes | blocked | state handoff pass only | disabled | blocked | needs runtime-slice graph support for 3D AltUp/per-layer state before text or multimodal promotion |
 | `mpt` | `mpt` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `olmo2` | `olmo2` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `olmoe` | `olmoe` | selected | yes | pass | pass | `ResidentKv` | pass + MoE expert smoke | cache restore and MoE expert-stage smoke ready |
@@ -219,9 +258,12 @@ or a blocker is discovered.
 | `hunyuan_moe` | `hunyuan-moe` | selected | yes | pass | pass | `ResidentKv` | pass | real A13B MoE runtime-slice and cache restore ready |
 | `bloom` | `bloom` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `gptneox` | `gptneox` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
+| `openai_moe` | `openai-moe` / `gpt-oss` | selected | yes | pass | pass | `ResidentKv` | pass | GPT-OSS 20B split/cache ready; f16 wire validated, q8 rejected |
 | `baichuan` | `baichuan` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `exaone` | `exaone` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `exaone4` | `exaone4` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
+| `ernie4_5_moe` | `ernie4-5-moe` | selected | yes | pass | pass | `ResidentKv` | pass | ERNIE 4.5 MoE split/cache ready; f16 and q8 wire validated |
+| `nemotron_h_moe` | `nemotron-h-moe` | package selected | yes | package validated | rejected-too-large | `KvRecurrent` | package validated | `lmstudio-community/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-GGUF:Q4_K_M` package-only certified; 52-layer package materialized and validated with all 401 tensors accounted for |
 | `command_r` | `command-r` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `cohere2` | `cohere2` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `jamba` | `jamba` | selected | yes | pass | pass | `KvRecurrent` | pass | recurrent cache restore ready; middle stage can be recurrent-only |
@@ -240,8 +282,10 @@ or a blocker is discovered.
 | `codeshell` | `codeshell` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready; q8 rejected |
 | `deci` | `deci` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready; q8 rejected |
 | `qwen35` | `qwen35` | selected | yes | pass | `KvRecurrent` pass; FullState too large | `KvRecurrent` | pass | recurrent cache restore ready; keep normal decode ownership sticky; q8 validated |
+| `qwen35moe` | `qwen35moe` | package selected | yes | package validated | package validated | `KvRecurrent` | package validated | `unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_XL` package-only certified; 40-layer package materialized and validated with all 733 tensors accounted for |
 | `xverse` | `xverse` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready; q8 validated |
 | `maincoder` | `maincoder` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready |
+| `mimo2` | `mimo2` | package/remote only | no | package/remote pending | package/remote pending | package-local `ResidentKv` target | pending | HF re-audit found MiMo-V2.5 and MiMo-V2-Flash GGUF artifacts; package-sized multimodal model requiring projector parity |
 | `openelm` | `openelm` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready |
 | `minicpm` | `minicpm` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready |
 | `minicpm3` | `minicpm3` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready |
@@ -250,7 +294,8 @@ or a blocker is discovered.
 | `refact` | `refact` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready |
 | `smallthinker` | `smallthinker` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready |
 | `smollm3` | `smollm3` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready |
-| `llama4` | `llama4` | package/remote only | no | package/remote pending | package/remote pending | package-local `ResidentKv` target | pending | no cheap artifact; local glogwa68 sample reports `llama`, not `llama4` |
+| `llama4` | `llama4` | package selected | yes | package validated | package validated | package-local `ResidentKv` target | package validated | `ggml-org/Llama-4-Scout-17B-16E-Instruct-GGUF:Q4_K_M` package-only certified; 48-layer split-GGUF package materialized and validated with all 627 owned tensors accounted for |
+| `seed_oss` | `seed-oss` | package selected | yes | package validated | package validated | package-local `ResidentKv` target | package validated | `lmstudio-community/Seed-OSS-36B-Instruct-GGUF:Q4_K_M` package-only certified; 64-layer package materialized and validated with all 771 tensors accounted for |
 
 Broader coverage lives in `docs/skippy/llama-parity-candidates.json`. The board
 above tracks the active certification queue rather than every pinned llama.cpp
@@ -258,13 +303,15 @@ implementation.
 
 ## Next Batch
 
-1. Resolve remaining `needs_candidate` rows that are already in the stage ABI
-   allowlist, especially `qwen35moe`, `arwkv7`, true `command-r`,
-   `plamo2`, `jais2`, and families where public GGUF search still found no
-   architecture-matching cheap artifact.
-2. Keep non-causal auxiliary rows in their own serving lanes instead of
+1. Finish P0 multimodal promotion for Qwen2-VL, Qwen3-VL, Qwen3-VL-MoE, and
+   Hunyuan-VL by proving projector/media sideband split serving.
+2. Finish package or remote certification for MiMo-V2 and Kimi Linear.
+3. Add Gemma3n runtime-slice graph support before attempting text or multimodal
+   promotion; its current graph carries 3D AltUp/per-layer state and has no
+   stage-filter hooks.
+4. Keep non-causal auxiliary rows in their own serving lanes instead of
    promoting them as causal stage-split serving.
-3. Promote multimodal only after projector/media sideband evidence, even when
+5. Promote multimodal only after projector/media sideband evidence, even when
    text-lane split support passes.
 
 ## Current Local Evidence
@@ -277,6 +324,12 @@ themselves until the reviewed topology records are updated.
 | --- | --- | --- | --- | --- | --- |
 | `qwen2` | `meshllm/qwen2.5-0.5b-instruct-parity-q8_0-gguf` | `single-step`, `chain`, and dtype matrix passed | rejected | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 10.82x cache-hit speedup |
 | `deepseek` | `Morgen0052/deepseek-llm-7b-chat-Q4_K_M-GGUF` | `single-step`, `chain`, and f16 dtype matrix passed | rejected | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 1.58x cache-hit speedup |
+| `openai_moe` | `ggml-org/gpt-oss-20b-GGUF:gpt-oss-20b-mxfp4` | `single-step`, `chain`, and dtype matrix passed | rejected | accepted | `ResidentKv` state handoff passed; llama.cpp model file is `openai-moe`, GGUF architecture is `gpt-oss` |
+| `ernie4_5_moe` | `lmstudio-community/ERNIE-4.5-21B-A3B-PT-GGUF:Q4_K_M` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` state handoff passed |
+| `llama4` | `ggml-org/Llama-4-Scout-17B-16E-Instruct-GGUF:Q4_K_M` | package validated | untested | untested | package-only validation passed: 48 layers, 627 owned tensors, 51 artifacts, no missing/duplicate tensors |
+| `mistral4` | `bartowski/mistralai_Mistral-Small-4-119B-2603-GGUF:IQ2_XXS` | package validated | untested | untested | package-only validation passed: 36 layers, 579 tensors, 39 artifacts, no missing/duplicate tensors |
+| `nemotron_h_moe` | `lmstudio-community/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-GGUF:Q4_K_M` | package validated | untested | rejected-too-large | package-only validation passed: 52 layers, 401 tensors, 55 artifacts; `KvRecurrent` target |
+| `seed_oss` | `lmstudio-community/Seed-OSS-36B-Instruct-GGUF:Q4_K_M` | package validated | untested | untested | package-only validation passed: 64 layers, 771 tensors, 67 artifacts, no missing/duplicate tensors |
 | `glm4_moe` | see `target/family-certify/llama-parity-glm4-moe-runtime-slice-1` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` native-sequence remap cache smoke passed |
 | `mistral3` | `lmstudio-community/Ministral-3-3B-Instruct-2512-GGUF` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 88.40x cache-hit speedup |
 | `baichuan` | see `target/family-certify/llama-parity-baichuan-runtime-slice-1` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 130.11x cache-hit speedup |
@@ -501,9 +554,10 @@ through mesh family policy and server-side auto-payload inference.
 - `gemma` is stage-correct only with `f32` activation wire for the sampled
   artifact. The earlier default-`f16` cheap run predicted token `0`, and `q8`
   predicted token `107`, while `f32` matched token `1106`.
-- `llama4` does not have a cheap local certification artifact yet. The local
+- `llama4` does not have a cheap local certification artifact. The local
   `glogwa68/Llama-4-scout-GGUF` sample reports `general.architecture = llama`,
-  not `llama4`; official llama4 Scout GGUF artifacts are package/remote-sized.
+  not `llama4`, so official Scout Q4_K_M is certified through package
+  materialization and validation instead of a monolithic full-model baseline.
 - The old `mistral3` candidate was not a `mistral3` GGUF. It reports
   `general.architecture = llama`, so it cannot be used for llama.cpp family
   parity even though the run itself passed. The replacement candidate is

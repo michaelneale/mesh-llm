@@ -5,7 +5,7 @@ use super::{
     invalid_data,
 };
 
-pub const STAGE_STATE_VERSION: i32 = 4;
+pub const STAGE_STATE_VERSION: i32 = 5;
 pub const MAX_STAGE_LOGIT_BIAS: usize = 256;
 pub const READY_MAGIC: i32 = 0x5352_4459; // "SRDY"
 pub const LLAMA_TOKEN_NULL: i32 = -1;

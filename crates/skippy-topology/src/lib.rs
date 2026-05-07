@@ -281,6 +281,11 @@ pub const STAGE_RUNTIME_LLAMA_FAMILY_EXPECTATIONS: &[StageRuntimeFamilyExpectati
         recurrent_or_hybrid: false,
     },
     StageRuntimeFamilyExpectation {
+        llama_architecture: "deepseek2-ocr",
+        family_id: "deepseek2ocr",
+        recurrent_or_hybrid: false,
+    },
+    StageRuntimeFamilyExpectation {
         llama_architecture: "exaone",
         family_id: "exaone",
         recurrent_or_hybrid: false,
@@ -483,6 +488,11 @@ pub const STAGE_RUNTIME_LLAMA_FAMILY_EXPECTATIONS: &[StageRuntimeFamilyExpectati
     StageRuntimeFamilyExpectation {
         llama_architecture: "qwen3vl",
         family_id: "qwen3vl",
+        recurrent_or_hybrid: false,
+    },
+    StageRuntimeFamilyExpectation {
+        llama_architecture: "qwen3vlmoe",
+        family_id: "qwen3vlmoe",
         recurrent_or_hybrid: false,
     },
     StageRuntimeFamilyExpectation {
@@ -1362,6 +1372,16 @@ pub fn deepseek2_capability(layer_count: u32, activation_width: u32) -> FamilyCa
     )
 }
 
+pub fn deepseek2ocr_capability(layer_count: u32, activation_width: u32) -> FamilyCapabilityRecord {
+    dense_family_capability(
+        "deepseek2ocr",
+        layer_count,
+        activation_width,
+        WireValidation::Rejected,
+        ExactStateMobility::Accepted,
+    )
+}
+
 pub fn deepseek3_capability(layer_count: u32, activation_width: u32) -> FamilyCapabilityRecord {
     dense_family_capability(
         "deepseek3",
@@ -1672,6 +1692,9 @@ pub fn infer_family_capability(
     if compact.contains("glm4") {
         return Some(glm4_capability(layer_count, activation_width));
     }
+    if compact.contains("deepseek2ocr") || compact.contains("deepseekocr") {
+        return Some(deepseek2ocr_capability(layer_count, activation_width));
+    }
     if compact.contains("deepseekcoderv2")
         || compact.contains("deepseekv2")
         || compact.contains("deepseek2")
@@ -1808,6 +1831,15 @@ pub fn infer_family_capability(
             activation_width,
             WireValidation::Rejected,
             ExactStateMobility::Untested,
+        ));
+    }
+    if compact.contains("qwen3vlmoe") {
+        return Some(dense_family_capability(
+            "qwen3vlmoe",
+            layer_count,
+            activation_width,
+            WireValidation::Rejected,
+            ExactStateMobility::Accepted,
         ));
     }
     if compact.contains("qwen3vl") {

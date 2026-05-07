@@ -561,6 +561,33 @@ fn infers_known_family_capabilities_from_model_identity() {
     .expect("qwen3moe");
     assert_eq!(qwen3moe.family_id, "qwen3moe");
     assert_eq!(qwen3moe.q8_wire_validation, WireValidation::Validated);
+    let openai_moe =
+        infer_family_capability("ggml-org/gpt-oss-20b-GGUF:gpt-oss-20b-mxfp4", 24, 2880)
+            .expect("openai_moe/gpt-oss");
+    assert_eq!(openai_moe.family_id, "openai_moe");
+    assert_eq!(openai_moe.q8_wire_validation, WireValidation::Rejected);
+    assert_eq!(
+        openai_moe.exact_state_mobility,
+        ExactStateMobility::Accepted
+    );
+    let llama4 = infer_family_capability(
+        "ggml-org/Llama-4-Scout-17B-16E-Instruct-GGUF:Q4_K_M",
+        48,
+        5120,
+    )
+    .expect("llama4 package");
+    assert_eq!(llama4.family_id, "llama4");
+    assert_eq!(llama4.q8_wire_validation, WireValidation::Untested);
+    assert_eq!(llama4.exact_state_mobility, ExactStateMobility::Untested);
+    let mistral4 = infer_family_capability(
+        "bartowski/mistralai_Mistral-Small-4-119B-2603-GGUF:IQ2_XXS",
+        36,
+        4096,
+    )
+    .expect("mistral4 package");
+    assert_eq!(mistral4.family_id, "mistral4");
+    assert_eq!(mistral4.q8_wire_validation, WireValidation::Untested);
+    assert_eq!(mistral4.exact_state_mobility, ExactStateMobility::Untested);
     let qwen3_coder_package = infer_family_capability(
         "unsloth/Qwen3-Coder-480B-A35B-Instruct-GGUF:UD-Q4_K_XL",
         62,
@@ -586,6 +613,156 @@ fn infers_known_family_capabilities_from_model_identity() {
     assert_eq!(qwen3vl.family_id, "qwen3vl");
     assert_eq!(qwen3vl.q8_wire_validation, WireValidation::Validated);
     assert_eq!(qwen3vl.exact_state_mobility, ExactStateMobility::Untested);
+    let deepseek2ocr =
+        infer_family_capability("ggml-org/DeepSeek-OCR-GGUF:Q8_0", 12, 1280).expect("deepseek2ocr");
+    assert_eq!(deepseek2ocr.family_id, "deepseek2ocr");
+    assert_eq!(deepseek2ocr.q8_wire_validation, WireValidation::Rejected);
+    assert_eq!(
+        deepseek2ocr.exact_state_mobility,
+        ExactStateMobility::Accepted
+    );
+    let qwen3vlmoe = infer_family_capability(
+        "noctrex/Qwen3-VL-30B-A3B-Instruct-1M-MXFP4_MOE-GGUF:MXFP4_MOE",
+        48,
+        2048,
+    )
+    .expect("qwen3vlmoe");
+    assert_eq!(qwen3vlmoe.family_id, "qwen3vlmoe");
+    assert_eq!(qwen3vlmoe.q8_wire_validation, WireValidation::Rejected);
+    assert_eq!(
+        qwen3vlmoe.exact_state_mobility,
+        ExactStateMobility::Accepted
+    );
+    let apertus =
+        infer_family_capability("unsloth/Apertus-8B-Instruct-2509-GGUF:UD-IQ2_M", 32, 4096)
+            .expect("apertus");
+    assert_eq!(apertus.family_id, "apertus");
+    assert_eq!(apertus.default_wire_dtype, WireDType::F32);
+    assert_eq!(apertus.q8_wire_validation, WireValidation::Rejected);
+    let bitnet =
+        infer_family_capability("Sarverott/bitnet_b1_58-large-Q4_K_M-GGUF:Q4_K_M", 24, 1536)
+            .expect("bitnet");
+    assert_eq!(bitnet.family_id, "bitnet");
+    assert_eq!(bitnet.q8_wire_validation, WireValidation::Validated);
+    assert_eq!(bitnet.exact_state_mobility, ExactStateMobility::Accepted);
+    let plamo =
+        infer_family_capability("QuantFactory/plamo-13b-GGUF:Q2_K", 40, 5120).expect("plamo");
+    assert_eq!(plamo.family_id, "plamo");
+    assert_eq!(plamo.q8_wire_validation, WireValidation::Validated);
+    assert_eq!(plamo.exact_state_mobility, ExactStateMobility::Accepted);
+    let starcoder = infer_family_capability(
+        "RichardErkhov/bigcode_-_tiny_starcoder_py-gguf:Q2_K",
+        20,
+        768,
+    )
+    .expect("starcoder");
+    assert_eq!(starcoder.family_id, "starcoder");
+    assert_eq!(starcoder.q8_wire_validation, WireValidation::Validated);
+    assert_eq!(starcoder.exact_state_mobility, ExactStateMobility::Accepted);
+    let llada =
+        infer_family_capability("mradermacher/LLaDA-1.5-Tiny-GGUF:Q2_K", 6, 512).expect("llada");
+    assert_eq!(llada.family_id, "llada");
+    assert_eq!(llada.q8_wire_validation, WireValidation::Validated);
+    assert_eq!(llada.exact_state_mobility, ExactStateMobility::Untested);
+    let plamo2 = infer_family_capability("mmnga/plamo-2-1b-gguf:Q4_K_M", 16, 2048).expect("plamo2");
+    assert_eq!(plamo2.family_id, "plamo2");
+    assert_eq!(plamo2.q8_wire_validation, WireValidation::Validated);
+    assert_eq!(plamo2.exact_state_mobility, ExactStateMobility::Accepted);
+    assert_eq!(plamo2.recurrent_ranges.len(), 1);
+    let ernie4_5 =
+        infer_family_capability("lmstudio-community/ERNIE-4.5-0.3B-GGUF:Q4_K_M", 18, 1024)
+            .expect("ernie4_5");
+    assert_eq!(ernie4_5.family_id, "ernie4_5");
+    assert_eq!(ernie4_5.q8_wire_validation, WireValidation::Validated);
+    assert_eq!(ernie4_5.exact_state_mobility, ExactStateMobility::Accepted);
+    let ernie4_5_moe = infer_family_capability(
+        "lmstudio-community/ERNIE-4.5-21B-A3B-PT-GGUF:Q4_K_M",
+        28,
+        2560,
+    )
+    .expect("ernie4_5_moe");
+    assert_eq!(ernie4_5_moe.family_id, "ernie4_5_moe");
+    assert_eq!(ernie4_5_moe.q8_wire_validation, WireValidation::Validated);
+    assert_eq!(
+        ernie4_5_moe.exact_state_mobility,
+        ExactStateMobility::Accepted
+    );
+    let qwen =
+        infer_family_capability("zhangtao103239/Qwen-1.8B-GGUF:q5_k_m", 24, 2048).expect("qwen");
+    assert_eq!(qwen.family_id, "qwen");
+    assert_eq!(qwen.q8_wire_validation, WireValidation::Rejected);
+    assert_eq!(qwen.exact_state_mobility, ExactStateMobility::Accepted);
+    let jais = infer_family_capability("mradermacher/Jais-family-256m-GGUF:Q4_K_M", 14, 1088)
+        .expect("jais");
+    assert_eq!(jais.family_id, "jais");
+    assert_eq!(jais.q8_wire_validation, WireValidation::Rejected);
+    assert_eq!(jais.exact_state_mobility, ExactStateMobility::Accepted);
+    let jais2 =
+        infer_family_capability("mradermacher/JAIS2-IT-0.3-GGUF:Q4_K_M", 32, 3328).expect("jais2");
+    assert_eq!(jais2.family_id, "jais2");
+    assert_eq!(jais2.q8_wire_validation, WireValidation::Rejected);
+    assert_eq!(jais2.exact_state_mobility, ExactStateMobility::Accepted);
+    let nemotron_h =
+        infer_family_capability("nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF:Q4_K_M", 42, 3136)
+            .expect("nemotron_h");
+    assert_eq!(nemotron_h.family_id, "nemotron_h");
+    assert_eq!(nemotron_h.q8_wire_validation, WireValidation::Rejected);
+    assert_eq!(
+        nemotron_h.exact_state_mobility,
+        ExactStateMobility::RejectedTooLarge
+    );
+    assert_eq!(nemotron_h.recurrent_ranges.len(), 1);
+    let nemotron_h_moe = infer_family_capability(
+        "lmstudio-community/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-GGUF:Q4_K_M",
+        52,
+        2688,
+    )
+    .expect("nemotron_h_moe package");
+    assert_eq!(nemotron_h_moe.family_id, "nemotron_h_moe");
+    assert_eq!(nemotron_h_moe.q8_wire_validation, WireValidation::Untested);
+    assert_eq!(
+        nemotron_h_moe.exact_state_mobility,
+        ExactStateMobility::RejectedTooLarge
+    );
+    assert_eq!(nemotron_h_moe.recurrent_ranges.len(), 1);
+    let llada_moe = infer_family_capability(
+        "mradermacher/LLaDA-MoE-7B-A1B-Instruct-i1-GGUF:IQ2_XS",
+        16,
+        2048,
+    )
+    .expect("llada_moe");
+    assert_eq!(llada_moe.family_id, "llada_moe");
+    assert_eq!(llada_moe.q8_wire_validation, WireValidation::Rejected);
+    assert_eq!(llada_moe.exact_state_mobility, ExactStateMobility::Untested);
+    let dream = infer_family_capability("mradermacher/DreamOn-v0-7B-i1-GGUF:IQ2_XS", 28, 3584)
+        .expect("dream");
+    assert_eq!(dream.family_id, "dream");
+    assert_eq!(dream.q8_wire_validation, WireValidation::Validated);
+    assert_eq!(dream.exact_state_mobility, ExactStateMobility::Untested);
+    let nemotron = infer_family_capability(
+        "mradermacher/nemotron-3-8b-chat-4k-sft-hf-i1-GGUF:IQ2_XS",
+        32,
+        4096,
+    )
+    .expect("nemotron");
+    assert_eq!(nemotron.family_id, "nemotron");
+    assert_eq!(nemotron.q8_wire_validation, WireValidation::Rejected);
+    assert_eq!(nemotron.exact_state_mobility, ExactStateMobility::Accepted);
+    let seed_oss = infer_family_capability(
+        "lmstudio-community/Seed-OSS-36B-Instruct-GGUF:Q4_K_M",
+        64,
+        5120,
+    )
+    .expect("seed_oss package");
+    assert_eq!(seed_oss.family_id, "seed_oss");
+    assert_eq!(seed_oss.q8_wire_validation, WireValidation::Untested);
+    assert_eq!(seed_oss.exact_state_mobility, ExactStateMobility::Untested);
+    let lfm2moe =
+        infer_family_capability("noctrex/LFM2-8B-A1B-MXFP4_MOE-GGUF", 24, 2048).expect("lfm2moe");
+    assert_eq!(lfm2moe.family_id, "lfm2moe");
+    assert_eq!(lfm2moe.q8_wire_validation, WireValidation::Validated);
+    assert_eq!(lfm2moe.exact_state_mobility, ExactStateMobility::Accepted);
+    assert_eq!(lfm2moe.recurrent_ranges.len(), 1);
     assert_eq!(
         infer_family_capability("meta/Llama-3.2-1B-Instruct", 16, 2048)
             .expect("llama")
@@ -603,6 +780,15 @@ fn infers_known_family_capabilities_from_model_identity() {
     assert_eq!(deepseek3.family_id, "deepseek3");
     assert_eq!(deepseek3.q8_wire_validation, WireValidation::Untested);
     assert_eq!(deepseek3.exact_state_mobility, ExactStateMobility::Accepted);
+    let qwen35moe = infer_family_capability("unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_XL", 40, 2048)
+        .expect("reviewed qwen35moe");
+    assert_eq!(qwen35moe.family_id, "qwen35moe");
+    assert_eq!(qwen35moe.q8_wire_validation, WireValidation::Untested);
+    assert_eq!(
+        qwen35moe.exact_state_mobility,
+        ExactStateMobility::RejectedTooLarge
+    );
+    assert_eq!(qwen35moe.recurrent_ranges.len(), 1);
     let generic_deepseek3 = infer_family_capability("unsloth/DeepSeek-V3.2-GGUF:Q4_K_M", 61, 7168)
         .expect("generic deepseek3");
     assert_eq!(generic_deepseek3.family_id, "deepseek3");
@@ -736,6 +922,7 @@ fn parity_candidate_manifest_uses_known_statuses() {
                     | "implementation_base"
                     | "needs_candidate"
                     | "needs_runtime_slice_support"
+                    | "no_public_gguf_candidate"
                     | "non_causal_aux"
                     | "package_or_remote_only"
             ),
@@ -848,12 +1035,21 @@ fn reviewed_supported_families_smoke_plan_with_expected_policy_signals() {
                     .contains(&PlanReasonCode::RecurrentOwnerSticky),
                 "missing recurrent boundary signal for {identity}"
             );
-            assert!(
-                plan.diagnostics.iter().any(|diagnostic| {
-                    diagnostic.code == PlanReasonCode::ExactStateMobilityRejected
-                }),
-                "missing recurrent state mobility diagnostic for {identity}"
-            );
+            match family.exact_state_mobility {
+                ExactStateMobility::Accepted => assert!(
+                    plan.diagnostics.iter().any(|diagnostic| {
+                        diagnostic.code == PlanReasonCode::ExactStateMobilityAccepted
+                    }),
+                    "missing accepted recurrent state mobility diagnostic for {identity}"
+                ),
+                ExactStateMobility::RejectedTooLarge => assert!(
+                    plan.diagnostics.iter().any(|diagnostic| {
+                        diagnostic.code == PlanReasonCode::ExactStateMobilityRejected
+                    }),
+                    "missing rejected recurrent state mobility diagnostic for {identity}"
+                ),
+                ExactStateMobility::Untested => {}
+            }
         }
 
         if !family.sidebands.is_empty() {
