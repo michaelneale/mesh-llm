@@ -2659,6 +2659,50 @@ fn worker_only_legacy_models_are_excluded_from_http_routes() {
     assert!(!legacy_worker.routes_http_model("worker-only-model"));
 }
 
+#[test]
+fn canonical_demand_model_ref_uses_loaded_catalog_without_refreshing() {
+    use crate::models::remote_catalog::{
+        set_catalog_entries_for_test, CatalogCurated, CatalogEntry, CatalogSource, CatalogVariant,
+    };
+    use std::collections::HashMap;
+
+    let mut variants = HashMap::new();
+    variants.insert(
+        "Qwen3-8B-Q4_K_M".to_string(),
+        CatalogVariant {
+            source: CatalogSource {
+                repo: "unsloth/Qwen3-8B-GGUF".to_string(),
+                revision: Some("main".to_string()),
+                file: Some("Qwen3-8B-Q4_K_M.gguf".to_string()),
+            },
+            curated: CatalogCurated {
+                name: "Qwen3 8B Q4".to_string(),
+                size: Some("5GB".to_string()),
+                description: None,
+                draft: None,
+                moe: None,
+                extra_files: Vec::new(),
+                mmproj: None,
+            },
+            packages: Vec::new(),
+        },
+    );
+    let _catalog = set_catalog_entries_for_test(vec![CatalogEntry {
+        schema_version: 1,
+        source_repo: "unsloth/Qwen3-8B-GGUF".to_string(),
+        variants,
+    }]);
+
+    assert_eq!(
+        canonical_demand_model_ref("Qwen3 8B Q4"),
+        "unsloth/Qwen3-8B-GGUF@main:Q4_K_M"
+    );
+    assert_eq!(
+        canonical_demand_model_ref("uncached-catalog-alias"),
+        "uncached-catalog-alias"
+    );
+}
+
 /// Verifies that dead-peer cleanup prevents re-admission within the TTL window:
 /// after a peer is cleaned up and added to dead_peers, the entry blocks connection
 /// attempts until it expires (after [`DEAD_PEER_TTL`]). A subsequent PeerLeaving

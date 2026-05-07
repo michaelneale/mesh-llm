@@ -2303,7 +2303,8 @@ async fn resolve_startup_models(
             Some(mmproj) => Some(resolve_model(mmproj).await?),
             None => None,
         };
-        let declared_ref = models::find_remote_catalog_model_exact(&requested_ref)
+        let declared_ref = find_remote_catalog_model_exact_blocking(requested_ref.to_string())
+            .await
             .map(|model| models::remote_catalog_model_ref(&model))
             .unwrap_or_else(|| {
                 // For hf:// layer package refs, use the requested ref as the model ref
@@ -3303,6 +3304,15 @@ fn runtime_model_capacity_for_ref(model: &str, vram_bytes: u64) -> RuntimeModelC
     runtime_model_capacity_for_path(&model_path, vram_bytes)
 }
 
+async fn find_remote_catalog_model_exact_blocking(
+    query: String,
+) -> Option<models::remote_catalog::RemoteCatalogModel> {
+    tokio::task::spawn_blocking(move || models::find_remote_catalog_model_exact(&query))
+        .await
+        .ok()
+        .flatten()
+}
+
 /// Pick which model this node should serve, based on demand signals.
 ///
 /// Priority:
@@ -3447,7 +3457,7 @@ async fn pick_model_assignment(node: &mesh::Node, local_models: &[String]) -> Op
         if serving_count.get(m).copied().unwrap_or(0) > 0 {
             continue;
         }
-        if let Some(cat) = models::find_remote_catalog_model_exact(m) {
+        if let Some(cat) = find_remote_catalog_model_exact_blocking(m.clone()).await {
             let Some(size_label) = cat.size.as_deref() else {
                 continue;
             };
@@ -4152,7 +4162,9 @@ async fn run_auto(
             let model_path = models::find_model_path(&model_name);
             if model_path.exists() {
                 model_path
-            } else if let Some(cat) = models::find_remote_catalog_model_exact(&model_name) {
+            } else if let Some(cat) =
+                find_remote_catalog_model_exact_blocking(model_name.clone()).await
+            {
                 // Model not on disk but in the remote catalog — download it.
                 let _ = emit_event(OutputEvent::Info {
                     message: format!("Downloading {model_name} for mesh..."),
@@ -4761,7 +4773,8 @@ async fn run_auto(
                     api::RuntimeControlRequest::Load { spec, resp } => {
                         let result = async {
                             let model_path = resolve_model(&PathBuf::from(&spec)).await?;
-                            let runtime_model_name = models::find_remote_catalog_model_exact(&spec)
+                            let runtime_model_name = find_remote_catalog_model_exact_blocking(spec.clone())
+                                .await
                                 .map(|model| models::remote_catalog_model_ref(&model))
                                 .unwrap_or_else(|| models::model_ref_for_path(&model_path));
                             let already_loaded = managed_models.contains_key(&runtime_model_name)

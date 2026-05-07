@@ -85,7 +85,7 @@ pub fn find_remote_catalog_model_exact(query: &str) -> Option<remote_catalog::Re
     remote_catalog::find_model_exact(query)
 }
 
-fn find_loaded_remote_catalog_model_exact(
+pub fn find_loaded_remote_catalog_model_exact(
     query: &str,
 ) -> Option<remote_catalog::RemoteCatalogModel> {
     remote_catalog::find_loaded_model_exact(query)

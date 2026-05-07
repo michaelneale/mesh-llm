@@ -810,7 +810,7 @@ fn canonical_demand_model_ref(model: &str) -> String {
     if let Ok(model_ref) = model_ref::ModelRef::parse(model) {
         return model_ref.display_id();
     }
-    crate::models::find_remote_catalog_model_exact(model)
+    crate::models::find_loaded_remote_catalog_model_exact(model)
         .map(|remote_model| crate::models::remote_catalog_model_ref(&remote_model))
         .unwrap_or_else(|| model.to_string())
 }
