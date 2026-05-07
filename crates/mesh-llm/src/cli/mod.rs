@@ -597,6 +597,69 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: BenchmarkCommand,
     },
+    /// Prepare a model for distributed inference by splitting it into
+    /// per-layer files on HF compute.
+    ///
+    /// Submits an HF Job that builds skippy-model-package from source,
+    /// splits the model, publishes the layer package, and updates the
+    /// meshllm/catalog.
+    #[command(name = "model-prepare")]
+    ModelPrepare {
+        /// Source HuggingFace repo (e.g. unsloth/Qwen3-235B-A22B-GGUF).
+        source_repo: Option<String>,
+
+        /// Quantization variant (e.g. UD-Q4_K_XL, Q4_K_M).
+        #[arg(long)]
+        quant: Option<String>,
+
+        /// Target repo for the layer package (auto-derived if omitted).
+        #[arg(long)]
+        target: Option<String>,
+
+        /// Override model ID in the manifest.
+        #[arg(long)]
+        model_id: Option<String>,
+
+        /// HF Job hardware flavor [default: cpu-xl].
+        #[arg(long, default_value = "cpu-xl")]
+        flavor: String,
+
+        /// Job timeout [default: 3h].
+        #[arg(long, default_value = "3h")]
+        timeout: String,
+
+        /// Git ref of mesh-llm to build in the job [default: main].
+        #[arg(long, default_value = "main")]
+        mesh_llm_ref: String,
+
+        /// Print the job spec without submitting.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Stream job logs after submission until completion.
+        #[arg(long)]
+        follow: bool,
+
+        /// Check status of a previously submitted job.
+        #[arg(long)]
+        status: Option<String>,
+
+        /// Fetch logs for a previously submitted job.
+        #[arg(long)]
+        logs: Option<String>,
+
+        /// Cancel a running job.
+        #[arg(long)]
+        cancel: Option<String>,
+
+        /// List recent model-prepare jobs.
+        #[arg(long)]
+        list: bool,
+
+        /// Upload the latest job script to the meshllm bucket (requires org access).
+        #[arg(long)]
+        update_script: bool,
+    },
     /// Manage owner identity and keystore.
     Auth {
         #[command(subcommand)]

@@ -4029,6 +4029,7 @@ dependencies = [
  "mesh-llm-client",
  "mesh-llm-plugin",
  "model-artifact",
+ "model-prepare",
  "model-ref",
  "nostr-sdk",
  "openai-frontend",
@@ -4202,6 +4203,23 @@ dependencies = [
  "model-ref",
  "serde",
  "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "model-prepare"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "futures",
+ "huggingface-hub",
+ "model-hf",
+ "model-ref",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
  "tokio",
 ]
 

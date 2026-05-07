@@ -1,0 +1,21 @@
+[package]
+name = "model-prepare"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[build-dependencies]
+sha2.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bytes = "1"
+hf_hub = { package = "huggingface-hub", git = "https://github.com/huggingface/huggingface_hub_rust.git", rev = "c9749ef76a294d5e97acae6b644071e39854aeb8", default-features = false, features = ["blocking", "xet", "buckets"] }
+model-hf = { path = "../model-hf" }
+model-ref = { path = "../model-ref" }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { version = "1", features = ["rt", "time"] }
+futures = "0.3"

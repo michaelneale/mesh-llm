@@ -409,12 +409,34 @@ impl PrepareJob {
 Source file resolution from `--quant`:
 - List all files in the repo with `list_tree(recursive: true)`
 - Filter to `*.gguf` files
-- Match against the quant string (e.g. `Q4_K_M` matches
-  `Qwen3-8B-Q4_K_M.gguf`, `UD-Q4_K_XL` matches
+- Group by distribution ID using `model_ref::normalize_gguf_distribution_id`
+- If `--quant` is provided, match against the quant string (e.g. `Q4_K_M`
+  matches `Qwen3-8B-Q4_K_M.gguf`, `UD-Q4_K_XL` matches
   `UD-Q4_K_XL/Qwen3-235B-A22B-UD-Q4_K_XL-00001-of-00003.gguf`)
 - For sharded GGUFs, pick the `-00001-of-NNNNN.gguf` shard
 - Uses `model_ref::split_gguf_shard_info` and
   `model_ref::normalize_gguf_distribution_id` for parsing
+
+If `--quant` is omitted, list the available quants and exit:
+
+```bash
+mesh-llm model-prepare unsloth/Qwen3-235B-A22B-GGUF
+```
+
+```
+📦 Available quants in unsloth/Qwen3-235B-A22B-GGUF:
+
+   UD-Q4_K_XL     3 shards, 142.7 GB
+   UD-IQ2_M       6 shards,  89.3 GB
+   Q4_K_M         1 file,    15.6 GB
+   Q8_0           2 shards,  28.1 GB
+
+Specify one with --quant, e.g.:
+   mesh-llm model-prepare unsloth/Qwen3-235B-A22B-GGUF --quant UD-Q4_K_XL
+```
+
+This replaces the old workflow of manually browsing the HF repo page to
+find the exact GGUF path and copy-pasting it into the shell script.
 
 Target repo auto-derivation:
 - Extract distribution ID from the resolved source file
