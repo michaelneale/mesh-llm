@@ -6,23 +6,42 @@ use model_prepare::permissions;
 use model_prepare::prepare::{self, DiscoveredQuant, PrepareParams};
 use model_prepare::script;
 
+/// All CLI arguments for `model-prepare`, bundled to avoid too-many-arguments.
+pub(crate) struct ModelPrepareArgs<'a> {
+    pub source_repo: Option<&'a str>,
+    pub quant: Option<&'a str>,
+    pub target: Option<&'a str>,
+    pub model_id: Option<&'a str>,
+    pub flavor: &'a str,
+    pub timeout: &'a str,
+    pub mesh_llm_ref: &'a str,
+    pub dry_run: bool,
+    pub follow: bool,
+    pub status: Option<&'a str>,
+    pub logs: Option<&'a str>,
+    pub cancel: Option<&'a str>,
+    pub list: bool,
+    pub update_script: bool,
+}
+
 /// Dispatch the model-prepare command.
-pub(crate) async fn dispatch_model_prepare(
-    source_repo: Option<&str>,
-    quant: Option<&str>,
-    target: Option<&str>,
-    model_id: Option<&str>,
-    flavor: &str,
-    timeout: &str,
-    mesh_llm_ref: &str,
-    dry_run: bool,
-    follow: bool,
-    status: Option<&str>,
-    logs: Option<&str>,
-    cancel: Option<&str>,
-    list: bool,
-    update_script: bool,
-) -> Result<()> {
+pub(crate) async fn dispatch_model_prepare(args: ModelPrepareArgs<'_>) -> Result<()> {
+    let ModelPrepareArgs {
+        source_repo,
+        quant,
+        target,
+        model_id,
+        flavor,
+        timeout,
+        mesh_llm_ref,
+        dry_run,
+        follow,
+        status,
+        logs,
+        cancel,
+        list,
+        update_script,
+    } = args;
     // ── Management subcommands (no source_repo needed) ───────────────
     if update_script {
         return run_update_script().await;

@@ -112,22 +112,22 @@ pub(crate) async fn dispatch(cli: &Cli) -> Result<bool> {
             list,
             update_script,
         } => {
-            model_prepare::dispatch_model_prepare(
-                source_repo.as_deref(),
-                quant.as_deref(),
-                target.as_deref(),
-                model_id.as_deref(),
+            model_prepare::dispatch_model_prepare(model_prepare::ModelPrepareArgs {
+                source_repo: source_repo.as_deref(),
+                quant: quant.as_deref(),
+                target: target.as_deref(),
+                model_id: model_id.as_deref(),
                 flavor,
                 timeout,
                 mesh_llm_ref,
-                *dry_run,
-                *follow,
-                status.as_deref(),
-                logs.as_deref(),
-                cancel.as_deref(),
-                *list,
-                *update_script,
-            )
+                dry_run: *dry_run,
+                follow: *follow,
+                status: status.as_deref(),
+                logs: logs.as_deref(),
+                cancel: cancel.as_deref(),
+                list: *list,
+                update_script: *update_script,
+            })
             .await
         }
         Command::Auth { command } => match command {
