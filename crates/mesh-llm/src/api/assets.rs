@@ -1,19 +1,9 @@
 use super::http::{respond_bytes, respond_bytes_cached};
-use include_dir::{include_dir, Dir};
 use tokio::net::TcpStream;
 
-static CONSOLE_DIST: Dir<'_> = include_dir!("$MESH_LLM_CONSOLE_DIST");
-
 pub(super) async fn respond_console_index(stream: &mut TcpStream) -> anyhow::Result<bool> {
-    if let Some(file) = CONSOLE_DIST.get_file("index.html") {
-        respond_bytes(
-            stream,
-            200,
-            "OK",
-            "text/html; charset=utf-8",
-            file.contents(),
-        )
-        .await?;
+    if let Some(asset) = mesh_llm_ui::index() {
+        respond_bytes(stream, 200, "OK", asset.content_type, asset.contents).await?;
         return Ok(true);
     }
     Ok(false)
@@ -27,33 +17,16 @@ pub(super) async fn respond_console_asset(
     if rel.contains("..") {
         return Ok(false);
     }
-    let Some(file) = CONSOLE_DIST.get_file(rel) else {
+    let Some(asset) = mesh_llm_ui::asset(rel) else {
         return Ok(false);
-    };
-    let content_type = match rel.rsplit('.').next().unwrap_or("") {
-        "js" | "mjs" => "text/javascript; charset=utf-8",
-        "css" => "text/css; charset=utf-8",
-        "svg" => "image/svg+xml",
-        "json" => "application/json; charset=utf-8",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        "woff2" => "font/woff2",
-        "wasm" => "application/wasm",
-        _ => "application/octet-stream",
-    };
-    let cache_control = if rel.starts_with("assets/") {
-        "public, max-age=31536000, immutable"
-    } else {
-        "public, max-age=3600"
     };
     respond_bytes_cached(
         stream,
         200,
         "OK",
-        content_type,
-        cache_control,
-        file.contents(),
+        asset.content_type,
+        asset.cache_control,
+        asset.contents,
     )
     .await?;
     Ok(true)

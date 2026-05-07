@@ -40,7 +40,7 @@ plugins/
 ## Runtime model
 
 - `mesh-llm` owns the user-facing OpenAI-compatible API on `:9337`. Requests are routed by full model ref.
-- The management API and web console live on `:3131`. Pass `--headless` to disable the embedded web UI while keeping the management API (`/api/*`) available on that port.
+- The management API and web console live on `:3131`. Pass `--headless` to disable the embedded web UI while keeping the management API (`/api/*`) available on that port. The React console source and embedded asset surface live in [`../mesh-llm-ui`](../mesh-llm-ui).
 - Models that fit run as embedded single-stage skippy runtimes. Larger certified models can run as staged splits over the `skippy-stage/1` control plane.
 - Stage topology is planned by mesh from peer/device inventory, package metadata, and reviewed family capability records. Replans withdraw old routes before publishing replacement stage-0 routes.
 - Routing and demand tracking are mesh-wide. Nodes can serve different models at the same time.

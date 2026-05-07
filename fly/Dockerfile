@@ -8,10 +8,10 @@
 
 FROM node:24-alpine AS ui-builder
 WORKDIR /app
-COPY crates/mesh-llm/ui/package.json crates/mesh-llm/ui/package-lock.json ./
+COPY crates/mesh-llm-ui/package.json crates/mesh-llm-ui/package-lock.json ./
 RUN --mount=type=cache,id=npm-cache,target=/root/.npm \
     npm ci
-COPY crates/mesh-llm/ui/ ./
+COPY crates/mesh-llm-ui/ ./
 RUN npm run build
 
 FROM debian:bookworm-slim AS builder
@@ -22,6 +22,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --de
 ENV PATH="/root/.cargo/bin:$PATH"
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
+COPY crates/mesh-llm-ui/ crates/mesh-llm-ui/
 COPY crates/mesh-llm/Cargo.toml crates/mesh-llm/Cargo.toml
 COPY crates/mesh-llm/build.rs crates/mesh-llm/build.rs
 COPY crates/mesh-llm-plugin/Cargo.toml crates/mesh-llm-plugin/Cargo.toml
@@ -58,7 +59,7 @@ COPY third_party/llama.cpp/upstream.txt third_party/llama.cpp/upstream.txt
 COPY third_party/llama.cpp/patches/ third_party/llama.cpp/patches/
 RUN LLAMA_STAGE_USE_SCCACHE=0 scripts/prepare-llama.sh pinned && \
     LLAMA_STAGE_USE_SCCACHE=0 scripts/build-llama.sh
-COPY --from=ui-builder /app/dist crates/mesh-llm/ui/dist
+COPY --from=ui-builder /app/dist crates/mesh-llm-ui/dist
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
     --mount=type=cache,target=/src/target \

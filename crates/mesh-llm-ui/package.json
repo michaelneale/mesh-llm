@@ -1,5 +1,5 @@
 {
-  "name": "mesh-llm-console-ui",
+  "name": "mesh-llm-ui",
   "private": true,
   "version": "0.0.1",
   "type": "module",

@@ -2,7 +2,7 @@
 # Run from repo root: docker build -f ci/linux-test.dockerfile -t mesh-llm-ci .
 #
 # NOTE: npm ci may fail behind SSL-intercepting proxies. If so, pre-build the
-# UI on the host (npm run build in crates/mesh-llm/ui/) — the dist/ is COPY'd in.
+# UI on the host (npm run build in crates/mesh-llm-ui/) — the dist/ is COPY'd in.
 FROM rust:latest
 
 RUN apt-get update && apt-get install -y cmake pkg-config git && rm -rf /var/lib/apt/lists/*
@@ -21,6 +21,7 @@ RUN cmake -B llama.cpp/build -S llama.cpp \
 
 # Build mesh-llm (UI already built on host via npm run build, dist/ included)
 COPY Cargo.toml Cargo.lock ./
+COPY crates/mesh-llm-ui/ crates/mesh-llm-ui/
 COPY crates/mesh-llm/ crates/mesh-llm/
 COPY crates/mesh-llm-plugin/ crates/mesh-llm-plugin/
 COPY crates/mesh-client/ crates/mesh-client/

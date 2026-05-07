@@ -24,4 +24,7 @@ This directory holds project documentation that is not owned by a single Rust cr
 | [plans/](plans/) | Narrow implementation plans that are not yet general design docs |
 | [specs/](specs/) | Focused behavior specs for individual features |
 
-Per-crate docs stay with their crates. The main binary crate overview lives at [../crates/mesh-llm/README.md](../crates/mesh-llm/README.md).
+Per-crate docs stay with their crates. The main binary crate overview lives at
+[../crates/mesh-llm/README.md](../crates/mesh-llm/README.md), and the web
+console/embedded asset crate overview lives at
+[../crates/mesh-llm-ui/README.md](../crates/mesh-llm-ui/README.md).

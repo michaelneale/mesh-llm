@@ -80,7 +80,7 @@ flowchart TD
 | `models/capabilities.rs`, `models/topology.rs`, `models/gguf.rs` | Existing `model-artifact`, `model-ref`, or `model-resolver` depending on final ownership | These are model metadata concerns, not host runtime concerns. |
 | `inference/skippy/*` | Existing `skippy-*` crates where possible | The host should orchestrate Skippy rather than own Skippy package, topology, and runtime internals. |
 | `inference/election.rs`, split planning | `mesh-llm-routing`, or existing shared client inference modules if needed by embedded clients | Election is placement logic rather than process runtime. |
-| `crates/mesh-llm/ui/` React console | New `mesh-llm-ui` | The console should own its package metadata, build, generated assets, and UI conventions instead of living under the host binary crate. |
+| React console | `mesh-llm-ui` | The console owns its package metadata, build, generated assets, Rust embedding surface, and UI conventions instead of living under the host binary crate. |
 | `api/` | New `mesh-llm-api-server` | Management API routes can depend on `mesh-llm-runtime-data` and serve assets produced by `mesh-llm-ui`, but should not own the console source. |
 | `cli/` | New `mesh-llm-cli` | Large dependency surface: Clap, Ratatui, terminal progress, dashboard output. Extract late. |
 | `runtime/` | New `mesh-llm-host-runtime` | Extract late because it coordinates almost every subsystem today. |
@@ -128,7 +128,7 @@ The crate split should include the documentation migration as part of the same s
 5. Extract `mesh-llm-runtime-data`.
 6. Decouple `mesh/` from CLI, system, and runtime, then extract `mesh-llm-control-plane`.
 7. Extract routing and election logic into `mesh-llm-routing`.
-8. Move the React console from `crates/mesh-llm/ui/` into `mesh-llm-ui`.
+8. Keep the React console and asset embedding surface in `mesh-llm-ui`.
 9. Extract plugin host, gateway, and API server crates.
 10. Extract `mesh-llm-cli`.
 11. Add new crate READMEs and update affected existing READMEs, docs, and Mermaid diagrams as each ownership boundary moves.

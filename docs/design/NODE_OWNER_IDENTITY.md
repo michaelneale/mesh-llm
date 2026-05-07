@@ -284,7 +284,7 @@ Suggested additions:
 - counters for verified/unverified/invalid peers
 - owner certificate ID for the local node and peers
 
-### `crates/mesh-llm/ui/`
+### `crates/mesh-llm-ui/`
 
 The console consumes the new `/api/status` fields and surfaces operator
 attribution, trust state, and warnings.

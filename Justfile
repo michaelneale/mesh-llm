@@ -3,8 +3,8 @@
 llama_dir := env("MESH_LLM_LLAMA_DIR", ".deps/llama.cpp")
 llama_build_root := env("MESH_LLM_LLAMA_BUILD_ROOT", ".deps/llama-build")
 build_dir := env("LLAMA_STAGE_BUILD_DIR", llama_build_root / "build-stage-abi-cpu")
-mesh_dir := "mesh-llm"
-ui_dir := mesh_dir / "ui"
+mesh_dir := "crates/mesh-llm"
+ui_dir := "crates/mesh-llm-ui"
 benchmark_src_dir := mesh_dir / "benchmarks"
 home_dir := if os_family() == "windows" { env("USERPROFILE") } else { env("HOME") }
 xdg_cache_dir := env("XDG_CACHE_HOME", home_dir / ".cache")

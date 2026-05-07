@@ -4022,12 +4022,12 @@ dependencies = [
  "hex",
  "httparse",
  "huggingface-hub",
- "include_dir",
  "iroh",
  "keyring",
  "libc",
  "mesh-llm-client",
  "mesh-llm-plugin",
+ "mesh-llm-ui",
  "model-artifact",
  "model-ref",
  "model-resolver",
@@ -4118,6 +4118,13 @@ dependencies = [
  "reqwest 0.12.28",
  "serde_json",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "mesh-llm-ui"
+version = "0.65.1"
+dependencies = [
+ "include_dir",
 ]
 
 [[package]]

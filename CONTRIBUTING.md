@@ -94,6 +94,9 @@ just bundle
 
 ## UI development workflow
 
+The React console and embedded asset crate live in `crates/mesh-llm-ui/`.
+The host binary serves the built assets through the management API.
+
 Use this two-terminal flow for UI development.
 
 Terminal A (run `mesh-llm` yourself):
@@ -158,7 +161,7 @@ For the repo's CI design rules and workflow responsibilities, see [`docs/CI_GUID
 | Changed paths                                                                                           | `linux` / `macos` | `linux_cuda` / `linux_rocm` / `linux_vulkan` / `windows` |
 | ------------------------------------------------------------------------------------------------------- | ----------------- | -------------------------------------------------------- |
 | `crates/mesh-llm/src/**`, `Cargo.*`, `Justfile`, `scripts/**`, `crates/mesh-llm/build.rs`, `crates/mesh-llm-plugin/**`, `crates/mesh-llm/tests/**`, `crates/mesh-llm/proto/**` | ✅ runs           | ✅ runs                                                  |
-| `crates/mesh-llm/ui/**`                                                                                        | ✅ runs           | ⏭ skipped                                               |
+| `crates/mesh-llm-ui/**`                                                                                        | ✅ runs           | ⏭ skipped                                               |
 | `**/*.md`, `docs/**`, anything else                                                                     | ⏭ skipped        | ⏭ skipped                                               |
 | Manual `workflow_dispatch`                                                                              | ✅ runs           | ✅ runs                                                  |
 
@@ -166,7 +169,7 @@ For the repo's CI design rules and workflow responsibilities, see [`docs/CI_GUID
 
 To confirm builds are skipped on a docs-only change, open a PR and push a commit that touches only a `.md` file (e.g. add a blank line to `README.md`). All build jobs should appear as **Skipped** in the Actions tab — only the `changes` job runs.
 
-To confirm UI-only changes skip the GPU backend jobs, push a commit touching only `crates/mesh-llm/ui/**`. The `linux` and `macos` jobs run; `linux_cuda`, `linux_rocm`, `linux_vulkan`, and `windows` are skipped.
+To confirm UI-only changes skip the GPU backend jobs, push a commit touching only `crates/mesh-llm-ui/**`. The `linux` and `macos` jobs run; `linux_cuda`, `linux_rocm`, `linux_vulkan`, and `windows` are skipped.
 
 ### Adding new paths
 

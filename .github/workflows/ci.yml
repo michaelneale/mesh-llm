@@ -53,7 +53,7 @@ jobs:
               - '.github/workflows/gpu-warm-cache-job.yml'
               - '.github/workflows/llama-cache-keys.yml'
             ui:
-              - 'crates/mesh-llm/ui/**'
+              - 'crates/mesh-llm-ui/**'
             benchmarks:
               - 'crates/skippy-bench/**'
               - 'crates/llama-spec-bench/**'
@@ -98,7 +98,7 @@ jobs:
           cache: npm
           cache-dependency-path: |
             .github/cache-version.txt
-            crates/mesh-llm/ui/package-lock.json
+            crates/mesh-llm-ui/package-lock.json
 
       - uses: actions/setup-python@v6
         with:
@@ -110,12 +110,12 @@ jobs:
 
       - name: Build UI
         if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
-        working-directory: crates/mesh-llm/ui
+        working-directory: crates/mesh-llm-ui
         run: npm ci && npm run build
 
       - name: Test UI
         if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
-        working-directory: crates/mesh-llm/ui
+        working-directory: crates/mesh-llm-ui
         run: npm test
 
       - name: Install Python SDKs
@@ -313,7 +313,7 @@ jobs:
       - name: Install tools
         run: brew install cmake ninja jq
       - name: Build UI placeholder
-        run: mkdir -p crates/mesh-llm/ui/dist && printf '<html></html>' > crates/mesh-llm/ui/dist/index.html
+        run: mkdir -p crates/mesh-llm-ui/dist && printf '<html></html>' > crates/mesh-llm-ui/dist/index.html
       - name: Prepare patched llama.cpp ABI checkout
         run: scripts/prepare-llama.sh pinned
       - name: Build patched llama.cpp ABI libraries
@@ -357,14 +357,14 @@ jobs:
           cache: npm
           cache-dependency-path: |
             .github/cache-version.txt
-            crates/mesh-llm/ui/package-lock.json
+            crates/mesh-llm-ui/package-lock.json
       - name: Build UI
         if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
-        working-directory: crates/mesh-llm/ui
+        working-directory: crates/mesh-llm-ui
         run: npm ci && npm run build
       - name: Test UI
         if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
-        working-directory: crates/mesh-llm/ui
+        working-directory: crates/mesh-llm-ui
         run: npm test
       - uses: dtolnay/rust-toolchain@stable
       - name: Install build dependencies
@@ -438,7 +438,7 @@ jobs:
       - uses: taiki-e/install-action@just
       - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Prepare UI placeholder
-        run: mkdir -p crates/mesh-llm/ui/dist && printf '<html></html>' > crates/mesh-llm/ui/dist/index.html
+        run: mkdir -p crates/mesh-llm-ui/dist && printf '<html></html>' > crates/mesh-llm-ui/dist/index.html
       - uses: actions/cache/restore@v5
         id: llama_cache
         with:
@@ -502,7 +502,7 @@ jobs:
       - uses: taiki-e/install-action@just
       - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Prepare UI placeholder
-        run: mkdir -p crates/mesh-llm/ui/dist && printf '<html></html>' > crates/mesh-llm/ui/dist/index.html
+        run: mkdir -p crates/mesh-llm-ui/dist && printf '<html></html>' > crates/mesh-llm-ui/dist/index.html
       - uses: actions/cache/restore@v5
         id: llama_cache
         with:
@@ -545,7 +545,7 @@ jobs:
       - uses: taiki-e/install-action@just
       - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Prepare UI placeholder
-        run: mkdir -p crates/mesh-llm/ui/dist && printf '<html></html>' > crates/mesh-llm/ui/dist/index.html
+        run: mkdir -p crates/mesh-llm-ui/dist && printf '<html></html>' > crates/mesh-llm-ui/dist/index.html
       - name: Build Linux Vulkan backend
         run: just --shell bash --shell-arg -lc release-build-vulkan
       - name: CLI smoke test
