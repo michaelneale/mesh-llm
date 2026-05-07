@@ -116,7 +116,7 @@ flowchart TD
 
 | Current area | Destination | Reason |
 | --- | --- | --- |
-| Generated proto, ALPN and stream IDs, frame validation, frame helpers, legacy tunnel-map decoding | `mesh-llm-protocol` | Implemented as the shared wire-protocol crate consumed by the host and `mesh-client`. |
+| Node proto schema, generated proto, ALPN and stream IDs, frame validation, frame helpers, legacy tunnel-map decoding | `mesh-llm-protocol` | Implemented as the shared wire-protocol crate consumed by the host and `mesh-client`. |
 | Host protocol conversion between proto and runtime structs | Host `protocol/convert.rs` for now | These conversions still depend on host-owned mesh, ownership, plugin config, and runtime structs; move them after control-plane/runtime boundaries are smaller. |
 | Pure shared mesh/client model types such as capabilities, topology, model demand, served-model identity, and descriptors | `mesh-llm-types` | Implemented first because these types are protocol-facing but do not need QUIC, protobuf, ownership, CLI, or runtime dependencies. |
 | Runtime peer state such as `PeerAnnouncement`, `PeerInfo`, and `NodeRole` | Later `mesh-llm-control-plane` or `mesh-llm-protocol` boundary after decoupling | These still carry `iroh`, protobuf summaries, ownership attestation, timestamps, and gossip semantics, so moving them before protocol/control-plane cleanup would smear dependencies into `mesh-llm-types`. |

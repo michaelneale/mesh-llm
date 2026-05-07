@@ -5,6 +5,7 @@ Wire protocol ownership for Mesh LLM control-plane traffic.
 This crate owns the dependency-light protocol surface that is shared by the
 host runtime and embedded clients:
 
+- the source node protobuf schema under `proto/node.proto`
 - generated protobuf message types under `proto::node`
 - QUIC ALPN values and mesh stream type constants
 - control-frame validation and encode/decode helpers
