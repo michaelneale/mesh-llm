@@ -1596,11 +1596,13 @@ mod filter_tests {
             model: Some("qwen3".into()),
             min_vram_gb: Some(10.0),
             region: Some("us-east".into()),
+            ..Default::default()
         };
         let fail_model = MeshFilter {
             model: Some("llama".into()),
             min_vram_gb: Some(10.0),
             region: Some("us-east".into()),
+            ..Default::default()
         };
         assert!(pass.matches(&m));
         assert!(!fail_model.matches(&m));
