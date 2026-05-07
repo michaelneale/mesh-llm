@@ -4030,6 +4030,7 @@ dependencies = [
  "mesh-llm-plugin",
  "model-artifact",
  "model-ref",
+ "model-resolver",
  "nostr-sdk",
  "openai-frontend",
  "prost",
@@ -4207,6 +4208,18 @@ name = "model-ref"
 version = "0.1.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "model-resolver"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "model-artifact",
+ "model-ref",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

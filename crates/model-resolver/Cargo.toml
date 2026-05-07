@@ -1,0 +1,15 @@
+[package]
+name = "model-resolver"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+model-ref = { path = "../model-ref" }
+model-artifact = { path = "../model-artifact" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

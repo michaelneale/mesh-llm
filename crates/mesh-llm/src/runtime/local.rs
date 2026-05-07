@@ -329,13 +329,30 @@ pub(super) async fn remove_serving_assignment(node: &mesh::Node, model_name: &st
 
 pub(super) async fn start_runtime_local_model(
     spec: LocalRuntimeModelStartSpec<'_>,
+    runtime_model_name: &str,
 ) -> Result<(
     String,
     LocalRuntimeModelHandle,
     tokio::sync::oneshot::Receiver<()>,
 )> {
-    let model_name = models::model_ref_for_path(spec.model_path);
-    let model_bytes = election::total_model_bytes(spec.model_path);
+    let model_name = runtime_model_name.to_string();
+    let package_ref = spec.model_path.to_string_lossy().to_string();
+    let layer_package = if skippy::is_layer_package_ref(&package_ref) {
+        let package_ref_for_identity = package_ref.clone();
+        Some(
+            tokio::task::spawn_blocking(move || {
+                skippy::identity_from_layer_package(&package_ref_for_identity)
+            })
+            .await
+            .context("join identify skippy layer package task")??,
+        )
+    } else {
+        None
+    };
+    let model_bytes = layer_package
+        .as_ref()
+        .map(|package| package.source_model_bytes)
+        .unwrap_or_else(|| election::total_model_bytes(spec.model_path));
     let my_vram = spec
         .pinned_gpu
         .map(|gpu| gpu.vram_bytes)
@@ -348,7 +365,19 @@ pub(super) async fn start_runtime_local_model(
         format_gb(my_vram)
     );
 
-    start_runtime_skippy_model(spec, model_name).await
+    if let Some(package) = layer_package {
+        start_runtime_layer_package_model(spec, model_name, package).await
+    } else {
+        start_runtime_skippy_model(spec, model_name).await
+    }
+}
+
+pub(super) fn runtime_model_planning_bytes(model_path: &Path) -> Result<u64> {
+    let package_ref = model_path.to_string_lossy().to_string();
+    if skippy::is_layer_package_ref(&package_ref) {
+        return Ok(skippy::identity_from_layer_package(&package_ref)?.source_model_bytes);
+    }
+    Ok(election::total_model_bytes(model_path))
 }
 
 pub(super) fn startup_runtime_plan(
@@ -1747,6 +1776,112 @@ async fn start_runtime_skippy_model(
     ))
 }
 
+async fn start_runtime_layer_package_model(
+    spec: LocalRuntimeModelStartSpec<'_>,
+    model_name: String,
+    package: skippy::SkippyPackageIdentity,
+) -> Result<(
+    String,
+    LocalRuntimeModelHandle,
+    tokio::sync::oneshot::Receiver<()>,
+)> {
+    let context_length = spec.ctx_size_override.unwrap_or(4096);
+    let kv_cache = skippy::KvCachePolicy::for_model_size(package.source_model_bytes);
+    let effective_cache_type_k = spec
+        .cache_type_k_override
+        .unwrap_or(kv_cache.cache_type_k())
+        .to_string();
+    let effective_cache_type_v = spec
+        .cache_type_v_override
+        .unwrap_or(kv_cache.cache_type_v())
+        .to_string();
+    let resolved_flash_attn_type =
+        effective_flash_attention(spec.flash_attention_override, &effective_cache_type_v);
+    tracing::info!(
+        model = model_name,
+        "KV cache: {}",
+        kv_cache.label(package.source_model_bytes)
+    );
+    let projector_path = spec
+        .mmproj_override
+        .map(|path| path.to_string_lossy().to_string())
+        .or_else(|| {
+            mmproj_path_for_model(&model_name).map(|path| path.to_string_lossy().to_string())
+        })
+        .filter(|path| Path::new(path).exists());
+    let activation_width = skippy_stage_activation_width(package.activation_width, &model_name)?;
+    let run_id = format!("mesh-skippy-{}", now_unix_nanos());
+    let config = StageConfig {
+        run_id: run_id.clone(),
+        topology_id: format!("topology-{run_id}"),
+        model_id: model_name.clone(),
+        package_ref: Some(package.package_ref.clone()),
+        manifest_sha256: Some(package.manifest_sha256.clone()),
+        source_model_path: Some(package.package_ref.clone()),
+        source_model_sha256: Some(package.source_model_sha256.clone()),
+        source_model_bytes: Some(package.source_model_bytes),
+        materialized_path: None,
+        materialized_pinned: false,
+        model_path: Some(package.package_ref.clone()),
+        projector_path,
+        stage_id: "stage-0".to_string(),
+        stage_index: 0,
+        layer_start: 0,
+        layer_end: package.layer_count,
+        ctx_size: context_length,
+        lane_count: spec.slots as u32,
+        n_batch: spec.n_batch_override,
+        n_ubatch: spec.n_ubatch_override,
+        n_gpu_layers: -1,
+        cache_type_k: effective_cache_type_k,
+        cache_type_v: effective_cache_type_v,
+        flash_attn_type: resolved_flash_attn_type,
+        filter_tensors_on_load: true,
+        selected_device: spec.pinned_gpu.map(|gpu| skippy_protocol::StageDevice {
+            backend_device: gpu.backend_device.clone(),
+            stable_id: Some(gpu.stable_id.clone()),
+            index: Some(gpu.index),
+            vram_bytes: Some(gpu.vram_bytes),
+        }),
+        kv_cache: None,
+        load_mode: LoadMode::LayerPackage,
+        bind_addr: "127.0.0.1:0".to_string(),
+        upstream: None,
+        downstream: None,
+    };
+    let slots = spec.slots;
+    let node_for_hook = spec.node.clone();
+    let handle = tokio::task::spawn_blocking(move || {
+        skippy::SkippyModelHandle::load_stage0_config(
+            config,
+            activation_width,
+            slots,
+            skippy_server::openai::CONTEXT_BUDGET_MAX_TOKENS,
+            Some(skippy::MeshAutoHookPolicy::new(node_for_hook)),
+        )
+    })
+    .await
+    .context("join load skippy layer package task")??;
+    let http = handle.start_http(alloc_local_port().await?);
+    let (death_tx, death_rx) = tokio::sync::oneshot::channel();
+
+    Ok((
+        model_name,
+        LocalRuntimeModelHandle {
+            port: http.port(),
+            backend: "skippy".into(),
+            context_length,
+            slots: spec.slots,
+            inner: LocalRuntimeBackendHandle::Skippy {
+                model: handle,
+                http,
+                _death_tx: death_tx,
+            },
+        },
+        death_rx,
+    ))
+}
+
 pub(super) fn local_process_payload(
     model_name: &str,
     backend: &str,
@@ -1792,6 +1927,8 @@ fn skippy_stage_activation_width(activation_width: u32, model_ref: &str) -> Resu
 mod tests {
     use super::*;
     use iroh::SecretKey;
+    use sha2::{Digest, Sha256};
+    use std::fs;
 
     fn make_id(seed: u8) -> iroh::EndpointId {
         let mut bytes = [0u8; 32];
@@ -1811,6 +1948,71 @@ mod tests {
             activation_width: 2048,
             tensor_count: 100,
         }
+    }
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        format!("{:x}", Sha256::digest(bytes))
+    }
+
+    fn write_test_layer_package(dir: &Path, source_model_bytes: u64) {
+        fs::create_dir_all(dir.join("layers")).unwrap();
+        fs::write(dir.join("metadata.gguf"), b"metadata").unwrap();
+        fs::write(dir.join("embeddings.gguf"), b"embeddings").unwrap();
+        fs::write(dir.join("output.gguf"), b"output").unwrap();
+        fs::write(dir.join("layers/00000.gguf"), b"layer0").unwrap();
+        let manifest = serde_json::json!({
+            "schema_version": 1,
+            "model_id": "meshllm/test-layer-package",
+            "source_model": {
+                "path": "/models/test-layer-package.gguf",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "files": [{
+                    "path": "/models/test-layer-package.gguf",
+                    "size_bytes": source_model_bytes,
+                    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                }]
+            },
+            "format": "layer-package",
+            "layer_count": 1,
+            "activation_width": 4096,
+            "shared": {
+                "metadata": {
+                    "path": "metadata.gguf",
+                    "tensor_count": 1,
+                    "tensor_bytes": 1,
+                    "artifact_bytes": 8,
+                    "sha256": sha256_hex(b"metadata")
+                },
+                "embeddings": {
+                    "path": "embeddings.gguf",
+                    "tensor_count": 1,
+                    "tensor_bytes": 1,
+                    "artifact_bytes": 10,
+                    "sha256": sha256_hex(b"embeddings")
+                },
+                "output": {
+                    "path": "output.gguf",
+                    "tensor_count": 1,
+                    "tensor_bytes": 1,
+                    "artifact_bytes": 6,
+                    "sha256": sha256_hex(b"output")
+                }
+            },
+            "layers": [{
+                "layer_index": 0,
+                "path": "layers/00000.gguf",
+                "tensor_count": 1,
+                "tensor_bytes": 1,
+                "artifact_bytes": 6,
+                "sha256": sha256_hex(b"layer0")
+            }],
+            "skippy_abi_version": "0.1.0",
+        });
+        fs::write(
+            dir.join("model-package.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -1864,6 +2066,22 @@ mod tests {
     fn startup_runtime_plan_auto_splits_when_model_exceeds_local_capacity() {
         assert_eq!(
             startup_runtime_plan(false, 3_000_000_000, 4_800_000_000),
+            StartupRuntimePlan::Split {
+                reason: SplitRuntimeReason::LocalCapacity
+            }
+        );
+    }
+
+    #[test]
+    fn runtime_model_planning_bytes_uses_layer_package_source_model_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        write_test_layer_package(dir.path(), 4_800_000_000);
+
+        let model_bytes = runtime_model_planning_bytes(dir.path()).unwrap();
+
+        assert_eq!(model_bytes, 4_800_000_000);
+        assert_eq!(
+            startup_runtime_plan(false, 3_000_000_000, model_bytes),
             StartupRuntimePlan::Split {
                 reason: SplitRuntimeReason::LocalCapacity
             }

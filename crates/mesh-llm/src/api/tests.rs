@@ -13,6 +13,41 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot};
 
+fn qwen_coder_remote_catalog_entry() -> crate::models::remote_catalog::CatalogEntry {
+    use crate::models::remote_catalog::{
+        CatalogCurated, CatalogEntry, CatalogSource, CatalogVariant,
+    };
+
+    CatalogEntry {
+        schema_version: 1,
+        source_repo: "Qwen/Qwen3-Coder-Next-GGUF".to_string(),
+        variants: HashMap::from([(
+            "Qwen3-Coder-Next-Q4_K_M".to_string(),
+            CatalogVariant {
+                source: CatalogSource {
+                    repo: "Qwen/Qwen3-Coder-Next-GGUF".to_string(),
+                    revision: Some("main".to_string()),
+                    file: Some("Qwen3-Coder-Next-Q4_K_M.gguf".to_string()),
+                },
+                curated: CatalogCurated {
+                    name: "Qwen3-Coder-Next-Q4_K_M".to_string(),
+                    size: Some("20GB".to_string()),
+                    description: Some("Coding model".to_string()),
+                    draft: None,
+                    moe: None,
+                    extra_files: Vec::new(),
+                    mmproj: None,
+                },
+                packages: Vec::new(),
+            },
+        )]),
+    }
+}
+
+fn qwen_coder_remote_catalog_ref() -> String {
+    "Qwen/Qwen3-Coder-Next-GGUF@main:Q4_K_M".to_string()
+}
+
 #[test]
 fn test_build_gpus_both_none() {
     let result = build_gpus(None, None, None, None, None, None);
@@ -1742,6 +1777,9 @@ async fn test_api_status_excludes_mesh_models_and_models_endpoint_serves_them() 
 
 #[tokio::test]
 async fn test_api_search_catalog_returns_canonical_model_refs() {
+    let _catalog_guard = crate::models::remote_catalog::set_catalog_entries_for_test(vec![
+        qwen_coder_remote_catalog_entry(),
+    ]);
     let state = build_test_mesh_api().await;
     let (addr, handle) = spawn_management_test_server(state).await;
 
@@ -1762,9 +1800,7 @@ async fn test_api_search_catalog_returns_canonical_model_refs() {
         !results.is_empty(),
         "expected at least one catalog result for Qwen3-Coder-Next"
     );
-    let catalog_ref = crate::models::find_catalog_model_exact("Qwen3-Coder-Next-Q4_K_M")
-        .map(crate::models::catalog_model_ref)
-        .expect("catalog model");
+    let catalog_ref = qwen_coder_remote_catalog_ref();
     let hit = results
         .into_iter()
         .find(|entry| entry["ref"] == json!(catalog_ref))
@@ -2025,9 +2061,7 @@ async fn test_api_model_targets_combine_interest_demand_and_serving_visibility()
         let inner = state.inner.lock().await;
         inner.node.clone()
     };
-    let catalog_model = &crate::models::catalog::MODEL_CATALOG[0];
-    let model_name = catalog_model.name.to_string();
-    let model_ref = crate::models::catalog_model_ref(catalog_model);
+    let model_ref = qwen_coder_remote_catalog_ref();
     let (interest, _) = state
         .upsert_model_interest(model_ref.clone(), Some("ui".to_string()))
         .await;
@@ -2036,7 +2070,7 @@ async fn test_api_model_targets_combine_interest_demand_and_serving_visibility()
         vec![model_ref.clone()]
     );
 
-    node.record_request(&model_name);
+    node.record_request(&model_ref);
 
     let mut peer = make_test_peer(
         0x44,
@@ -2085,8 +2119,7 @@ async fn test_api_status_and_models_surface_wanted_targets() {
         let inner = state.inner.lock().await;
         inner.node.clone()
     };
-    let catalog_model = &crate::models::catalog::MODEL_CATALOG[0];
-    let model_ref = crate::models::catalog_model_ref(catalog_model);
+    let model_ref = qwen_coder_remote_catalog_ref();
     let (interest, _) = state
         .upsert_model_interest(model_ref.clone(), Some("ui".to_string()))
         .await;
@@ -2403,8 +2436,7 @@ async fn test_api_models_include_model_routing_metrics() {
         let inner = state.inner.lock().await;
         inner.node.clone()
     };
-    let catalog_model = &crate::models::catalog::MODEL_CATALOG[0];
-    let model_ref = crate::models::catalog_model_ref(catalog_model);
+    let model_ref = qwen_coder_remote_catalog_ref();
     let peer_id = iroh::EndpointId::from(iroh::SecretKey::generate().public());
     node.set_requested_models(vec![model_ref.clone()]).await;
 

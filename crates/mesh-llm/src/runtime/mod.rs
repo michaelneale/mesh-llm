@@ -11,11 +11,11 @@ use self::interactive::InitialPromptMode;
 use self::local::{
     add_runtime_local_target, add_serving_assignment, advertise_model_ready, local_process_payload,
     model_fits_runtime_capacity, remove_runtime_local_target, remove_serving_assignment,
-    resolved_model_name, runtime_model_required_bytes, set_advertised_model_context,
-    start_runtime_local_model, start_runtime_split_model, startup_runtime_plan,
-    stop_split_generation_cleanup, withdraw_advertised_model, LocalRuntimeModelHandle,
-    LocalRuntimeModelStartSpec, ManagedModelController, RuntimeEvent, SplitCoordinatorAck,
-    SplitRuntimeReason, SplitRuntimeStart, StartupRuntimePlan,
+    resolved_model_name, runtime_model_planning_bytes, runtime_model_required_bytes,
+    set_advertised_model_context, start_runtime_local_model, start_runtime_split_model,
+    startup_runtime_plan, stop_split_generation_cleanup, withdraw_advertised_model,
+    LocalRuntimeModelHandle, LocalRuntimeModelStartSpec, ManagedModelController, RuntimeEvent,
+    SplitCoordinatorAck, SplitRuntimeReason, SplitRuntimeStart, StartupRuntimePlan,
 };
 use self::proxy::{api_proxy, bootstrap_proxy};
 use crate::api;
@@ -34,7 +34,6 @@ use crate::inference::{election, skippy};
 use crate::mesh;
 use crate::mesh::NodeRole;
 use crate::models;
-use crate::models::catalog;
 use crate::network::{affinity, nostr, tunnel};
 use crate::plugin;
 use crate::system::{autoupdate, backend, benchmark, hardware};
@@ -877,7 +876,27 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         .as_ref()
         .map(|gpu| gpu.vram_bytes)
         .unwrap_or_else(|| node.vram_bytes());
-    let model_bytes = election::total_model_bytes(&model_path);
+    let model_path_for_sizing = model_path.clone();
+    let model_bytes = match tokio::task::spawn_blocking(move || {
+        runtime_model_planning_bytes(&model_path_for_sizing)
+    })
+    .await
+    .context("join runtime model sizing task")
+    .and_then(|result| result)
+    {
+        Ok(model_bytes) => model_bytes,
+        Err(err) => {
+            let _ = emit_event(OutputEvent::Error {
+                message: format!("Failed to inspect model {model_name}: {err:#}"),
+                context: Some(format!("model={model_name}")),
+            });
+            update_startup_target(&target_tx, &model_name, election::InferenceTarget::None);
+            if let Some(cs) = console_state {
+                cs.update(false, false).await;
+            }
+            return;
+        }
+    };
     let runtime_plan = startup_runtime_plan(split, local_capacity, model_bytes);
     let (
         mut loaded_name,
@@ -939,22 +958,24 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                 }
             }
         }
-        StartupRuntimePlan::Local => match start_runtime_local_model(start_spec).await {
-            Ok((loaded_name, handle, death_rx)) => {
-                (loaded_name, handle, death_rx, None, None, None)
-            }
-            Err(err) => {
-                let _ = emit_event(OutputEvent::Error {
-                    message: format!("Failed to start model {model_name}: {err:#}"),
-                    context: Some(format!("model={model_name}")),
-                });
-                update_startup_target(&target_tx, &model_name, election::InferenceTarget::None);
-                if let Some(cs) = console_state {
-                    cs.update(false, false).await;
+        StartupRuntimePlan::Local => {
+            match start_runtime_local_model(start_spec, &model_ref).await {
+                Ok((loaded_name, handle, death_rx)) => {
+                    (loaded_name, handle, death_rx, None, None, None)
                 }
-                return;
+                Err(err) => {
+                    let _ = emit_event(OutputEvent::Error {
+                        message: format!("Failed to start model {model_name}: {err:#}"),
+                        context: Some(format!("model={model_name}")),
+                    });
+                    update_startup_target(&target_tx, &model_name, election::InferenceTarget::None);
+                    if let Some(cs) = console_state {
+                        cs.update(false, false).await;
+                    }
+                    return;
+                }
             }
-        },
+        }
     };
     drop(startup_load_guard);
 
@@ -1910,28 +1931,24 @@ fn build_startup_model_specs(
 
 async fn resolve_startup_models(
     specs: &[StartupModelSpec],
-    split: bool,
+    _split: bool,
 ) -> Result<Vec<StartupModelPlan>> {
     let mut plans = Vec::with_capacity(specs.len());
     for spec in specs {
         let requested_ref = spec.model_ref.to_string_lossy();
 
-        // In split mode, check the remote catalog for a pre-split layer package
-        // before downloading the full monolithic GGUF. This avoids downloading
-        // hundreds of GB that won't be used — each node only needs its layers.
-        let resolved_path = if split {
-            let requested_ref_for_catalog = requested_ref.to_string();
-            let model_ref_for_catalog = spec.model_ref.clone();
-            if let Some(package_ref) = tokio::task::spawn_blocking(move || {
-                resolve_split_layer_package(&requested_ref_for_catalog, &model_ref_for_catalog)
-            })
-            .await
-            .context("join resolve split layer package task")?
-            {
-                PathBuf::from(package_ref)
-            } else {
-                resolve_model(&spec.model_ref).await?
-            }
+        // Check the remote catalog for a pre-split layer package before
+        // downloading a remote monolithic GGUF. Auto-split can decide to split
+        // later, so layer-package discovery must not depend on `--split`.
+        let requested_ref_for_catalog = requested_ref.to_string();
+        let model_ref_for_catalog = spec.model_ref.clone();
+        let resolved_path = if let Some(package_ref) = tokio::task::spawn_blocking(move || {
+            resolve_split_layer_package(&requested_ref_for_catalog, &model_ref_for_catalog)
+        })
+        .await
+        .context("join resolve layer package task")?
+        {
+            PathBuf::from(package_ref)
         } else {
             resolve_model(&spec.model_ref).await?
         };
@@ -1940,8 +1957,8 @@ async fn resolve_startup_models(
             Some(mmproj) => Some(resolve_model(mmproj).await?),
             None => None,
         };
-        let declared_ref = models::find_catalog_model_exact(&requested_ref)
-            .map(models::catalog_model_ref)
+        let declared_ref = models::find_remote_catalog_model_exact(&requested_ref)
+            .map(|model| models::remote_catalog_model_ref(&model))
             .unwrap_or_else(|| {
                 // For hf:// layer package refs, use the requested ref as the model ref
                 // rather than trying to parse the hf:// URL as a filesystem path.
@@ -1998,6 +2015,12 @@ fn resolve_split_layer_package(model_query: &str, model_path: &Path) -> Option<S
     // Local directory with model-package.json — already a layer package on disk
     if model_path.join("model-package.json").is_file() {
         return Some(path_str.to_string());
+    }
+
+    // Existing local GGUFs should stay local. Layer-package lookup is only meant
+    // to avoid remote monolithic downloads, not replace an explicit local file.
+    if model_path.exists() {
+        return None;
     }
 
     // Try remote catalog
@@ -3013,8 +3036,11 @@ async fn pick_model_assignment(node: &mesh::Node, local_models: &[String]) -> Op
         if serving_count.get(m).copied().unwrap_or(0) > 0 {
             continue;
         }
-        if let Some(cat) = models::find_catalog_model_exact(m) {
-            let size_bytes = parse_size_str(&cat.size);
+        if let Some(cat) = models::find_remote_catalog_model_exact(m) {
+            let Some(size_label) = cat.size.as_deref() else {
+                continue;
+            };
+            let size_bytes = parse_size_str(size_label);
             let needed = (size_bytes as f64 * 1.1) as u64;
             if needed <= my_vram {
                 downloadable.push((m.clone(), d.request_count));
@@ -3696,13 +3722,14 @@ async fn run_auto(
             let model_path = models::find_model_path(&model_name);
             if model_path.exists() {
                 model_path
-            } else if let Some(cat) = models::find_catalog_model_exact(&model_name) {
-                // Model not on disk but in catalog — download it
+            } else if let Some(cat) = models::find_remote_catalog_model_exact(&model_name) {
+                // Model not on disk but in the remote catalog — download it.
                 let _ = emit_event(OutputEvent::Info {
                     message: format!("Downloading {model_name} for mesh..."),
                     context: None,
                 });
-                catalog::download_model(cat).await?
+                let model_ref = models::remote_catalog_model_ref(&cat);
+                resolve_model(&PathBuf::from(model_ref)).await?
             } else {
                 model_path
             }
@@ -4275,8 +4302,8 @@ async fn run_auto(
                         let mut assigned_runtime_model: Option<String> = None;
                         let result = async {
                             let model_path = resolve_model(&PathBuf::from(&spec)).await?;
-                            let runtime_model_name = models::find_catalog_model_exact(&spec)
-                                .map(models::catalog_model_ref)
+                            let runtime_model_name = models::find_remote_catalog_model_exact(&spec)
+                                .map(|model| models::remote_catalog_model_ref(&model))
                                 .unwrap_or_else(|| models::model_ref_for_path(&model_path));
                             let already_loaded = managed_models.contains_key(&runtime_model_name)
                                 || runtime_models.contains_key(&runtime_model_name);
@@ -4315,6 +4342,7 @@ async fn run_auto(
                                         .unwrap_or(FlashAttentionType::Auto),
                                     slots,
                                 },
+                                &runtime_model_name,
                             )
                             .await?;
 
@@ -5048,6 +5076,25 @@ mod tests {
             resolved,
             Some("hf://meshllm/remote-split-only-model-layers".to_string())
         );
+    }
+
+    #[test]
+    #[serial]
+    fn layer_package_resolution_keeps_existing_local_gguf() {
+        let _catalog_guard =
+            models::remote_catalog::set_catalog_entries_for_test(vec![remote_catalog_layer_entry(
+                "LocalModel-Q4_K_M",
+                "Local Model Q4_K_M",
+                "mesh-test/local-model",
+                "meshllm/local-model-layers",
+            )]);
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let local_model = temp_dir.path().join("LocalModel-Q4_K_M.gguf");
+        std::fs::write(&local_model, b"gguf").expect("write local model");
+
+        let resolved = resolve_split_layer_package("LocalModel-Q4_K_M", &local_model);
+
+        assert_eq!(resolved, None);
     }
 
     #[test]

@@ -1,98 +1,24 @@
-//! Built-in model catalog plus managed acquisition helpers.
+//! Managed model acquisition helpers.
 
 use super::track_managed_model_usage;
 use crate::cli::output::{emit_event, interactive_tui_active, ModelProgressStatus, OutputEvent};
 use crate::cli::terminal_progress::{start_spinner, SpinnerHandle};
 use anyhow::{Context, Result};
 use hf_hub::{DownloadEvent, Progress, ProgressEvent, ProgressHandler, RepoDownloadFileParams};
-use serde::Deserialize;
 #[cfg(test)]
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex};
+#[cfg(test)]
+use std::sync::LazyLock;
+use std::sync::{Arc, Mutex};
 use tokio::io::AsyncWriteExt;
-#[derive(Clone, Debug, Deserialize)]
-pub struct CatalogAsset {
-    pub file: String,
-    pub url: String,
-}
-
-#[derive(Clone, Debug)]
-pub struct CatalogModel {
-    pub name: String,
-    pub file: String,
-    /// Legacy transport field. Prefer `source_repo()`, `source_revision()`,
-    /// and `source_file()` for curated model identity.
-    pub url: String,
-    pub size: String,
-    pub description: String,
-    /// If set, this model has a recommended draft model for speculative decoding.
-    pub draft: Option<String>,
-    /// Additional split GGUF files (for models too large for a single file).
-    /// llama.cpp auto-discovers splits from the first file, but all parts
-    /// must be present in the same directory.
-    pub extra_files: Vec<CatalogAsset>,
-    /// Multimodal projector sidecar for vision models.
-    pub mmproj: Option<CatalogAsset>,
-}
-
-impl CatalogModel {
-    pub fn source_repo(&self) -> Option<&str> {
-        parse_hf_resolve_url_parts(&self.url).map(|(repo, _, _)| repo)
-    }
-
-    pub fn source_revision(&self) -> Option<&str> {
-        parse_hf_resolve_url_parts(&self.url).and_then(|(_, revision, _)| revision)
-    }
-
-    pub fn source_file(&self) -> Option<&str> {
-        parse_hf_resolve_url_parts(&self.url).map(|(_, _, file)| file)
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct CatalogModelJson {
-    name: String,
-    file: String,
-    url: String,
-    size: String,
-    description: String,
-    draft: Option<String>,
-    #[serde(default)]
-    extra_files: Vec<CatalogAsset>,
-    mmproj: Option<CatalogAsset>,
-}
-
-pub static MODEL_CATALOG: LazyLock<Vec<CatalogModel>> = LazyLock::new(load_catalog);
-
-fn load_catalog() -> Vec<CatalogModel> {
-    let raw: Vec<CatalogModelJson> =
-        serde_json::from_str(include_str!("catalog.json")).expect("parse bundled catalog.json");
-    raw.into_iter().map(CatalogModel::from_json).collect()
-}
-
-impl CatalogModel {
-    fn from_json(raw: CatalogModelJson) -> Self {
-        Self {
-            name: raw.name,
-            file: raw.file,
-            url: raw.url,
-            size: raw.size,
-            description: raw.description,
-            draft: raw.draft,
-            extra_files: raw.extra_files,
-            mmproj: raw.mmproj,
-        }
-    }
-}
 
 /// Get the canonical managed model root (the Hugging Face hub cache).
 pub fn models_dir() -> PathBuf {
     crate::models::huggingface_hub_cache_dir()
 }
 
-/// Find a catalog model by name (case-insensitive partial match)
 /// Parse a size string like "20GB", "4.4GB", "491MB" into GB as f64.
 pub fn parse_size_gb(s: &str) -> f64 {
     let s = s.trim();
@@ -103,38 +29,6 @@ pub fn parse_size_gb(s: &str) -> f64 {
     } else {
         0.0
     }
-}
-
-pub fn find_model(query: &str) -> Option<&'static CatalogModel> {
-    let q = query.to_lowercase();
-    MODEL_CATALOG
-        .iter()
-        .find(|m| m.name.to_lowercase() == q)
-        .or_else(|| {
-            MODEL_CATALOG
-                .iter()
-                .find(|m| m.name.to_lowercase().contains(&q))
-        })
-}
-
-fn parse_hf_resolve_url_parts(url: &str) -> Option<(&str, Option<&str>, &str)> {
-    let tail = url
-        .strip_prefix("https://huggingface.co/")
-        .or_else(|| url.strip_prefix("http://huggingface.co/"))?;
-    let (repo, rest) = tail.split_once("/resolve/")?;
-    if !repo.contains('/') {
-        return None;
-    }
-    let (revision, file) = rest.split_once('/')?;
-    if file.is_empty() {
-        return None;
-    }
-    Some((repo, Some(revision), file))
-}
-
-pub fn huggingface_repo_url(url: &str) -> Option<String> {
-    let (repo, _, _) = parse_hf_resolve_url_parts(url)?;
-    Some(format!("https://huggingface.co/{repo}"))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -150,15 +44,6 @@ impl HfAsset {
             .split_once('/')
             .unwrap_or(("", self.repo.as_str()))
     }
-}
-
-fn hf_asset_from_url(url: &str) -> Option<HfAsset> {
-    let (repo, revision, file) = parse_hf_resolve_url_parts(url)?;
-    Some(HfAsset {
-        repo: repo.to_string(),
-        revision: revision.unwrap_or("main").to_string(),
-        file: file.to_string(),
-    })
 }
 
 fn expand_split_asset(asset: &HfAsset) -> Result<Vec<HfAsset>> {
@@ -776,6 +661,7 @@ fn initial_download_plan_for_assets(
     Ok(download_plan)
 }
 
+#[cfg(test)]
 pub async fn download_hf_repo_file(
     repo: &str,
     revision: Option<&str>,
@@ -784,6 +670,7 @@ pub async fn download_hf_repo_file(
     download_hf_repo_file_with_progress(repo, revision, file, true).await
 }
 
+#[cfg(test)]
 pub async fn download_hf_repo_file_with_progress(
     repo: &str,
     revision: Option<&str>,
@@ -843,183 +730,6 @@ pub async fn download_hf_repo_file_with_progress_label(
     Ok(path)
 }
 
-/// Download a model into the managed model store with resume support.
-/// Returns the path to the primary downloaded file.
-/// For split GGUFs (extra_files), downloads all parts to the same directory.
-pub async fn download_model(model: &CatalogModel) -> Result<PathBuf> {
-    download_model_with_progress(model, true).await
-}
-
-pub async fn download_model_with_progress(model: &CatalogModel, progress: bool) -> Result<PathBuf> {
-    let hf_assets: Option<Vec<HfAsset>> = std::iter::once(model.url.as_str())
-        .chain(model.extra_files.iter().map(|asset| asset.url.as_str()))
-        .chain(model.mmproj.iter().map(|asset| asset.url.as_str()))
-        .map(hf_asset_from_url)
-        .collect();
-    if let Some(assets) = hf_assets {
-        let source = model.source_file().unwrap_or(model.file.as_str());
-        let mut paths = download_hf_assets(&model.name, assets, progress).await?;
-        paths.sort();
-        let managed_paths = paths.clone();
-        if let Some(path) = paths
-            .iter()
-            .find(|path| path_suffix_matches_ignore_case(path, source))
-            .cloned()
-        {
-            if let Err(err) = track_managed_model_usage(
-                &path,
-                &managed_paths,
-                &model.name,
-                Some(&model.name),
-                "catalog",
-            ) {
-                tracing::warn!(
-                    "failed to record managed model usage for {}: {err}",
-                    path.display()
-                );
-            }
-            return Ok(path);
-        }
-        let path = paths
-            .into_iter()
-            .find(|path| path_suffix_matches_ignore_case(path, &model.file))
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Downloaded model path not found in cache for {}",
-                    model.name
-                )
-            })?;
-        if let Err(err) = track_managed_model_usage(
-            &path,
-            &managed_paths,
-            &model.name,
-            Some(&model.name),
-            "catalog",
-        ) {
-            tracing::warn!(
-                "failed to record managed model usage for {}: {err}",
-                path.display()
-            );
-        }
-        return Ok(path);
-    }
-
-    let dir = models_dir();
-    tokio::fs::create_dir_all(&dir).await?;
-    let dest = dir.join(&model.file);
-
-    // Collect all files to download: primary + extra splits + mmproj
-    let mut files: Vec<(&str, &str)> = vec![(model.file.as_str(), model.url.as_str())];
-    for asset in &model.extra_files {
-        files.push((asset.file.as_str(), asset.url.as_str()));
-    }
-    if let Some(asset) = &model.mmproj {
-        files.push((asset.file.as_str(), asset.url.as_str()));
-    }
-    let all_paths: Vec<PathBuf> = files.iter().map(|(file, _)| dir.join(file)).collect();
-
-    let mut all_present = true;
-    let mut total_size: u64 = 0;
-    for (file, _) in &files {
-        let path = dir.join(file);
-        let size = tokio::fs::metadata(&path)
-            .await
-            .map(|m| m.len())
-            .unwrap_or(0);
-        if size < 1_000_000 {
-            all_present = false;
-            break;
-        }
-        total_size += size;
-    }
-
-    if all_present {
-        if progress {
-            eprintln!(
-                "✅ {} already exists ({:.1}GB, {} file{})",
-                model.name,
-                total_size as f64 / 1e9,
-                files.len(),
-                if files.len() > 1 { "s" } else { "" },
-            );
-        }
-        if let Err(err) =
-            track_managed_model_usage(&dest, &all_paths, &model.name, Some(&model.name), "catalog")
-        {
-            tracing::warn!(
-                "failed to record managed model usage for {}: {err}",
-                dest.display()
-            );
-        }
-        return Ok(dest);
-    }
-
-    if progress {
-        eprintln!("📥 Downloading {} ({})...", model.name, model.size);
-    }
-
-    // Collect files that still need downloading
-    let mut needed: Vec<(String, String)> = Vec::new();
-    for (file, url) in &files {
-        let path = dir.join(file);
-        if path.exists() {
-            let size = tokio::fs::metadata(&path)
-                .await
-                .map(|m| m.len())
-                .unwrap_or(0);
-            if size > 1_000_000 {
-                if progress {
-                    eprintln!("  ✅ {file} already exists ({:.1}GB)", size as f64 / 1e9);
-                }
-                continue;
-            }
-        }
-        needed.push((file.to_string(), url.to_string()));
-    }
-
-    if needed.len() > 1 {
-        // Parallel download of split files
-        if progress {
-            eprintln!("  ⚡ Downloading {} files in parallel...", needed.len());
-        }
-        let total = needed.len();
-        let completed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let mut handles = Vec::new();
-        for (file, url) in needed {
-            let path = dir.join(&file);
-            let completed = completed.clone();
-            handles.push(tokio::spawn(async move {
-                download_with_resume(&path, &url).await?;
-                let done = completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                if progress {
-                    eprintln!("  ✅ {file} [{done}/{total}]");
-                }
-                Ok::<(), anyhow::Error>(())
-            }));
-        }
-        for handle in handles {
-            handle.await??;
-        }
-    } else if let Some((file, url)) = needed.into_iter().next() {
-        // Single file — just download it
-        let path = dir.join(&file);
-        download_with_resume(&path, &url).await?;
-    }
-
-    if progress {
-        eprintln!("✅ Downloaded {} to {}", model.name, dir.display());
-    }
-    if let Err(err) =
-        track_managed_model_usage(&dest, &all_paths, &model.name, Some(&model.name), "catalog")
-    {
-        tracing::warn!(
-            "failed to record managed model usage for {}: {err}",
-            dest.display()
-        );
-    }
-    Ok(dest)
-}
-
 /// Download any URL to a destination path with resume support.
 pub async fn download_url(url: &str, dest: &Path) -> Result<()> {
     download_with_resume(dest, url).await
@@ -1052,133 +762,6 @@ fn path_suffix_matches_ignore_case(path: &Path, expected: &str) -> bool {
     }
 
     true
-}
-
-/// Download a HuggingFace GGUF URL, auto-detecting split files (-00001-of-NNNNN.gguf).
-/// If the filename matches the split pattern, discovers and downloads all parts in parallel.
-/// Returns the path to the first part (or the single file).
-pub async fn download_hf_split_gguf(url: &str, filename: &str) -> Result<PathBuf> {
-    if let Some(asset) = hf_asset_from_url(url) {
-        return download_hf_repo_file(&asset.repo, Some(&asset.revision), &asset.file).await;
-    }
-
-    let dir = models_dir();
-    tokio::fs::create_dir_all(&dir).await?;
-
-    let re = regex_lite::Regex::new(r"-00001-of-(\d{5})\.gguf$").unwrap();
-    if let Some(caps) = re.captures(filename) {
-        let n: u32 = caps[1].parse()?;
-        eprintln!("📥 Detected split GGUF: {n} parts");
-
-        // Build list of (part_filename, part_url) for all parts
-        let mut files: Vec<(String, String)> = Vec::new();
-        for i in 1..=n {
-            let part_filename = filename.replace("-00001-of-", &format!("-{i:05}-of-"));
-            let part_url = url.replace("-00001-of-", &format!("-{i:05}-of-"));
-            files.push((part_filename, part_url));
-        }
-
-        // Filter to parts that still need downloading
-        let mut needed: Vec<(String, String)> = Vec::new();
-        for (f, u) in &files {
-            let path = dir.join(f);
-            if path.exists() {
-                let size = tokio::fs::metadata(&path)
-                    .await
-                    .map(|m| m.len())
-                    .unwrap_or(0);
-                if size > 1_000_000 {
-                    eprintln!("  ✅ {f} already exists ({:.1}GB)", size as f64 / 1e9);
-                    continue;
-                }
-            }
-            needed.push((f.clone(), u.clone()));
-        }
-
-        if !needed.is_empty() {
-            eprintln!("  ⚡ Downloading {} file(s) in parallel...", needed.len());
-            let total = needed.len();
-            let completed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let mut handles = Vec::new();
-            for (file, url) in needed {
-                let path = dir.join(&file);
-                let completed = completed.clone();
-                handles.push(tokio::spawn(async move {
-                    download_with_resume(&path, &url).await?;
-                    let done = completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                    eprintln!("  ✅ {file} [{done}/{total}]");
-                    Ok::<(), anyhow::Error>(())
-                }));
-            }
-            for handle in handles {
-                handle.await??;
-            }
-        }
-        let primary = dir.join(filename);
-        let all_paths: Vec<PathBuf> = files.iter().map(|(file, _)| dir.join(file)).collect();
-        let display_name = Path::new(filename)
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .unwrap_or(filename);
-        if let Err(err) =
-            track_managed_model_usage(&primary, &all_paths, display_name, Some(url), "url")
-        {
-            tracing::warn!(
-                "failed to record managed model usage for {}: {err}",
-                primary.display()
-            );
-        }
-        return Ok(primary);
-    }
-
-    // Not a split file — single download
-    let dest = dir.join(filename);
-    if dest.exists() {
-        let size = tokio::fs::metadata(&dest).await?.len();
-        if size > 1_000_000 {
-            eprintln!(
-                "✅ {} already exists ({:.1}GB)",
-                filename,
-                size as f64 / 1e9
-            );
-            let display_name = Path::new(filename)
-                .file_stem()
-                .and_then(|value| value.to_str())
-                .unwrap_or(filename);
-            if let Err(err) = track_managed_model_usage(
-                &dest,
-                std::slice::from_ref(&dest),
-                display_name,
-                Some(url),
-                "url",
-            ) {
-                tracing::warn!(
-                    "failed to record managed model usage for {}: {err}",
-                    dest.display()
-                );
-            }
-            return Ok(dest);
-        }
-    }
-    eprintln!("📥 Downloading {filename}...");
-    download_with_resume(&dest, url).await?;
-    let display_name = Path::new(filename)
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or(filename);
-    if let Err(err) = track_managed_model_usage(
-        &dest,
-        std::slice::from_ref(&dest),
-        display_name,
-        Some(url),
-        "url",
-    ) {
-        tracing::warn!(
-            "failed to record managed model usage for {}: {err}",
-            dest.display()
-        );
-    }
-    Ok(dest)
 }
 
 /// Download with resume support and retries using reqwest.
@@ -1410,44 +993,9 @@ fn print_transfer_status(
     Ok(())
 }
 
-/// List available models
-pub fn list_models() {
-    eprintln!("Available models:");
-    eprintln!();
-    for m in MODEL_CATALOG.iter() {
-        let draft_info = if let Some(d) = m.draft.as_deref() {
-            format!(" (draft: {})", d)
-        } else {
-            String::new()
-        };
-        eprintln!(
-            "  {:40} {:>6}  {}{}",
-            m.name, m.size, m.description, draft_info
-        );
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn source_identity_is_exposed_for_hf_catalog_entries() {
-        let model = find_model("Qwen3-8B-Q4_K_M").unwrap();
-        assert_eq!(model.source_repo(), Some("unsloth/Qwen3-8B-GGUF"));
-        assert_eq!(model.source_revision(), Some("main"));
-        assert_eq!(model.source_file(), Some("Qwen3-8B-Q4_K_M.gguf"));
-        assert!(model.source_repo().is_some());
-    }
-
-    #[test]
-    fn source_identity_is_absent_for_direct_url_entries() {
-        let model = find_model("Qwen3.5-27B-Q4_K_M").unwrap();
-        assert_eq!(model.source_repo(), None);
-        assert_eq!(model.source_revision(), None);
-        assert_eq!(model.source_file(), None);
-        assert!(model.source_repo().is_none());
-    }
 
     #[test]
     fn test_free_disk_space() {
@@ -1749,88 +1297,6 @@ mod tests {
         assert_eq!(state.downloaded, 1_000);
         assert_eq!(state.total, 1_000);
         assert_eq!(state.bytes_per_sec, None);
-    }
-
-    #[tokio::test]
-    async fn download_model_matches_hf_cache_file_case_insensitively() {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let cached_file = std::env::temp_dir()
-            .join(format!("mesh-llm-hf-case-model-{unique}"))
-            .join("qwen2.5-coder-7b-instruct-q4_k_m.gguf");
-        std::fs::create_dir_all(cached_file.parent().unwrap()).unwrap();
-        std::fs::write(&cached_file, b"gguf").unwrap();
-
-        let model = CatalogModel {
-            name: "Qwen2.5-Coder-7B-Instruct-Q4_K_M".to_string(),
-            file: "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf".to_string(),
-            url: "https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/qwen2.5-coder-7b-instruct-q4_k_m.gguf".to_string(),
-            size: "4.4GB".to_string(),
-            description: "".to_string(),
-            draft: None,
-            extra_files: Vec::new(),
-            mmproj: None,
-        };
-
-        {
-            let label = model.name.clone();
-            let _guard = DownloadHfAssetsOverrideGuard::set(
-                label,
-                Arc::new({
-                    let cached = cached_file.clone();
-                    move |_, _| Ok(vec![cached.clone()])
-                }),
-            );
-            let resolved = download_model(&model).await.unwrap();
-            assert_eq!(resolved, cached_file);
-        }
-
-        {
-            let label = model.name.clone();
-            let _guard = DownloadHfAssetsOverrideGuard::set(label, Arc::new(|_, _| Ok(Vec::new())));
-            assert!(download_model(&model).await.is_err());
-        }
-    }
-
-    #[tokio::test]
-    async fn download_model_prefers_nested_source_path_over_same_basename() {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("mesh-llm-hf-nested-model-{unique}"));
-        let wrong_file = root.join("another").join("model.gguf");
-        let expected_file = root.join("nested").join("model.gguf");
-        std::fs::create_dir_all(wrong_file.parent().unwrap()).unwrap();
-        std::fs::create_dir_all(expected_file.parent().unwrap()).unwrap();
-        std::fs::write(&wrong_file, b"wrong").unwrap();
-        std::fs::write(&expected_file, b"right").unwrap();
-
-        let model = CatalogModel {
-            name: "Nested-Path-Model".to_string(),
-            file: "model.gguf".to_string(),
-            url: "https://huggingface.co/org/repo/resolve/main/nested/MODEL.gguf".to_string(),
-            size: "1GB".to_string(),
-            description: "".to_string(),
-            draft: None,
-            extra_files: Vec::new(),
-            mmproj: None,
-        };
-
-        let label = model.name.clone();
-        let _guard = DownloadHfAssetsOverrideGuard::set(
-            label,
-            Arc::new({
-                let wrong = wrong_file.clone();
-                let expected = expected_file.clone();
-                move |_, _| Ok(vec![wrong.clone(), expected.clone()])
-            }),
-        );
-
-        let resolved = download_model(&model).await.unwrap();
-        assert_eq!(resolved, expected_file);
     }
 
     #[test]

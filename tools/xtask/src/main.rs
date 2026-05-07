@@ -22,7 +22,7 @@ fn run() -> DynResult<()> {
             check_release_targets()
         }
         _ => Err(
-            "usage: cargo run -p xtask -- repo-consistency release-targets"
+            "usage:\n  cargo run -p xtask -- repo-consistency release-targets"
                 .to_string()
                 .into(),
         ),

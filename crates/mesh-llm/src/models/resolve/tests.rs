@@ -51,6 +51,19 @@ fn remote_catalog_entry(
     }
 }
 
+fn remote_catalog_entry_with_mmproj(
+    variant_name: &str,
+    curated_name: &str,
+    source_repo: &str,
+    source_file: &str,
+    mmproj: &str,
+) -> crate::models::remote_catalog::CatalogEntry {
+    let mut entry = remote_catalog_entry(variant_name, curated_name, source_repo, source_file);
+    let variant = entry.variants.get_mut(variant_name).unwrap();
+    variant.curated.mmproj = Some(mmproj.to_string());
+    entry
+}
+
 #[tokio::test]
 async fn existing_model_path_resolves_to_canonical_path() {
     let temp = tempfile::tempdir().expect("create temp model dir");
@@ -69,11 +82,9 @@ async fn existing_model_path_resolves_to_canonical_path() {
 
 #[tokio::test]
 #[serial]
-async fn bare_name_missing_from_baked_catalog_falls_back_to_remote_catalog() {
+async fn bare_name_resolves_from_remote_catalog() {
     let query = "RemoteOnlyResolverFallbackModel-Q4_K_M";
     let source_file = "RemoteOnlyResolverFallbackModel-Q4_K_M.gguf";
-    assert!(find_catalog_model_exact(query).is_none());
-    assert!(catalog::find_model(query).is_none());
 
     let _catalog_guard =
         crate::models::remote_catalog::set_catalog_entries_for_test(vec![remote_catalog_entry(
@@ -94,9 +105,43 @@ async fn bare_name_missing_from_baked_catalog_falls_back_to_remote_catalog() {
     assert_eq!(resolved, PathBuf::from(format!("/tmp/{source_file}")));
 }
 
+#[tokio::test]
+#[serial]
+async fn bare_name_resolution_prefers_remote_catalog_over_baked_catalog() {
+    let query = "Qwen3-8B-Q4_K_M";
+    let source_file = "RemotePreferred-Q4_K_M.gguf";
+    let _catalog_guard =
+        crate::models::remote_catalog::set_catalog_entries_for_test(vec![remote_catalog_entry(
+            query,
+            "Remote Preferred Catalog Model",
+            "mesh-test/remote-preferred-catalog-model",
+            source_file,
+        )]);
+    let _download_guard = catalog::set_download_hf_assets_label_override(
+        "Remote Preferred Catalog Model".to_string(),
+        Arc::new(move |_| Ok(vec![PathBuf::from(format!("/tmp/{source_file}"))])),
+    );
+
+    let resolved = resolve_model_spec_with_progress(Path::new(query), false)
+        .await
+        .unwrap();
+
+    assert_eq!(resolved, PathBuf::from(format!("/tmp/{source_file}")));
+}
+
 #[test]
-fn primary_hf_ref_maps_to_full_catalog_download() {
-    let model = matching_catalog_primary_for_huggingface(
+#[serial]
+fn primary_hf_ref_maps_to_full_remote_catalog_download() {
+    let _catalog_guard = crate::models::remote_catalog::set_catalog_entries_for_test(vec![
+        remote_catalog_entry_with_mmproj(
+            "Qwen3.5-0.8B-Q4_K_M",
+            "Qwen3.5-0.8B-Vision-Q4_K_M",
+            "unsloth/Qwen3.5-0.8B-GGUF",
+            "Qwen3.5-0.8B-Q4_K_M.gguf",
+            "unsloth/Qwen3.5-0.8B-GGUF@main/mmproj-BF16.gguf",
+        ),
+    ]);
+    let model = matching_remote_catalog_primary_for_huggingface(
         "unsloth/Qwen3.5-0.8B-GGUF",
         Some("main"),
         "Qwen3.5-0.8B-Q4_K_M.gguf",
@@ -107,8 +152,18 @@ fn primary_hf_ref_maps_to_full_catalog_download() {
 }
 
 #[test]
-fn mmproj_hf_ref_does_not_expand_to_full_catalog_download() {
-    assert!(matching_catalog_primary_for_huggingface(
+#[serial]
+fn mmproj_hf_ref_does_not_expand_to_full_remote_catalog_download() {
+    let _catalog_guard = crate::models::remote_catalog::set_catalog_entries_for_test(vec![
+        remote_catalog_entry_with_mmproj(
+            "Qwen3.5-0.8B-Q4_K_M",
+            "Qwen3.5-0.8B-Vision-Q4_K_M",
+            "unsloth/Qwen3.5-0.8B-GGUF",
+            "Qwen3.5-0.8B-Q4_K_M.gguf",
+            "unsloth/Qwen3.5-0.8B-GGUF@main/mmproj-BF16.gguf",
+        ),
+    ]);
+    assert!(matching_remote_catalog_primary_for_huggingface(
         "unsloth/Qwen3.5-0.8B-GGUF",
         Some("main"),
         "mmproj-BF16.gguf",
@@ -117,8 +172,18 @@ fn mmproj_hf_ref_does_not_expand_to_full_catalog_download() {
 }
 
 #[test]
-fn primary_url_maps_to_full_catalog_download() {
-    let model = matching_catalog_primary_for_url(
+#[serial]
+fn primary_url_maps_to_full_remote_catalog_download() {
+    let _catalog_guard = crate::models::remote_catalog::set_catalog_entries_for_test(vec![
+        remote_catalog_entry_with_mmproj(
+            "Qwen3.5-0.8B-Q4_K_M",
+            "Qwen3.5-0.8B-Vision-Q4_K_M",
+            "unsloth/Qwen3.5-0.8B-GGUF",
+            "Qwen3.5-0.8B-Q4_K_M.gguf",
+            "unsloth/Qwen3.5-0.8B-GGUF@main/mmproj-BF16.gguf",
+        ),
+    ]);
+    let model = matching_remote_catalog_primary_for_url(
         "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_K_M.gguf",
     )
     .expect("primary model url should map to catalog download");
@@ -127,8 +192,18 @@ fn primary_url_maps_to_full_catalog_download() {
 }
 
 #[test]
-fn mmproj_url_does_not_expand_to_full_catalog_download() {
-    assert!(matching_catalog_primary_for_url(
+#[serial]
+fn mmproj_url_does_not_expand_to_full_remote_catalog_download() {
+    let _catalog_guard = crate::models::remote_catalog::set_catalog_entries_for_test(vec![
+        remote_catalog_entry_with_mmproj(
+            "Qwen3.5-0.8B-Q4_K_M",
+            "Qwen3.5-0.8B-Vision-Q4_K_M",
+            "unsloth/Qwen3.5-0.8B-GGUF",
+            "Qwen3.5-0.8B-Q4_K_M.gguf",
+            "unsloth/Qwen3.5-0.8B-GGUF@main/mmproj-BF16.gguf",
+        ),
+    ]);
+    assert!(matching_remote_catalog_primary_for_url(
         "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/mmproj-BF16.gguf",
     )
     .is_none());

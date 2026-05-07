@@ -1,11 +1,11 @@
 use super::resolve::{
-    catalog_model_draft_ref, catalog_model_ref, file_preference_score,
-    gguf_variant_size_bytes_from_siblings, is_known_gguf_sidecar,
-    matching_catalog_model_for_huggingface, merge_capabilities, quant_selector_from_gguf_file,
+    file_preference_score, gguf_variant_size_bytes_from_siblings, is_known_gguf_sidecar,
+    matching_remote_catalog_model_for_huggingface, merge_capabilities,
+    quant_selector_from_gguf_file, remote_catalog_model_draft_ref, remote_catalog_model_ref,
     remote_hf_size_label_with_api,
 };
 use super::ModelCapabilities;
-use super::{build_hf_tokio_api, capabilities, catalog};
+use super::{build_hf_tokio_api, capabilities, catalog, remote_catalog};
 use crate::system::hardware;
 use anyhow::{Context, Result};
 use hf_hub::{ListModelsParams, ModelInfo};
@@ -25,7 +25,7 @@ pub struct SearchHit {
     pub size_label: Option<String>,
     pub downloads: Option<u64>,
     pub likes: Option<u64>,
-    pub catalog: Option<&'static catalog::CatalogModel>,
+    pub catalog: Option<remote_catalog::RemoteCatalogModel>,
     pub capabilities: ModelCapabilities,
 }
 
@@ -64,44 +64,51 @@ struct RepoArtifactCandidate {
     file: String,
 }
 
-pub fn search_catalog_models(query: &str) -> Vec<&'static catalog::CatalogModel> {
+pub fn search_catalog_models(query: &str) -> Result<Vec<remote_catalog::RemoteCatalogModel>> {
+    remote_catalog::ensure_catalog().context("load meshllm/catalog for catalog search")?;
     let q = query.to_lowercase();
-    let mut results: Vec<_> = catalog::MODEL_CATALOG
-        .iter()
+    let mut results: Vec<_> = remote_catalog::loaded_models()
+        .context("parse meshllm/catalog models for catalog search")?
+        .into_iter()
         .filter(|model| {
             model.name.to_lowercase().contains(&q)
                 || model.file.to_lowercase().contains(&q)
-                || model.description.to_lowercase().contains(&q)
+                || model
+                    .description
+                    .as_deref()
+                    .unwrap_or_default()
+                    .to_lowercase()
+                    .contains(&q)
         })
         .collect();
     results.sort_by(|left, right| left.name.cmp(&right.name));
-    results
+    Ok(results)
 }
 
 pub fn search_catalog_json_payload(
     query: &str,
     filter: SearchArtifactFilter,
     sort: SearchSort,
-    results: &[&'static catalog::CatalogModel],
+    results: &[remote_catalog::RemoteCatalogModel],
     limit: usize,
 ) -> Value {
     let payload_results: Vec<Value> = results
         .iter()
         .take(limit)
         .map(|model| {
-            let model_ref = catalog_model_ref(model);
+            let model_ref = remote_catalog_model_ref(model);
             json!({
                 "name": model.name,
                 "repo_id": model.source_repo(),
                 "type": catalog_model_kind_code(model),
                 "size": model.size,
                 "description": model.description,
-                "fit": fit_code_for_size_label(&model.size),
+                "fit": model.size.as_deref().and_then(fit_code_for_size_label),
                 "ref": model_ref,
                 "show": format!("mesh-llm models show {model_ref}"),
                 "download": format!("mesh-llm models download {model_ref}"),
-                "draft": catalog_model_draft_ref(model),
-                "capabilities": capabilities_json(capabilities::infer_catalog_capabilities(model)),
+                "draft": remote_catalog_model_draft_ref(model),
+                "capabilities": capabilities_json(capabilities::infer_remote_catalog_capabilities(model)),
             })
         })
         .collect();
@@ -140,7 +147,7 @@ pub fn search_huggingface_json_payload(
                 "show": format!("mesh-llm models show {}", result.exact_ref),
                 "download": format!("mesh-llm models download {}", result.exact_ref),
                 "capabilities": capabilities_json(result.capabilities),
-                "catalog": result.catalog.map(|model| {
+                "catalog": result.catalog.as_ref().map(|model| {
                     json!({
                         "name": model.name,
                         "size": model.size,
@@ -287,9 +294,9 @@ async fn build_search_hit(
     let candidate = &matching_candidates[0];
     let variant_count = search_hit_variant_count(filter, &repo_id, &matching_candidates);
     let remote_metadata = capabilities::fetch_remote_hf_metadata_jsons(&repo_id, None).await;
-    let catalog = matching_catalog_model_for_huggingface(&repo_id, None, &candidate.file);
+    let catalog = matching_remote_catalog_model_for_huggingface(&repo_id, None, &candidate.file);
     let size_label = match catalog {
-        Some(model) => Some(model.size.to_string()),
+        Some(ref model) => model.size.clone(),
         None => match size_label_from_sibling_entries(&candidate.file, &sibling_size_entries) {
             Some(size_label) => Some(size_label),
             None => remote_hf_size_label_with_api(&api, &repo_id, None, &candidate.file).await,
@@ -302,8 +309,8 @@ async fn build_search_hit(
         &remote_metadata,
     );
     let capabilities = match catalog {
-        Some(model) => {
-            let base = capabilities::infer_catalog_capabilities(model);
+        Some(ref model) => {
+            let base = capabilities::infer_remote_catalog_capabilities(model);
             merge_capabilities(base, remote_caps)
         }
         None => remote_caps,
@@ -402,14 +409,11 @@ fn model_kind_code(kind: &str) -> &'static str {
     }
 }
 
-fn catalog_model_kind_code(model: &catalog::CatalogModel) -> &'static str {
-    if model
-        .source_file()
-        .map(|file| {
-            file.ends_with("model.safetensors") || file.ends_with("model.safetensors.index.json")
-        })
-        .unwrap_or(false)
-        || model.url.contains("model.safetensors")
+fn catalog_model_kind_code(model: &remote_catalog::RemoteCatalogModel) -> &'static str {
+    if model.source_file().ends_with("model.safetensors")
+        || model
+            .source_file()
+            .ends_with("model.safetensors.index.json")
     {
         "mlx"
     } else {
@@ -649,8 +653,22 @@ fn mlx_candidate_rank(file: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::find_catalog_model_exact;
     use std::sync::{Arc, Mutex};
+
+    fn test_remote_catalog_model() -> remote_catalog::RemoteCatalogModel {
+        remote_catalog::RemoteCatalogModel {
+            name: "Qwen3-Coder-Next-Q4_K_M".to_string(),
+            file: "Qwen3-Coder-Next-Q4_K_M.gguf".to_string(),
+            repo: "Qwen/Qwen3-Coder-Next-GGUF".to_string(),
+            revision: Some("main".to_string()),
+            source_file: "Qwen3-Coder-Next-Q4_K_M.gguf".to_string(),
+            size: Some("20GB".to_string()),
+            description: Some("Coding model".to_string()),
+            draft: None,
+            extra_files: Vec::new(),
+            mmproj: None,
+        }
+    }
 
     fn assert_progress_sequence(events: &[SearchProgress]) {
         assert!(
@@ -906,12 +924,12 @@ mod tests {
 
     #[test]
     fn search_catalog_json_payload_uses_cli_contract_fields() {
-        let model = find_catalog_model_exact("Qwen3-Coder-Next-Q4_K_M").expect("catalog model");
+        let model = test_remote_catalog_model();
         let payload = search_catalog_json_payload(
             "qwen",
             SearchArtifactFilter::Gguf,
             SearchSort::ParametersDesc,
-            &[model],
+            std::slice::from_ref(&model),
             1,
         );
 
@@ -919,7 +937,7 @@ mod tests {
         assert_eq!(payload["sort"], serde_json::json!("parameters-desc"));
         assert!(payload.get("machine").is_some());
         let result = &payload["results"][0];
-        let model_ref = catalog_model_ref(model);
+        let model_ref = remote_catalog_model_ref(&model);
         assert_eq!(result["ref"], serde_json::json!(model_ref));
         assert_eq!(result["type"], serde_json::json!("gguf"));
         assert_eq!(
@@ -930,7 +948,7 @@ mod tests {
 
     #[test]
     fn search_huggingface_json_payload_uses_cli_contract_fields() {
-        let model = find_catalog_model_exact("Qwen3-Coder-Next-Q4_K_M").expect("catalog model");
+        let model = test_remote_catalog_model();
         let payload = search_huggingface_json_payload(
             "qwen",
             SearchArtifactFilter::Gguf,
@@ -940,11 +958,11 @@ mod tests {
                 kind: "🦙 GGUF",
                 exact_ref: "Qwen3-Coder-Next-Q4_K_M".to_string(),
                 variant_count: Some(3),
-                size_label: Some(model.size.clone()),
+                size_label: model.size.clone(),
                 downloads: Some(42),
                 likes: Some(7),
-                catalog: Some(model),
-                capabilities: capabilities::infer_catalog_capabilities(model),
+                catalog: Some(model.clone()),
+                capabilities: capabilities::infer_remote_catalog_capabilities(&model),
             }],
         );
 
