@@ -21,6 +21,7 @@ struct RunningStage {
     load: StageLoadRequest,
     server: EmbeddedServerHandle,
     materialized: Option<super::materialization::MaterializedStageArtifact>,
+    package: Option<super::materialization::ResolvedStagePackage>,
     _materialized_pin: Option<super::materialization::MaterializedStagePin>,
 }
 
@@ -180,15 +181,18 @@ impl StageControlState {
         effective_load.bind_addr = bind_addr.to_string();
         super::configure_materialized_stage_cache();
         let package_request = effective_load.clone();
-        if let Some(local_ref) = tokio::task::spawn_blocking(move || {
+        let mut resolved_package = None;
+        if let Some(package) = tokio::task::spawn_blocking(move || {
             super::materialization::resolve_stage_load_package(&package_request)
         })
         .await
         .context("join resolve stage load package task")??
         {
-            effective_load.model_path = Some(local_ref);
+            effective_load.model_path = Some(package.local_ref.clone());
+            effective_load.source_model_bytes = package.source_model_bytes;
+            resolved_package = Some(package);
         }
-        let config = stage_config(&effective_load, None)?;
+        let config = stage_config(&effective_load, None, resolved_package.as_ref())?;
         let server = skippy_server::start_binary_stage(BinaryStageOptions {
             config,
             topology: None,
@@ -218,6 +222,7 @@ impl StageControlState {
                 load: effective_load.clone(),
                 server,
                 materialized: None,
+                package: resolved_package,
                 _materialized_pin: None,
             },
         );
@@ -369,6 +374,7 @@ fn probe_binary_stage_ready(bind_addr: SocketAddr, timeout: Duration) -> Result<
 fn stage_config(
     load: &StageLoadRequest,
     materialized: Option<&super::materialization::MaterializedStageArtifact>,
+    package: Option<&super::materialization::ResolvedStagePackage>,
 ) -> Result<StageConfig> {
     anyhow::ensure!(!load.topology_id.is_empty(), "topology_id is required");
     anyhow::ensure!(!load.run_id.is_empty(), "run_id is required");
@@ -394,10 +400,14 @@ fn stage_config(
         manifest_sha256: Some(load.manifest_sha256.clone()),
         source_model_path: materialized
             .map(|artifact| artifact.source_model_path.clone())
+            .or_else(|| package.map(|package| package.source_model_path.clone()))
             .or_else(|| load.model_path.clone()),
-        source_model_sha256: materialized.map(|artifact| artifact.source_model_sha256.clone()),
+        source_model_sha256: materialized
+            .map(|artifact| artifact.source_model_sha256.clone())
+            .or_else(|| package.map(|package| package.source_model_sha256.clone())),
         source_model_bytes: materialized
             .and_then(|artifact| artifact.source_model_bytes)
+            .or_else(|| package.and_then(|package| package.source_model_bytes))
             .or(load.source_model_bytes),
         materialized_path: materialized.map(|artifact| artifact.path.to_string_lossy().to_string()),
         materialized_pinned: materialized.is_some(),
@@ -467,15 +477,33 @@ fn status_from_running(stage: &RunningStage) -> StageStatusSnapshot {
             .materialized
             .as_ref()
             .map(|artifact| artifact.source_model_path.clone())
+            .or_else(|| {
+                stage
+                    .package
+                    .as_ref()
+                    .map(|package| package.source_model_path.clone())
+            })
             .or_else(|| stage.load.model_path.clone()),
         source_model_sha256: stage
             .materialized
             .as_ref()
-            .map(|artifact| artifact.source_model_sha256.clone()),
+            .map(|artifact| artifact.source_model_sha256.clone())
+            .or_else(|| {
+                stage
+                    .package
+                    .as_ref()
+                    .map(|package| package.source_model_sha256.clone())
+            }),
         source_model_bytes: stage
             .materialized
             .as_ref()
             .and_then(|artifact| artifact.source_model_bytes)
+            .or_else(|| {
+                stage
+                    .package
+                    .as_ref()
+                    .and_then(|package| package.source_model_bytes)
+            })
             .or(stage.load.source_model_bytes),
         materialized_path: stage
             .materialized

@@ -3,10 +3,11 @@ use std::{
     fs,
     io::Read,
     path::{Path, PathBuf},
+    time::UNIX_EPOCH,
 };
 
 use anyhow::{bail, Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::write_gguf_from_parts;
@@ -37,6 +38,7 @@ pub struct SelectedPackageParts {
     pub selected_parts: Vec<PackagePart>,
     pub absolute_paths: Vec<PathBuf>,
     pub projector_paths: Vec<PathBuf>,
+    pub integrity: PackageIntegrityReport,
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +77,55 @@ pub struct PackagePart {
     pub path: PathBuf,
     pub sha256: String,
     pub artifact_bytes: u64,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PackageIntegrityOptions {
+    verify_sha256: bool,
+    cache_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PackageIntegrityReport {
+    pub manifest_sha256: String,
+    pub artifacts: usize,
+    pub verified_artifacts: usize,
+    pub cached_artifacts: usize,
+}
+
+impl PackageIntegrityOptions {
+    pub fn manifest_only() -> Self {
+        Self {
+            verify_sha256: false,
+            cache_dir: None,
+        }
+    }
+
+    pub fn verify_without_cache() -> Self {
+        Self {
+            verify_sha256: true,
+            cache_dir: None,
+        }
+    }
+
+    pub fn verify_with_cache(cache_dir: impl AsRef<Path>) -> Self {
+        Self {
+            verify_sha256: true,
+            cache_dir: Some(cache_dir.as_ref().to_path_buf()),
+        }
+    }
+
+    fn from_env() -> Self {
+        let mut options = if env_flag("SKIPPY_VERIFY_PACKAGE_SHA") {
+            Self::verify_without_cache()
+        } else {
+            Self::manifest_only()
+        };
+        if let Some(cache_dir) = std::env::var_os("SKIPPY_PACKAGE_VERIFY_CACHE_DIR") {
+            options.cache_dir = Some(PathBuf::from(cache_dir));
+        }
+        options
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -196,6 +247,13 @@ pub fn materialize_layer_package_details(
 }
 
 pub fn select_layer_package_parts(request: &PackageStageRequest) -> Result<SelectedPackageParts> {
+    select_layer_package_parts_with_integrity(request, &PackageIntegrityOptions::from_env())
+}
+
+pub fn select_layer_package_parts_with_integrity(
+    request: &PackageStageRequest,
+    integrity_options: &PackageIntegrityOptions,
+) -> Result<SelectedPackageParts> {
     let package_dir = resolve_package_dir(&request.package_ref)?;
     let manifest_path = package_dir.join("model-package.json");
     let manifest_contents = fs::read(&manifest_path)
@@ -260,33 +318,6 @@ pub fn select_layer_package_parts(request: &PackageStageRequest) -> Result<Selec
         )?;
     }
 
-    if env_flag("SKIPPY_VERIFY_PACKAGE_SHA") {
-        for part in &parts {
-            let absolute = package_dir.join(&part.path);
-            let actual = file_sha256(&absolute)?;
-            if actual != part.sha256 {
-                bail!(
-                    "package part checksum mismatch for {}: expected {}, got {}",
-                    part.path.display(),
-                    part.sha256,
-                    actual
-                );
-            }
-        }
-        for projector in &manifest.projectors {
-            let absolute = package_dir.join(&projector.path);
-            let actual = file_sha256(&absolute)?;
-            if actual != projector.sha256 {
-                bail!(
-                    "package projector checksum mismatch for {}: expected {}, got {}",
-                    projector.path,
-                    projector.sha256,
-                    actual
-                );
-            }
-        }
-    }
-
     let absolute_paths = parts
         .iter()
         .map(|part| package_dir.join(&part.path))
@@ -296,6 +327,13 @@ pub fn select_layer_package_parts(request: &PackageStageRequest) -> Result<Selec
         .iter()
         .map(|projector| projector_path(projector, &package_dir))
         .collect::<Result<Vec<_>>>()?;
+    let integrity = verify_package_artifacts(
+        &package_dir,
+        &manifest_sha256,
+        &parts,
+        &manifest.projectors,
+        integrity_options,
+    )?;
 
     Ok(SelectedPackageParts {
         package_dir,
@@ -303,7 +341,45 @@ pub fn select_layer_package_parts(request: &PackageStageRequest) -> Result<Selec
         selected_parts: parts,
         absolute_paths,
         projector_paths,
+        integrity,
     })
+}
+
+pub fn verify_layer_package_integrity(
+    request: &PackageStageRequest,
+    integrity_options: &PackageIntegrityOptions,
+) -> Result<PackageIntegrityReport> {
+    Ok(select_layer_package_parts_with_integrity(request, integrity_options)?.integrity)
+}
+
+pub fn verify_layer_package_metadata_integrity(
+    package_ref: &str,
+    integrity_options: &PackageIntegrityOptions,
+) -> Result<PackageIntegrityReport> {
+    let package_dir = resolve_package_dir(package_ref)?;
+    let manifest_path = package_dir.join("model-package.json");
+    let manifest_contents = fs::read(&manifest_path)
+        .with_context(|| format!("read package manifest {}", manifest_path.display()))?;
+    let manifest_sha256 = sha256_bytes(&manifest_contents);
+    let manifest = load_manifest(&manifest_path, &manifest_contents)?;
+    validate_manifest_identity(&manifest)?;
+    validate_layer_manifest(&manifest)?;
+
+    let mut parts = Vec::new();
+    push_part(
+        &mut parts,
+        "metadata",
+        None,
+        &manifest.shared.metadata,
+        &package_dir,
+    )?;
+    verify_package_artifacts(
+        &package_dir,
+        &manifest_sha256,
+        &parts,
+        &[],
+        integrity_options,
+    )
 }
 
 pub fn inspect_layer_package(package_ref: &str) -> Result<LayerPackageInfo> {
@@ -314,15 +390,19 @@ pub fn inspect_layer_package(package_ref: &str) -> Result<LayerPackageInfo> {
     let manifest_sha256 = sha256_bytes(&manifest_contents);
     let manifest = load_manifest(&manifest_path, &manifest_contents)?;
     validate_manifest_identity(&manifest)?;
+    validate_layer_manifest(&manifest)?;
     let projectors = manifest
         .projectors
         .into_iter()
-        .map(|projector| PackageProjectorInfo {
-            kind: projector.kind,
-            path: package_dir.join(projector.path),
-            artifact_bytes: projector.artifact_bytes,
+        .map(|projector| {
+            let path = safe_relative_manifest_path(&projector.path)?;
+            Ok(PackageProjectorInfo {
+                kind: projector.kind,
+                path: package_dir.join(path),
+                artifact_bytes: projector.artifact_bytes,
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
     let activation_width = match manifest.activation_width {
         Some(width) => Some(width),
         None => infer_activation_width_from_layers(&package_dir, &manifest.layers)?,
@@ -371,7 +451,7 @@ fn infer_activation_width_from_layers(
     let Some(layer) = layers.first() else {
         return Ok(None);
     };
-    let layer_path = package_dir.join(&layer.path);
+    let layer_path = package_dir.join(safe_relative_manifest_path(&layer.path)?);
     let info = match crate::ModelInfo::open(&layer_path) {
         Ok(info) => info,
         Err(_) => return Ok(None),
@@ -469,6 +549,7 @@ fn load_manifest(path: &Path, contents: &[u8]) -> Result<PackageManifest> {
 
 fn validate_manifest(manifest: &PackageManifest, request: &PackageStageRequest) -> Result<()> {
     validate_manifest_identity(manifest)?;
+    let layer_counts = validate_layer_manifest(manifest)?;
     if request.layer_start >= request.layer_end {
         bail!("stage layer_start must be less than layer_end");
     }
@@ -480,6 +561,15 @@ fn validate_manifest(manifest: &PackageManifest, request: &PackageStageRequest) 
         );
     }
 
+    for layer_index in request.layer_start..request.layer_end {
+        if !layer_counts.contains_key(&layer_index) {
+            bail!("package is missing layer {layer_index}");
+        }
+    }
+    Ok(())
+}
+
+fn validate_layer_manifest(manifest: &PackageManifest) -> Result<BTreeMap<u32, usize>> {
     let mut layer_counts = BTreeMap::<u32, usize>::new();
     for layer in &manifest.layers {
         *layer_counts.entry(layer.layer_index).or_default() += 1;
@@ -508,12 +598,7 @@ fn validate_manifest(manifest: &PackageManifest, request: &PackageStageRequest) 
     if !duplicates.is_empty() {
         bail!("package manifest contains duplicate layers: {duplicates:?}");
     }
-    for layer_index in request.layer_start..request.layer_end {
-        if !layer_counts.contains_key(&layer_index) {
-            bail!("package is missing layer {layer_index}");
-        }
-    }
-    Ok(())
+    Ok(layer_counts)
 }
 
 fn validate_manifest_identity(manifest: &PackageManifest) -> Result<()> {
@@ -539,7 +624,6 @@ fn validate_manifest_identity(manifest: &PackageManifest) -> Result<()> {
         bail!("package manifest model_id must not be empty");
     }
     if manifest.source_model.path.trim().is_empty()
-        || manifest.source_model.sha256.trim().is_empty()
         || manifest
             .source_model
             .repo
@@ -568,6 +652,7 @@ fn validate_manifest_identity(manifest: &PackageManifest) -> Result<()> {
     {
         bail!("package manifest source_model identity fields must not be empty");
     }
+    validate_sha256_digest("source_model sha256", &manifest.source_model.sha256)?;
     for file in &manifest.source_model.files {
         if file.path.trim().is_empty()
             || file
@@ -576,6 +661,9 @@ fn validate_manifest_identity(manifest: &PackageManifest) -> Result<()> {
                 .is_some_and(|sha256| sha256.trim().is_empty())
         {
             bail!("package manifest source_model files must not contain empty path or sha256");
+        }
+        if let Some(sha256) = &file.sha256 {
+            validate_sha256_digest("source_model file sha256", sha256)?;
         }
         let _ = file.size_bytes;
     }
@@ -592,12 +680,9 @@ fn validate_artifact_manifest(role: &str, artifact: &PackageArtifact) -> Result<
     if artifact.path.trim().is_empty() {
         bail!("package {role} artifact path must not be empty");
     }
-    if Path::new(&artifact.path).is_absolute() {
-        bail!("package {role} artifact path must be relative");
-    }
-    if artifact.sha256.len() != 64 || !artifact.sha256.chars().all(|ch| ch.is_ascii_hexdigit()) {
-        bail!("package {role} artifact sha256 must be a hex SHA-256 digest");
-    }
+    let _ = safe_relative_manifest_path(&artifact.path)
+        .with_context(|| format!("package {role} artifact path must be a safe relative path"))?;
+    validate_sha256_digest(&format!("package {role} artifact sha256"), &artifact.sha256)?;
     if artifact.artifact_bytes == 0 {
         bail!("package {role} artifact_bytes must be greater than zero");
     }
@@ -636,15 +721,12 @@ fn push_part(
     artifact: &PackageArtifact,
     package_dir: &Path,
 ) -> Result<()> {
-    let path = PathBuf::from(&artifact.path);
-    if path.is_absolute() {
-        bail!("package part paths must be relative: {}", path.display());
-    }
+    let path = safe_relative_manifest_path(&artifact.path)?;
     let absolute = package_dir.join(&path);
     let metadata = fs::metadata(&absolute)
-        .with_context(|| format!("read package part metadata {}", absolute.display()))?;
+        .with_context(|| format!("read package part metadata {}", path.display()))?;
     if !metadata.is_file() {
-        bail!("package part is not a file: {}", absolute.display());
+        bail!("package part is not a file: {}", path.display());
     }
     if metadata.len() != artifact.artifact_bytes {
         bail!(
@@ -665,18 +747,12 @@ fn push_part(
 }
 
 fn projector_path(projector: &PackageProjector, package_dir: &Path) -> Result<PathBuf> {
-    let path = PathBuf::from(&projector.path);
-    if path.is_absolute() {
-        bail!(
-            "package projector paths must be relative: {}",
-            path.display()
-        );
-    }
+    let path = safe_relative_manifest_path(&projector.path)?;
     let absolute = package_dir.join(&path);
     let metadata = fs::metadata(&absolute)
-        .with_context(|| format!("read package projector metadata {}", absolute.display()))?;
+        .with_context(|| format!("read package projector metadata {}", path.display()))?;
     if !metadata.is_file() {
-        bail!("package projector is not a file: {}", absolute.display());
+        bail!("package projector is not a file: {}", path.display());
     }
     if metadata.len() != projector.artifact_bytes {
         bail!(
@@ -687,6 +763,202 @@ fn projector_path(projector: &PackageProjector, package_dir: &Path) -> Result<Pa
         );
     }
     Ok(absolute)
+}
+
+#[derive(Debug)]
+struct ArtifactVerification<'a> {
+    role: &'a str,
+    layer_index: Option<u32>,
+    path: PathBuf,
+    sha256: String,
+    artifact_bytes: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct IntegrityCacheRecord {
+    schema_version: u32,
+    manifest_sha256: String,
+    artifact_sha256: String,
+    artifact_bytes: u64,
+    file_len: u64,
+    modified_unix_nanos: Option<u128>,
+}
+
+fn verify_package_artifacts(
+    package_dir: &Path,
+    manifest_sha256: &str,
+    parts: &[PackagePart],
+    projectors: &[PackageProjector],
+    options: &PackageIntegrityOptions,
+) -> Result<PackageIntegrityReport> {
+    let artifacts = parts
+        .iter()
+        .map(|part| ArtifactVerification {
+            role: &part.role,
+            layer_index: part.layer_index,
+            path: part.path.clone(),
+            sha256: part.sha256.clone(),
+            artifact_bytes: part.artifact_bytes,
+        })
+        .chain(projectors.iter().map(|projector| ArtifactVerification {
+            role: "projector",
+            layer_index: None,
+            path: PathBuf::from(&projector.path),
+            sha256: projector.sha256.to_ascii_lowercase(),
+            artifact_bytes: projector.artifact_bytes,
+        }))
+        .collect::<Vec<_>>();
+
+    let mut report = PackageIntegrityReport {
+        manifest_sha256: manifest_sha256.to_string(),
+        artifacts: artifacts.len(),
+        verified_artifacts: 0,
+        cached_artifacts: 0,
+    };
+
+    if !options.verify_sha256 {
+        return Ok(report);
+    }
+
+    for artifact in artifacts {
+        let relative_path = safe_relative_manifest_path(&artifact.path)?;
+        let absolute = package_dir.join(&relative_path);
+        let metadata = fs::metadata(&absolute).with_context(|| {
+            format!("read package artifact metadata {}", relative_path.display())
+        })?;
+        let fingerprint = file_fingerprint(&metadata);
+        if let Some(cache_dir) = &options.cache_dir {
+            if integrity_cache_hit(
+                cache_dir,
+                manifest_sha256,
+                &artifact,
+                metadata.len(),
+                fingerprint,
+            )? {
+                report.cached_artifacts += 1;
+                continue;
+            }
+        }
+
+        let actual = file_sha256(&absolute)?;
+        if actual != artifact.sha256 {
+            bail!(
+                "package artifact checksum mismatch for {}: expected {}, got {}",
+                relative_path.display(),
+                artifact.sha256,
+                actual
+            );
+        }
+        report.verified_artifacts += 1;
+        if let Some(cache_dir) = &options.cache_dir {
+            write_integrity_cache_record(
+                cache_dir,
+                manifest_sha256,
+                &artifact,
+                metadata.len(),
+                fingerprint,
+            )?;
+        }
+    }
+
+    Ok(report)
+}
+
+fn integrity_cache_hit(
+    cache_dir: &Path,
+    manifest_sha256: &str,
+    artifact: &ArtifactVerification<'_>,
+    file_len: u64,
+    modified_unix_nanos: Option<u128>,
+) -> Result<bool> {
+    let path = integrity_cache_path(cache_dir, manifest_sha256, artifact);
+    let Ok(bytes) = fs::read(&path) else {
+        return Ok(false);
+    };
+    let Ok(record) = serde_json::from_slice::<IntegrityCacheRecord>(&bytes) else {
+        return Ok(false);
+    };
+    Ok(record.schema_version == 1
+        && record.manifest_sha256 == manifest_sha256
+        && record.artifact_sha256 == artifact.sha256
+        && record.artifact_bytes == artifact.artifact_bytes
+        && record.file_len == file_len
+        && record.modified_unix_nanos == modified_unix_nanos)
+}
+
+fn write_integrity_cache_record(
+    cache_dir: &Path,
+    manifest_sha256: &str,
+    artifact: &ArtifactVerification<'_>,
+    file_len: u64,
+    modified_unix_nanos: Option<u128>,
+) -> Result<()> {
+    fs::create_dir_all(cache_dir)
+        .with_context(|| format!("create package integrity cache {}", cache_dir.display()))?;
+    let record = IntegrityCacheRecord {
+        schema_version: 1,
+        manifest_sha256: manifest_sha256.to_string(),
+        artifact_sha256: artifact.sha256.clone(),
+        artifact_bytes: artifact.artifact_bytes,
+        file_len,
+        modified_unix_nanos,
+    };
+    fs::write(
+        integrity_cache_path(cache_dir, manifest_sha256, artifact),
+        serde_json::to_vec_pretty(&record)?,
+    )
+    .with_context(|| format!("write package integrity cache {}", cache_dir.display()))
+}
+
+fn integrity_cache_path(
+    cache_dir: &Path,
+    manifest_sha256: &str,
+    artifact: &ArtifactVerification<'_>,
+) -> PathBuf {
+    let mut hasher = Sha256::new();
+    hasher.update(b"skippy-package-integrity-cache-v1\0");
+    hasher.update(manifest_sha256.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(artifact.role.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(artifact.layer_index.unwrap_or(u32::MAX).to_le_bytes());
+    hasher.update(b"\0");
+    hasher.update(artifact.path.to_string_lossy().as_bytes());
+    hasher.update(b"\0");
+    hasher.update(artifact.sha256.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(artifact.artifact_bytes.to_le_bytes());
+    cache_dir.join(format!("{}.json", hex_lower(&hasher.finalize())))
+}
+
+fn file_fingerprint(metadata: &fs::Metadata) -> Option<u128> {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+}
+
+fn safe_relative_manifest_path(path: impl AsRef<Path>) -> Result<PathBuf> {
+    let path = path.as_ref();
+    let mut components = path.components();
+    let Some(first) = components.next() else {
+        bail!("manifest file path is empty");
+    };
+    anyhow::ensure!(
+        matches!(first, std::path::Component::Normal(_))
+            && components.all(|component| matches!(component, std::path::Component::Normal(_))),
+        "manifest file path must be a safe relative path: {}",
+        path.display()
+    );
+    Ok(path.to_path_buf())
+}
+
+fn validate_sha256_digest(label: &str, value: &str) -> Result<()> {
+    if value.len() != 64 || !value.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        bail!("{label} must be a hex SHA-256 digest");
+    }
+    Ok(())
 }
 
 fn materialized_path(
@@ -812,78 +1084,23 @@ fn sanitize(value: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn parses_hf_package_refs() {
-        assert_eq!(
-            parse_hf_package_ref("hf://Mesh-LLM/Qwen3.6-package").unwrap(),
-            HfPackageRef {
-                repo_id: "Mesh-LLM/Qwen3.6-package".to_string(),
-                revision: None,
-            }
-        );
-        assert_eq!(
-            parse_hf_package_ref("hf://Mesh-LLM/Qwen3.6-package:abc123").unwrap(),
-            HfPackageRef {
-                repo_id: "Mesh-LLM/Qwen3.6-package".to_string(),
-                revision: Some("abc123".to_string()),
-            }
-        );
-        assert_eq!(
-            parse_hf_package_ref("hf://Mesh-LLM/Qwen3.6-package@branch-name").unwrap(),
-            HfPackageRef {
-                repo_id: "Mesh-LLM/Qwen3.6-package".to_string(),
-                revision: Some("branch-name".to_string()),
-            }
-        );
-    }
-
-    #[test]
-    fn rejects_invalid_hf_package_refs() {
-        assert!(parse_hf_package_ref("hf://").is_err());
-        assert!(parse_hf_package_ref("hf://namespace-only").is_err());
-        assert!(parse_hf_package_ref("hf://namespace/repo@").is_err());
-        assert!(parse_hf_package_ref("hf://namespace/repo:").is_err());
-    }
-
-    #[test]
-    fn checks_abi_version_compatibility() {
-        assert!(abi_version_supported(&format!(
-            "{}.{}.0",
-            skippy_ffi::ABI_VERSION_MAJOR,
-            skippy_ffi::ABI_VERSION_MINOR
-        ))
-        .unwrap());
-        assert!(
-            !abi_version_supported(&format!("{}.{}.0", skippy_ffi::ABI_VERSION_MAJOR + 1, 0))
-                .unwrap()
-        );
-        assert!(!abi_version_supported(&format!(
-            "{}.{}.0",
-            skippy_ffi::ABI_VERSION_MAJOR,
-            skippy_ffi::ABI_VERSION_MINOR + 1
-        ))
-        .unwrap());
-    }
-
-    #[test]
-    fn inspect_layer_package_returns_manifest_identity() {
-        let dir = tempfile::tempdir().unwrap();
-        fs::create_dir_all(dir.path().join("layers")).unwrap();
-        fs::write(dir.path().join("metadata.gguf"), b"metadata").unwrap();
-        fs::write(dir.path().join("embeddings.gguf"), b"embeddings").unwrap();
-        fs::write(dir.path().join("output.gguf"), b"output").unwrap();
-        fs::write(dir.path().join("layers/00000.gguf"), b"layer0").unwrap();
-        fs::create_dir_all(dir.path().join("projectors")).unwrap();
-        fs::write(dir.path().join("projectors/mmproj.gguf"), b"projector").unwrap();
+    fn write_package_fixture(dir: &Path) -> serde_json::Value {
+        fs::create_dir_all(dir.join("layers")).unwrap();
+        fs::create_dir_all(dir.join("projectors")).unwrap();
+        fs::write(dir.join("metadata.gguf"), b"metadata").unwrap();
+        fs::write(dir.join("embeddings.gguf"), b"embeddings").unwrap();
+        fs::write(dir.join("output.gguf"), b"output").unwrap();
+        fs::write(dir.join("layers/00000.gguf"), b"layer0").unwrap();
+        fs::write(dir.join("projectors/mmproj.gguf"), b"projector").unwrap();
         let manifest = serde_json::json!({
             "schema_version": 1,
             "model_id": "model-a",
             "source_model": {
-                "path": "/models/model-a.gguf",
+                "path": "model-a.gguf",
                 "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "files": [
                     {
-                        "path": "/models/model-a.gguf",
+                        "path": "model-a.gguf",
                         "size_bytes": 123,
                         "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                     }
@@ -943,10 +1160,83 @@ mod tests {
             ),
         });
         fs::write(
-            dir.path().join("model-package.json"),
+            dir.join("model-package.json"),
             serde_json::to_vec_pretty(&manifest).unwrap(),
         )
         .unwrap();
+        manifest
+    }
+
+    fn package_stage_request(package_ref: &Path) -> PackageStageRequest {
+        PackageStageRequest {
+            model_id: "model-a".to_string(),
+            topology_id: "topology-a".to_string(),
+            package_ref: package_ref.to_string_lossy().to_string(),
+            stage_id: "stage-0".to_string(),
+            layer_start: 0,
+            layer_end: 1,
+            include_embeddings: true,
+            include_output: true,
+        }
+    }
+
+    #[test]
+    fn parses_hf_package_refs() {
+        assert_eq!(
+            parse_hf_package_ref("hf://Mesh-LLM/Qwen3.6-package").unwrap(),
+            HfPackageRef {
+                repo_id: "Mesh-LLM/Qwen3.6-package".to_string(),
+                revision: None,
+            }
+        );
+        assert_eq!(
+            parse_hf_package_ref("hf://Mesh-LLM/Qwen3.6-package:abc123").unwrap(),
+            HfPackageRef {
+                repo_id: "Mesh-LLM/Qwen3.6-package".to_string(),
+                revision: Some("abc123".to_string()),
+            }
+        );
+        assert_eq!(
+            parse_hf_package_ref("hf://Mesh-LLM/Qwen3.6-package@branch-name").unwrap(),
+            HfPackageRef {
+                repo_id: "Mesh-LLM/Qwen3.6-package".to_string(),
+                revision: Some("branch-name".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_hf_package_refs() {
+        assert!(parse_hf_package_ref("hf://").is_err());
+        assert!(parse_hf_package_ref("hf://namespace-only").is_err());
+        assert!(parse_hf_package_ref("hf://namespace/repo@").is_err());
+        assert!(parse_hf_package_ref("hf://namespace/repo:").is_err());
+    }
+
+    #[test]
+    fn checks_abi_version_compatibility() {
+        assert!(abi_version_supported(&format!(
+            "{}.{}.0",
+            skippy_ffi::ABI_VERSION_MAJOR,
+            skippy_ffi::ABI_VERSION_MINOR
+        ))
+        .unwrap());
+        assert!(
+            !abi_version_supported(&format!("{}.{}.0", skippy_ffi::ABI_VERSION_MAJOR + 1, 0))
+                .unwrap()
+        );
+        assert!(!abi_version_supported(&format!(
+            "{}.{}.0",
+            skippy_ffi::ABI_VERSION_MAJOR,
+            skippy_ffi::ABI_VERSION_MINOR + 1
+        ))
+        .unwrap());
+    }
+
+    #[test]
+    fn inspect_layer_package_returns_manifest_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        write_package_fixture(dir.path());
 
         let info = inspect_layer_package(&dir.path().to_string_lossy()).unwrap();
 
@@ -961,6 +1251,148 @@ mod tests {
             dir.path().join("projectors/mmproj.gguf")
         );
         assert_eq!(info.manifest_sha256.len(), 64);
+    }
+
+    #[test]
+    fn verify_layer_package_integrity_rejects_selected_artifact_sha_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        write_package_fixture(dir.path());
+        fs::write(dir.path().join("layers/00000.gguf"), b"wrong0").unwrap();
+
+        let error = verify_layer_package_integrity(
+            &package_stage_request(dir.path()),
+            &PackageIntegrityOptions::verify_without_cache(),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("checksum mismatch"), "{error}");
+        assert!(error.contains("layers/00000.gguf"), "{error}");
+    }
+
+    #[test]
+    fn verify_layer_package_metadata_integrity_allows_metadata_only_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        write_package_fixture(dir.path());
+        fs::write(dir.path().join("layers/00000.gguf"), b"wrong0").unwrap();
+        fs::write(
+            dir.path().join("projectors/mmproj.gguf"),
+            b"wrong-projector",
+        )
+        .unwrap();
+
+        let report = verify_layer_package_metadata_integrity(
+            &dir.path().to_string_lossy(),
+            &PackageIntegrityOptions::verify_without_cache(),
+        )
+        .expect("metadata-only verification should not require a stage layer range");
+
+        assert_eq!(report.artifacts, 1);
+        assert_eq!(report.verified_artifacts, 1);
+        assert_eq!(report.cached_artifacts, 0);
+    }
+
+    #[test]
+    fn verify_layer_package_metadata_integrity_checks_metadata_sha() {
+        let dir = tempfile::tempdir().unwrap();
+        write_package_fixture(dir.path());
+        fs::write(dir.path().join("metadata.gguf"), b"metadota").unwrap();
+
+        let error = verify_layer_package_metadata_integrity(
+            &dir.path().to_string_lossy(),
+            &PackageIntegrityOptions::verify_without_cache(),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("checksum mismatch"), "{error}");
+        assert!(error.contains("metadata.gguf"), "{error}");
+    }
+
+    #[test]
+    fn verify_layer_package_integrity_uses_private_cache_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        write_package_fixture(dir.path());
+
+        let options = PackageIntegrityOptions::verify_with_cache(cache_dir.path());
+        let first = verify_layer_package_integrity(&package_stage_request(dir.path()), &options)
+            .expect("first verification should hash artifacts");
+        assert_eq!(first.verified_artifacts, 5);
+        assert_eq!(first.cached_artifacts, 0);
+
+        let second = verify_layer_package_integrity(&package_stage_request(dir.path()), &options)
+            .expect("second verification should reuse cache");
+        assert_eq!(second.verified_artifacts, 0);
+        assert_eq!(second.cached_artifacts, 5);
+
+        let cache_blob = fs::read_to_string(
+            fs::read_dir(cache_dir.path())
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path(),
+        )
+        .unwrap();
+        assert!(
+            !cache_blob.contains(&dir.path().to_string_lossy().to_string()),
+            "cache records must not store raw local package paths"
+        );
+    }
+
+    #[test]
+    fn validates_source_model_sha256_as_hex_digest() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manifest = write_package_fixture(dir.path());
+        manifest["source_model"]["sha256"] = serde_json::Value::String("not-a-sha".to_string());
+        fs::write(
+            dir.path().join("model-package.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let error = inspect_layer_package(&dir.path().to_string_lossy())
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("source_model sha256"), "{error}");
+    }
+
+    #[test]
+    fn rejects_package_artifact_paths_that_escape_package_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manifest = write_package_fixture(dir.path());
+        manifest["layers"][0]["path"] = serde_json::Value::String("../outside.gguf".to_string());
+        fs::write(
+            dir.path().join("model-package.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let error = select_layer_package_parts(&package_stage_request(dir.path()))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("safe relative"), "{error}");
+    }
+
+    #[test]
+    fn inspect_layer_package_rejects_unsafe_layer_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manifest = write_package_fixture(dir.path());
+        manifest["layers"][0]["path"] = serde_json::Value::String("../outside.gguf".to_string());
+        fs::write(
+            dir.path().join("model-package.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let error = inspect_layer_package(&dir.path().to_string_lossy())
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("safe relative"), "{error}");
     }
 
     #[test]

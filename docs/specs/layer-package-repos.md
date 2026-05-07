@@ -300,14 +300,23 @@ Before a stage starts, consumers MUST validate:
 - requested layer range is non-empty and within `layer_count`;
 - requested layers exist and are not duplicated in the manifest;
 - selected artifact paths are relative, safe, and files;
-- selected artifact sizes match `artifact_bytes`.
+- selected artifact sizes match `artifact_bytes`;
 - declared projector paths are relative, safe, and files;
 - declared projector sizes match `artifact_bytes`.
 
-Consumers SHOULD verify SHA-256 checksums for selected artifacts when a package
-is first downloaded or when `SKIPPY_VERIFY_PACKAGE_SHA` is set. Implementations
-may cache checksum results keyed by package repo, revision, manifest digest, and
-artifact path.
+Consumers MUST verify SHA-256 checksums for selected artifacts before using an
+`hf://` layer package, including cache-hit resolutions. Local package
+directories MAY keep checksum verification behind `SKIPPY_VERIFY_PACKAGE_SHA`
+for development workflows.
+
+Metadata-only inspection for inventory, identity discovery, or prepare planning
+MAY validate only the manifest and shared metadata artifact, and must not
+require a non-empty stage layer range. A real stage load still requires the
+non-empty range and selected-artifact checks above.
+
+Implementations MAY cache successful checksum verification results. Cache keys
+and records should be derived from manifest and artifact identity plus file
+metadata, and should not store raw local package paths.
 
 Checksum verification SHOULD include declared projectors when the package is
 first downloaded, when the package is validated by tooling, or when a stage is
