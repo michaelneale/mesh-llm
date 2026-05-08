@@ -234,7 +234,7 @@ jobs:
   agent_live_smokes:
     needs: [changes, linux]
     if: ${{ (vars.MESH_AGENT_BASE_URL != '' || vars.MESH_OPENCODE_BASE_URL != '') && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 45
     env:
       MESH_AGENT_BASE_URL: ${{ vars.MESH_AGENT_BASE_URL || vars.MESH_OPENCODE_BASE_URL }}
@@ -253,8 +253,13 @@ jobs:
           node-version: 24
       - name: Install agent CLIs
         run: |
-          npm install --global opencode-ai@latest
-          npm install --global @earendil-works/pi-coding-agent@latest
+          corepack enable
+          corepack prepare pnpm@10 --activate
+          export PNPM_HOME="$HOME/.local/share/pnpm"
+          mkdir -p "$PNPM_HOME"
+          echo "PNPM_HOME=$PNPM_HOME" >> "$GITHUB_ENV"
+          echo "$PNPM_HOME" >> "$GITHUB_PATH"
+          pnpm add --global opencode-ai@latest @earendil-works/pi-coding-agent@latest
           opencode --version
           pi --version
       - name: Install Goose
