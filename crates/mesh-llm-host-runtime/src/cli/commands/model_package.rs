@@ -245,7 +245,7 @@ pub(crate) async fn dispatch_model_package(args: ModelPrepareArgs<'_>) -> Result
         eprintln!();
         eprintln!("📜 Following logs...");
         eprintln!();
-        follow_until_done(&jobs_client, &job.namespace, &info.id).await?;
+        follow_until_done(jobs_client, &job.namespace, &info.id).await?;
     }
 
     Ok(())
