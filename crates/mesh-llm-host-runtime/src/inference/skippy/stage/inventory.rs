@@ -132,7 +132,7 @@ async fn prepare_stage_source(load: &StageLoadRequest) -> Result<PrepareSourceRe
     .flatten()
     .filter(|candidate| !candidate.is_empty())
     {
-        match crate::models::resolve_model_spec_with_progress(Path::new(candidate), false).await {
+        match crate::models::resolve_model_spec_with_progress(Path::new(candidate), true).await {
             Ok(path) => {
                 let bytes_total = crate::inference::election::total_model_bytes(&path);
                 return Ok(PrepareSourceResult {
