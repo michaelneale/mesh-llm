@@ -46,7 +46,15 @@ pub fn connect_ready(addr: SocketAddr, timeout_secs: u64) -> Result<TcpStream> {
                     .set_write_timeout(Some(Duration::from_millis(500)))
                     .ok();
                 match recv_ready(&mut stream) {
-                    Ok(()) => return Ok(stream),
+                    Ok(()) => {
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(timeout_secs.max(1))))
+                            .ok();
+                        stream
+                            .set_write_timeout(Some(Duration::from_secs(timeout_secs.max(1))))
+                            .ok();
+                        return Ok(stream);
+                    }
                     Err(error) => {
                         last_error = Some(anyhow!(error).context("ready handshake failed"))
                     }

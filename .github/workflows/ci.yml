@@ -407,9 +407,10 @@ jobs:
       LLAMA_STAGE_BACKEND: cuda
       LLAMA_STAGE_CUDA_ARCHITECTURES: "89"
       MESH_LLM_SKIP_UI: "1"
-      # CI containers have no GPU driver (libcuda.so.1). Disable VMM to avoid
-      # linking the CUDA driver library, which isn't needed for validation builds.
+      # CI containers have no GPU driver (libcuda.so.1). Disable VMM and NCCL
+      # to avoid linking libraries that require the CUDA driver at runtime.
       GGML_CUDA_NO_VMM: "1"
+      LLAMA_STAGE_SKIP_NCCL: "1"
     outputs:
       benchmark_artifact_ready: ${{ steps.benchmark_gate.outputs.ready }}
     steps:
@@ -451,7 +452,9 @@ jobs:
         if: steps.llama_cache.outputs.cache-hit == 'true'
         run: cargo build --release -p mesh-llm
       - name: CLI smoke test
-        run: target/release/mesh-llm --version
+        run: |
+          export LD_LIBRARY_PATH="/usr/local/cuda/lib64/stubs:${LD_LIBRARY_PATH:-}"
+          target/release/mesh-llm --version
       - name: Build CUDA benchmark binary
         if: ${{ steps.benchmark_gate.outputs.ready == 'true' }}
         run: nvcc -O3 -o target/release/membench-fingerprint-cuda crates/mesh-llm/benchmarks/membench-fingerprint.cu

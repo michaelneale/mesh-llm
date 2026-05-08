@@ -88,6 +88,67 @@ skippy-correctness state-handoff \
 All commands emit JSON, optionally write the same JSON with `--report-out`, and
 exit non-zero on mismatch unless `--allow-mismatch` is set.
 
+## Llama Family Parity Tests
+
+`tests/parity_models.rs` is the Rust regression lane for the P0/P1 llama.cpp
+family matrix in `docs/skippy/llama-parity-candidates.json`. Each P0/P1 family
+has its own test module so missing coverage is obvious in test output and code
+review. The cheap tests validate manifest completeness and fail if a P0/P1
+manifest row is added without a matching family module.
+
+```bash
+LLAMA_STAGE_BUILD_DIR="$PWD/.deps/llama-build/build-stage-abi-cpu" \
+  cargo test -p skippy-correctness --test parity_models
+```
+
+The artifact-loading checks are ignored by default because they may download
+and load every representative GGUF/package. Run a single family while developing:
+
+```bash
+SKIPPY_PARITY_DOWNLOAD=1 \
+LLAMA_STAGE_BUILD_DIR="$PWD/.deps/llama-build/build-stage-abi-cpu" \
+  cargo test -p skippy-correctness --test parity_models \
+  p0_qwen2_qwen2 -- --ignored
+```
+
+Run the full P0/P1 artifact lane before rebuilding the llama patch queue or
+promoting a broad family-parity change:
+
+```bash
+SKIPPY_PARITY_DOWNLOAD=1 \
+LLAMA_STAGE_BUILD_DIR="$PWD/.deps/llama-build/build-stage-abi-cpu" \
+  cargo test -p skippy-correctness --test parity_models -- --ignored
+```
+
+The ignored tests prove two production contracts per family:
+
+- `activation_handoff_matches_full_model` compares a local three-stage split
+  against a full-model baseline for the same prompt.
+- `cache_state_restore_matches_recompute` records state from one session/lane,
+  restores it into a different session/lane, and compares the next token or
+  activation frame against normal recompute. Dense families use `ResidentKv`;
+  recurrent/hybrid families use `KvRecurrent`.
+
+Useful knobs:
+
+- `SKIPPY_PARITY_DOWNLOAD=0` requires the artifacts to already exist in the
+  Hugging Face cache.
+- `SKIPPY_PARITY_DOWNLOAD_PACKAGE_ONLY=1` opts into downloading
+  `certified_package_only` GGUF rows whose representative artifacts are often
+  tens or hundreds of GB. By default those rows only run when the artifact or
+  package is already local.
+- `SKIPPY_PARITY_REQUIRE_PACKAGE_ONLY=1` turns a missing package-only local
+  artifact into a test failure instead of a documented skip.
+- `SKIPPY_PARITY_N_GPU_LAYERS` controls runtime offload for the heavy checks.
+  It defaults to `999`, matching the family-certification lane; set it to `0`
+  for an explicit CPU-only repro.
+- `SKIPPY_PARITY_NATIVE_LOGS=1` leaves llama.cpp native logs on stdout; by
+  default the test redirects them to a temp file.
+
+Rows whose manifest `include` is `model-package.json` are package-backed tests:
+the harness downloads the package repo, materializes stage slices, and runs the
+same activation/cache contracts without requiring a monolithic full GGUF.
+
 ## Notes
 
 - `--model` is always the full GGUF baseline.

@@ -53,7 +53,46 @@ work together.
    only the split/debug lane and does not reproduce the production cache
    evidence below.
 
-4. Promote passing rows into:
+4. Keep the Rust regression lane green. `crates/skippy-correctness/tests/parity_models.rs`
+   has one module per P0/P1 family and a cheap coverage test that fails when a
+   P0/P1 manifest row does not have a module:
+
+   ```bash
+   LLAMA_STAGE_BUILD_DIR="$PWD/.deps/llama-build/build-stage-abi-cpu" \
+     cargo test -p skippy-correctness --test parity_models
+   ```
+
+   The expensive checks are ignored by default. Run one family while debugging:
+
+   ```bash
+   SKIPPY_PARITY_DOWNLOAD=1 \
+   LLAMA_STAGE_BUILD_DIR="$PWD/.deps/llama-build/build-stage-abi-cpu" \
+     cargo test -p skippy-correctness --test parity_models \
+     p0_qwen2_qwen2 -- --ignored
+   ```
+
+   Before patch-queue rebuilds or broad family promotions, run the full ignored
+   lane. It downloads missing representatives, compares a three-stage local
+   split against full-model decode, and verifies cache restore from one
+   session/lane into another session/lane with native sequence remapping:
+
+   ```bash
+   SKIPPY_PARITY_DOWNLOAD=1 \
+   LLAMA_STAGE_BUILD_DIR="$PWD/.deps/llama-build/build-stage-abi-cpu" \
+     cargo test -p skippy-correctness --test parity_models -- --ignored
+   ```
+
+   Heavy parity tests default `SKIPPY_PARITY_N_GPU_LAYERS` to `999`, matching
+   the family-certification lane; set it to `0` for an explicit CPU-only repro.
+   Use `SKIPPY_PARITY_DOWNLOAD=0` when the Hugging Face cache must be treated as
+   fixed input. Package-only rows that point at monolithic GGUFs are not
+   downloaded by default, because some representatives are larger than 100GB.
+   Set `SKIPPY_PARITY_DOWNLOAD_PACKAGE_ONLY=1` to fetch those artifacts, and
+   set `SKIPPY_PARITY_REQUIRE_PACKAGE_ONLY=1` when a missing local package-only
+   artifact should fail the run instead of being reported as a skipped
+   package-only proof.
+
+5. Promote passing rows into:
 
    - `docs/skippy/FAMILY_STATUS.md`
    - `crates/skippy-topology/capabilities/reviewed-family-capabilities.json`
