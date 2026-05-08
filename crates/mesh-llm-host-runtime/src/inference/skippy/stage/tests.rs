@@ -414,6 +414,78 @@ async fn cancel_prepare_persists_cancelled_status_and_blocks_late_prefetch_resul
 }
 
 #[tokio::test]
+async fn prepare_preserves_equal_or_newer_cancelled_status() {
+    let mut load = load_request();
+    load.load_mode = LoadMode::LayerPackage;
+    load.package_ref = "missing-layer-package".to_string();
+    load.manifest_sha256 = "a".repeat(64);
+    load.downstream = None;
+
+    let (prefetcher, started_rx, release_tx) = BlockingPackagePrefetcher::new();
+    let mut state = StageControlState {
+        package_prefetcher: Some(Arc::new(prefetcher)),
+        ..Default::default()
+    };
+    state
+        .prepare(StagePrepareRequest {
+            load: load.clone(),
+            coordinator_id: None,
+        })
+        .await
+        .unwrap();
+    started_rx.await.expect("prefetch must start before cancel");
+
+    let status = state
+        .cancel_prepare(StageCancelPrepareRequest {
+            topology_id: load.topology_id.clone(),
+            run_id: load.run_id.clone(),
+            stage_id: load.stage_id.clone(),
+            shutdown_generation: load.shutdown_generation + 1,
+        })
+        .await;
+    assert_eq!(status.state, StagePreparationState::Cancelled);
+
+    let response = state
+        .prepare(StagePrepareRequest {
+            load: load.clone(),
+            coordinator_id: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(!response.accepted);
+    assert_eq!(response.error.as_deref(), Some("stale shutdown generation"));
+    assert_eq!(response.status.state, StagePreparationState::Cancelled);
+    assert_eq!(
+        response.status.error.as_deref(),
+        Some("stale shutdown generation")
+    );
+    assert_eq!(
+        response.status.shutdown_generation,
+        load.shutdown_generation + 1
+    );
+
+    let _ = release_tx.send(Ok(()));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let inventory = state
+        .inventory(StageInventoryRequest {
+            model_id: load.model_id.clone(),
+            package_ref: load.package_ref.clone(),
+            manifest_sha256: load.manifest_sha256.clone(),
+        })
+        .await;
+    let stored = inventory
+        .preparing_ranges
+        .iter()
+        .find(|status| status.stage_id == load.stage_id)
+        .expect("cancelled prepare status should remain visible");
+    assert_eq!(stored.state, StagePreparationState::Cancelled);
+    assert_eq!(stored.shutdown_generation, load.shutdown_generation + 1);
+    assert!(stored.error.is_none());
+}
+
+#[tokio::test]
 async fn stale_cancel_prepare_keeps_newer_prepare_status() {
     let load = load_request();
     let key = stage_key(&load.topology_id, &load.run_id, &load.stage_id);

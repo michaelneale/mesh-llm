@@ -175,10 +175,23 @@ impl StageControlState {
             &request.load.stage_id,
         );
         let status = preparation_status_from_load(&request.load, StagePreparationState::Assigned);
-        self.preparations
-            .lock()
-            .await
-            .insert(key.clone(), status.clone());
+        {
+            let mut preparations = self.preparations.lock().await;
+            if let Some(existing) = preparations.get(&key) {
+                if existing.state == StagePreparationState::Cancelled
+                    && existing.shutdown_generation >= request.load.shutdown_generation
+                {
+                    let mut status = existing.clone();
+                    status.error = Some("stale shutdown generation".to_string());
+                    return Ok(StagePrepareAcceptedResponse {
+                        accepted: false,
+                        status,
+                        error: Some("stale shutdown generation".to_string()),
+                    });
+                }
+            }
+            preparations.insert(key.clone(), status.clone());
+        }
         if let Some(task) = self.preparation_tasks.remove(&key) {
             task.cancelled.store(true, Ordering::Release);
             task.handle.abort();
