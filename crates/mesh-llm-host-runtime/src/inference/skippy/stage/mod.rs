@@ -29,12 +29,23 @@ struct RunningStage {
 struct StageControlState {
     stages: HashMap<String, RunningStage>,
     preparations: Arc<Mutex<HashMap<String, StagePreparationStatus>>>,
+    package_prefetcher: Option<Arc<dyn StagePackagePrefetcher>>,
 }
 
-pub(crate) fn spawn_stage_control_loop() -> mpsc::UnboundedSender<StageControlCommand> {
+#[async_trait::async_trait]
+pub(crate) trait StagePackagePrefetcher: Send + Sync {
+    async fn prefetch_stage_package(&self, request: &StagePrepareRequest) -> Result<()>;
+}
+
+pub(crate) fn spawn_stage_control_loop(
+    package_prefetcher: Option<Arc<dyn StagePackagePrefetcher>>,
+) -> mpsc::UnboundedSender<StageControlCommand> {
     let (tx, mut rx) = mpsc::unbounded_channel::<StageControlCommand>();
     tokio::spawn(async move {
-        let mut state = StageControlState::default();
+        let mut state = StageControlState {
+            package_prefetcher,
+            ..Default::default()
+        };
         while let Some(command) = rx.recv().await {
             let result = state.handle(command.request).await;
             let _ = command.resp.send(result);
@@ -155,8 +166,9 @@ impl StageControlState {
             .await
             .insert(key.clone(), status.clone());
         let preparations = Arc::clone(&self.preparations);
+        let package_prefetcher = self.package_prefetcher.clone();
         tokio::spawn(async move {
-            run_stage_prepare_task(preparations, key, request.load).await;
+            run_stage_prepare_task(preparations, key, request, package_prefetcher).await;
         });
         Ok(StagePrepareAcceptedResponse {
             accepted: true,

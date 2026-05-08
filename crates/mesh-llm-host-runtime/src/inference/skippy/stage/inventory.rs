@@ -12,7 +12,7 @@ use crate::inference::skippy::materialization::{inspect_stage_package, is_layer_
 
 use super::{
     preparation_status_from_load, SourceModelKind, StageInventoryRequest, StageLoadRequest,
-    StagePreparationState, StagePreparationStatus,
+    StagePackagePrefetcher, StagePreparationState, StagePreparationStatus, StagePrepareRequest,
 };
 
 #[derive(Clone, Debug)]
@@ -78,15 +78,22 @@ fn is_split_gguf_path(path: &Path) -> bool {
 pub(super) async fn run_stage_prepare_task(
     preparations: Arc<Mutex<HashMap<String, StagePreparationStatus>>>,
     key: String,
-    load: StageLoadRequest,
+    request: StagePrepareRequest,
+    package_prefetcher: Option<Arc<dyn StagePackagePrefetcher>>,
 ) {
+    let load = request.load.clone();
     update_preparation(
         &preparations,
         &key,
         preparation_status_from_load(&load, StagePreparationState::Resolving),
     )
     .await;
-    if load.load_mode != LoadMode::LayerPackage && !is_layer_package_ref(&load.package_ref) {
+    let peer_prefetch_error =
+        prefetch_stage_package_if_needed(&preparations, &key, &request, package_prefetcher).await;
+    if peer_prefetch_error.is_none()
+        && load.load_mode != LoadMode::LayerPackage
+        && !is_layer_package_ref(&load.package_ref)
+    {
         update_preparation(
             &preparations,
             &key,
@@ -104,11 +111,47 @@ pub(super) async fn run_stage_prepare_task(
         }
         Err(error) => {
             let mut status = preparation_status_from_load(&load, StagePreparationState::Failed);
-            status.error = Some(error.to_string());
+            status.error = Some(match peer_prefetch_error {
+                Some(prefetch_error) => {
+                    format!("{error}; peer artifact prefetch failed: {prefetch_error}")
+                }
+                None => error.to_string(),
+            });
             status
         }
     };
     update_preparation(&preparations, &key, state).await;
+}
+
+async fn prefetch_stage_package_if_needed(
+    preparations: &Arc<Mutex<HashMap<String, StagePreparationStatus>>>,
+    key: &str,
+    request: &StagePrepareRequest,
+    package_prefetcher: Option<Arc<dyn StagePackagePrefetcher>>,
+) -> Option<String> {
+    let load = &request.load;
+    if load.load_mode != LoadMode::LayerPackage && !is_layer_package_ref(&load.package_ref) {
+        return None;
+    }
+    let prefetcher = package_prefetcher?;
+    update_preparation(
+        preparations,
+        key,
+        preparation_status_from_load(load, StagePreparationState::Downloading),
+    )
+    .await;
+    match prefetcher.prefetch_stage_package(request).await {
+        Ok(()) => None,
+        Err(error) => {
+            tracing::debug!(
+                topology_id = %load.topology_id,
+                run_id = %load.run_id,
+                stage_id = %load.stage_id,
+                "peer artifact prefetch failed, falling back to local/HF resolver: {error}"
+            );
+            Some(error.to_string())
+        }
+    }
 }
 
 struct PrepareSourceResult {

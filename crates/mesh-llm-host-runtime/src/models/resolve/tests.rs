@@ -708,6 +708,7 @@ fn format_huggingface_display_ref_uses_selector_for_split_gguf() {
 }
 
 #[tokio::test]
+#[serial]
 async fn download_exact_ref_bf16_shorthand_downloads_full_split_model() {
     let fixture = load_gemma_live_fixture();
     let _siblings_guard = RepoSiblingEntriesOverrideGuard::set(Arc::new({
@@ -770,6 +771,7 @@ async fn download_exact_ref_bf16_shorthand_downloads_full_split_model() {
 }
 
 #[tokio::test]
+#[serial]
 async fn show_model_variants_accepts_selected_quant_ref() {
     let fixture = load_gemma_live_fixture();
     let _siblings_guard = RepoSiblingEntriesOverrideGuard::set(Arc::new({
@@ -777,7 +779,13 @@ async fn show_model_variants_accepts_selected_quant_ref() {
         let siblings = fixture
             .siblings
             .iter()
-            .map(|file| (file.clone(), fixture.size_bytes.get(file).copied()))
+            // Keep this fixture hermetic: missing sizes would trigger live HEAD requests.
+            .map(|file| {
+                (
+                    file.clone(),
+                    Some(fixture.size_bytes.get(file).copied().unwrap_or(1)),
+                )
+            })
             .collect::<Vec<_>>();
         move |requested_repo, requested_revision| {
             if requested_repo == repo && requested_revision == "main" {

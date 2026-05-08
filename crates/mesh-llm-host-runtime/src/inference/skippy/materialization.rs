@@ -903,6 +903,18 @@ pub(crate) fn resolve_hf_package_to_local(
             }
         }
     }
+    if layer_start == 0 {
+        if let Some(projectors) = manifest.get("projectors").and_then(|p| p.as_array()) {
+            for projector in projectors {
+                if let Some(path) = projector.get("path").and_then(|value| value.as_str()) {
+                    needed_files.push((
+                        safe_manifest_file_path(path)?,
+                        manifest_artifact_bytes(projector),
+                    ));
+                }
+            }
+        }
+    }
 
     let missing_files: Vec<_> = needed_files
         .iter()
@@ -953,6 +965,24 @@ fn safe_manifest_file_path(path: &str) -> Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 
+pub(crate) fn ensure_package_manifest_sha(package_ref: &str, expected_sha256: &str) -> Result<()> {
+    if expected_sha256.trim().is_empty() {
+        return Ok(());
+    }
+    anyhow::ensure!(
+        expected_sha256.len() == 64 && expected_sha256.chars().all(|ch| ch.is_ascii_hexdigit()),
+        "package manifest sha256 must be a hex SHA-256 digest"
+    );
+    let manifest_path = Path::new(package_ref).join("model-package.json");
+    let manifest_contents = fs::read(&manifest_path).context("read package manifest")?;
+    let actual_sha = hex::encode(Sha256::digest(&manifest_contents));
+    anyhow::ensure!(
+        actual_sha.eq_ignore_ascii_case(expected_sha256),
+        "package manifest sha256 mismatch"
+    );
+    Ok(())
+}
+
 pub(crate) fn inspect_stage_package(package_ref: &str) -> Result<StagePackageInfo> {
     // Resolve hf:// to local for inspection, downloading the manifest and any
     // shared package metadata that resolver path needs.
@@ -983,6 +1013,7 @@ pub(crate) fn resolve_stage_load_package(
         include_embeddings,
         is_final, // include_output
     )?;
+    ensure_package_manifest_sha(&local_ref, &load.manifest_sha256)?;
     let info = package::inspect_layer_package(&local_ref)
         .with_context(|| format!("inspect resolved layer package {}", load.package_ref))?;
     Ok(Some(ResolvedStagePackage {
@@ -1016,6 +1047,9 @@ pub(crate) fn materialize_stage_config(
         include_embeddings,
         include_output,
     )?;
+    if let Some(expected_manifest_sha) = config.manifest_sha256.as_deref() {
+        ensure_package_manifest_sha(&local_ref, expected_manifest_sha)?;
+    }
     let request = package_stage_request(
         &config.model_id,
         &config.topology_id,
@@ -1314,12 +1348,119 @@ mod tests {
     use std::ffi::OsString;
 
     use serial_test::serial;
+    use skippy_protocol::{FlashAttentionType, LoadMode};
 
     fn restore_env(key: &str, previous: Option<OsString>) {
         if let Some(value) = previous {
             std::env::set_var(key, value);
         } else {
             std::env::remove_var(key);
+        }
+    }
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        hex::encode(Sha256::digest(bytes))
+    }
+
+    fn write_local_package_fixture(root: &Path) -> (PathBuf, String) {
+        fs::create_dir_all(root.join("shared")).unwrap();
+        fs::create_dir_all(root.join("layers")).unwrap();
+        fs::write(root.join("shared/metadata.gguf"), b"metadata").unwrap();
+        fs::write(root.join("shared/embeddings.gguf"), b"embeddings").unwrap();
+        fs::write(root.join("shared/output.gguf"), b"output").unwrap();
+        fs::write(root.join("layers/layer-000.gguf"), b"layer").unwrap();
+        let manifest = serde_json::json!({
+            "schema_version": 1,
+            "model_id": "model-a",
+            "source_model": {
+                "path": "model-a.gguf",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "files": [
+                    {
+                        "path": "model-a.gguf",
+                        "size_bytes": 123,
+                        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    }
+                ]
+            },
+            "format": "layer-package",
+            "layer_count": 1,
+            "activation_width": 4096,
+            "shared": {
+                "metadata": {
+                    "path": "shared/metadata.gguf",
+                    "tensor_count": 1,
+                    "tensor_bytes": 1,
+                    "artifact_bytes": 8,
+                    "sha256": sha256_hex(b"metadata")
+                },
+                "embeddings": {
+                    "path": "shared/embeddings.gguf",
+                    "tensor_count": 1,
+                    "tensor_bytes": 1,
+                    "artifact_bytes": 10,
+                    "sha256": sha256_hex(b"embeddings")
+                },
+                "output": {
+                    "path": "shared/output.gguf",
+                    "tensor_count": 1,
+                    "tensor_bytes": 1,
+                    "artifact_bytes": 6,
+                    "sha256": sha256_hex(b"output")
+                }
+            },
+            "layers": [
+                {
+                    "layer_index": 0,
+                    "path": "layers/layer-000.gguf",
+                    "tensor_count": 1,
+                    "tensor_bytes": 1,
+                    "artifact_bytes": 5,
+                    "sha256": sha256_hex(b"layer")
+                }
+            ],
+            "skippy_abi_version": "0.1.0"
+        });
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+        let manifest_sha = sha256_hex(&manifest_bytes);
+        fs::write(root.join("model-package.json"), manifest_bytes).unwrap();
+        (root.to_path_buf(), manifest_sha)
+    }
+
+    fn stage_load_request_for_package(
+        package_dir: &Path,
+        manifest_sha256: String,
+    ) -> StageLoadRequest {
+        StageLoadRequest {
+            topology_id: "topology-a".to_string(),
+            run_id: "run-a".to_string(),
+            model_id: "model-a".to_string(),
+            backend: "skippy".to_string(),
+            package_ref: package_dir.to_string_lossy().to_string(),
+            manifest_sha256,
+            stage_id: "stage-0".to_string(),
+            stage_index: 0,
+            layer_start: 0,
+            layer_end: 1,
+            model_path: Some(package_dir.to_string_lossy().to_string()),
+            source_model_bytes: None,
+            projector_path: None,
+            selected_device: None,
+            bind_addr: "127.0.0.1:0".to_string(),
+            activation_width: 4096,
+            wire_dtype: crate::inference::skippy::StageWireDType::F16,
+            ctx_size: 8192,
+            lane_count: 1,
+            n_batch: None,
+            n_ubatch: None,
+            n_gpu_layers: -1,
+            cache_type_k: "f16".to_string(),
+            cache_type_v: "f16".to_string(),
+            flash_attn_type: FlashAttentionType::Auto,
+            shutdown_generation: 1,
+            load_mode: LoadMode::LayerPackage,
+            upstream: None,
+            downstream: None,
         }
     }
 
@@ -1332,17 +1473,6 @@ mod tests {
         fn drop(&mut self) {
             restore_env(self.key, self.previous.take());
         }
-    }
-
-    fn sha256_hex(bytes: &[u8]) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(bytes);
-        let digest = hasher.finalize();
-        let mut out = String::with_capacity(64);
-        for byte in digest {
-            out.push_str(&format!("{byte:02x}"));
-        }
-        out
     }
 
     fn write_cached_package_snapshot(snapshot: &Path, layer_sha: String) {
@@ -1525,6 +1655,29 @@ mod tests {
     }
 
     #[test]
+    fn resolve_stage_load_package_requires_expected_manifest_sha() {
+        let dir = tempfile::tempdir().unwrap();
+        let (package_dir, manifest_sha) = write_local_package_fixture(dir.path());
+
+        let load = stage_load_request_for_package(&package_dir, manifest_sha.clone());
+        let resolved = resolve_stage_load_package(&load).unwrap();
+        assert_eq!(
+            resolved.as_ref().map(|package| package.local_ref.as_str()),
+            Some(package_dir.to_str().unwrap())
+        );
+
+        let mut mismatched = stage_load_request_for_package(&package_dir, "0".repeat(64));
+        mismatched.package_ref = package_dir.to_string_lossy().to_string();
+        let error = resolve_stage_load_package(&mismatched)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("package manifest sha256 mismatch"),
+            "{error}"
+        );
+    }
+
+    #[test]
     #[serial]
     fn hf_package_resolution_rejects_revision_cache_traversal() {
         let prev_hf_home = std::env::var_os("HF_HOME");
@@ -1701,13 +1854,15 @@ mod tests {
     fn resolved_stage_load_package_keeps_local_path_out_of_source_identity() {
         let dir = tempfile::tempdir().unwrap();
         write_cached_package_snapshot(dir.path(), sha256_hex(b"layer"));
+        let manifest_bytes = fs::read(dir.path().join("model-package.json")).unwrap();
+        let manifest_sha256 = sha256_hex(&manifest_bytes);
         let load = StageLoadRequest {
             topology_id: "topology-a".to_string(),
             run_id: "run-a".to_string(),
             model_id: "model-a".to_string(),
             backend: "skippy".to_string(),
             package_ref: dir.path().to_string_lossy().to_string(),
-            manifest_sha256: "manifest".to_string(),
+            manifest_sha256,
             stage_id: "stage-0".to_string(),
             stage_index: 0,
             layer_start: 0,

@@ -98,6 +98,38 @@ Projector artifacts are package-level companions, not transformer-layer
 fragments. They MUST NOT be counted as owned layer tensors and MUST NOT be
 merged into per-stage GGUF materializations.
 
+## Peer Cache Transfer
+
+For split Skippy runs, a worker may fetch missing Hugging Face package artifacts
+from the coordinating mesh node over admitted mesh `STREAM_SUBPROTOCOL`
+transport before falling back to normal local/HF package resolution. This
+transfer path is an optimization for already-selected split participants, not a
+package discovery protocol.
+
+Privacy and compatibility boundaries:
+
+- Nodes advertise only `skippy-stage/1` subprotocol feature support, including
+  `artifact-transfer`. They do not gossip local package inventory, artifact
+  paths, cache roots, or tokens.
+- Mesh owns only the subprotocol open envelope; Skippy owns the artifact
+  request/response schema, authorization semantics, and byte framing.
+- Legacy inbound `skippy-stage/1` artifact-transfer streams remain accepted for
+  rolling-update compatibility; new outbound peer cache transfer uses the mesh
+  `STREAM_SUBPROTOCOL` envelope.
+- Only `hf://namespace/repo@revision` package refs are eligible for peer
+  transfer.
+- The serving node checks the active split topology and only serves artifacts
+  needed by the requesting node's assigned stage range. Stage 0 may fetch input
+  boundary files and projector artifacts; final stages may fetch output boundary
+  files.
+- `model-package.json` is capped at 16 MiB for peer transfer.
+- Non-manifest artifacts must match the manifest-declared relative path, byte
+  size, and SHA-256 digest.
+- Received artifacts are written to a fresh hidden partial file and installed
+  atomically only after size and SHA-256 verification.
+- Set `MESH_LLM_ARTIFACT_TRANSFER=off` to opt out of advertising and serving
+  peer artifact transfer.
+
 ## Manifest Schema
 
 The manifest file is UTF-8 JSON. The current schema version is `1`.

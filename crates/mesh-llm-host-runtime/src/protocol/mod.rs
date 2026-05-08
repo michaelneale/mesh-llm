@@ -27,9 +27,11 @@ pub(crate) const STREAM_PLUGIN_CHANNEL: u8 = 0x08;
 pub(crate) const STREAM_PLUGIN_BULK_TRANSFER: u8 = 0x09;
 pub(crate) const STREAM_CONFIG_SUBSCRIBE: u8 = 0x0b;
 pub(crate) const STREAM_CONFIG_PUSH: u8 = 0x0c;
+pub(crate) const STREAM_SUBPROTOCOL: u8 = 0x0d;
 const _: () = {
     let _ = STREAM_CONFIG_SUBSCRIBE;
     let _ = STREAM_CONFIG_PUSH;
+    let _ = STREAM_SUBPROTOCOL;
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -56,6 +58,7 @@ pub(crate) enum ControlFrameError {
     InvalidConfigHashLength {
         got: usize,
     },
+    InvalidSubprotocol,
     InvalidPublicKeyLength {
         got: usize,
     },
@@ -99,6 +102,9 @@ impl std::fmt::Display for ControlFrameError {
             }
             ControlFrameError::InvalidConfigHashLength { got } => {
                 write!(f, "invalid config_hash length: expected 32, got {}", got)
+            }
+            ControlFrameError::InvalidSubprotocol => {
+                write!(f, "subprotocol entries require a non-empty name and major")
             }
             ControlFrameError::InvalidPublicKeyLength { got } => {
                 write!(f, "invalid public key length: expected 32, got {}", got)
@@ -298,6 +304,18 @@ impl ValidateControlFrame for crate::proto::node::ConfigPushResponse {
     }
 }
 
+impl ValidateControlFrame for crate::proto::node::MeshSubprotocolOpen {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        if self.gen != NODE_PROTOCOL_GENERATION {
+            return Err(ControlFrameError::BadGeneration { got: self.gen });
+        }
+        if self.name.trim().is_empty() || self.major == 0 {
+            return Err(ControlFrameError::InvalidSubprotocol);
+        }
+        Ok(())
+    }
+}
+
 pub(crate) fn validate_peer_announcement(
     pa: &crate::proto::node::PeerAnnouncement,
 ) -> Result<(), ControlFrameError> {
@@ -308,6 +326,11 @@ pub(crate) fn validate_peer_announcement(
     }
     if pa.role == crate::proto::node::NodeRole::Host as i32 && pa.http_port.is_none() {
         return Err(ControlFrameError::MissingHttpPort);
+    }
+    for subprotocol in &pa.subprotocols {
+        if subprotocol.name.trim().is_empty() || subprotocol.major == 0 {
+            return Err(ControlFrameError::InvalidSubprotocol);
+        }
     }
     Ok(())
 }
@@ -458,9 +481,9 @@ mod tests {
     use crate::mesh::{resolve_peer_down, resolve_peer_leaving, PeerInfo};
     use crate::proto::node::{
         ConfigPush, ConfigPushResponse, ConfigSnapshotResponse, ConfigSubscribe,
-        ConfigUpdateNotification, ConfiguredModelRef, GossipFrame, NodeConfigSnapshot,
-        NodeGpuConfig, NodeModelEntry, NodePluginEntry, NodeRole, PeerAnnouncement,
-        RouteTableRequest,
+        ConfigUpdateNotification, ConfiguredModelRef, GossipFrame, MeshSubprotocolOpen,
+        NodeConfigSnapshot, NodeGpuConfig, NodeModelEntry, NodePluginEntry, NodeRole,
+        PeerAnnouncement, RouteTableRequest,
     };
     use iroh::{EndpointAddr, EndpointId, SecretKey};
     use std::collections::{HashMap, HashSet};
@@ -552,6 +575,7 @@ mod tests {
             served_model_descriptors: vec![],
             served_model_runtime: vec![],
             owner_attestation: None,
+            artifact_transfer_supported: false,
             owner_summary: OwnershipSummary::default(),
         }
     }
@@ -574,6 +598,30 @@ mod tests {
         assert_eq!(decoded.peers.len(), 1);
         assert_eq!(decoded.peers[0].endpoint_id, vec![0u8; 32]);
         assert_eq!(decoded.peers[0].role, NodeRole::Worker as i32);
+    }
+
+    #[test]
+    fn mesh_subprotocol_open_roundtrips_and_validates() {
+        let open = MeshSubprotocolOpen {
+            gen: NODE_PROTOCOL_GENERATION,
+            name: skippy_protocol::STAGE_SUBPROTOCOL_NAME.to_string(),
+            major: skippy_protocol::STAGE_SUBPROTOCOL_MAJOR,
+        };
+        let encoded = encode_control_frame(STREAM_SUBPROTOCOL, &open);
+        let decoded: MeshSubprotocolOpen =
+            decode_control_frame(STREAM_SUBPROTOCOL, &encoded).unwrap();
+        assert_eq!(decoded.name, skippy_protocol::STAGE_SUBPROTOCOL_NAME);
+        assert_eq!(decoded.major, skippy_protocol::STAGE_SUBPROTOCOL_MAJOR);
+
+        let bad = MeshSubprotocolOpen {
+            gen: NODE_PROTOCOL_GENERATION,
+            name: String::new(),
+            major: skippy_protocol::STAGE_SUBPROTOCOL_MAJOR,
+        };
+        let encoded = encode_control_frame(STREAM_SUBPROTOCOL, &bad);
+        let err = decode_control_frame::<MeshSubprotocolOpen>(STREAM_SUBPROTOCOL, &encoded)
+            .expect_err("empty subprotocol names must be rejected");
+        assert!(matches!(err, ControlFrameError::InvalidSubprotocol));
     }
 
     #[test]
@@ -1231,8 +1279,22 @@ mod tests {
                 },
                 signature: "33".repeat(64),
             }),
+            artifact_transfer_supported: true,
         };
         let proto_pa = local_ann_to_proto_ann(&ann);
+        let skippy = proto_pa
+            .subprotocols
+            .iter()
+            .find(|subprotocol| subprotocol.name == skippy_protocol::STAGE_SUBPROTOCOL_NAME)
+            .expect("skippy-stage subprotocol should be advertised");
+        assert_eq!(skippy.major, skippy_protocol::STAGE_SUBPROTOCOL_MAJOR);
+        assert!(
+            skippy
+                .features
+                .iter()
+                .any(|feature| feature
+                    == skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_ARTIFACT_TRANSFER)
+        );
         assert_eq!(
             proto_pa
                 .owner_attestation
@@ -1243,6 +1305,7 @@ mod tests {
 
         let (_, roundtripped) =
             proto_ann_to_local(&proto_pa).expect("proto_ann_to_local must succeed");
+        assert!(roundtripped.artifact_transfer_supported);
         let roundtripped = roundtripped
             .owner_attestation
             .expect("owner attestation must round-trip");
@@ -1286,6 +1349,7 @@ mod tests {
             served_model_descriptors: vec![],
             served_model_runtime: vec![],
             owner_attestation: None,
+            artifact_transfer_supported: true,
         };
 
         let proto_pa = local_ann_to_proto_ann(&ann);
@@ -2008,6 +2072,7 @@ mod tests {
             served_model_descriptors: vec![],
             served_model_runtime: vec![],
             owner_attestation: None,
+            artifact_transfer_supported: true,
         };
 
         let proto_pa = local_ann_to_proto_ann(&ann_with_timestamp);
@@ -2052,6 +2117,7 @@ mod tests {
             served_model_descriptors: vec![],
             served_model_runtime: vec![],
             owner_attestation: None,
+            artifact_transfer_supported: false,
         };
 
         let proto_pa = local_ann_to_proto_ann(&ann_without_timestamp);

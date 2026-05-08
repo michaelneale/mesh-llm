@@ -5,6 +5,30 @@ use crate::protocol::NODE_PROTOCOL_GENERATION;
 use iroh::{EndpointAddr, EndpointId};
 use std::collections::HashMap;
 
+fn skippy_stage_subprotocols(
+    artifact_transfer_supported: bool,
+) -> Vec<crate::proto::node::MeshSubprotocol> {
+    let mut features = vec![skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STAGE_CONTROL.to_string()];
+    if artifact_transfer_supported {
+        features.push(skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_ARTIFACT_TRANSFER.to_string());
+    }
+    vec![crate::proto::node::MeshSubprotocol {
+        name: skippy_protocol::STAGE_SUBPROTOCOL_NAME.to_string(),
+        major: skippy_protocol::STAGE_SUBPROTOCOL_MAJOR,
+        features,
+    }]
+}
+
+fn supports_skippy_artifact_transfer(subprotocols: &[crate::proto::node::MeshSubprotocol]) -> bool {
+    subprotocols.iter().any(|subprotocol| {
+        subprotocol.name == skippy_protocol::STAGE_SUBPROTOCOL_NAME
+            && subprotocol.major == skippy_protocol::STAGE_SUBPROTOCOL_MAJOR
+            && subprotocol.features.iter().any(|feature| {
+                feature == skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_ARTIFACT_TRANSFER
+            })
+    })
+}
+
 fn split_optional_csv(values: Option<&str>) -> Vec<Option<String>> {
     values
         .map(|values| {
@@ -485,6 +509,7 @@ pub(crate) fn local_ann_to_proto_ann(
         gpu_reserved_bytes: ann.gpu_reserved_bytes.clone(),
         hardware,
         first_joined_mesh_ts: ann.first_joined_mesh_ts,
+        subprotocols: skippy_stage_subprotocols(ann.artifact_transfer_supported),
     }
 }
 
@@ -646,6 +671,7 @@ pub(crate) fn proto_ann_to_local(
             .owner_attestation
             .as_ref()
             .map(proto_owner_attestation_to_local),
+        artifact_transfer_supported: supports_skippy_artifact_transfer(&pa.subprotocols),
     };
     crate::mesh::backfill_legacy_descriptors(&mut ann);
     Some((addr, ann))

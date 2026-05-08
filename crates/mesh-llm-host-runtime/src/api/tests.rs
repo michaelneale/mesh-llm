@@ -5,6 +5,7 @@ use crate::plugins::{blackboard, blobstore};
 use mesh_llm_plugin::MeshVisibility;
 use rmcp::model::ErrorCode;
 use serde_json::json;
+use serial_test::serial;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -623,6 +624,7 @@ fn make_test_state_peer(seed: u8, role: mesh::NodeRole) -> mesh::PeerInfo {
         served_model_descriptors: vec![],
         served_model_runtime: vec![],
         owner_attestation: None,
+        artifact_transfer_supported: false,
         owner_summary: crate::crypto::OwnershipSummary::default(),
         first_joined_mesh_ts: None,
     }
@@ -895,6 +897,7 @@ fn make_test_peer(
         served_model_descriptors: Vec::new(),
         served_model_runtime: Vec::new(),
         owner_attestation: None,
+        artifact_transfer_supported: false,
         owner_summary: crate::crypto::OwnershipSummary::default(),
     }
 }
@@ -1852,6 +1855,7 @@ async fn test_api_status_excludes_mesh_models_and_models_endpoint_serves_them() 
 }
 
 #[tokio::test]
+#[serial]
 async fn test_api_search_catalog_returns_canonical_model_refs() {
     let _catalog_guard = crate::models::remote_catalog::set_catalog_entries_for_test(vec![
         qwen_coder_remote_catalog_entry(),
@@ -1892,6 +1896,7 @@ async fn test_api_search_catalog_returns_canonical_model_refs() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_api_search_caps_limit_and_uses_canonical_parameter_sort_name() {
     let _catalog_guard = crate::models::remote_catalog::set_catalog_entries_for_test(vec![
         qwen_coder_remote_catalog_entry(),

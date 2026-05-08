@@ -44,10 +44,10 @@ pub(crate) use package::{
 pub(crate) use stage::{
     spawn_stage_control_loop, stage_load_timeout, LayerRange, SourceModelKind,
     StageCancelPrepareRequest, StageControlCommand, StageControlRequest, StageControlResponse,
-    StageInventoryRequest, StageLayerInventory, StageLoadRequest, StagePeerDescriptor,
-    StagePreparationState, StagePreparationStatus, StagePrepareAcceptedResponse,
-    StagePrepareRequest, StageReadyResponse, StageRuntimeState, StageStatusAck, StageStatusFilter,
-    StageStatusSnapshot, StageStopRequest, StageWireDType,
+    StageInventoryRequest, StageLayerInventory, StageLoadRequest, StagePackagePrefetcher,
+    StagePeerDescriptor, StagePreparationState, StagePreparationStatus,
+    StagePrepareAcceptedResponse, StagePrepareRequest, StageReadyResponse, StageRuntimeState,
+    StageStatusAck, StageStatusFilter, StageStatusSnapshot, StageStopRequest, StageWireDType,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -315,6 +315,12 @@ impl SkippyModelHandle {
                     config.layer_start == 0,
                     config.downstream.is_none(),
                 )?;
+                if let Some(expected_manifest_sha) = config.manifest_sha256.as_deref() {
+                    materialization::ensure_package_manifest_sha(
+                        &local_ref,
+                        expected_manifest_sha,
+                    )?;
+                }
                 config.model_path = Some(local_ref);
             }
             None

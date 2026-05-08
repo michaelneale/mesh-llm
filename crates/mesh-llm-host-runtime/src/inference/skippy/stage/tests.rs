@@ -1,8 +1,13 @@
 use super::*;
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use super::inventory::inventory_source_candidates;
+use anyhow::{anyhow, Result};
 use skippy_protocol::{FlashAttentionType, LoadMode, StageDevice};
+use tokio::sync::{oneshot, Mutex as TokioMutex};
 
 fn load_request() -> StageLoadRequest {
     StageLoadRequest {
@@ -45,6 +50,41 @@ fn load_request() -> StageLoadRequest {
             endpoint: "127.0.0.1:9001".to_string(),
             node_id: None,
         }),
+    }
+}
+
+struct BlockingPackagePrefetcher {
+    started: TokioMutex<Option<oneshot::Sender<()>>>,
+    release: TokioMutex<Option<oneshot::Receiver<Result<()>>>>,
+}
+
+impl BlockingPackagePrefetcher {
+    fn new() -> (Self, oneshot::Receiver<()>, oneshot::Sender<Result<()>>) {
+        let (started_tx, started_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        (
+            Self {
+                started: TokioMutex::new(Some(started_tx)),
+                release: TokioMutex::new(Some(release_rx)),
+            },
+            started_rx,
+            release_tx,
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl StagePackagePrefetcher for BlockingPackagePrefetcher {
+    async fn prefetch_stage_package(&self, _request: &StagePrepareRequest) -> Result<()> {
+        if let Some(started) = self.started.lock().await.take() {
+            let _ = started.send(());
+        }
+        let Some(release) = self.release.lock().await.take() else {
+            return Ok(());
+        };
+        release
+            .await
+            .unwrap_or_else(|_| Err(anyhow!("prefetch cancelled")))
     }
 }
 
@@ -222,6 +262,100 @@ async fn prepare_stage_records_background_source_availability() {
     }
 
     panic!("prepare did not become available, last state: {last_state:?}");
+}
+
+#[tokio::test]
+async fn prepare_layer_package_stays_downloading_while_peer_prefetch_is_pending() {
+    let mut load = load_request();
+    load.load_mode = LoadMode::LayerPackage;
+    load.package_ref = "missing-layer-package".to_string();
+    load.manifest_sha256 = "a".repeat(64);
+    load.downstream = None;
+
+    let (prefetcher, started_rx, release_tx) = BlockingPackagePrefetcher::new();
+    let mut state = StageControlState {
+        package_prefetcher: Some(Arc::new(prefetcher)),
+        ..Default::default()
+    };
+
+    let accepted = state
+        .prepare(StagePrepareRequest {
+            load: load.clone(),
+            coordinator_id: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(accepted.status.state, StagePreparationState::Assigned);
+    started_rx.await.expect("prefetch must start");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let inventory = state
+        .inventory(StageInventoryRequest {
+            model_id: load.model_id.clone(),
+            package_ref: load.package_ref.clone(),
+            manifest_sha256: load.manifest_sha256.clone(),
+        })
+        .await;
+    let status = inventory
+        .preparing_ranges
+        .iter()
+        .find(|status| status.stage_id == load.stage_id)
+        .expect("prepare status must stay visible");
+    assert_eq!(status.state, StagePreparationState::Downloading);
+
+    let _ = release_tx.send(Err(anyhow!("peer stalled")));
+}
+
+#[tokio::test]
+async fn prepare_layer_package_fails_only_after_peer_prefetch_and_local_resolution_fail() {
+    let mut load = load_request();
+    load.load_mode = LoadMode::LayerPackage;
+    load.package_ref = "missing-layer-package".to_string();
+    load.manifest_sha256 = "a".repeat(64);
+    load.downstream = None;
+
+    let (prefetcher, started_rx, release_tx) = BlockingPackagePrefetcher::new();
+    let mut state = StageControlState {
+        package_prefetcher: Some(Arc::new(prefetcher)),
+        ..Default::default()
+    };
+
+    state
+        .prepare(StagePrepareRequest {
+            load: load.clone(),
+            coordinator_id: None,
+        })
+        .await
+        .unwrap();
+    started_rx.await.expect("prefetch must start");
+    release_tx.send(Err(anyhow!("peer unavailable"))).unwrap();
+
+    for _ in 0..40 {
+        let inventory = state
+            .inventory(StageInventoryRequest {
+                model_id: load.model_id.clone(),
+                package_ref: load.package_ref.clone(),
+                manifest_sha256: load.manifest_sha256.clone(),
+            })
+            .await;
+        if let Some(status) = inventory
+            .preparing_ranges
+            .iter()
+            .find(|status| status.stage_id == load.stage_id)
+        {
+            if status.state == StagePreparationState::Failed {
+                let error = status.error.as_deref().unwrap_or_default();
+                assert!(error.contains("not a skippy package ref"));
+                assert!(error.contains("peer artifact prefetch failed"));
+                return;
+            }
+            assert_ne!(status.state, StagePreparationState::Failed);
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    panic!("prepare did not fail after peer prefetch and local resolution failed");
 }
 
 #[tokio::test]

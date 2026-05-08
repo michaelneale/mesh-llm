@@ -44,6 +44,24 @@ message PeerAnnouncement {
   optional HardwareInfo hardware = 33;              // Introduced in v0.60.0; preferred structured hardware inventory
   optional uint64 first_joined_mesh_ts = 34;
   repeated string explicit_model_interests = 35;    // Advisory canonical refs this node wants the mesh to consider
+  reserved 36;
+  reserved "artifact_transfer_supported";
+  repeated MeshSubprotocol subprotocols = 37;       // Additive feature discovery for admitted subsystem protocols
+}
+
+message MeshSubprotocol {
+  string name = 1;             // e.g. "skippy-stage"
+  uint32 major = 2;            // subprotocol major version
+  repeated string features = 3; // e.g. "artifact-transfer"
+}
+
+// Stream 0x0d — generic admitted subsystem stream.
+// Mesh owns this open frame. The remaining bytes on the stream are opaque to
+// mesh and are owned by the selected subsystem protocol.
+message MeshSubprotocolOpen {
+  uint32 gen = 1;
+  string name = 2;             // e.g. "skippy-stage"
+  uint32 major = 3;            // subprotocol major version
 }
 
 message HardwareInfo {

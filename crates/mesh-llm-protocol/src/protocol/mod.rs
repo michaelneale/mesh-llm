@@ -20,9 +20,11 @@ pub const STREAM_PLUGIN_CHANNEL: u8 = 0x08;
 pub const STREAM_PLUGIN_BULK_TRANSFER: u8 = 0x09;
 pub const STREAM_CONFIG_SUBSCRIBE: u8 = 0x0b;
 pub const STREAM_CONFIG_PUSH: u8 = 0x0c;
+pub const STREAM_SUBPROTOCOL: u8 = 0x0d;
 const _: () = {
     let _ = STREAM_CONFIG_SUBSCRIBE;
     let _ = STREAM_CONFIG_PUSH;
+    let _ = STREAM_SUBPROTOCOL;
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -40,6 +42,7 @@ pub enum ControlFrameError {
     MissingHttpPort,
     MissingOwnerId,
     InvalidConfigHashLength { got: usize },
+    InvalidSubprotocol,
     InvalidPublicKeyLength { got: usize },
     MissingSignature,
     InvalidSignatureLength { got: usize },
@@ -74,6 +77,9 @@ impl std::fmt::Display for ControlFrameError {
             ControlFrameError::MissingOwnerId => write!(f, "config frame missing owner_id"),
             ControlFrameError::InvalidConfigHashLength { got } => {
                 write!(f, "invalid config_hash length: expected 32, got {}", got)
+            }
+            ControlFrameError::InvalidSubprotocol => {
+                write!(f, "subprotocol entries require a non-empty name and major")
             }
             ControlFrameError::InvalidPublicKeyLength { got } => {
                 write!(f, "invalid public key length: expected 32, got {}", got)
@@ -283,6 +289,18 @@ impl ValidateControlFrame for crate::proto::node::ConfigPushResponse {
     }
 }
 
+impl ValidateControlFrame for crate::proto::node::MeshSubprotocolOpen {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        if self.gen != NODE_PROTOCOL_GENERATION {
+            return Err(ControlFrameError::BadGeneration { got: self.gen });
+        }
+        if self.name.trim().is_empty() || self.major == 0 {
+            return Err(ControlFrameError::InvalidSubprotocol);
+        }
+        Ok(())
+    }
+}
+
 pub fn validate_peer_announcement(
     pa: &crate::proto::node::PeerAnnouncement,
 ) -> Result<(), ControlFrameError> {
@@ -293,6 +311,11 @@ pub fn validate_peer_announcement(
     }
     if pa.role == crate::proto::node::NodeRole::Host as i32 && pa.http_port.is_none() {
         return Err(ControlFrameError::MissingHttpPort);
+    }
+    for subprotocol in &pa.subprotocols {
+        if subprotocol.name.trim().is_empty() || subprotocol.major == 0 {
+            return Err(ControlFrameError::InvalidSubprotocol);
+        }
     }
     Ok(())
 }

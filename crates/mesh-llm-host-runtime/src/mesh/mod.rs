@@ -1,8 +1,9 @@
 //! Mesh membership via iroh QUIC connections.
 //!
 //! Mesh control traffic uses QUIC ALPN `mesh-llm/1` and multiplexes bi-streams
-//! by first byte. Skippy stage control and activation transport use the
-//! separate `skippy-stage/1` ALPN.
+//! by first byte. Mesh-owned subsystem streams use `STREAM_SUBPROTOCOL` on the
+//! admitted mesh connection; Skippy activation transport remains on the
+//! latency-sensitive `skippy-stage/1` ALPN.
 
 pub use mesh_llm_types::mesh::{
     infer_available_model_descriptors, infer_local_served_model_descriptor,
@@ -63,6 +64,9 @@ fn current_time_unix_ms() -> u64 {
 const MIN_PINNED_GPU_CONFIG_PEER_VERSION: &str = "0.59.0";
 pub(super) const PEER_CONNECT_AND_GOSSIP_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(15);
+const ARTIFACT_TRANSFER_OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const ARTIFACT_TRANSFER_READ_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const ARTIFACT_TRANSFER_BUFFER_BYTES: usize = 1024 * 1024;
 
 fn quic_bind_addr(bind_port: Option<u16>) -> Option<std::net::SocketAddr> {
     if let Some(port) = bind_port {
@@ -106,6 +110,153 @@ fn pinned_gpu_config_peer_error(peer_version: Option<&str>) -> String {
     format!(
         "pinned gpu config sync requires mesh-llm >= {MIN_PINNED_GPU_CONFIG_PEER_VERSION}; subscriber advertised {advertised}"
     )
+}
+
+fn partial_artifact_path(destination: &std::path::Path) -> std::path::PathBuf {
+    let file_name = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("artifact");
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    destination.with_file_name(format!(
+        ".{file_name}.{}.{}.part",
+        std::process::id(),
+        unique
+    ))
+}
+
+struct PartialArtifactGuard {
+    path: std::path::PathBuf,
+    armed: bool,
+}
+
+impl PartialArtifactGuard {
+    fn new(path: std::path::PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PartialArtifactGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+async fn read_artifact_transfer_chunk<R>(
+    reader: &mut R,
+    buffer: &mut [u8],
+    idle_timeout: std::time::Duration,
+) -> Result<usize>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let read = tokio::time::timeout(idle_timeout, tokio::io::AsyncReadExt::read(reader, buffer))
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!("artifact transfer body read idle timeout after {idle_timeout:?}")
+        })?
+        .context("read artifact transfer bytes")?;
+    anyhow::ensure!(
+        read > 0,
+        "artifact transfer ended before expected byte count"
+    );
+    Ok(read)
+}
+
+async fn write_artifact_transfer_response(
+    send: &mut iroh::endpoint::SendStream,
+    accepted: bool,
+    total_size: u64,
+    sha256: Option<&str>,
+    error: Option<&str>,
+) -> Result<()> {
+    let response = skippy_stage_proto::StageArtifactTransferResponse {
+        gen: skippy_protocol::STAGE_PROTOCOL_GENERATION,
+        accepted,
+        total_size,
+        sha256: sha256.map(str::to_string),
+        error: error.map(str::to_string),
+    };
+    skippy_protocol::validate_stage_artifact_transfer_response(&response)
+        .map_err(|error| anyhow::anyhow!("invalid artifact transfer response: {error}"))?;
+    write_len_prefixed(send, &response.encode_to_vec()).await?;
+    if !accepted {
+        let _ = send.finish();
+    }
+    Ok(())
+}
+
+fn artifact_transfer_allowed_by_topology(
+    topologies: &[StageTopologyInstance],
+    remote: EndpointId,
+    package_dir: &std::path::Path,
+    request: &skippy_stage_proto::StageArtifactTransferRequest,
+) -> Result<bool> {
+    let relative_path =
+        crate::models::artifact_transfer::safe_relative_artifact_path(&request.relative_path)?;
+    let manifest_path =
+        std::path::PathBuf::from(crate::models::artifact_transfer::PACKAGE_MANIFEST_FILE);
+    for topology in topologies {
+        if topology.topology_id != request.topology_id
+            || topology.run_id != request.run_id
+            || topology.package_ref != request.package_ref
+            || !topology
+                .manifest_sha256
+                .eq_ignore_ascii_case(&request.manifest_sha256)
+        {
+            continue;
+        }
+        let final_stage_index = topology.stages.iter().map(|stage| stage.stage_index).max();
+        for assignment in topology
+            .stages
+            .iter()
+            .filter(|stage| stage.node_id == remote && stage.stage_id == request.stage_id)
+        {
+            if relative_path == manifest_path {
+                return Ok(true);
+            }
+            let include_output = final_stage_index == Some(assignment.stage_index);
+            let allowed = crate::models::artifact_transfer::required_stage_package_artifacts(
+                package_dir,
+                &topology.package_ref,
+                &topology.manifest_sha256,
+                crate::models::artifact_transfer::StageArtifactSelection {
+                    layer_start: assignment.layer_start,
+                    layer_end: assignment.layer_end,
+                    include_embeddings: assignment.layer_start == 0,
+                    include_output,
+                    include_projectors: assignment.layer_start == 0,
+                },
+            )?;
+            if allowed.iter().any(|artifact| {
+                artifact.relative_path == relative_path
+                    && request
+                        .expected_size
+                        .is_none_or(|expected_size| Some(expected_size) == artifact.expected_size)
+                    && request
+                        .expected_sha256
+                        .as_deref()
+                        .is_none_or(|expected_sha| {
+                            artifact
+                                .expected_sha256
+                                .as_deref()
+                                .is_some_and(|sha| sha.eq_ignore_ascii_case(expected_sha))
+                        })
+            }) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 fn preflight_pushed_config_for_current_node(config: &crate::plugin::MeshConfig) -> Result<()> {
@@ -603,6 +754,7 @@ pub(crate) struct PeerAnnouncement {
     pub(crate) served_model_descriptors: Vec<ServedModelDescriptor>,
     pub(crate) served_model_runtime: Vec<ModelRuntimeDescriptor>,
     pub(crate) owner_attestation: Option<SignedNodeOwnership>,
+    pub(crate) artifact_transfer_supported: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -655,6 +807,7 @@ pub struct PeerInfo {
     pub served_model_descriptors: Vec<ServedModelDescriptor>,
     pub served_model_runtime: Vec<ModelRuntimeDescriptor>,
     pub owner_attestation: Option<SignedNodeOwnership>,
+    pub artifact_transfer_supported: bool,
     pub owner_summary: OwnershipSummary,
 }
 
@@ -710,6 +863,7 @@ impl PeerInfo {
             served_model_descriptors: ann.served_model_descriptors.clone(),
             served_model_runtime: ann.served_model_runtime.clone(),
             owner_attestation: ann.owner_attestation.clone(),
+            artifact_transfer_supported: ann.artifact_transfer_supported,
             owner_summary,
         }
     }
@@ -1426,6 +1580,16 @@ impl Drop for InflightRequestGuard {
     }
 }
 
+#[async_trait::async_trait]
+impl crate::inference::skippy::StagePackagePrefetcher for Node {
+    async fn prefetch_stage_package(
+        &self,
+        request: &crate::inference::skippy::StagePrepareRequest,
+    ) -> Result<()> {
+        self.prefetch_stage_package_from_coordinator(request).await
+    }
+}
+
 impl Node {
     pub(crate) fn set_routing_telemetry_sink(
         &self,
@@ -1675,11 +1839,23 @@ impl Node {
                 .await;
         }
         let frame = stage_control_request_to_proto(self.endpoint.id(), request);
-        let conn = self.stage_connection_to_peer(peer_id).await?;
         let response = tokio::time::timeout(timeout, async {
-            let (mut send, mut recv) = conn.open_bi().await?;
-            send.write_all(&[skippy_protocol::STAGE_STREAM_CONTROL])
-                .await?;
+            let (mut send, mut recv) = if self
+                .peer_supports_skippy_subprotocol_feature(
+                    peer_id,
+                    skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STAGE_CONTROL,
+                )
+                .await
+            {
+                self.open_skippy_stage_mesh_stream(peer_id, skippy_protocol::STAGE_STREAM_CONTROL)
+                    .await?
+            } else {
+                let conn = self.stage_connection_to_peer(peer_id).await?;
+                let (mut send, recv) = conn.open_bi().await?;
+                send.write_all(&[skippy_protocol::STAGE_STREAM_CONTROL])
+                    .await?;
+                (send, recv)
+            };
             write_len_prefixed(&mut send, &frame.encode_to_vec()).await?;
             let buf = read_len_prefixed(&mut recv).await?;
             let response =
@@ -1725,8 +1901,8 @@ impl Node {
             | crate::inference::skippy::StageControlRequest::StatusUpdate(_) => {
                 std::time::Duration::from_secs(30)
             }
-            crate::inference::skippy::StageControlRequest::Prepare(_) => {
-                std::time::Duration::from_secs(30)
+            crate::inference::skippy::StageControlRequest::Prepare(prepare) => {
+                crate::inference::skippy::stage_load_timeout(&prepare.load)
             }
         }
     }
@@ -3477,6 +3653,44 @@ impl Node {
         }
     }
 
+    async fn open_mesh_subprotocol_stream(
+        &self,
+        peer_id: EndpointId,
+        name: &str,
+        major: u32,
+    ) -> Result<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)> {
+        use prost::Message as _;
+
+        let conn = self.connection_to_peer(peer_id).await?;
+        let (mut send, recv) = conn.open_bi().await?;
+        send.write_all(&[STREAM_SUBPROTOCOL]).await?;
+        let open = crate::proto::node::MeshSubprotocolOpen {
+            gen: NODE_PROTOCOL_GENERATION,
+            name: name.to_string(),
+            major,
+        };
+        open.validate_frame()
+            .map_err(|error| anyhow::anyhow!("invalid mesh subprotocol open: {error}"))?;
+        write_len_prefixed(&mut send, &open.encode_to_vec()).await?;
+        Ok((send, recv))
+    }
+
+    async fn open_skippy_stage_mesh_stream(
+        &self,
+        peer_id: EndpointId,
+        stream_kind: u8,
+    ) -> Result<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)> {
+        let (mut send, recv) = self
+            .open_mesh_subprotocol_stream(
+                peer_id,
+                skippy_protocol::STAGE_SUBPROTOCOL_NAME,
+                skippy_protocol::STAGE_SUBPROTOCOL_MAJOR,
+            )
+            .await?;
+        send.write_all(&[stream_kind]).await?;
+        Ok((send, recv))
+    }
+
     async fn stage_connection_to_peer(&self, peer_id: EndpointId) -> Result<Connection> {
         let addr = {
             let state = self.state.lock().await;
@@ -3649,6 +3863,20 @@ impl Node {
                     {
                         tracing::warn!("Stage transport channel closed, dropping stream");
                     }
+                }
+                skippy_protocol::STAGE_STREAM_ARTIFACT_TRANSFER => {
+                    let node = self.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = node
+                            .handle_artifact_transfer_stream(remote, send, recv)
+                            .await
+                        {
+                            tracing::debug!(
+                                "legacy artifact transfer stream error from {}: {e}",
+                                remote.fmt_short()
+                            );
+                        }
+                    });
                 }
                 other => {
                     tracing::warn!(
@@ -4114,10 +4342,74 @@ impl Node {
                         }
                     });
                 }
+                STREAM_SUBPROTOCOL => {
+                    let node = self.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = node
+                            .handle_mesh_subprotocol_stream(remote, send, recv)
+                            .await
+                        {
+                            tracing::debug!(
+                                "subprotocol stream error from {}: {e}",
+                                remote.fmt_short()
+                            );
+                        }
+                    });
+                }
                 other => {
                     tracing::warn!("Unknown stream type {other} from {}", remote.fmt_short());
                 }
             }
+        }
+    }
+
+    async fn handle_mesh_subprotocol_stream(
+        &self,
+        remote: EndpointId,
+        send: iroh::endpoint::SendStream,
+        mut recv: iroh::endpoint::RecvStream,
+    ) -> Result<()> {
+        use prost::Message as _;
+
+        let buf = read_len_prefixed(&mut recv).await?;
+        let open = crate::proto::node::MeshSubprotocolOpen::decode(buf.as_slice())
+            .map_err(|error| anyhow::anyhow!("MeshSubprotocolOpen decode error: {error}"))?;
+        open.validate_frame()
+            .map_err(|error| anyhow::anyhow!("MeshSubprotocolOpen validation error: {error}"))?;
+        match (open.name.as_str(), open.major) {
+            (skippy_protocol::STAGE_SUBPROTOCOL_NAME, skippy_protocol::STAGE_SUBPROTOCOL_MAJOR) => {
+                self.handle_skippy_stage_subprotocol_stream(remote, send, recv)
+                    .await
+            }
+            _ => anyhow::bail!(
+                "unsupported mesh subprotocol {}/{} from {}",
+                open.name,
+                open.major,
+                remote.fmt_short()
+            ),
+        }
+    }
+
+    async fn handle_skippy_stage_subprotocol_stream(
+        &self,
+        remote: EndpointId,
+        send: iroh::endpoint::SendStream,
+        mut recv: iroh::endpoint::RecvStream,
+    ) -> Result<()> {
+        let mut type_buf = [0u8; 1];
+        recv.read_exact(&mut type_buf).await?;
+        match type_buf[0] {
+            skippy_protocol::STAGE_STREAM_CONTROL => {
+                self.handle_stage_control(remote, send, recv).await
+            }
+            skippy_protocol::STAGE_STREAM_ARTIFACT_TRANSFER => {
+                self.handle_artifact_transfer_stream(remote, send, recv)
+                    .await
+            }
+            skippy_protocol::STAGE_STREAM_TRANSPORT => {
+                anyhow::bail!("skippy activation transport stays on skippy-stage/1")
+            }
+            other => anyhow::bail!("unknown skippy stage subprotocol stream kind {other:#04x}"),
         }
     }
 
@@ -4226,16 +4518,439 @@ impl Node {
                     .await?;
                 downstream.endpoint = bridge_addr;
             }
+            crate::inference::skippy::StageControlRequest::Prepare(_) => {}
             crate::inference::skippy::StageControlRequest::Stop(stop) => {
                 self.stop_stage_transport_bridge(&stop.topology_id, &stop.run_id, &stop.stage_id)
                     .await;
             }
             crate::inference::skippy::StageControlRequest::Status(_)
             | crate::inference::skippy::StageControlRequest::Inventory(_)
-            | crate::inference::skippy::StageControlRequest::Prepare(_)
             | crate::inference::skippy::StageControlRequest::CancelPrepare(_)
             | crate::inference::skippy::StageControlRequest::StatusUpdate(_) => {}
         }
+        Ok(())
+    }
+
+    async fn prefetch_stage_package_from_coordinator(
+        &self,
+        prepare: &crate::inference::skippy::StagePrepareRequest,
+    ) -> Result<()> {
+        let load = &prepare.load;
+        if load.load_mode != skippy_protocol::LoadMode::LayerPackage {
+            return Ok(());
+        }
+        if !crate::models::artifact_transfer::artifact_transfer_enabled() {
+            return Ok(());
+        }
+        let Some(coordinator_id) = prepare.coordinator_id else {
+            return Ok(());
+        };
+        if coordinator_id == self.endpoint.id() {
+            return Ok(());
+        }
+        if !self
+            .peer_supports_skippy_subprotocol_feature(
+                coordinator_id,
+                skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_ARTIFACT_TRANSFER,
+            )
+            .await
+        {
+            return Ok(());
+        }
+        self.fetch_stage_package_artifacts_from_peer(coordinator_id, load)
+            .await
+    }
+
+    async fn peer_supports_skippy_subprotocol_feature(
+        &self,
+        peer_id: EndpointId,
+        feature: &str,
+    ) -> bool {
+        let state = self.state.lock().await;
+        let Some(peer) = state.peers.get(&peer_id) else {
+            return false;
+        };
+        match feature {
+            // Current PR peers advertise `stage-control` together with the
+            // artifact-transfer feature. Older peers fall back to the legacy
+            // skippy-stage ALPN control path.
+            skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STAGE_CONTROL
+            | skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_ARTIFACT_TRANSFER => {
+                peer.artifact_transfer_supported
+            }
+            _ => false,
+        }
+    }
+
+    async fn fetch_stage_package_artifacts_from_peer(
+        &self,
+        peer_id: EndpointId,
+        load: &crate::inference::skippy::StageLoadRequest,
+    ) -> Result<()> {
+        let package_dir =
+            crate::models::artifact_transfer::package_cache_dir_for_ref(&load.package_ref)?;
+        let manifest_request = crate::models::artifact_transfer::manifest_artifact_request(
+            &load.package_ref,
+            &load.manifest_sha256,
+        )?;
+        let manifest_path =
+            crate::models::artifact_transfer::local_artifact_path(&package_dir, &manifest_request);
+        if !crate::models::artifact_transfer::local_artifact_satisfies(
+            &package_dir,
+            &manifest_request,
+            true,
+        )? {
+            self.fetch_artifact_from_peer(peer_id, load, &manifest_request, &manifest_path)
+                .await
+                .context("fetch package manifest from peer")?;
+        }
+
+        let artifacts = crate::models::artifact_transfer::required_stage_package_artifacts(
+            &package_dir,
+            &load.package_ref,
+            &load.manifest_sha256,
+            crate::models::artifact_transfer::StageArtifactSelection {
+                layer_start: load.layer_start,
+                layer_end: load.layer_end,
+                include_embeddings: load.layer_start == 0,
+                include_output: load.downstream.is_none(),
+                include_projectors: load.layer_start == 0,
+            },
+        )?;
+        for artifact in artifacts {
+            if crate::models::artifact_transfer::local_artifact_satisfies(
+                &package_dir,
+                &artifact,
+                true,
+            )? {
+                continue;
+            }
+            let destination =
+                crate::models::artifact_transfer::local_artifact_path(&package_dir, &artifact);
+            self.fetch_artifact_from_peer(peer_id, load, &artifact, &destination)
+                .await
+                .with_context(|| {
+                    format!(
+                        "fetch package artifact {} from peer",
+                        artifact.relative_path.display()
+                    )
+                })?;
+        }
+        Ok(())
+    }
+
+    async fn fetch_artifact_from_peer(
+        &self,
+        peer_id: EndpointId,
+        load: &crate::inference::skippy::StageLoadRequest,
+        artifact: &crate::models::artifact_transfer::PackageArtifactRequest,
+        destination: &std::path::Path,
+    ) -> Result<()> {
+        use tokio::io::AsyncWriteExt;
+
+        if let Some(parent) = destination.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .context("create package artifact directory")?;
+        }
+        crate::models::artifact_transfer::ensure_local_artifact_install_parent(
+            &artifact.package_ref,
+            destination,
+        )?;
+        let temp_path = partial_artifact_path(destination);
+        let mut partial_guard = PartialArtifactGuard::new(temp_path.clone());
+        let offset = 0;
+
+        let frame = skippy_stage_proto::StageArtifactTransferRequest {
+            gen: skippy_protocol::STAGE_PROTOCOL_GENERATION,
+            requester_id: self.endpoint.id().as_bytes().to_vec(),
+            topology_id: load.topology_id.clone(),
+            run_id: load.run_id.clone(),
+            stage_id: load.stage_id.clone(),
+            package_ref: artifact.package_ref.clone(),
+            manifest_sha256: artifact.manifest_sha256.clone(),
+            relative_path: artifact.relative_path.to_string_lossy().to_string(),
+            offset,
+            expected_size: artifact.expected_size,
+            expected_sha256: artifact.expected_sha256.clone(),
+        };
+        skippy_protocol::validate_stage_artifact_transfer_request(&frame)
+            .map_err(|error| anyhow::anyhow!("invalid artifact transfer request: {error}"))?;
+
+        let response = tokio::time::timeout(ARTIFACT_TRANSFER_OPEN_TIMEOUT, async {
+            let (mut send, mut recv) = self
+                .open_skippy_stage_mesh_stream(
+                    peer_id,
+                    skippy_protocol::STAGE_STREAM_ARTIFACT_TRANSFER,
+                )
+                .await?;
+            write_len_prefixed(&mut send, &frame.encode_to_vec()).await?;
+            let _ = send.finish();
+            let response_buf = read_len_prefixed(&mut recv).await?;
+            let response =
+                skippy_stage_proto::StageArtifactTransferResponse::decode(response_buf.as_slice())
+                    .map_err(|error| {
+                        anyhow::anyhow!("StageArtifactTransferResponse decode error: {error}")
+                    })?;
+            skippy_protocol::validate_stage_artifact_transfer_response(&response).map_err(
+                |error| anyhow::anyhow!("StageArtifactTransferResponse validation error: {error}"),
+            )?;
+            Ok::<_, anyhow::Error>((recv, response))
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("timeout opening artifact transfer stream"))??;
+        let (mut recv, response) = response;
+        if !response.accepted {
+            anyhow::bail!(
+                "peer artifact transfer rejected: {}",
+                response
+                    .error
+                    .unwrap_or_else(|| "artifact unavailable".to_string())
+            );
+        }
+        if let Some(expected_size) = artifact.expected_size {
+            anyhow::ensure!(
+                response.total_size == expected_size,
+                "peer artifact size mismatch"
+            );
+        } else if artifact.relative_path.as_path()
+            == std::path::Path::new(crate::models::artifact_transfer::PACKAGE_MANIFEST_FILE)
+        {
+            anyhow::ensure!(
+                response.total_size <= crate::models::artifact_transfer::MAX_PACKAGE_MANIFEST_BYTES,
+                "peer package manifest exceeds transfer limit"
+            );
+        } else {
+            anyhow::bail!("peer artifact response missing expected size");
+        }
+        if let Some(expected_sha) = artifact.expected_sha256.as_deref() {
+            anyhow::ensure!(
+                response
+                    .sha256
+                    .as_deref()
+                    .is_some_and(|sha| sha.eq_ignore_ascii_case(expected_sha)),
+                "peer artifact sha256 mismatch"
+            );
+        }
+        anyhow::ensure!(
+            offset <= response.total_size,
+            "peer artifact response is smaller than resume offset"
+        );
+
+        let transfer_result = async {
+            let mut file = tokio::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&temp_path)
+                .await
+                .context("open partial artifact")?;
+            let mut remaining = response.total_size.saturating_sub(offset);
+            let mut buffer = vec![0u8; ARTIFACT_TRANSFER_BUFFER_BYTES];
+            while remaining > 0 {
+                let limit = buffer.len().min(remaining as usize);
+                let read = read_artifact_transfer_chunk(
+                    &mut recv,
+                    &mut buffer[..limit],
+                    ARTIFACT_TRANSFER_READ_IDLE_TIMEOUT,
+                )
+                .await?;
+                file.write_all(&buffer[..read])
+                    .await
+                    .context("write partial artifact")?;
+                remaining -= read as u64;
+            }
+            file.flush().await.context("flush partial artifact")?;
+            drop(file);
+
+            let actual_size = tokio::fs::metadata(&temp_path)
+                .await
+                .context("stat partial artifact")?
+                .len();
+            anyhow::ensure!(
+                actual_size == response.total_size,
+                "partial artifact size mismatch after transfer"
+            );
+            let temp_for_hash = temp_path.clone();
+            let actual_sha = tokio::task::spawn_blocking(move || {
+                crate::models::artifact_transfer::file_sha256_hex(&temp_for_hash)
+            })
+            .await
+            .context("join artifact sha256 task")??;
+            let expected_sha = artifact
+                .expected_sha256
+                .as_deref()
+                .or(response.sha256.as_deref())
+                .context("peer artifact response missing sha256")?;
+            anyhow::ensure!(
+                actual_sha.eq_ignore_ascii_case(expected_sha),
+                "transferred artifact sha256 mismatch"
+            );
+            if destination.exists() {
+                let _ = tokio::fs::remove_file(destination).await;
+            }
+            tokio::fs::rename(&temp_path, destination)
+                .await
+                .context("install transferred artifact")?;
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        if let Err(error) = transfer_result {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return Err(error);
+        }
+        partial_guard.disarm();
+        Ok(())
+    }
+
+    async fn handle_artifact_transfer_stream(
+        &self,
+        remote: EndpointId,
+        mut send: iroh::endpoint::SendStream,
+        mut recv: iroh::endpoint::RecvStream,
+    ) -> anyhow::Result<()> {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+        let buf = read_len_prefixed(&mut recv).await?;
+        let request = skippy_stage_proto::StageArtifactTransferRequest::decode(buf.as_slice())
+            .map_err(|error| {
+                anyhow::anyhow!("StageArtifactTransferRequest decode error: {error}")
+            })?;
+        skippy_protocol::validate_stage_artifact_transfer_request(&request).map_err(|error| {
+            anyhow::anyhow!("StageArtifactTransferRequest validation error: {error}")
+        })?;
+        if request.requester_id.as_slice() != remote.as_bytes() {
+            anyhow::bail!("artifact transfer requester_id does not match QUIC peer identity");
+        }
+        if !crate::models::artifact_transfer::artifact_transfer_enabled() {
+            return write_artifact_transfer_response(
+                &mut send,
+                false,
+                0,
+                None,
+                Some("artifact transfer disabled"),
+            )
+            .await;
+        }
+        let package_dir =
+            match crate::models::artifact_transfer::package_cache_dir_for_ref(&request.package_ref)
+            {
+                Ok(path) => path,
+                Err(error) => {
+                    tracing::debug!(
+                        peer = %remote.fmt_short(),
+                        "artifact transfer request has unsupported package ref: {error}"
+                    );
+                    return write_artifact_transfer_response(
+                        &mut send,
+                        false,
+                        0,
+                        None,
+                        Some("artifact unavailable"),
+                    )
+                    .await;
+                }
+            };
+        let topologies = self
+            .stage_topologies
+            .lock()
+            .await
+            .topologies
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        match artifact_transfer_allowed_by_topology(&topologies, remote, &package_dir, &request) {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::debug!(
+                    peer = %remote.fmt_short(),
+                    path = %request.relative_path,
+                    "artifact transfer request is not authorized for this stage assignment"
+                );
+                return write_artifact_transfer_response(
+                    &mut send,
+                    false,
+                    0,
+                    None,
+                    Some("artifact unavailable"),
+                )
+                .await;
+            }
+            Err(error) => {
+                tracing::debug!(
+                    peer = %remote.fmt_short(),
+                    path = %request.relative_path,
+                    "artifact transfer authorization failed: {error}"
+                );
+                return write_artifact_transfer_response(
+                    &mut send,
+                    false,
+                    0,
+                    None,
+                    Some("artifact unavailable"),
+                )
+                .await;
+            }
+        }
+
+        let artifact =
+            match crate::models::artifact_transfer::servable_artifact_from_request(&request) {
+                Ok(artifact) => artifact,
+                Err(error) => {
+                    tracing::debug!(
+                        peer = %remote.fmt_short(),
+                        path = %request.relative_path,
+                        "artifact transfer request cannot be served: {error}"
+                    );
+                    return write_artifact_transfer_response(
+                        &mut send,
+                        false,
+                        0,
+                        None,
+                        Some("artifact unavailable"),
+                    )
+                    .await;
+                }
+            };
+        if request.offset > artifact.size {
+            return write_artifact_transfer_response(
+                &mut send,
+                false,
+                artifact.size,
+                Some(&artifact.sha256),
+                Some("invalid transfer offset"),
+            )
+            .await;
+        }
+
+        write_artifact_transfer_response(
+            &mut send,
+            true,
+            artifact.size,
+            Some(&artifact.sha256),
+            None,
+        )
+        .await?;
+        let mut file = tokio::fs::File::open(&artifact.path)
+            .await
+            .context("open artifact for transfer")?;
+        file.seek(std::io::SeekFrom::Start(request.offset))
+            .await
+            .context("seek artifact for transfer")?;
+        let mut buffer = vec![0u8; ARTIFACT_TRANSFER_BUFFER_BYTES];
+        let mut remaining = artifact.size.saturating_sub(request.offset);
+        while remaining > 0 {
+            let limit = buffer.len().min(remaining as usize);
+            let read = file
+                .read(&mut buffer[..limit])
+                .await
+                .context("read artifact for transfer")?;
+            anyhow::ensure!(read > 0, "artifact file ended before expected byte count");
+            send.write_all(&buffer[..read])
+                .await
+                .context("write artifact transfer bytes")?;
+            remaining -= read as u64;
+        }
+        let _ = send.finish();
         Ok(())
     }
 

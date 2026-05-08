@@ -4109,8 +4109,10 @@ async fn run_auto(
         cli.config.as_deref(),
     )
     .await?;
-    node.set_stage_control_sender(skippy::spawn_stage_control_loop())
-        .await;
+    node.set_stage_control_sender(skippy::spawn_stage_control_loop(Some(Arc::new(
+        node.clone(),
+    ))))
+    .await;
     node.start_accepting();
     let token = node.invite_token();
     node.set_display_name(node_display_name(&cli, &node)).await;

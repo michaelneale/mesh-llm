@@ -105,6 +105,32 @@ pub struct PeerAnnouncement {
     /// Advisory canonical refs this node wants the mesh to consider
     #[prost(string, repeated, tag = "35")]
     pub explicit_model_interests: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Additive feature discovery for admitted subsystem protocols
+    #[prost(message, repeated, tag = "37")]
+    pub subprotocols: ::prost::alloc::vec::Vec<MeshSubprotocol>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct MeshSubprotocol {
+    /// e.g. "skippy-stage"
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    /// subprotocol major version
+    #[prost(uint32, tag = "2")]
+    pub major: u32,
+    /// e.g. "artifact-transfer"
+    #[prost(string, repeated, tag = "3")]
+    pub features: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct MeshSubprotocolOpen {
+    #[prost(uint32, tag = "1")]
+    pub gen: u32,
+    /// e.g. "skippy-stage"
+    #[prost(string, tag = "2")]
+    pub name: ::prost::alloc::string::String,
+    /// subprotocol major version
+    #[prost(uint32, tag = "3")]
+    pub major: u32,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct HardwareInfo {

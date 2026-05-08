@@ -2,13 +2,14 @@
 // These tests verify the portable protocol layer that is safe to use on mobile targets.
 
 use mesh_client::proto::node::{
-    GossipFrame, NodeRole, PeerAnnouncement, PeerDown, PeerLeaving, RouteTable, RouteTableRequest,
+    GossipFrame, MeshSubprotocol, MeshSubprotocolOpen, NodeRole, PeerAnnouncement, PeerDown,
+    PeerLeaving, RouteTable, RouteTableRequest,
 };
 use mesh_client::protocol::{
     decode_control_frame, decode_legacy_tunnel_map_frame, encode_control_frame, ControlFrameError,
     ControlProtocol, ALPN_V0, ALPN_V1, MAX_CONTROL_FRAME_BYTES, NODE_PROTOCOL_GENERATION,
     STREAM_CONFIG_PUSH, STREAM_CONFIG_SUBSCRIBE, STREAM_GOSSIP, STREAM_PEER_DOWN,
-    STREAM_PEER_LEAVING, STREAM_ROUTE_REQUEST, STREAM_TUNNEL_MAP,
+    STREAM_PEER_LEAVING, STREAM_ROUTE_REQUEST, STREAM_SUBPROTOCOL, STREAM_TUNNEL_MAP,
 };
 
 // ── ALPN constants ──────────────────────────────────────────────────────────
@@ -113,6 +114,59 @@ fn gossip_frame_bad_generation_rejected() {
         matches!(err, ControlFrameError::BadGeneration { got: 0 }),
         "expected BadGeneration{{got:0}}, got {err:?}"
     );
+}
+
+#[test]
+fn gossip_subprotocol_discovery_roundtrip_and_validation() {
+    let frame = GossipFrame {
+        gen: NODE_PROTOCOL_GENERATION,
+        sender_id: vec![0u8; 32],
+        peers: vec![PeerAnnouncement {
+            endpoint_id: vec![0u8; 32],
+            role: NodeRole::Worker as i32,
+            subprotocols: vec![MeshSubprotocol {
+                name: "skippy-stage".to_string(),
+                major: 1,
+                features: vec!["stage-control".to_string(), "artifact-transfer".to_string()],
+            }],
+            ..Default::default()
+        }],
+    };
+    let encoded = encode_control_frame(STREAM_GOSSIP, &frame);
+    let decoded: GossipFrame = decode_control_frame(STREAM_GOSSIP, &encoded)
+        .expect("valid gossip subprotocol discovery must decode");
+    assert_eq!(decoded.peers[0].subprotocols[0].name, "skippy-stage");
+    assert_eq!(decoded.peers[0].subprotocols[0].major, 1);
+
+    let mut invalid = decoded;
+    invalid.peers[0].subprotocols[0].name.clear();
+    let encoded = encode_control_frame(STREAM_GOSSIP, &invalid);
+    let err = decode_control_frame::<GossipFrame>(STREAM_GOSSIP, &encoded)
+        .expect_err("invalid subprotocol discovery must be rejected");
+    assert!(matches!(err, ControlFrameError::InvalidSubprotocol));
+}
+
+#[test]
+fn mesh_subprotocol_open_validates_generic_envelope() {
+    let open = MeshSubprotocolOpen {
+        gen: NODE_PROTOCOL_GENERATION,
+        name: "skippy-stage".to_string(),
+        major: 1,
+    };
+    let encoded = encode_control_frame(STREAM_SUBPROTOCOL, &open);
+    let decoded: MeshSubprotocolOpen = decode_control_frame(STREAM_SUBPROTOCOL, &encoded).unwrap();
+    assert_eq!(decoded.name, "skippy-stage");
+    assert_eq!(decoded.major, 1);
+
+    let bad = MeshSubprotocolOpen {
+        gen: NODE_PROTOCOL_GENERATION,
+        name: " ".to_string(),
+        major: 1,
+    };
+    let encoded = encode_control_frame(STREAM_SUBPROTOCOL, &bad);
+    let err = decode_control_frame::<MeshSubprotocolOpen>(STREAM_SUBPROTOCOL, &encoded)
+        .expect_err("empty subprotocol names must be rejected");
+    assert!(matches!(err, ControlFrameError::InvalidSubprotocol));
 }
 
 #[test]

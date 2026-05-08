@@ -35,6 +35,7 @@ pub(super) fn peer_meaningfully_changed(old: &PeerInfo, new: &PeerInfo) -> bool 
         || old.explicit_model_interests != new.explicit_model_interests
         || old.served_model_descriptors != new.served_model_descriptors
         || old.served_model_runtime != new.served_model_runtime
+        || old.artifact_transfer_supported != new.artifact_transfer_supported
         || old.version != new.version
         || old.owner_summary != new.owner_summary
         || old.gpu_reserved_bytes != new.gpu_reserved_bytes
@@ -106,6 +107,7 @@ pub(super) fn apply_transitive_ann(
     }
     existing.served_model_descriptors = ann.served_model_descriptors.clone();
     existing.served_model_runtime = ann.served_model_runtime.clone();
+    existing.artifact_transfer_supported = ann.artifact_transfer_supported;
     if ann.experts_summary.is_some() {
         existing.experts_summary = ann.experts_summary.clone();
     }
@@ -678,6 +680,7 @@ impl Node {
                     served_model_descriptors: p.served_model_descriptors.clone(),
                     served_model_runtime: p.served_model_runtime.clone(),
                     owner_attestation: p.owner_attestation.clone(),
+                    artifact_transfer_supported: p.artifact_transfer_supported,
                 })
                 .collect()
         };
@@ -742,6 +745,8 @@ impl Node {
             served_model_descriptors: my_served_model_descriptors,
             served_model_runtime: my_model_runtime_descriptors,
             owner_attestation: my_owner_attestation,
+            artifact_transfer_supported:
+                crate::models::artifact_transfer::artifact_transfer_enabled(),
         });
         announcements
     }
@@ -795,6 +800,7 @@ mod tests {
             served_model_descriptors: vec![],
             served_model_runtime: vec![],
             owner_attestation: None,
+            artifact_transfer_supported: true,
         }
     }
 
