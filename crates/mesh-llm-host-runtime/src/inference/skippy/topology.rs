@@ -7,7 +7,7 @@ use skippy_topology::{
     TopologyPlanRequest,
 };
 
-use super::materialization::StagePackageInfo;
+use super::{materialization::StagePackageInfo, package::SkippyPackageIdentity};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct StageTopologyParticipant {
@@ -27,6 +27,7 @@ pub(crate) struct MeshStagePlan {
     pub(crate) node_id: iroh::EndpointId,
     pub(crate) layer_start: u32,
     pub(crate) layer_end: u32,
+    pub(crate) parameter_bytes: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -124,6 +125,7 @@ pub(crate) fn plan_package_topology(
                 node_id,
                 layer_start: stage.layer_start,
                 layer_end: stage.layer_end,
+                parameter_bytes: stage.parameter_bytes,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -138,6 +140,33 @@ pub(crate) fn plan_package_topology(
             .map(|diagnostic| diagnostic.message)
             .collect(),
     })
+}
+
+pub(crate) fn plan_package_identity_topology(
+    topology_id: &str,
+    model_id: &str,
+    package: &SkippyPackageIdentity,
+    participants: &[StageTopologyParticipant],
+) -> Result<MeshTopologyPlan> {
+    let package_dir = package
+        .source_model_path
+        .parent()
+        .map(ToOwned::to_owned)
+        .unwrap_or_default();
+    let package = StagePackageInfo {
+        package_ref: package.package_ref.clone(),
+        package_dir,
+        manifest_sha256: package.manifest_sha256.clone(),
+        model_id: model_id.to_string(),
+        source_model_path: package.source_model_path.to_string_lossy().to_string(),
+        source_model_sha256: package.source_model_sha256.clone(),
+        source_model_bytes: Some(package.source_model_bytes),
+        layer_count: package.layer_count,
+        activation_width: package.activation_width,
+        projector_path: None,
+        layers: Vec::new(),
+    };
+    plan_package_topology(topology_id, &package, participants)
 }
 
 fn layer_specs(package: &StagePackageInfo) -> Vec<LayerSpec> {

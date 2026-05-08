@@ -11,10 +11,6 @@ use crate::runtime_data::{
 };
 use anyhow::{Context, Result};
 use skippy_protocol::{FlashAttentionType, LoadMode, PeerConfig, StageConfig};
-use skippy_topology::{
-    infer_family_capability, plan_package_aware_contiguous, BoundaryDecision, DiagnosticSeverity,
-    LayerSpec, NodeSpec, PlannerPolicy, TopologyPlanRequest,
-};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -568,6 +564,78 @@ struct SplitParticipant {
     node_id: iroh::EndpointId,
     vram_bytes: u64,
     first_joined_mesh_ts: Option<u64>,
+    cached_slice_bytes: u64,
+    missing_artifact_bytes: u64,
+    rtt_ms: Option<u32>,
+    artifact_transfer_supported: bool,
+    availability_score: u32,
+}
+
+impl SplitParticipant {
+    fn new(node_id: iroh::EndpointId, vram_bytes: u64, first_joined_mesh_ts: Option<u64>) -> Self {
+        Self {
+            node_id,
+            vram_bytes,
+            first_joined_mesh_ts,
+            cached_slice_bytes: 0,
+            missing_artifact_bytes: 0,
+            rtt_ms: None,
+            artifact_transfer_supported: false,
+            availability_score: 0,
+        }
+    }
+
+    fn local_package(
+        node_id: iroh::EndpointId,
+        vram_bytes: u64,
+        first_joined_mesh_ts: Option<u64>,
+        package: &skippy::SkippyPackageIdentity,
+    ) -> Self {
+        let mut participant = Self::new(node_id, vram_bytes, first_joined_mesh_ts);
+        participant.cached_slice_bytes = package.source_model_bytes;
+        participant.artifact_transfer_supported = true;
+        participant.availability_score = package.layer_count;
+        participant
+    }
+
+    fn with_package_signals(
+        mut self,
+        signal: SplitParticipantPackageSignal,
+        rtt_ms: Option<u32>,
+        artifact_transfer_supported: bool,
+    ) -> Self {
+        self.cached_slice_bytes = signal.cached_slice_bytes;
+        self.missing_artifact_bytes = signal.missing_artifact_bytes;
+        self.availability_score = signal.availability_score;
+        self.rtt_ms = rtt_ms;
+        self.artifact_transfer_supported = artifact_transfer_supported;
+        self
+    }
+
+    fn to_topology_participant(self) -> skippy::StageTopologyParticipant {
+        skippy::StageTopologyParticipant {
+            node_id: self.node_id,
+            vram_bytes: self.vram_bytes,
+            cached_slice_bytes: self.cached_slice_bytes,
+            missing_artifact_bytes: self.missing_artifact_bytes,
+            rtt_ms: self.rtt_ms,
+            artifact_transfer_supported: self.artifact_transfer_supported,
+            availability_score: self.availability_score,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SplitParticipantPackageSignal {
+    cached_slice_bytes: u64,
+    missing_artifact_bytes: u64,
+    availability_score: u32,
+}
+
+impl SplitParticipantPackageSignal {
+    fn can_stage_with(self, artifact_transfer_supported: bool) -> bool {
+        self.missing_artifact_bytes == 0 || artifact_transfer_supported
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1490,6 +1558,8 @@ fn split_stage_balance_score(stages: &[RuntimeSliceStagePlan]) -> u32 {
     max.saturating_sub(min)
 }
 
+type SplitParticipantSignature = Vec<(String, u64, u64, u64, Option<u32>, bool, u32)>;
+
 async fn wait_for_split_participants(
     node: &mesh::Node,
     model_name: &str,
@@ -1501,7 +1571,7 @@ async fn wait_for_split_participants(
     let deadline = tokio::time::Instant::now() + timeout;
     let mut best: Vec<SplitParticipant> = Vec::new();
     let mut best_excluded: Vec<SplitParticipantExclusion> = Vec::new();
-    let mut last_signature: Vec<(String, u64)> = Vec::new();
+    let mut last_signature: SplitParticipantSignature = Vec::new();
     let mut stable_since = tokio::time::Instant::now();
     loop {
         let snapshot =
@@ -1565,11 +1635,12 @@ async fn collect_split_participants(
     package: &skippy::SkippyPackageIdentity,
     local_vram_override: Option<u64>,
 ) -> SplitParticipantSnapshot {
-    let mut participants = vec![SplitParticipant {
-        node_id: node.id(),
-        vram_bytes: local_vram_override.unwrap_or_else(|| node.vram_bytes()),
-        first_joined_mesh_ts: Some(node.first_joined_mesh_ts().await.unwrap_or(0)),
-    }];
+    let mut participants = vec![SplitParticipant::local_package(
+        node.id(),
+        local_vram_override.unwrap_or_else(|| node.vram_bytes()),
+        Some(node.first_joined_mesh_ts().await.unwrap_or(0)),
+        package,
+    )];
     let mut excluded = Vec::new();
     for peer in node.peers().await {
         if matches!(peer.role, NodeRole::Client) {
@@ -1608,12 +1679,24 @@ async fn collect_split_participants(
             continue;
         }
 
-        if split_peer_source_available(node, peer.id, model_ref, package).await {
-            participants.push(SplitParticipant {
-                node_id: peer.id,
-                vram_bytes: peer.vram_bytes,
-                first_joined_mesh_ts: peer.first_joined_mesh_ts,
-            });
+        if let Some(package_signal) =
+            split_peer_package_signal(node, peer.id, model_ref, package).await
+        {
+            if package_signal.can_stage_with(peer.artifact_transfer_supported) {
+                participants.push(
+                    SplitParticipant::new(peer.id, peer.vram_bytes, peer.first_joined_mesh_ts)
+                        .with_package_signals(
+                            package_signal,
+                            peer.rtt_ms,
+                            peer.artifact_transfer_supported,
+                        ),
+                );
+            } else {
+                excluded.push(SplitParticipantExclusion {
+                    node_id: peer.id,
+                    reason: SplitParticipantExclusionReason::MissingModelSource,
+                });
+            }
         } else {
             excluded.push(SplitParticipantExclusion {
                 node_id: peer.id,
@@ -1631,12 +1714,12 @@ async fn collect_split_participants(
     }
 }
 
-async fn split_peer_source_available(
+async fn split_peer_package_signal(
     node: &mesh::Node,
     peer_id: iroh::EndpointId,
     model_ref: &str,
     package: &skippy::SkippyPackageIdentity,
-) -> bool {
+) -> Option<SplitParticipantPackageSignal> {
     let request = skippy::StageInventoryRequest {
         model_id: model_ref.to_string(),
         package_ref: package.package_ref.clone(),
@@ -1646,19 +1729,107 @@ async fn split_peer_source_available(
         .send_stage_control(peer_id, skippy::StageControlRequest::Inventory(request))
         .await;
     let Ok(skippy::StageControlResponse::Inventory(inventory)) = result else {
-        return false;
+        return None;
     };
-    inventory
-        .available_ranges
-        .iter()
-        .chain(inventory.ready_ranges.iter())
-        .any(|range| range.layer_start == 0 && range.layer_end >= package.layer_count)
+    Some(split_inventory_package_signal(&inventory, package))
 }
 
-fn split_participant_signature(participants: &[SplitParticipant]) -> Vec<(String, u64)> {
+fn split_inventory_package_signal(
+    inventory: &skippy::StageLayerInventory,
+    package: &skippy::SkippyPackageIdentity,
+) -> SplitParticipantPackageSignal {
+    let cached_slice_bytes = split_inventory_range_bytes(
+        inventory
+            .available_ranges
+            .iter()
+            .chain(inventory.ready_ranges.iter()),
+        package,
+    );
+    let explicit_missing_bytes =
+        split_inventory_range_bytes(inventory.missing_ranges.iter(), package);
+    let missing_artifact_bytes = if explicit_missing_bytes > 0 {
+        explicit_missing_bytes
+    } else if cached_slice_bytes >= package.source_model_bytes {
+        0
+    } else if inventory.layer_count == 0 && cached_slice_bytes == 0 {
+        package.source_model_bytes
+    } else {
+        package
+            .source_model_bytes
+            .saturating_sub(cached_slice_bytes)
+    };
+    SplitParticipantPackageSignal {
+        cached_slice_bytes,
+        missing_artifact_bytes,
+        availability_score: split_inventory_covered_layers(
+            inventory
+                .available_ranges
+                .iter()
+                .chain(inventory.ready_ranges.iter()),
+            package.layer_count,
+        ),
+    }
+}
+
+fn split_inventory_range_bytes<'a>(
+    ranges: impl Iterator<Item = &'a skippy::LayerRange>,
+    package: &skippy::SkippyPackageIdentity,
+) -> u64 {
+    if package.layer_count == 0 || package.source_model_bytes == 0 {
+        return 0;
+    }
+    let covered_layers = u128::from(split_inventory_covered_layers(ranges, package.layer_count));
+    let layer_count = u128::from(package.layer_count);
+    let bytes = u128::from(package.source_model_bytes).saturating_mul(covered_layers) / layer_count;
+    bytes.min(u128::from(package.source_model_bytes)) as u64
+}
+
+fn split_inventory_covered_layers<'a>(
+    ranges: impl Iterator<Item = &'a skippy::LayerRange>,
+    layer_count: u32,
+) -> u32 {
+    let mut ranges = ranges
+        .filter_map(|range| {
+            let start = range.layer_start.min(layer_count);
+            let end = range.layer_end.min(layer_count);
+            (start < end).then_some((start, end))
+        })
+        .collect::<Vec<_>>();
+    ranges.sort_unstable();
+    let mut covered = 0u32;
+    let mut current: Option<(u32, u32)> = None;
+    for (start, end) in ranges {
+        match current {
+            Some((current_start, current_end)) if start <= current_end => {
+                current = Some((current_start, current_end.max(end)));
+            }
+            Some((current_start, current_end)) => {
+                covered = covered.saturating_add(current_end.saturating_sub(current_start));
+                current = Some((start, end));
+            }
+            None => current = Some((start, end)),
+        }
+    }
+    if let Some((start, end)) = current {
+        covered = covered.saturating_add(end.saturating_sub(start));
+    }
+    covered
+}
+
+fn split_participant_signature(participants: &[SplitParticipant]) -> SplitParticipantSignature {
     participants
         .iter()
-        .map(|participant| (participant.node_id.to_string(), participant.vram_bytes))
+        .map(|participant| {
+            (
+                participant.node_id.to_string(),
+                participant.vram_bytes,
+                participant.cached_slice_bytes,
+                participant.missing_artifact_bytes,
+                participant.rtt_ms,
+                participant.artifact_transfer_supported,
+                participant.availability_score,
+            )
+        })
         .collect()
 }
 
@@ -1667,9 +1838,13 @@ fn split_participant_labels(participants: &[SplitParticipant]) -> Vec<String> {
         .iter()
         .map(|participant| {
             format!(
-                "{}:{}GB",
+                "{}:{}GB cached={}GB missing={}GB rtt={}ms transfer={}",
                 participant.node_id.fmt_short(),
-                participant.vram_bytes / 1_000_000_000
+                participant.vram_bytes / 1_000_000_000,
+                participant.cached_slice_bytes / 1_000_000_000,
+                participant.missing_artifact_bytes / 1_000_000_000,
+                participant.rtt_ms.unwrap_or_default(),
+                participant.artifact_transfer_supported
             )
         })
         .collect()
@@ -1701,34 +1876,6 @@ fn plan_runtime_slice_topology(
     package: &skippy::SkippyPackageIdentity,
     participants: &[SplitParticipant],
 ) -> Result<Vec<RuntimeSliceStagePlan>> {
-    let node_by_id = participants
-        .iter()
-        .map(|participant| (participant.node_id.to_string(), participant.node_id))
-        .collect::<HashMap<_, _>>();
-    let fallback_layer_bytes = package.source_model_bytes / u64::from(package.layer_count.max(1));
-    let layers = (0..package.layer_count)
-        .map(|index| LayerSpec {
-            index,
-            attention: true,
-            recurrent: false,
-            parameter_bytes: fallback_layer_bytes,
-        })
-        .collect();
-    let request = TopologyPlanRequest {
-        topology_id: topology_id.to_string(),
-        model_id: model_ref.to_string(),
-        layers,
-        nodes: participants
-            .iter()
-            .map(|participant| NodeSpec {
-                node_id: participant.node_id.to_string(),
-                cached_slice_bytes: 0,
-                vram_bytes: participant.vram_bytes,
-            })
-            .collect(),
-        family: infer_family_capability(model_ref, package.layer_count, package.activation_width),
-        policy: PlannerPolicy::default(),
-    };
     tracing::info!(
         topology_id,
         model_ref,
@@ -1736,48 +1883,37 @@ fn plan_runtime_slice_topology(
         layer_count = package.layer_count,
         "planning split runtime topology"
     );
-    let plan = plan_package_aware_contiguous(&request)?;
-    let rejected = plan
-        .boundaries
+    let topology_participants = participants
         .iter()
-        .filter(|boundary| boundary.decision == BoundaryDecision::Rejected)
-        .map(|boundary| {
-            format!(
-                "rejected boundary at layer {}: {}",
-                boundary.layer_boundary,
-                boundary.messages.join("; ")
-            )
-        })
+        .copied()
+        .map(SplitParticipant::to_topology_participant)
         .collect::<Vec<_>>();
-    if !rejected.is_empty() {
-        anyhow::bail!("{}", rejected.join("; "));
-    }
-    let errors = plan
-        .diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error)
-        .map(|diagnostic| diagnostic.message.clone())
-        .collect::<Vec<_>>();
-    if !errors.is_empty() {
-        anyhow::bail!("{}", errors.join("; "));
+    let plan = skippy::plan_package_identity_topology(
+        topology_id,
+        model_ref,
+        package,
+        &topology_participants,
+    )?;
+    if !plan.diagnostics.is_empty() {
+        tracing::debug!(
+            topology_id,
+            model_ref,
+            diagnostics = ?plan.diagnostics,
+            "package-aware split topology planner emitted diagnostics"
+        );
     }
     let mut stages = plan
         .stages
         .into_iter()
-        .map(|stage| {
-            let node_id = node_by_id.get(&stage.node_id).copied().with_context(|| {
-                format!("topology planner returned unknown node {}", stage.node_id)
-            })?;
-            Ok(RuntimeSliceStagePlan {
-                stage_id: stage.stage_id,
-                stage_index: stage.stage_index,
-                node_id,
-                layer_start: stage.layer_start,
-                layer_end: stage.layer_end,
-                parameter_bytes: stage.parameter_bytes,
-            })
+        .map(|stage| RuntimeSliceStagePlan {
+            stage_id: stage.stage_id,
+            stage_index: stage.stage_index,
+            node_id: stage.node_id,
+            layer_start: stage.layer_start,
+            layer_end: stage.layer_end,
+            parameter_bytes: stage.parameter_bytes,
         })
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<Vec<_>>();
     stages.sort_by_key(|stage| stage.stage_index);
     validate_split_capacity(model_ref, package, participants, &stages)?;
     tracing::info!(
@@ -2401,11 +2537,7 @@ mod tests {
     }
 
     fn participant(seed: u8) -> SplitParticipant {
-        SplitParticipant {
-            node_id: make_id(seed),
-            vram_bytes: 24_000_000_000,
-            first_joined_mesh_ts: None,
-        }
+        SplitParticipant::new(make_id(seed), 24_000_000_000, None)
     }
 
     fn stage(
@@ -2576,26 +2708,10 @@ mod tests {
     #[test]
     fn split_topology_planner_uses_all_eligible_participants() {
         let participants = vec![
-            SplitParticipant {
-                node_id: make_id(1),
-                vram_bytes: 16_000_000_000,
-                first_joined_mesh_ts: None,
-            },
-            SplitParticipant {
-                node_id: make_id(2),
-                vram_bytes: 24_000_000_000,
-                first_joined_mesh_ts: None,
-            },
-            SplitParticipant {
-                node_id: make_id(3),
-                vram_bytes: 32_000_000_000,
-                first_joined_mesh_ts: None,
-            },
-            SplitParticipant {
-                node_id: make_id(4),
-                vram_bytes: 48_000_000_000,
-                first_joined_mesh_ts: None,
-            },
+            SplitParticipant::new(make_id(1), 16_000_000_000, None),
+            SplitParticipant::new(make_id(2), 24_000_000_000, None),
+            SplitParticipant::new(make_id(3), 32_000_000_000, None),
+            SplitParticipant::new(make_id(4), 48_000_000_000, None),
         ];
 
         let stages = plan_runtime_slice_topology(
@@ -2618,6 +2734,117 @@ mod tests {
         );
         assert_eq!(stages.first().unwrap().layer_start, 0);
         assert_eq!(stages.last().unwrap().layer_end, 40);
+    }
+
+    #[test]
+    fn split_topology_planner_prefers_cached_participant_in_runtime_path() {
+        let cold = SplitParticipant::new(make_id(1), 24_000_000_000, None).with_package_signals(
+            SplitParticipantPackageSignal {
+                cached_slice_bytes: 0,
+                missing_artifact_bytes: 40_000_000,
+                availability_score: 0,
+            },
+            Some(80),
+            true,
+        );
+        let warm = SplitParticipant::new(make_id(2), 24_000_000_000, None).with_package_signals(
+            SplitParticipantPackageSignal {
+                cached_slice_bytes: 40_000_000,
+                missing_artifact_bytes: 0,
+                availability_score: 40,
+            },
+            Some(5),
+            true,
+        );
+
+        let stages = plan_runtime_slice_topology(
+            "topology-test",
+            "unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_XL",
+            &package(40),
+            &[cold, warm],
+        )
+        .expect("package-aware topology plan");
+
+        assert_eq!(stages.len(), 2);
+        assert_eq!(stages[0].node_id, make_id(2));
+        assert_eq!((stages[0].layer_start, stages[0].layer_end), (0, 20));
+    }
+
+    #[test]
+    fn split_inventory_package_signal_counts_cached_and_missing_ranges() {
+        let package = skippy::SkippyPackageIdentity {
+            source_model_bytes: 1_000,
+            layer_count: 10,
+            ..package(10)
+        };
+        let inventory = skippy::StageLayerInventory {
+            model_id: "model-a".to_string(),
+            package_ref: package.package_ref.clone(),
+            manifest_sha256: package.manifest_sha256.clone(),
+            layer_count: 10,
+            ready_ranges: vec![skippy::LayerRange {
+                layer_start: 4,
+                layer_end: 6,
+            }],
+            available_ranges: vec![skippy::LayerRange {
+                layer_start: 0,
+                layer_end: 4,
+            }],
+            missing_ranges: vec![skippy::LayerRange {
+                layer_start: 6,
+                layer_end: 10,
+            }],
+            preparing_ranges: Vec::new(),
+            source_model_path: None,
+            source_model_bytes: None,
+            source_model_kind: skippy::SourceModelKind::LayerPackage,
+        };
+
+        let signal = split_inventory_package_signal(&inventory, &package);
+
+        assert_eq!(
+            signal,
+            SplitParticipantPackageSignal {
+                cached_slice_bytes: 600,
+                missing_artifact_bytes: 400,
+                availability_score: 6,
+            }
+        );
+        assert!(signal.can_stage_with(true));
+        assert!(!signal.can_stage_with(false));
+    }
+
+    #[test]
+    fn split_inventory_package_signal_treats_unknown_inventory_as_missing_package() {
+        let package = skippy::SkippyPackageIdentity {
+            source_model_bytes: 1_000,
+            layer_count: 10,
+            ..package(10)
+        };
+        let inventory = skippy::StageLayerInventory {
+            model_id: "model-a".to_string(),
+            package_ref: package.package_ref.clone(),
+            manifest_sha256: package.manifest_sha256.clone(),
+            layer_count: 0,
+            ready_ranges: Vec::new(),
+            available_ranges: Vec::new(),
+            missing_ranges: Vec::new(),
+            preparing_ranges: Vec::new(),
+            source_model_path: None,
+            source_model_bytes: None,
+            source_model_kind: skippy::SourceModelKind::Unknown,
+        };
+
+        let signal = split_inventory_package_signal(&inventory, &package);
+
+        assert_eq!(
+            signal,
+            SplitParticipantPackageSignal {
+                cached_slice_bytes: 0,
+                missing_artifact_bytes: 1_000,
+                availability_score: 0,
+            }
+        );
     }
 
     #[test]
@@ -2667,16 +2894,8 @@ mod tests {
     #[test]
     fn split_topology_planner_accepts_constrained_nodes_with_enough_aggregate_capacity() {
         let participants = vec![
-            SplitParticipant {
-                node_id: make_id(1),
-                vram_bytes: 3_000_000_000,
-                first_joined_mesh_ts: None,
-            },
-            SplitParticipant {
-                node_id: make_id(2),
-                vram_bytes: 3_000_000_000,
-                first_joined_mesh_ts: None,
-            },
+            SplitParticipant::new(make_id(1), 3_000_000_000, None),
+            SplitParticipant::new(make_id(2), 3_000_000_000, None),
         ];
         let package = skippy::SkippyPackageIdentity {
             source_model_bytes: 4_800_000_000,
@@ -2705,16 +2924,8 @@ mod tests {
     #[test]
     fn split_topology_planner_rejects_insufficient_aggregate_capacity() {
         let participants = vec![
-            SplitParticipant {
-                node_id: make_id(1),
-                vram_bytes: 2_000_000_000,
-                first_joined_mesh_ts: None,
-            },
-            SplitParticipant {
-                node_id: make_id(2),
-                vram_bytes: 2_000_000_000,
-                first_joined_mesh_ts: None,
-            },
+            SplitParticipant::new(make_id(1), 2_000_000_000, None),
+            SplitParticipant::new(make_id(2), 2_000_000_000, None),
         ];
         let package = skippy::SkippyPackageIdentity {
             source_model_bytes: 4_800_000_000,
@@ -2739,16 +2950,8 @@ mod tests {
     #[test]
     fn split_topology_planner_rejects_stage_that_exceeds_participant_capacity() {
         let participants = vec![
-            SplitParticipant {
-                node_id: make_id(1),
-                vram_bytes: 900,
-                first_joined_mesh_ts: None,
-            },
-            SplitParticipant {
-                node_id: make_id(2),
-                vram_bytes: 200,
-                first_joined_mesh_ts: None,
-            },
+            SplitParticipant::new(make_id(1), 900, None),
+            SplitParticipant::new(make_id(2), 200, None),
         ];
         let package = skippy::SkippyPackageIdentity {
             source_model_bytes: 1_000,
@@ -2799,16 +3002,29 @@ mod tests {
     #[test]
     fn split_participant_signature_includes_vram_for_stability() {
         let node_id = make_id(9);
-        let first = vec![SplitParticipant {
-            node_id,
-            vram_bytes: 16_000_000_000,
-            first_joined_mesh_ts: None,
-        }];
-        let second = vec![SplitParticipant {
-            node_id,
-            vram_bytes: 24_000_000_000,
-            first_joined_mesh_ts: None,
-        }];
+        let first = vec![SplitParticipant::new(node_id, 16_000_000_000, None)];
+        let second = vec![SplitParticipant::new(node_id, 24_000_000_000, None)];
+
+        assert_ne!(
+            split_participant_signature(&first),
+            split_participant_signature(&second)
+        );
+    }
+
+    #[test]
+    fn split_participant_signature_includes_package_signals_for_stability() {
+        let node_id = make_id(9);
+        let first = vec![SplitParticipant::new(node_id, 24_000_000_000, None)];
+        let second = vec![SplitParticipant::new(node_id, 24_000_000_000, None)
+            .with_package_signals(
+                SplitParticipantPackageSignal {
+                    cached_slice_bytes: 12_000_000,
+                    missing_artifact_bytes: 0,
+                    availability_score: 12,
+                },
+                Some(20),
+                true,
+            )];
 
         assert_ne!(
             split_participant_signature(&first),
@@ -2898,11 +3114,7 @@ mod tests {
             "candidate-topology".into(),
             "candidate-run".into(),
             2,
-            vec![SplitParticipant {
-                node_id: local_id,
-                vram_bytes: 24_000_000_000,
-                first_joined_mesh_ts: None,
-            }],
+            vec![SplitParticipant::new(local_id, 24_000_000_000, None)],
             vec![
                 local_stage(local_id, 0, 0, 12),
                 local_stage(local_id, 1, 12, 24),
@@ -2967,11 +3179,7 @@ mod tests {
 
     #[test]
     fn split_replan_decision_accepts_more_stage_capacity() {
-        let participants = vec![SplitParticipant {
-            node_id: make_id(1),
-            vram_bytes: 16_000_000_000,
-            first_joined_mesh_ts: None,
-        }];
+        let participants = vec![SplitParticipant::new(make_id(1), 16_000_000_000, None)];
         let active = SplitTopologyGeneration::new(
             "topology-a".into(),
             "run-a".into(),
@@ -3027,11 +3235,7 @@ mod tests {
             layer_end: 40,
             parameter_bytes: 40_000_000,
         }];
-        let participants = vec![SplitParticipant {
-            node_id: make_id(1),
-            vram_bytes: 16_000_000_000,
-            first_joined_mesh_ts: None,
-        }];
+        let participants = vec![SplitParticipant::new(make_id(1), 16_000_000_000, None)];
         let active = SplitTopologyGeneration::new(
             "topology-a".into(),
             "run-a".into(),

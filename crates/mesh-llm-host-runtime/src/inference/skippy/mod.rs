@@ -49,6 +49,7 @@ pub(crate) use stage::{
     StagePrepareAcceptedResponse, StagePrepareRequest, StageReadyResponse, StageRuntimeState,
     StageStatusAck, StageStatusFilter, StageStatusSnapshot, StageStopRequest, StageWireDType,
 };
+pub(crate) use topology::{plan_package_identity_topology, StageTopologyParticipant};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SkippyModelState {

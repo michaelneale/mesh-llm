@@ -235,6 +235,7 @@ mod tests {
                 node_id: make_id(1),
                 layer_start: 4,
                 layer_end: 8,
+                parameter_bytes: 50,
             },
             None,
         );
@@ -258,6 +259,7 @@ mod tests {
                 node_id: make_id(0),
                 layer_start: 0,
                 layer_end: 4,
+                parameter_bytes: 50,
             },
             &MeshStagePlan {
                 stage_id: "stage-1".to_string(),
@@ -265,6 +267,7 @@ mod tests {
                 node_id: make_id(1),
                 layer_start: 4,
                 layer_end: 8,
+                parameter_bytes: 50,
             },
             "127.0.0.1:9001".to_string(),
             None,
