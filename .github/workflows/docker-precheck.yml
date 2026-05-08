@@ -63,6 +63,10 @@ jobs:
           grep -qE '^\s*COPY\s+Cargo\.toml\s+Cargo\.lock\s+\./?$' "$file"
           for path in \
             crates/mesh-llm/ \
+            crates/mesh-llm-identity/ \
+            crates/mesh-llm-protocol/ \
+            crates/mesh-llm-routing/ \
+            crates/mesh-llm-types/ \
             crates/mesh-llm-plugin/ \
             crates/mesh-client/ \
             crates/mesh-api/ \

@@ -1,6 +1,6 @@
 const path = require('node:path')
 
-const appDir = path.resolve(__dirname, 'crates/mesh-llm/ui-preview')
+const appDir = path.resolve(__dirname, 'crates/mesh-llm-ui/preview')
 const testDir = path.resolve(appDir, 'e2e')
 const host = process.env.PLAYWRIGHT_HOST ?? '127.0.0.1'
 const port = Number(process.env.PLAYWRIGHT_PORT ?? 51973)

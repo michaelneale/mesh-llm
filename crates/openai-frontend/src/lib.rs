@@ -36,7 +36,7 @@ pub use hooks::{
 };
 pub use models::{ModelId, ModelIdError, ModelObject, ModelsResponse};
 pub use responses::{
-    chat_usage_to_responses_usage, normalize_openai_compat_request,
+    chat_usage_to_responses_usage, normalize_openai_compat_request, parse_chat_stream_chunk,
     responses_stream_completed_event, responses_stream_created_event, responses_stream_delta_event,
     responses_stream_delta_event_with_logprobs, responses_stream_text_done_event,
     stream_usage_to_responses_usage, translate_chat_completion_response_to_responses,

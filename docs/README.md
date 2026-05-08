@@ -24,4 +24,15 @@ This directory holds project documentation that is not owned by a single Rust cr
 | [plans/](plans/) | Narrow implementation plans that are not yet general design docs |
 | [specs/](specs/) | Focused behavior specs for individual features |
 
-Per-crate docs stay with their crates. The main binary crate overview lives at [../crates/mesh-llm/README.md](../crates/mesh-llm/README.md).
+Per-crate docs stay with their crates. The main binary crate overview lives at
+[../crates/mesh-llm/README.md](../crates/mesh-llm/README.md), and the web
+console/embedded asset crate overview lives at
+[../crates/mesh-llm-ui/README.md](../crates/mesh-llm-ui/README.md).
+Shared protocol-facing model/type ownership lives at
+[../crates/mesh-llm-types/README.md](../crates/mesh-llm-types/README.md).
+Shared owner identity and envelope crypto lives at
+[../crates/mesh-llm-identity/README.md](../crates/mesh-llm-identity/README.md).
+Shared wire protocol ownership lives at
+[../crates/mesh-llm-protocol/README.md](../crates/mesh-llm-protocol/README.md).
+Shared routing target ownership lives at
+[../crates/mesh-llm-routing/README.md](../crates/mesh-llm-routing/README.md).

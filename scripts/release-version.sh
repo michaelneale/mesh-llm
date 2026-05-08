@@ -98,7 +98,14 @@ done < <(
     cd "$REPO_ROOT"
     git ls-files \
         'crates/mesh-llm/Cargo.toml' \
+        'crates/mesh-llm-host-runtime/Cargo.toml' \
+        'crates/mesh-llm-identity/Cargo.toml' \
         'crates/mesh-llm-plugin/Cargo.toml' \
+        'crates/mesh-llm-protocol/Cargo.toml' \
+        'crates/mesh-llm-routing/Cargo.toml' \
+        'crates/mesh-llm-system/Cargo.toml' \
+        'crates/mesh-llm-types/Cargo.toml' \
+        'crates/mesh-llm-ui/Cargo.toml' \
         'crates/mesh-api/Cargo.toml' \
         'crates/mesh-client/Cargo.toml' \
         | sort -u
@@ -111,7 +118,7 @@ fi
 
 versioned_files=()
 
-lib_file="$REPO_ROOT/crates/mesh-llm/src/lib.rs"
+lib_file="$REPO_ROOT/crates/mesh-llm-host-runtime/src/lib.rs"
 require_file "$lib_file"
 update_lib_version "$lib_file" "$version"
 versioned_files+=("$lib_file")

@@ -4004,6 +4004,50 @@ version = "0.1.0"
 name = "mesh-llm"
 version = "0.65.1"
 dependencies = [
+ "axum",
+ "hex",
+ "mesh-llm-client",
+ "mesh-llm-host-runtime",
+ "serde_json",
+ "serial_test",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "mesh-llm-client"
+version = "0.65.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "crypto_box",
+ "ed25519-dalek",
+ "hex",
+ "httparse",
+ "iroh",
+ "mesh-llm-identity",
+ "mesh-llm-protocol",
+ "mesh-llm-routing",
+ "mesh-llm-types",
+ "model-artifact",
+ "nostr-sdk",
+ "prost",
+ "rand 0.10.1",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "mesh-llm-host-runtime"
+version = "0.65.1"
+dependencies = [
  "ansi-to-tui",
  "anyhow",
  "arboard",
@@ -4022,12 +4066,17 @@ dependencies = [
  "hex",
  "httparse",
  "huggingface-hub",
- "include_dir",
  "iroh",
  "keyring",
  "libc",
  "mesh-llm-client",
+ "mesh-llm-identity",
  "mesh-llm-plugin",
+ "mesh-llm-protocol",
+ "mesh-llm-routing",
+ "mesh-llm-system",
+ "mesh-llm-types",
+ "mesh-llm-ui",
  "model-artifact",
  "model-ref",
  "model-resolver",
@@ -4037,8 +4086,6 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "prost",
- "prost-build",
- "protoc-bin-vendored",
  "rand 0.10.1",
  "ratatui",
  "regex-lite",
@@ -4071,28 +4118,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "mesh-llm-client"
-version = "0.65.1"
+name = "mesh-llm-identity"
+version = "0.1.0"
 dependencies = [
- "anyhow",
- "async-trait",
- "bytes",
  "crypto_box",
  "ed25519-dalek",
  "hex",
- "httparse",
- "iroh",
- "nostr-sdk",
- "prost",
  "rand 0.10.1",
- "rustls",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.18",
- "tokio",
- "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -4112,12 +4148,68 @@ dependencies = [
 ]
 
 [[package]]
+name = "mesh-llm-protocol"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hex",
+ "iroh",
+ "prost",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "mesh-llm-routing"
+version = "0.65.1"
+dependencies = [
+ "iroh",
+]
+
+[[package]]
+name = "mesh-llm-system"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "dirs",
+ "hex",
+ "libc",
+ "reqwest 0.12.28",
+ "semver",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "sha2 0.10.9",
+ "tracing",
+ "zip 2.4.2",
+]
+
+[[package]]
 name = "mesh-llm-test-harness"
 version = "0.1.0"
 dependencies = [
  "reqwest 0.12.28",
  "serde_json",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "mesh-llm-types"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "mesh-llm-ui"
+version = "0.65.1"
+dependencies = [
+ "include_dir",
 ]
 
 [[package]]

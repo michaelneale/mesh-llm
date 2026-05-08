@@ -1,0 +1,22 @@
+[package]
+name = "mesh-llm-system"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+dirs = "6.0.0"
+hex = "0.4.3"
+libc = "0.2.183"
+reqwest = { version = "0.12", features = ["stream", "json"] }
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tracing = "0.1"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+serial_test = "3"

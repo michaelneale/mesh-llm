@@ -10,7 +10,7 @@ Add a CLI command at `mesh-llm gpu benchmark` that forces a fresh benchmark run 
 
 Update the existing GPU command from a bare top-level variant into a real subcommand surface.
 
-- Today, `crates/mesh-llm/src/cli/mod.rs` defines `Command::Gpus` as a bare variant with the alias `gpu`.
+- Today, `crates/mesh-llm-host-runtime/src/cli/mod.rs` defines `Command::Gpus` as a bare variant with the alias `gpu`.
 - Change that to a subcommand-bearing variant so `mesh-llm gpu benchmark` becomes valid.
 - Add a new `GpuCommand` enum for GPU-specific actions.
 
@@ -26,24 +26,24 @@ Optional compatibility decision during implementation:
 
 ## Files to change
 
-### `crates/mesh-llm/src/cli/mod.rs`
+### `crates/mesh-llm-host-runtime/src/cli/mod.rs`
 
 - Replace the bare `Command::Gpus` variant with a subcommand-bearing form.
 - Add a `GpuCommand` enum.
 - Keep user-facing help text concise and consistent with nearby commands.
 
-### `crates/mesh-llm/src/cli/commands/mod.rs`
+### `crates/mesh-llm-host-runtime/src/cli/commands/mod.rs`
 
 - Change dispatch from direct `run_gpus()` invocation to a GPU command dispatcher.
 - Route `gpu benchmark` to a dedicated handler.
 
-### `crates/mesh-llm/src/cli/commands/gpus.rs`
+### `crates/mesh-llm-host-runtime/src/cli/commands/gpus.rs`
 
 - Keep `run_gpus()` for the current read-only inspection path.
 - Add something like `dispatch_gpu_command()`.
 - Add `run_gpu_benchmark()` to perform the forced benchmark flow and print a short result summary.
 
-### `crates/mesh-llm/src/system/benchmark.rs`
+### `crates/mesh-llm-system/src/benchmark.rs`
 
 - Add a helper for a forced rerun path.
 - Do not reuse `run_or_load()` unchanged, because it prefers the cache when hardware matches.
@@ -113,7 +113,7 @@ Preferred direction: extract a dedicated helper rather than overloading `run_or_
 
 ### Unit tests
 
-Add or extend tests in `crates/mesh-llm/src/system/benchmark.rs` to cover:
+Add or extend tests in `crates/mesh-llm-system/src/benchmark.rs` to cover:
 
 - forced rerun path bypasses cache reuse
 - forced path rewrites the fingerprint file

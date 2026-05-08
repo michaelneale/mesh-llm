@@ -1,9 +1,20 @@
-mod envelope;
-pub mod error;
-pub mod keys;
-pub mod provider;
+pub mod envelope {
+    pub use mesh_llm_identity::envelope::*;
+}
 
-pub use self::envelope::{open_message, seal_message, OpenedMessage, SignedEncryptedEnvelope};
-pub use self::error::CryptoError;
-pub use self::keys::{owner_id_from_verifying_key, OwnerKeypair};
-pub use self::provider::{InMemoryKeyProvider, KeyProvider, KeyProviderError};
+pub mod error {
+    pub use mesh_llm_identity::error::*;
+}
+
+pub mod keys {
+    pub use mesh_llm_identity::keys::*;
+}
+
+pub mod provider {
+    pub use mesh_llm_identity::provider::*;
+}
+
+pub use mesh_llm_identity::{
+    open_message, owner_id_from_verifying_key, seal_message, CryptoError, InMemoryKeyProvider,
+    KeyProvider, KeyProviderError, OpenedMessage, OwnerKeypair, SignedEncryptedEnvelope,
+};

@@ -152,7 +152,7 @@ Line-oriented pretty sessions accept these commands after startup is ready:
 - `i` prints the current mesh status snapshot
 - `q` quits cleanly
 
-For the full event taxonomy and field reference, see [crates/mesh-llm/src/cli/output/EVENTS.md](crates/mesh-llm/src/cli/output/EVENTS.md).
+For the full event taxonomy and field reference, see [crates/mesh-llm-host-runtime/src/cli/output/EVENTS.md](crates/mesh-llm-host-runtime/src/cli/output/EVENTS.md).
 
 ## How it works
 
@@ -639,6 +639,11 @@ You can also try the hosted demo:
 - [docs/plugins/README.md](docs/plugins/README.md) for the plugin system and blackboard internals
 - [docs/design/VIRTUAL_LLM.md](docs/design/VIRTUAL_LLM.md) for inter-model collaboration design
 - [crates/mesh-llm/README.md](crates/mesh-llm/README.md) for Rust crate structure
+- [crates/mesh-llm-identity/README.md](crates/mesh-llm-identity/README.md) for shared owner identity and envelope crypto
+- [crates/mesh-llm-protocol/README.md](crates/mesh-llm-protocol/README.md) for shared mesh wire protocol types and frame helpers
+- [crates/mesh-llm-routing/README.md](crates/mesh-llm-routing/README.md) for shared routing targets and model placement helpers
+- [crates/mesh-llm-types/README.md](crates/mesh-llm-types/README.md) for shared protocol-facing model and mesh data types
+- [crates/mesh-llm-ui/README.md](crates/mesh-llm-ui/README.md) for web console source, build, and embedded asset ownership
 - [ROADMAP.md](ROADMAP.md) for future work
 
 ## Community
