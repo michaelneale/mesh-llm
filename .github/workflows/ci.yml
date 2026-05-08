@@ -231,16 +231,16 @@ jobs:
       cache_key_prefix: ''
       workflow_cache_file: .github/workflows/ci.yml
 
-  opencode_smoke:
+  agent_live_smokes:
     needs: [changes, linux]
-    if: ${{ (vars.MESH_OPENCODE_BASE_URL != '' || vars.OPENCODE_TWO_NODE_SMOKE == 'true') && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') }}
+    if: ${{ (vars.MESH_AGENT_BASE_URL != '' || vars.MESH_OPENCODE_BASE_URL != '') && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     env:
-      MESH_OPENCODE_BASE_URL: ${{ vars.MESH_OPENCODE_BASE_URL }}
-      MESH_OPENCODE_MODEL: ${{ vars.MESH_OPENCODE_MODEL }}
-      MESH_OPENCODE_TWO_NODE_MODEL_URL: ${{ vars.MESH_OPENCODE_TWO_NODE_MODEL_URL }}
-      MESH_OPENCODE_TWO_NODE_MODEL_FILE: ${{ vars.MESH_OPENCODE_TWO_NODE_MODEL_FILE }}
+      MESH_AGENT_BASE_URL: ${{ vars.MESH_AGENT_BASE_URL || vars.MESH_OPENCODE_BASE_URL }}
+      MESH_AGENT_MODEL: ${{ vars.MESH_AGENT_MODEL || vars.MESH_OPENCODE_MODEL }}
+      MESH_OPENCODE_BASE_URL: ${{ vars.MESH_AGENT_BASE_URL || vars.MESH_OPENCODE_BASE_URL }}
+      MESH_OPENCODE_MODEL: ${{ vars.MESH_AGENT_MODEL || vars.MESH_OPENCODE_MODEL }}
       OPENCODE_SMOKE_LONG_PROMPT_CHARS: ${{ vars.OPENCODE_SMOKE_LONG_PROMPT_CHARS || '65536' }}
       OPENCODE_DISABLE_AUTOUPDATE: "true"
       OPENCODE_DISABLE_PRUNE: "true"
@@ -250,42 +250,60 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-      - name: Install OpenCode
+      - name: Install agent CLIs
         run: |
           npm install --global opencode-ai@latest
+          npm install --global @earendil-works/pi-coding-agent@latest
           opencode --version
+          pi --version
+      - name: Install Goose
+        run: |
+          curl -fsSL https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Check Goose
+        run: goose --version
       - name: OpenCode configured mesh coding smoke
-        if: ${{ vars.MESH_OPENCODE_BASE_URL != '' }}
         run: scripts/ci-opencode-smoke.sh
+      - name: Pi configured mesh coding smoke
+        run: scripts/ci-pi-smoke.sh
+      - name: Goose configured mesh coding smoke
+        run: scripts/ci-goose-smoke.sh
+
+  two_node_client_serving_smoke:
+    needs: [changes, linux]
+    if: ${{ needs.linux.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install smoke dependencies
+        run: sudo apt-get update && sudo apt-get install -y curl jq lsof
       - uses: actions/download-artifact@v7
-        if: ${{ vars.OPENCODE_TWO_NODE_SMOKE == 'true' }}
         with:
           name: ci-linux-inference-binaries
           path: ci-artifacts/linux
       - name: Stage binary
-        if: ${{ vars.OPENCODE_TWO_NODE_SMOKE == 'true' }}
         run: |
           mkdir -p target/debug
           cp ci-artifacts/linux/mesh-llm target/debug/mesh-llm
           chmod +x target/debug/mesh-llm
-      - name: Validate two-node model config
-        if: ${{ vars.OPENCODE_TWO_NODE_SMOKE == 'true' }}
-        run: |
-          test -n "$MESH_OPENCODE_TWO_NODE_MODEL_URL" || { echo "Set MESH_OPENCODE_TWO_NODE_MODEL_URL to a capable coding/tool GGUF URL"; exit 1; }
-          test -n "$MESH_OPENCODE_TWO_NODE_MODEL_FILE" || { echo "Set MESH_OPENCODE_TWO_NODE_MODEL_FILE to the GGUF filename"; exit 1; }
       - name: Cache integration model
-        if: ${{ vars.OPENCODE_TWO_NODE_SMOKE == 'true' }}
-        id: cache-opencode-model
+        id: cache-two-node-model
         uses: actions/cache/restore@v5
         with:
-          path: ~/.models/${{ env.MESH_OPENCODE_TWO_NODE_MODEL_FILE }}
-          key: ${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-opencode-model-${{ env.MESH_OPENCODE_TWO_NODE_MODEL_FILE }}-${{ hashFiles('.github/cache-version.txt', '.github/workflows/ci.yml') }}
+          path: ~/.models/${{ env.MODEL_FILE }}
+          key: ${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-two-node-model-${{ env.MODEL_FILE }}-${{ hashFiles('.github/cache-version.txt', '.github/workflows/ci.yml') }}
       - name: Download integration model
-        if: ${{ vars.OPENCODE_TWO_NODE_SMOKE == 'true' && steps.cache-opencode-model.outputs.cache-hit != 'true' }}
-        run: mkdir -p ~/.models && curl -fSL "$MESH_OPENCODE_TWO_NODE_MODEL_URL" -o "$HOME/.models/$MESH_OPENCODE_TWO_NODE_MODEL_FILE"
-      - name: OpenCode two-node client routing smoke
-        if: ${{ vars.OPENCODE_TWO_NODE_SMOKE == 'true' }}
-        run: scripts/ci-opencode-two-node-smoke.sh target/debug/mesh-llm ci-artifacts/linux "$HOME/.models/$MESH_OPENCODE_TWO_NODE_MODEL_FILE"
+        if: steps.cache-two-node-model.outputs.cache-hit != 'true'
+        run: mkdir -p ~/.models && curl -fSL "$MODEL_URL" -o "$HOME/.models/$MODEL_FILE"
+      - name: Save integration model cache
+        if: ${{ github.ref == 'refs/heads/main' && steps.cache-two-node-model.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.models/${{ env.MODEL_FILE }}
+          key: ${{ steps.cache-two-node-model.outputs.cache-primary-key }}
+      - name: Two-node client/serving smoke
+        run: scripts/ci-two-node-client-serving-smoke.sh target/debug/mesh-llm ci-artifacts/linux "$HOME/.models/$MODEL_FILE"
 
   native_sdk_smoke:
     needs: [changes, linux, inference_smoke_tests]
