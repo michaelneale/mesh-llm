@@ -17,7 +17,8 @@ use self::local::{
     set_advertised_model_context, start_runtime_local_model, start_runtime_split_model,
     startup_runtime_plan, stop_split_generation_cleanup, withdraw_advertised_model,
     LocalRuntimeModelHandle, LocalRuntimeModelStartSpec, ManagedModelController, RuntimeEvent,
-    SplitCoordinatorAck, SplitRuntimeReason, SplitRuntimeStart, StartupRuntimePlan,
+    SplitCoordinatorAck, SplitCoordinatorEvent, SplitRuntimeReason, SplitRuntimeStart,
+    StartupRuntimePlan,
 };
 use self::proxy::{api_proxy, bootstrap_proxy};
 use crate::api;
@@ -1142,7 +1143,7 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
     let launch_started = Instant::now();
     let (
         mut loaded_name,
-        mut handle,
+        handle,
         mut death_rx,
         mut split_cleanup,
         mut split_event_rx,
@@ -1321,6 +1322,7 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         }
     }
 
+    let mut handle = Some(handle);
     let mut context_usage_tick = tokio::time::interval(DASHBOARD_CONTEXT_USAGE_REFRESH_INTERVAL);
     context_usage_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut survey_exited_unexpectedly = false;
@@ -1328,20 +1330,23 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
     loop {
         tokio::select! {
             _ = context_usage_tick.tick() => {
-                refresh_dashboard_context_usage(&dashboard_context_usage, &loaded_name, &handle).await;
-                publish_runtime_llama_slots(
-                    runtime_data_producer.as_ref(),
-                    &loaded_name,
-                    Some(&instance_id),
-                    &handle,
-                );
+                if let Some(handle) = handle.as_ref() {
+                    refresh_dashboard_context_usage(&dashboard_context_usage, &loaded_name, handle).await;
+                    publish_runtime_llama_slots(
+                        runtime_data_producer.as_ref(),
+                        &loaded_name,
+                        Some(&instance_id),
+                        handle,
+                    );
+                }
             }
             _ = &mut death_rx => {
                 survey_exited_unexpectedly = true;
                 survey_telemetry.record_unexpected_exit(&survey_loaded_model);
+                let port = handle.as_ref().map(|handle| handle.port).unwrap_or_default();
                 let _ = emit_event(OutputEvent::Warning {
                     message: format!("Startup model '{loaded_name}' exited unexpectedly"),
-                    context: Some(format!("model={loaded_name} port={}", handle.port)),
+                    context: Some(format!("model={loaded_name} port={port}")),
                 });
                 break;
             }
@@ -1356,10 +1361,205 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                     split_event_rx = None;
                     continue;
                 };
+                let event = match event {
+                    SplitCoordinatorEvent::Replace(event) => *event,
+                    SplitCoordinatorEvent::LocalFallback(event) => {
+                        let missing_stage_nodes = event
+                            .missing_stage_nodes
+                            .iter()
+                            .map(|node| node.fmt_short().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let old_loaded_name = loaded_name.clone();
+                        let Some(old_handle) = handle.take() else {
+                            let _ = event.ack.send(SplitCoordinatorAck::Accepted);
+                            break;
+                        };
+                        let old_port = old_handle.port;
+                        remove_runtime_local_target(&target_tx, &old_loaded_name, old_port);
+                        remove_dashboard_context_usage(
+                            &dashboard_context_usage,
+                            &old_loaded_name,
+                            &old_handle,
+                        )
+                        .await;
+                        old_handle.shutdown().await;
+                        survey_telemetry.record_unload(&survey_loaded_model);
+                        if let Some(cleanup) = split_cleanup.take() {
+                            stop_split_generation_cleanup(
+                                &node,
+                                cleanup,
+                                event.generation.saturating_add(1),
+                            )
+                            .await;
+                        }
+                        let launch_started = Instant::now();
+                        match start_runtime_local_model(LocalRuntimeModelStartSpec {
+                            node: &node,
+                            model_path: &model_path,
+                            mmproj_override: mmproj_path.as_deref(),
+                            ctx_size_override: ctx_size,
+                            pinned_gpu: pinned_gpu.as_ref(),
+                            cache_type_k_override: cache_type_k.as_deref(),
+                            cache_type_v_override: cache_type_v.as_deref(),
+                            n_batch_override: n_batch,
+                            n_ubatch_override: n_ubatch,
+                            flash_attention_override: flash_attention,
+                            slots,
+                            parallel_override,
+                        }, &model_ref)
+                        .await
+                        {
+                            Ok((next_loaded_name, next_handle, next_death_rx)) => {
+                                loaded_name = next_loaded_name;
+                                add_runtime_local_target(&target_tx, &loaded_name, next_handle.port);
+                                tunnel_mgr.set_http_port(api_port);
+                                register_runtime_instance(
+                                    &runtime_instance_registry,
+                                    &node,
+                                    &primary_model_name,
+                                    &loaded_name,
+                                    &instance_id,
+                                    Some(next_handle.context_length),
+                                )
+                                .await;
+                                let payload = local_process_payload(
+                                    &loaded_name,
+                                    Some(&instance_id),
+                                    &next_handle.backend,
+                                    next_handle.port,
+                                    next_handle.pid(),
+                                    next_handle.slots,
+                                    next_handle.context_length,
+                                );
+                                upsert_dashboard_process(&dashboard_processes, payload.clone()).await;
+                                if let Some(ref cs) = console_state {
+                                    cs.upsert_local_process(payload).await;
+                                    cs.update(true, true).await;
+                                }
+                                survey_loaded_model = survey_telemetry.model(survey::SurveyModelSpec {
+                                    model: &loaded_name,
+                                    model_path: Some(&model_path),
+                                    launch_kind: survey::SurveyLaunchKind::MoeFallback,
+                                    pinned_gpu: pinned_gpu.as_ref(),
+                                    backend: Some(&next_handle.backend),
+                                    context_length: Some(u64::from(next_handle.context_length)),
+                                });
+                                survey_telemetry.record_launch_success(
+                                    &survey_loaded_model,
+                                    launch_started.elapsed(),
+                                );
+                                refresh_dashboard_context_usage(
+                                    &dashboard_context_usage,
+                                    &loaded_name,
+                                    &next_handle,
+                                )
+                                .await;
+                                publish_runtime_llama_slots(
+                                    runtime_data_producer.as_ref(),
+                                    &loaded_name,
+                                    Some(&instance_id),
+                                    &next_handle,
+                                );
+                                let new_port = next_handle.port;
+                                let new_context_length = next_handle.context_length;
+                                handle = Some(next_handle);
+                                death_rx = next_death_rx;
+                                split_event_rx = None;
+                                let _ = event.ack.send(SplitCoordinatorAck::Accepted);
+                                let _ = emit_event(OutputEvent::Warning {
+                                    message: format!(
+                                        "Split runtime topology '{}' lost required stage peer(s); recovered model '{}' locally",
+                                        event.topology_id, loaded_name
+                                    ),
+                                    context: Some(format!(
+                                        "reason={} generation={} missing_stage_nodes=[{}] previous_port={} new_port={} new_ctx={}",
+                                        event.reason,
+                                        event.generation,
+                                        missing_stage_nodes,
+                                        old_port,
+                                        new_port,
+                                        new_context_length
+                                    )),
+                                });
+                                continue;
+                            }
+                            Err(err) => {
+                                survey_telemetry.record_launch_failure(
+                                    survey::SurveyModelSpec {
+                                        model: &old_loaded_name,
+                                        model_path: Some(&model_path),
+                                        launch_kind: survey::SurveyLaunchKind::MoeFallback,
+                                        pinned_gpu: pinned_gpu.as_ref(),
+                                        backend: None,
+                                        context_length: ctx_size.map(u64::from),
+                                    },
+                                    launch_started.elapsed(),
+                                    survey::classify_launch_failure(&err),
+                                );
+                                let _ = emit_event(OutputEvent::Warning {
+                                    message: format!(
+                                        "Split runtime topology '{}' lost required stage peer(s); local fallback failed, withdrawing model '{}'",
+                                        event.topology_id, old_loaded_name
+                                    ),
+                                    context: Some(format!(
+                                        "reason={} generation={} missing_stage_nodes=[{}] error={err:#}",
+                                        event.reason, event.generation, missing_stage_nodes
+                                    )),
+                                });
+                                let _ = event.ack.send(SplitCoordinatorAck::Accepted);
+                                if unregister_runtime_instance(
+                                    &runtime_instance_registry,
+                                    &node,
+                                    &old_loaded_name,
+                                    &instance_id,
+                                )
+                                .await
+                                {
+                                    publish_runtime_llama_unavailable(
+                                        runtime_data_producer.as_ref(),
+                                        &old_loaded_name,
+                                        Some(&instance_id),
+                                    );
+                                }
+                                remove_dashboard_process(&dashboard_processes, &instance_id).await;
+                                if let Some(cs) = console_state {
+                                    cs.remove_local_process(&instance_id).await;
+                                    cs.update(false, false).await;
+                                }
+                                return;
+                            }
+                        }
+                    }
+                    SplitCoordinatorEvent::Withdraw(event) => {
+                        let missing_stage_nodes = event
+                            .missing_stage_nodes
+                            .iter()
+                            .map(|node| node.fmt_short().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let _ = emit_event(OutputEvent::Warning {
+                            message: format!(
+                                "Split runtime topology '{}' lost required stage peer(s); withdrawing model '{}'",
+                                event.topology_id, loaded_name
+                            ),
+                            context: Some(format!(
+                                "reason={} generation={} missing_stage_nodes=[{}]",
+                                event.reason, event.generation, missing_stage_nodes
+                            )),
+                        });
+                        let _ = event.ack.send(SplitCoordinatorAck::Accepted);
+                        break;
+                    }
+                };
                 let mut next = event.loaded;
                 let old_loaded_name = loaded_name.clone();
-                let old_port = handle.port;
-                let old_context_length = handle.context_length;
+                let Some(old_handle) = handle.take() else {
+                    let _ = event.ack.send(SplitCoordinatorAck::Accepted);
+                    break;
+                };
+                let old_port = old_handle.port;
+                let old_context_length = old_handle.context_length;
                 remove_runtime_local_target(&target_tx, &old_loaded_name, old_port);
                 add_runtime_local_target(&target_tx, &next.loaded_name, next.handle.port);
                 tunnel_mgr.set_http_port(api_port);
@@ -1401,7 +1601,6 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                     cs.upsert_local_process(payload).await;
                     cs.update(true, true).await;
                 }
-                let old_handle = std::mem::replace(&mut handle, next.handle);
                 remove_dashboard_context_usage(
                     &dashboard_context_usage,
                     &old_loaded_name,
@@ -1415,33 +1614,36 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                     model_path: Some(&model_path),
                     launch_kind,
                     pinned_gpu: pinned_gpu.as_ref(),
-                    backend: Some(&handle.backend),
-                    context_length: Some(u64::from(handle.context_length)),
+                    backend: Some(&next.handle.backend),
+                    context_length: Some(u64::from(next.handle.context_length)),
                 });
                 survey_telemetry.record_launch_success(
                     &survey_loaded_model,
                     Duration::from_secs(0),
                 );
-                refresh_dashboard_context_usage(&dashboard_context_usage, &loaded_name, &handle)
+                refresh_dashboard_context_usage(&dashboard_context_usage, &loaded_name, &next.handle)
                     .await;
                 publish_runtime_llama_slots(
                     runtime_data_producer.as_ref(),
                     &loaded_name,
                     Some(&instance_id),
-                    &handle,
+                    &next.handle,
                 );
+                let new_port = next.handle.port;
+                let new_context_length = next.handle.context_length;
                 death_rx = next.death_rx;
                 split_cleanup = next.cleanup.take();
+                handle = Some(next.handle);
                 let _ = event.ack.send(SplitCoordinatorAck::Accepted);
                 old_handle.shutdown().await;
                 let _ = emit_event(OutputEvent::Info {
                     message: format!(
                         "Split runtime cut over model '{}' from :{} to :{}",
-                        loaded_name, old_port, handle.port
+                        loaded_name, old_port, new_port
                     ),
                     context: Some(format!(
                         "reason={} generation={} previous_ctx={} new_ctx={}",
-                        event.reason, event.generation, old_context_length, handle.context_length
+                        event.reason, event.generation, old_context_length, new_context_length
                     )),
                 });
             }
@@ -1459,6 +1661,9 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
     if !survey_exited_unexpectedly {
         survey_telemetry.record_unload(&survey_loaded_model);
     }
+    let Some(handle) = handle.take() else {
+        return;
+    };
     let port = handle.port;
     remove_runtime_local_target(&target_tx, &loaded_name, port);
     tunnel_mgr.set_http_port(api_port);
