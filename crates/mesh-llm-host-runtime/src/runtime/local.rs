@@ -1008,8 +1008,17 @@ impl SplitTopologyCoordinator {
             self.pinned_gpu.as_ref().map(|gpu| gpu.vram_bytes),
         )
         .await;
+        self.node
+            .refresh_stage_runtime_statuses(Duration::from_secs(2))
+            .await;
+        let runtime_statuses = self.node.stage_runtime_statuses().await;
         let missing_stage_nodes =
             split_missing_active_stage_nodes(&self.active, &snapshot.participants);
+        let unavailable_stage_nodes = split_unavailable_active_stage_nodes(
+            &self.active,
+            &snapshot.participants,
+            &runtime_statuses,
+        );
         let planned_participants = snapshot.participants.clone();
         let candidate = if split_participants_meet_minimum(&planned_participants) {
             match self.plan_replan_candidate(&planned_participants) {
@@ -1056,6 +1065,7 @@ impl SplitTopologyCoordinator {
         match split_loss_recovery_decision(
             &self.active,
             &snapshot.participants,
+            &unavailable_stage_nodes,
             candidate.as_ref(),
             self.local_model_fits(),
         ) {
@@ -1070,6 +1080,7 @@ impl SplitTopologyCoordinator {
                     candidate_topology_id = candidate.topology_id,
                     candidate_generation = candidate.generation,
                     missing_stage_nodes = ?split_node_labels(&missing_stage_nodes),
+                    unavailable_stage_nodes = ?split_node_labels(&unavailable_stage_nodes),
                     active_stages = ?split_stage_plan_labels(&self.active.stages),
                     candidate_stages = ?split_stage_plan_labels(&candidate.stages),
                     participants = ?split_participant_labels(&candidate.participants),
@@ -1088,7 +1099,7 @@ impl SplitTopologyCoordinator {
                 }
                 if self.local_model_fits() {
                     if let Err(err) = self
-                        .request_local_fallback(reason, missing_stage_nodes.clone())
+                        .request_local_fallback(reason, unavailable_stage_nodes.clone())
                         .await
                     {
                         tracing::warn!(
@@ -1102,7 +1113,7 @@ impl SplitTopologyCoordinator {
                     }
                 }
                 if let Err(err) = self
-                    .withdraw_active_generation(reason, missing_stage_nodes.clone())
+                    .withdraw_active_generation(reason, unavailable_stage_nodes.clone())
                     .await
                 {
                     tracing::warn!(
@@ -1123,10 +1134,11 @@ impl SplitTopologyCoordinator {
                     topology_id = self.active.topology_id,
                     generation = self.active.generation,
                     missing_stage_nodes = ?split_node_labels(&missing_stage_nodes),
+                    unavailable_stage_nodes = ?split_node_labels(&unavailable_stage_nodes),
                     "split topology lost an active stage peer; requesting local runtime fallback"
                 );
                 if let Err(err) = self
-                    .request_local_fallback(reason, missing_stage_nodes.clone())
+                    .request_local_fallback(reason, unavailable_stage_nodes.clone())
                     .await
                 {
                     tracing::warn!(
@@ -1146,10 +1158,11 @@ impl SplitTopologyCoordinator {
                     topology_id = self.active.topology_id,
                     generation = self.active.generation,
                     missing_stage_nodes = ?split_node_labels(&missing_stage_nodes),
+                    unavailable_stage_nodes = ?split_node_labels(&unavailable_stage_nodes),
                     "split topology lost an active stage peer and no replacement path is available; withdrawing active generation"
                 );
                 if let Err(err) = self
-                    .withdraw_active_generation(reason, missing_stage_nodes.clone())
+                    .withdraw_active_generation(reason, unavailable_stage_nodes.clone())
                     .await
                 {
                     tracing::warn!(
@@ -1377,10 +1390,13 @@ fn split_replan_decision(
 fn split_loss_recovery_decision(
     active: &SplitTopologyGeneration,
     current_participants: &[SplitParticipant],
+    unavailable_stage_nodes: &[iroh::EndpointId],
     candidate: Option<&SplitTopologyGeneration>,
     local_model_fits: bool,
 ) -> SplitLossRecoveryDecision {
-    if !split_active_stage_participant_missing(active, current_participants) {
+    if !split_active_stage_participant_missing(active, current_participants)
+        && unavailable_stage_nodes.is_empty()
+    {
         return SplitLossRecoveryDecision::NoActiveStageLoss;
     }
     if candidate.is_some_and(split_candidate_is_valid_replacement_split) {
@@ -1428,6 +1444,35 @@ fn split_missing_active_stage_nodes(
         missing.push(stage.node_id);
     }
     missing
+}
+
+fn split_unavailable_active_stage_nodes(
+    active: &SplitTopologyGeneration,
+    current_participants: &[SplitParticipant],
+    runtime_statuses: &[mesh::StageRuntimeStatus],
+) -> Vec<iroh::EndpointId> {
+    let mut unavailable = split_missing_active_stage_nodes(active, current_participants);
+    for status in runtime_statuses {
+        if !matches!(
+            status.state,
+            skippy::StageRuntimeState::Failed | skippy::StageRuntimeState::Stopped
+        ) || status.topology_id != active.topology_id
+            || status.run_id != active.run_id
+            || active
+                .stages
+                .iter()
+                .all(|stage| stage.stage_id != status.stage_id)
+        {
+            continue;
+        }
+        let Some(node_id) = status.node_id else {
+            continue;
+        };
+        if !unavailable.contains(&node_id) {
+            unavailable.push(node_id);
+        }
+    }
+    unavailable
 }
 
 async fn stop_split_generation(
@@ -2424,6 +2469,44 @@ mod tests {
         }
     }
 
+    fn runtime_status_for_stage(
+        generation: &SplitTopologyGeneration,
+        stage: &RuntimeSliceStagePlan,
+        state: skippy::StageRuntimeState,
+    ) -> mesh::StageRuntimeStatus {
+        mesh::StageRuntimeStatus {
+            topology_id: generation.topology_id.clone(),
+            run_id: generation.run_id.clone(),
+            model_id: "model-a".to_string(),
+            backend: "skippy".to_string(),
+            package_ref: Some("gguf:///model.gguf".to_string()),
+            manifest_sha256: Some("direct-gguf:1:model.gguf".to_string()),
+            source_model_path: Some("/model.gguf".to_string()),
+            source_model_sha256: None,
+            source_model_bytes: Some(1),
+            materialized_path: None,
+            materialized_pinned: false,
+            projector_path: None,
+            stage_id: stage.stage_id.clone(),
+            stage_index: stage.stage_index,
+            node_id: Some(stage.node_id),
+            layer_start: stage.layer_start,
+            layer_end: stage.layer_end,
+            state,
+            bind_addr: "127.0.0.1:31000".to_string(),
+            activation_width: 896,
+            wire_dtype: skippy::StageWireDType::F16,
+            selected_device: None,
+            ctx_size: 512,
+            lane_count: 4,
+            n_batch: None,
+            n_ubatch: None,
+            flash_attn_type: FlashAttentionType::Auto,
+            error: None,
+            shutdown_generation: generation.generation,
+        }
+    }
+
     fn local_stage(
         node_id: iroh::EndpointId,
         stage_index: u32,
@@ -2833,6 +2916,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn split_unavailable_active_stage_nodes_includes_failed_stage_without_missing_peer() {
+        let active = SplitTopologyGeneration::new(
+            "topology-a".into(),
+            "run-a".into(),
+            1,
+            vec![participant(1), participant(2), participant(3)],
+            vec![stage(1, 0, 0, 20), stage(2, 1, 20, 40)],
+        );
+        let statuses = vec![runtime_status_for_stage(
+            &active,
+            &active.stages[1],
+            skippy::StageRuntimeState::Failed,
+        )];
+
+        assert_eq!(
+            split_unavailable_active_stage_nodes(
+                &active,
+                &[participant(1), participant(2), participant(3)],
+                &statuses,
+            ),
+            vec![make_id(2)]
+        );
+    }
+
     #[tokio::test]
     async fn load_split_runtime_generation_stops_candidate_stages_after_partial_load_failure() {
         let node = mesh::Node::new_for_tests(NodeRole::Host { http_port: 9337 })
@@ -3121,6 +3229,35 @@ mod tests {
             split_loss_recovery_decision(
                 &active,
                 &[participant(1), participant(3)],
+                &[],
+                Some(&candidate),
+                true,
+            ),
+            SplitLossRecoveryDecision::ReplacementSplit
+        );
+    }
+
+    #[test]
+    fn split_loss_recovery_uses_replacement_split_when_active_stage_has_failed() {
+        let active = SplitTopologyGeneration::new(
+            "topology-a".into(),
+            "run-a".into(),
+            1,
+            vec![participant(1), participant(2), participant(3)],
+            vec![stage(1, 0, 0, 10), stage(2, 1, 10, 20), stage(3, 2, 20, 30)],
+        );
+        let candidate = SplitTopologyGeneration::new(
+            "topology-b".into(),
+            "run-b".into(),
+            2,
+            vec![participant(1), participant(2), participant(3)],
+            vec![stage(1, 0, 0, 15), stage(2, 1, 15, 30)],
+        );
+        assert_eq!(
+            split_loss_recovery_decision(
+                &active,
+                &[participant(1), participant(2), participant(3)],
+                &[make_id(2)],
                 Some(&candidate),
                 true,
             ),
@@ -3139,7 +3276,7 @@ mod tests {
         );
 
         assert_eq!(
-            split_loss_recovery_decision(&active, &[participant(1)], None, true),
+            split_loss_recovery_decision(&active, &[participant(1)], &[], None, true),
             SplitLossRecoveryDecision::LocalFallback
         );
     }
@@ -3155,7 +3292,7 @@ mod tests {
         );
 
         assert_eq!(
-            split_loss_recovery_decision(&active, &[participant(1)], None, false),
+            split_loss_recovery_decision(&active, &[participant(1)], &[], None, false),
             SplitLossRecoveryDecision::Withdraw
         );
     }
@@ -3178,7 +3315,7 @@ mod tests {
         );
 
         assert_eq!(
-            split_loss_recovery_decision(&active, &[participant(1)], Some(&candidate), true),
+            split_loss_recovery_decision(&active, &[participant(1)], &[], Some(&candidate), true),
             SplitLossRecoveryDecision::LocalFallback
         );
         assert!(!split_candidate_is_valid_replacement_split(&candidate));
@@ -3206,6 +3343,7 @@ mod tests {
             split_loss_recovery_decision(
                 &active,
                 &[participant(1), participant(2)],
+                &[],
                 Some(&candidate),
                 false,
             ),

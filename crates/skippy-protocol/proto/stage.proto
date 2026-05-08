@@ -30,6 +30,7 @@ message StageControlResponse {
     PrepareStageAccepted prepare_stage_accepted = 5;
     StagePreparationStatus stage_preparation_status = 6;
     StageStatusAck stage_status_ack = 7;
+    StageStatusList stage_statuses = 8;
   }
 }
 
@@ -168,6 +169,10 @@ message StageStatus {
   optional uint32 n_batch = 26;
   optional uint32 n_ubatch = 27;
   StageFlashAttnType flash_attn_type = 28;
+}
+
+message StageStatusList {
+  repeated StageStatus statuses = 1;
 }
 
 message LayerInventory {

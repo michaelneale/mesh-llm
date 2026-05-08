@@ -755,6 +755,7 @@ pub(crate) struct PeerAnnouncement {
     pub(crate) served_model_runtime: Vec<ModelRuntimeDescriptor>,
     pub(crate) owner_attestation: Option<SignedNodeOwnership>,
     pub(crate) artifact_transfer_supported: bool,
+    pub(crate) stage_status_list_supported: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -808,6 +809,7 @@ pub struct PeerInfo {
     pub served_model_runtime: Vec<ModelRuntimeDescriptor>,
     pub owner_attestation: Option<SignedNodeOwnership>,
     pub artifact_transfer_supported: bool,
+    pub stage_status_list_supported: bool,
     pub owner_summary: OwnershipSummary,
 }
 
@@ -864,6 +866,7 @@ impl PeerInfo {
             served_model_runtime: ann.served_model_runtime.clone(),
             owner_attestation: ann.owner_attestation.clone(),
             artifact_transfer_supported: ann.artifact_transfer_supported,
+            stage_status_list_supported: ann.stage_status_list_supported,
             owner_summary,
         }
     }
@@ -4464,7 +4467,13 @@ impl Node {
             }
             _ => {}
         }
-        let proto_response = stage_control_response_to_proto(response);
+        let status_list_supported = self
+            .peer_supports_skippy_subprotocol_feature(
+                remote,
+                skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STATUS_LIST,
+            )
+            .await;
+        let proto_response = stage_control_response_to_proto(response, status_list_supported);
         write_len_prefixed(&mut send, &proto_response.encode_to_vec()).await?;
         let _ = send.finish();
         Ok(())
@@ -4577,6 +4586,9 @@ impl Node {
             skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STAGE_CONTROL
             | skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_ARTIFACT_TRANSFER => {
                 peer.artifact_transfer_supported
+            }
+            skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STATUS_LIST => {
+                peer.stage_status_list_supported
             }
             _ => false,
         }
@@ -6195,6 +6207,7 @@ fn stage_preparation_status_from_cancel(
 
 fn stage_control_response_to_proto(
     response: crate::inference::skippy::StageControlResponse,
+    status_list_supported: bool,
 ) -> skippy_stage_proto::StageControlResponse {
     use skippy_stage_proto::stage_control_response::Response;
 
@@ -6207,13 +6220,19 @@ fn stage_control_response_to_proto(
             })
         }
         crate::inference::skippy::StageControlResponse::Status(statuses) => {
-            Response::StageStatus(statuses.into_iter().next().map_or_else(
-                || skippy_stage_proto::StageStatus {
-                    state: skippy_stage_proto::StageRuntimeState::Stopped as i32,
-                    ..Default::default()
-                },
-                stage_status_to_proto,
-            ))
+            if status_list_supported {
+                Response::StageStatuses(skippy_stage_proto::StageStatusList {
+                    statuses: statuses.into_iter().map(stage_status_to_proto).collect(),
+                })
+            } else {
+                Response::StageStatus(statuses.into_iter().next().map_or_else(
+                    || skippy_stage_proto::StageStatus {
+                        state: skippy_stage_proto::StageRuntimeState::Stopped as i32,
+                        ..Default::default()
+                    },
+                    stage_status_to_proto,
+                ))
+            }
         }
         crate::inference::skippy::StageControlResponse::Inventory(inventory) => {
             Response::LayerInventory(layer_inventory_to_proto(inventory))
@@ -6266,6 +6285,15 @@ fn stage_control_response_from_proto(
         Response::StageStatus(status) => {
             Ok(crate::inference::skippy::StageControlResponse::Status(
                 vec![stage_status_from_proto(status)?],
+            ))
+        }
+        Response::StageStatuses(statuses) => {
+            Ok(crate::inference::skippy::StageControlResponse::Status(
+                statuses
+                    .statuses
+                    .into_iter()
+                    .map(stage_status_from_proto)
+                    .collect::<anyhow::Result<Vec<_>>>()?,
             ))
         }
         Response::LayerInventory(inventory) => {

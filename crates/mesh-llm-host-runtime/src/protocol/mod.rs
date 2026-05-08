@@ -576,6 +576,7 @@ mod tests {
             served_model_runtime: vec![],
             owner_attestation: None,
             artifact_transfer_supported: false,
+            stage_status_list_supported: false,
             owner_summary: OwnershipSummary::default(),
         }
     }
@@ -1280,6 +1281,7 @@ mod tests {
                 signature: "33".repeat(64),
             }),
             artifact_transfer_supported: true,
+            stage_status_list_supported: true,
         };
         let proto_pa = local_ann_to_proto_ann(&ann);
         let skippy = proto_pa
@@ -1295,6 +1297,10 @@ mod tests {
                 .any(|feature| feature
                     == skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_ARTIFACT_TRANSFER)
         );
+        assert!(skippy
+            .features
+            .iter()
+            .any(|feature| feature == skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STATUS_LIST));
         assert_eq!(
             proto_pa
                 .owner_attestation
@@ -1306,6 +1312,7 @@ mod tests {
         let (_, roundtripped) =
             proto_ann_to_local(&proto_pa).expect("proto_ann_to_local must succeed");
         assert!(roundtripped.artifact_transfer_supported);
+        assert!(roundtripped.stage_status_list_supported);
         let roundtripped = roundtripped
             .owner_attestation
             .expect("owner attestation must round-trip");
@@ -1350,6 +1357,7 @@ mod tests {
             served_model_runtime: vec![],
             owner_attestation: None,
             artifact_transfer_supported: true,
+            stage_status_list_supported: true,
         };
 
         let proto_pa = local_ann_to_proto_ann(&ann);
@@ -2073,6 +2081,7 @@ mod tests {
             served_model_runtime: vec![],
             owner_attestation: None,
             artifact_transfer_supported: true,
+            stage_status_list_supported: true,
         };
 
         let proto_pa = local_ann_to_proto_ann(&ann_with_timestamp);
@@ -2118,6 +2127,7 @@ mod tests {
             served_model_runtime: vec![],
             owner_attestation: None,
             artifact_transfer_supported: false,
+            stage_status_list_supported: false,
         };
 
         let proto_pa = local_ann_to_proto_ann(&ann_without_timestamp);

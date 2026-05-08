@@ -1,4 +1,12 @@
-use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
 use anyhow::{anyhow, Context, Result};
 use skippy_protocol::{FlashAttentionType, LoadMode, PeerConfig, StageConfig};
@@ -7,7 +15,10 @@ use skippy_server::{
     telemetry::TelemetryLevel,
     EmbeddedServerHandle,
 };
-use tokio::sync::{mpsc, Mutex};
+use tokio::{
+    sync::{mpsc, Mutex},
+    task::JoinHandle,
+};
 
 mod inventory;
 #[cfg(test)]
@@ -29,7 +40,13 @@ struct RunningStage {
 struct StageControlState {
     stages: HashMap<String, RunningStage>,
     preparations: Arc<Mutex<HashMap<String, StagePreparationStatus>>>,
+    preparation_tasks: HashMap<String, StagePreparationTask>,
     package_prefetcher: Option<Arc<dyn StagePackagePrefetcher>>,
+}
+
+struct StagePreparationTask {
+    cancelled: Arc<AtomicBool>,
+    handle: JoinHandle<()>,
 }
 
 #[async_trait::async_trait]
@@ -73,14 +90,11 @@ impl StageControlState {
                 self.prepare(request).await?,
             )),
             StageControlRequest::CancelPrepare(cancel) => Ok(
-                StageControlResponse::PreparationStatus(preparation_status_from_cancel(cancel)),
+                StageControlResponse::PreparationStatus(self.cancel_prepare(cancel).await),
             ),
-            StageControlRequest::StatusUpdate(_status) => {
-                Ok(StageControlResponse::StatusAck(StageStatusAck {
-                    accepted: true,
-                    error: None,
-                }))
-            }
+            StageControlRequest::StatusUpdate(_status) => Ok(StageControlResponse::StatusAck(
+                self.apply_status_update(_status).await,
+            )),
         }
     }
 
@@ -165,16 +179,93 @@ impl StageControlState {
             .lock()
             .await
             .insert(key.clone(), status.clone());
+        if let Some(task) = self.preparation_tasks.remove(&key) {
+            task.cancelled.store(true, Ordering::Release);
+            task.handle.abort();
+        }
         let preparations = Arc::clone(&self.preparations);
         let package_prefetcher = self.package_prefetcher.clone();
-        tokio::spawn(async move {
-            run_stage_prepare_task(preparations, key, request, package_prefetcher).await;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let task_cancelled = Arc::clone(&cancelled);
+        let task_key = key.clone();
+        let handle = tokio::spawn(async move {
+            run_stage_prepare_task(
+                preparations,
+                task_key,
+                request,
+                package_prefetcher,
+                task_cancelled,
+            )
+            .await;
         });
+        self.preparation_tasks
+            .insert(key.clone(), StagePreparationTask { cancelled, handle });
         Ok(StagePrepareAcceptedResponse {
             accepted: true,
             status,
             error: None,
         })
+    }
+
+    async fn cancel_prepare(
+        &mut self,
+        cancel: StageCancelPrepareRequest,
+    ) -> StagePreparationStatus {
+        let key = stage_key(&cancel.topology_id, &cancel.run_id, &cancel.stage_id);
+        let mut preparations = self.preparations.lock().await;
+        if let Some(existing) = preparations.get(&key) {
+            if cancel.shutdown_generation < existing.shutdown_generation {
+                let mut status = existing.clone();
+                status.error = Some("stale shutdown generation".to_string());
+                return status;
+            }
+        }
+
+        if let Some(task) = self.preparation_tasks.remove(&key) {
+            task.cancelled.store(true, Ordering::Release);
+            task.handle.abort();
+        }
+
+        let status = preparations
+            .get(&key)
+            .cloned()
+            .map(|mut status| {
+                status.state = StagePreparationState::Cancelled;
+                status.shutdown_generation = cancel.shutdown_generation;
+                status.error = None;
+                status
+            })
+            .unwrap_or_else(|| preparation_status_from_cancel(cancel));
+        preparations.insert(key, status.clone());
+        status
+    }
+
+    async fn apply_status_update(&mut self, status: StagePreparationStatus) -> StageStatusAck {
+        if status.topology_id.is_empty() || status.run_id.is_empty() || status.stage_id.is_empty() {
+            return StageStatusAck {
+                accepted: false,
+                error: Some(
+                    "stage status update requires topology_id, run_id, and stage_id".into(),
+                ),
+            };
+        }
+        let key = stage_key(&status.topology_id, &status.run_id, &status.stage_id);
+        let mut preparations = self.preparations.lock().await;
+        if preparations.get(&key).is_some_and(|existing| {
+            status.shutdown_generation < existing.shutdown_generation
+                || (matches!(existing.state, StagePreparationState::Cancelled)
+                    && status.shutdown_generation <= existing.shutdown_generation)
+        }) {
+            return StageStatusAck {
+                accepted: false,
+                error: Some("stale shutdown generation".to_string()),
+            };
+        }
+        preparations.insert(key, status);
+        StageStatusAck {
+            accepted: true,
+            error: None,
+        }
     }
 
     async fn load(&mut self, load: StageLoadRequest) -> Result<StageReadyResponse> {

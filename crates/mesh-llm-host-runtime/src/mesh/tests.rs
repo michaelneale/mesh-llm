@@ -831,6 +831,7 @@ fn make_test_peer_info(peer_id: EndpointId) -> PeerInfo {
         served_model_runtime: vec![],
         owner_attestation: None,
         artifact_transfer_supported: false,
+        stage_status_list_supported: false,
         owner_summary: OwnershipSummary::default(),
     }
 }
@@ -1686,6 +1687,7 @@ fn gossip_frame_roundtrip_preserves_scanned_model_metadata() {
         }],
         owner_attestation: None,
         artifact_transfer_supported: true,
+        stage_status_list_supported: true,
     };
 
     let proto_pa = local_ann_to_proto_ann(&local_ann);
@@ -1909,6 +1911,7 @@ fn transitive_peer_update_refreshes_metadata_fields() {
         served_model_runtime: vec![],
         owner_attestation: None,
         artifact_transfer_supported: true,
+        stage_status_list_supported: true,
     };
 
     apply_transitive_ann(&mut existing, &addr, &ann);
@@ -1988,6 +1991,7 @@ fn transitive_peer_merge_preserves_richer_direct_address() {
         served_model_runtime: vec![],
         owner_attestation: None,
         artifact_transfer_supported: true,
+        stage_status_list_supported: true,
     };
 
     apply_transitive_ann(&mut existing, &weak_addr, &ann);
@@ -2041,6 +2045,7 @@ fn transitive_peer_merge_preserves_richer_direct_address() {
         served_model_runtime: vec![],
         owner_attestation: None,
         artifact_transfer_supported: true,
+        stage_status_list_supported: true,
     };
     apply_transitive_ann(&mut existing, &richer_addr, &ann2);
 
@@ -2612,6 +2617,7 @@ fn transitive_peer_update_refreshes_last_mentioned() {
         served_model_runtime: vec![],
         owner_attestation: None,
         artifact_transfer_supported: true,
+        stage_status_list_supported: true,
     };
 
     apply_transitive_ann(&mut peer, &addr, &ann);
@@ -3357,6 +3363,7 @@ fn make_test_peer(id: EndpointId, rtt_ms: Option<u32>, vram_gb: u64) -> PeerInfo
         served_model_runtime: vec![],
         owner_attestation: None,
         artifact_transfer_supported: false,
+        stage_status_list_supported: false,
         owner_summary: OwnershipSummary::default(),
     }
 }
@@ -5495,7 +5502,7 @@ fn stage_control_inventory_response_round_trips_plain_gguf_source() {
     );
 
     let decoded =
-        stage_control_response_from_proto(stage_control_response_to_proto(response)).unwrap();
+        stage_control_response_from_proto(stage_control_response_to_proto(response, true)).unwrap();
 
     let crate::inference::skippy::StageControlResponse::Inventory(inventory) = decoded else {
         panic!("expected inventory response");
@@ -5528,7 +5535,7 @@ fn stage_control_prepare_response_round_trips_failed_status() {
     );
 
     let decoded =
-        stage_control_response_from_proto(stage_control_response_to_proto(response)).unwrap();
+        stage_control_response_from_proto(stage_control_response_to_proto(response, true)).unwrap();
 
     let crate::inference::skippy::StageControlResponse::PrepareAccepted(accepted) = decoded else {
         panic!("expected prepare response");
@@ -5543,6 +5550,65 @@ fn stage_control_prepare_response_round_trips_failed_status() {
         accepted.status.error.as_deref(),
         Some("source GGUF missing")
     );
+}
+
+#[test]
+fn stage_control_status_list_response_round_trips_all_statuses() {
+    let first = stage_status_from_load(
+        &test_stage_load_request(),
+        crate::inference::skippy::StageRuntimeState::Ready,
+    );
+    let mut second = first.clone();
+    second.stage_id = "stage-2".to_string();
+    second.stage_index = 2;
+    second.layer_start = 24;
+    second.layer_end = 36;
+    second.bind_addr = "127.0.0.1:51235".to_string();
+    let response =
+        crate::inference::skippy::StageControlResponse::Status(vec![first.clone(), second.clone()]);
+
+    let decoded =
+        stage_control_response_from_proto(stage_control_response_to_proto(response, true)).unwrap();
+
+    let crate::inference::skippy::StageControlResponse::Status(statuses) = decoded else {
+        panic!("expected status response");
+    };
+    assert_eq!(statuses.len(), 2);
+    assert_eq!(statuses[0].stage_id, first.stage_id);
+    assert_eq!(statuses[1].stage_id, second.stage_id);
+    assert_eq!(statuses[1].bind_addr, "127.0.0.1:51235");
+}
+
+#[test]
+fn empty_stage_control_status_list_response_round_trips_as_empty() {
+    let response = crate::inference::skippy::StageControlResponse::Status(Vec::new());
+
+    let decoded =
+        stage_control_response_from_proto(stage_control_response_to_proto(response, true)).unwrap();
+
+    let crate::inference::skippy::StageControlResponse::Status(statuses) = decoded else {
+        panic!("expected status response");
+    };
+    assert!(statuses.is_empty());
+}
+
+#[test]
+fn legacy_stage_control_status_response_still_decodes() {
+    let status = stage_status_from_load(
+        &test_stage_load_request(),
+        crate::inference::skippy::StageRuntimeState::Ready,
+    );
+    let response = crate::inference::skippy::StageControlResponse::Status(vec![status.clone()]);
+
+    let decoded =
+        stage_control_response_from_proto(stage_control_response_to_proto(response, false))
+            .unwrap();
+
+    let crate::inference::skippy::StageControlResponse::Status(statuses) = decoded else {
+        panic!("expected status response");
+    };
+    assert_eq!(statuses.len(), 1);
+    assert_eq!(statuses[0].stage_id, status.stage_id);
 }
 
 #[test]

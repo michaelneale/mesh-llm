@@ -681,6 +681,7 @@ impl Node {
                     served_model_runtime: p.served_model_runtime.clone(),
                     owner_attestation: p.owner_attestation.clone(),
                     artifact_transfer_supported: p.artifact_transfer_supported,
+                    stage_status_list_supported: p.stage_status_list_supported,
                 })
                 .collect()
         };
@@ -747,6 +748,7 @@ impl Node {
             owner_attestation: my_owner_attestation,
             artifact_transfer_supported:
                 crate::models::artifact_transfer::artifact_transfer_enabled(),
+            stage_status_list_supported: true,
         });
         announcements
     }
@@ -801,6 +803,7 @@ mod tests {
             served_model_runtime: vec![],
             owner_attestation: None,
             artifact_transfer_supported: true,
+            stage_status_list_supported: true,
         }
     }
 

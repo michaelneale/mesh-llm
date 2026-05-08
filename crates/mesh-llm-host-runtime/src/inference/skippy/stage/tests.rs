@@ -359,6 +359,135 @@ async fn prepare_layer_package_fails_only_after_peer_prefetch_and_local_resoluti
 }
 
 #[tokio::test]
+async fn cancel_prepare_persists_cancelled_status_and_blocks_late_prefetch_result() {
+    let mut load = load_request();
+    load.load_mode = LoadMode::LayerPackage;
+    load.package_ref = "missing-layer-package".to_string();
+    load.manifest_sha256 = "a".repeat(64);
+    load.downstream = None;
+
+    let (prefetcher, started_rx, release_tx) = BlockingPackagePrefetcher::new();
+    let mut state = StageControlState {
+        package_prefetcher: Some(Arc::new(prefetcher)),
+        ..Default::default()
+    };
+
+    state
+        .prepare(StagePrepareRequest {
+            load: load.clone(),
+            coordinator_id: None,
+        })
+        .await
+        .unwrap();
+    started_rx.await.expect("prefetch must start before cancel");
+
+    let status = state
+        .cancel_prepare(StageCancelPrepareRequest {
+            topology_id: load.topology_id.clone(),
+            run_id: load.run_id.clone(),
+            stage_id: load.stage_id.clone(),
+            shutdown_generation: load.shutdown_generation + 1,
+        })
+        .await;
+
+    assert_eq!(status.state, StagePreparationState::Cancelled);
+    assert_eq!(status.model_id, load.model_id);
+    assert_eq!(status.package_ref, load.package_ref);
+    assert_eq!(status.shutdown_generation, load.shutdown_generation + 1);
+
+    let _ = release_tx.send(Ok(()));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let inventory = state
+        .inventory(StageInventoryRequest {
+            model_id: load.model_id.clone(),
+            package_ref: load.package_ref.clone(),
+            manifest_sha256: load.manifest_sha256.clone(),
+        })
+        .await;
+    let status = inventory
+        .preparing_ranges
+        .iter()
+        .find(|status| status.stage_id == load.stage_id)
+        .expect("cancelled prepare status should remain visible");
+    assert_eq!(status.state, StagePreparationState::Cancelled);
+}
+
+#[tokio::test]
+async fn stale_cancel_prepare_keeps_newer_prepare_status() {
+    let load = load_request();
+    let key = stage_key(&load.topology_id, &load.run_id, &load.stage_id);
+    let mut state = StageControlState::default();
+    let current = preparation_status_from_load(&load, StagePreparationState::Resolving);
+    state.preparations.lock().await.insert(key, current.clone());
+
+    let status = state
+        .cancel_prepare(StageCancelPrepareRequest {
+            topology_id: load.topology_id.clone(),
+            run_id: load.run_id.clone(),
+            stage_id: load.stage_id.clone(),
+            shutdown_generation: load.shutdown_generation.saturating_sub(1),
+        })
+        .await;
+
+    assert_eq!(status.state, StagePreparationState::Resolving);
+    assert_eq!(status.shutdown_generation, current.shutdown_generation);
+    assert_eq!(status.error.as_deref(), Some("stale shutdown generation"));
+}
+
+#[tokio::test]
+async fn status_update_upserts_preparation_status_and_rejects_stale_generation() {
+    let load = load_request();
+    let mut state = StageControlState::default();
+    let mut update = preparation_status_from_load(&load, StagePreparationState::Loading);
+    update.bytes_done = Some(1024);
+    update.bytes_total = Some(4096);
+
+    let ack = state.apply_status_update(update.clone()).await;
+
+    assert!(ack.accepted);
+    assert!(ack.error.is_none());
+    let inventory = state
+        .inventory(StageInventoryRequest {
+            model_id: load.model_id.clone(),
+            package_ref: load.package_ref.clone(),
+            manifest_sha256: load.manifest_sha256.clone(),
+        })
+        .await;
+    let status = inventory
+        .preparing_ranges
+        .iter()
+        .find(|status| status.stage_id == load.stage_id)
+        .expect("status update should be visible through inventory");
+    assert_eq!(status.state, StagePreparationState::Loading);
+    assert_eq!(status.bytes_done, Some(1024));
+
+    let mut stale = update;
+    stale.shutdown_generation = stale.shutdown_generation.saturating_sub(1);
+    stale.state = StagePreparationState::Failed;
+    stale.error = Some("late failure".to_string());
+
+    let ack = state.apply_status_update(stale).await;
+
+    assert!(!ack.accepted);
+    assert_eq!(ack.error.as_deref(), Some("stale shutdown generation"));
+    let inventory = state
+        .inventory(StageInventoryRequest {
+            model_id: load.model_id.clone(),
+            package_ref: load.package_ref.clone(),
+            manifest_sha256: load.manifest_sha256.clone(),
+        })
+        .await;
+    let status = inventory
+        .preparing_ranges
+        .iter()
+        .find(|status| status.stage_id == load.stage_id)
+        .expect("newer status should remain visible");
+    assert_eq!(status.state, StagePreparationState::Loading);
+    assert!(status.error.is_none());
+}
+
+#[tokio::test]
 async fn inventory_retains_failed_prepare_status() {
     let load = load_request();
     let key = stage_key(&load.topology_id, &load.run_id, &load.stage_id);

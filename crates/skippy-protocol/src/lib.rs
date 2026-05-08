@@ -13,6 +13,7 @@ pub const STAGE_SUBPROTOCOL_NAME: &str = "skippy-stage";
 pub const STAGE_SUBPROTOCOL_MAJOR: u32 = 1;
 pub const STAGE_SUBPROTOCOL_FEATURE_STAGE_CONTROL: &str = "stage-control";
 pub const STAGE_SUBPROTOCOL_FEATURE_ARTIFACT_TRANSFER: &str = "artifact-transfer";
+pub const STAGE_SUBPROTOCOL_FEATURE_STATUS_LIST: &str = "status-list";
 pub const STAGE_PROTOCOL_GENERATION: u32 = 2;
 pub const STAGE_STREAM_CONTROL: u8 = 0x01;
 pub const STAGE_STREAM_TRANSPORT: u8 = 0x02;
@@ -640,8 +641,8 @@ mod tests {
         GetStageStatus, LayerInventory, LayerRange, LoadStage, PrepareStage, PrepareStageAccepted,
         SourceModelKind, StageArtifactTransferRequest, StageArtifactTransferResponse,
         StageControlRequest, StageControlResponse, StagePreparationState, StagePreparationStatus,
-        StageReady, StageRuntimeState, StageStatus, StageStatusAck, StageStatusUpdate,
-        StageTransportOpen, StageWireDType, StopStage,
+        StageReady, StageRuntimeState, StageStatus, StageStatusAck, StageStatusList,
+        StageStatusUpdate, StageTransportOpen, StageWireDType, StopStage,
     };
     use super::{
         validate_stage_artifact_transfer_request, validate_stage_artifact_transfer_response,
@@ -885,6 +886,33 @@ mod tests {
             ..frame.clone()
         };
         validate_stage_control_response(&ack_response).unwrap();
+
+        let status_list_response = StageControlResponse {
+            response: Some(stage_control_response::Response::StageStatuses(
+                StageStatusList {
+                    statuses: vec![StageStatus {
+                        topology_id: "topology-a".to_string(),
+                        run_id: "run-a".to_string(),
+                        model_id: "qwen".to_string(),
+                        backend: "skippy".to_string(),
+                        stage_id: "stage-0".to_string(),
+                        stage_index: 0,
+                        layer_start: 0,
+                        layer_end: 16,
+                        state: StageRuntimeState::Ready as i32,
+                        bind_addr: "127.0.0.1:51234".to_string(),
+                        activation_width: 4096,
+                        wire_dtype: StageWireDType::StageWireDtypeF16 as i32,
+                        shutdown_generation: 7,
+                        ctx_size: 8192,
+                        lane_count: 2,
+                        ..Default::default()
+                    }],
+                },
+            )),
+            ..frame.clone()
+        };
+        validate_stage_control_response(&status_list_response).unwrap();
 
         let missing_response = StageControlResponse {
             response: None,

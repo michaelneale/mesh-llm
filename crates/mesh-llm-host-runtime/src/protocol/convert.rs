@@ -7,10 +7,14 @@ use std::collections::HashMap;
 
 fn skippy_stage_subprotocols(
     artifact_transfer_supported: bool,
+    status_list_supported: bool,
 ) -> Vec<crate::proto::node::MeshSubprotocol> {
     let mut features = vec![skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STAGE_CONTROL.to_string()];
     if artifact_transfer_supported {
         features.push(skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_ARTIFACT_TRANSFER.to_string());
+    }
+    if status_list_supported {
+        features.push(skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STATUS_LIST.to_string());
     }
     vec![crate::proto::node::MeshSubprotocol {
         name: skippy_protocol::STAGE_SUBPROTOCOL_NAME.to_string(),
@@ -20,12 +24,30 @@ fn skippy_stage_subprotocols(
 }
 
 fn supports_skippy_artifact_transfer(subprotocols: &[crate::proto::node::MeshSubprotocol]) -> bool {
+    supports_skippy_stage_feature(
+        subprotocols,
+        skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_ARTIFACT_TRANSFER,
+    )
+}
+
+fn supports_skippy_status_list(subprotocols: &[crate::proto::node::MeshSubprotocol]) -> bool {
+    supports_skippy_stage_feature(
+        subprotocols,
+        skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STATUS_LIST,
+    )
+}
+
+fn supports_skippy_stage_feature(
+    subprotocols: &[crate::proto::node::MeshSubprotocol],
+    expected_feature: &str,
+) -> bool {
     subprotocols.iter().any(|subprotocol| {
         subprotocol.name == skippy_protocol::STAGE_SUBPROTOCOL_NAME
             && subprotocol.major == skippy_protocol::STAGE_SUBPROTOCOL_MAJOR
-            && subprotocol.features.iter().any(|feature| {
-                feature == skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_ARTIFACT_TRANSFER
-            })
+            && subprotocol
+                .features
+                .iter()
+                .any(|feature| feature == expected_feature)
     })
 }
 
@@ -509,7 +531,10 @@ pub(crate) fn local_ann_to_proto_ann(
         gpu_reserved_bytes: ann.gpu_reserved_bytes.clone(),
         hardware,
         first_joined_mesh_ts: ann.first_joined_mesh_ts,
-        subprotocols: skippy_stage_subprotocols(ann.artifact_transfer_supported),
+        subprotocols: skippy_stage_subprotocols(
+            ann.artifact_transfer_supported,
+            ann.stage_status_list_supported,
+        ),
     }
 }
 
@@ -672,6 +697,7 @@ pub(crate) fn proto_ann_to_local(
             .as_ref()
             .map(proto_owner_attestation_to_local),
         artifact_transfer_supported: supports_skippy_artifact_transfer(&pa.subprotocols),
+        stage_status_list_supported: supports_skippy_status_list(&pa.subprotocols),
     };
     crate::mesh::backfill_legacy_descriptors(&mut ann);
     Some((addr, ann))

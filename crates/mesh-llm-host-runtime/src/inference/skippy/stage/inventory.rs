@@ -1,7 +1,10 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
 
 use anyhow::Result;
@@ -80,28 +83,40 @@ pub(super) async fn run_stage_prepare_task(
     key: String,
     request: StagePrepareRequest,
     package_prefetcher: Option<Arc<dyn StagePackagePrefetcher>>,
+    cancelled: Arc<AtomicBool>,
 ) {
     let load = request.load.clone();
-    update_preparation(
+    if !update_preparation(
         &preparations,
         &key,
         preparation_status_from_load(&load, StagePreparationState::Resolving),
     )
-    .await;
+    .await
+        || cancelled.load(Ordering::Acquire)
+    {
+        return;
+    }
     let peer_prefetch_error =
         prefetch_stage_package_if_needed(&preparations, &key, &request, package_prefetcher).await;
+    if cancelled.load(Ordering::Acquire) {
+        return;
+    }
     if peer_prefetch_error.is_none()
         && load.load_mode != LoadMode::LayerPackage
         && !is_layer_package_ref(&load.package_ref)
-    {
-        update_preparation(
+        && !update_preparation(
             &preparations,
             &key,
             preparation_status_from_load(&load, StagePreparationState::Downloading),
         )
-        .await;
+        .await
+    {
+        return;
     }
     let result = prepare_stage_source(&load).await;
+    if cancelled.load(Ordering::Acquire) {
+        return;
+    }
     let state = match result {
         Ok(PrepareSourceResult { bytes_total }) => {
             let mut status = preparation_status_from_load(&load, StagePreparationState::Available);
@@ -134,7 +149,7 @@ async fn prefetch_stage_package_if_needed(
         return None;
     }
     let prefetcher = package_prefetcher?;
-    update_preparation(
+    let _ = update_preparation(
         preparations,
         key,
         preparation_status_from_load(load, StagePreparationState::Downloading),
@@ -199,6 +214,14 @@ async fn update_preparation(
     preparations: &Arc<Mutex<HashMap<String, StagePreparationStatus>>>,
     key: &str,
     status: StagePreparationStatus,
-) {
-    preparations.lock().await.insert(key.to_string(), status);
+) -> bool {
+    let mut preparations = preparations.lock().await;
+    if preparations.get(key).is_some_and(|existing| {
+        matches!(existing.state, StagePreparationState::Cancelled)
+            && existing.shutdown_generation >= status.shutdown_generation
+    }) {
+        return false;
+    }
+    preparations.insert(key.to_string(), status);
+    true
 }
