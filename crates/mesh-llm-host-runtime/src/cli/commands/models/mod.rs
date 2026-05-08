@@ -2,7 +2,7 @@ mod formatters;
 mod formatters_console;
 mod formatters_json;
 
-use crate::cli::commands::model_package;
+use crate::cli::commands::{model_certify, model_package};
 use crate::cli::models::ModelSearchSort;
 use crate::cli::models::ModelsCommand;
 use crate::cli::terminal_progress::{clear_stderr_line, start_spinner, DeterminateProgressLine};
@@ -453,6 +453,89 @@ pub async fn dispatch_models_command(command: &ModelsCommand) -> Result<()> {
                 cancel: cancel.as_deref(),
                 list: *list,
                 update_script: *update_script,
+            })
+            .await?;
+        }
+        ModelsCommand::CertifyFamily {
+            source_repo,
+            family,
+            quant,
+            artifact_repo,
+            model_id,
+            flavor,
+            timeout,
+            mesh_llm_ref,
+            dry_run,
+            confirm,
+            confirm_max_cost_usd,
+            follow,
+            status,
+            logs,
+            cancel,
+            list,
+            update_script,
+            run_id,
+            layer_end,
+            split_layer,
+            splits,
+            activation_width,
+            prompt,
+            ctx_size,
+            n_gpu_layers,
+            startup_timeout_secs,
+            wire_dtype,
+            wire_dtypes,
+            prefix_token_count,
+            cache_hit_repeats,
+            allow_mismatch,
+            strict_dtype,
+            skip_correctness,
+            skip_dtype,
+            skip_state,
+            borrow_resident_hits,
+            json,
+        } => {
+            let options = ::model_package::certify::CertifyOptions {
+                run_id: run_id.clone(),
+                layer_end: layer_end.clone(),
+                split_layer: split_layer.clone(),
+                splits: splits.clone(),
+                activation_width: activation_width.clone(),
+                prompt: prompt.clone(),
+                ctx_size: ctx_size.clone(),
+                n_gpu_layers: n_gpu_layers.clone(),
+                startup_timeout_secs: startup_timeout_secs.clone(),
+                wire_dtype: wire_dtype.clone(),
+                wire_dtypes: wire_dtypes.clone(),
+                prefix_token_count: prefix_token_count.clone(),
+                cache_hit_repeats: cache_hit_repeats.clone(),
+                allow_mismatch: *allow_mismatch,
+                strict_dtype: *strict_dtype,
+                skip_correctness: *skip_correctness,
+                skip_dtype: *skip_dtype,
+                skip_state: *skip_state,
+                borrow_resident_hits: *borrow_resident_hits,
+            };
+            model_certify::dispatch_model_certify(model_certify::ModelCertifyArgs {
+                source_repo: source_repo.as_deref(),
+                family: family.as_deref(),
+                quant: quant.as_deref(),
+                artifact_repo: artifact_repo.as_deref(),
+                model_id: model_id.as_deref(),
+                flavor,
+                timeout,
+                mesh_llm_ref,
+                dry_run: *dry_run,
+                confirm: *confirm,
+                confirm_max_cost_usd: *confirm_max_cost_usd,
+                follow: *follow,
+                json: *json,
+                status: status.as_deref(),
+                logs: logs.as_deref(),
+                cancel: cancel.as_deref(),
+                list: *list,
+                update_script: *update_script,
+                options,
             })
             .await?;
         }
