@@ -12,6 +12,7 @@ set -euo pipefail
 #
 # Volumes:
 #   /source  — source GGUF repo (read-only mount)
+#   /bucket  — writable storage bucket for script + large package workspace
 
 MESH_LLM_REF="${MESH_LLM_REF:-main}"
 
@@ -79,7 +80,25 @@ echo "  ✓ Built: $SLICER"
 echo ""
 echo "=== [4/9] Splitting model ==="
 SOURCE_PATH="/source/${SOURCE_FILE}"
-PACKAGE_DIR="/tmp/package"
+JOB_WORK_ROOT="${JOB_WORK_ROOT:-/bucket/job-work}"
+if [ -z "${JOB_WORK_DIR:-}" ]; then
+    SAFE_TARGET_REPO="$(printf '%s' "$TARGET_REPO" | tr -c '[:alnum:]._-' '_')"
+    JOB_WORK_DIR="${JOB_WORK_ROOT}/${SAFE_TARGET_REPO}-$(date +%Y%m%d%H%M%S)-$$"
+    CLEANUP_JOB_WORK_DIR="${CLEANUP_JOB_WORK_DIR:-true}"
+else
+    CLEANUP_JOB_WORK_DIR="${CLEANUP_JOB_WORK_DIR:-false}"
+fi
+PACKAGE_DIR="${PACKAGE_DIR:-${JOB_WORK_DIR}/package}"
+export JOB_WORK_DIR PACKAGE_DIR
+
+cleanup_job_work_dir() {
+    if [ "${CLEANUP_JOB_WORK_DIR}" = "true" ] && [ -n "${JOB_WORK_DIR:-}" ]; then
+        echo "Cleaning job work dir: ${JOB_WORK_DIR}"
+        rm -rf "$JOB_WORK_DIR"
+    fi
+}
+trap cleanup_job_work_dir EXIT
+
 mkdir -p "$PACKAGE_DIR"
 
 if [ ! -f "$SOURCE_PATH" ]; then
@@ -91,6 +110,7 @@ if [ ! -f "$SOURCE_PATH" ]; then
 fi
 
 echo "  Source: $SOURCE_PATH ($(du -h "$SOURCE_PATH" | cut -f1))"
+echo "  Package workspace: $PACKAGE_DIR"
 time $SLICER write-package "$SOURCE_PATH" \
     --out-dir "$PACKAGE_DIR" \
     --model-id "$MODEL_ID" \
@@ -129,12 +149,12 @@ api.create_repo(target_repo, exist_ok=True)
 # Upload the entire package
 api.upload_folder(
     repo_id=target_repo,
-    folder_path='/tmp/package',
+    folder_path=os.environ['PACKAGE_DIR'],
     commit_message=f'Layer package from {source_repo} ({model_id})',
 )
 
 # Print summary
-manifest = json.load(open('/tmp/package/model-package.json'))
+manifest = json.load(open(os.path.join(os.environ['PACKAGE_DIR'], 'model-package.json')))
 print(f'  ✓ Published: https://huggingface.co/{target_repo}')
 print(f'    Model:  {manifest["model_id"]}')
 print(f'    Layers: {manifest["layer_count"]}')
@@ -154,9 +174,10 @@ target_repo = os.environ['TARGET_REPO']
 source_file = os.environ['SOURCE_FILE']
 source_revision = os.environ.get('SOURCE_REVISION', 'main')
 model_id = os.environ.get('MODEL_ID', '')
+package_dir = os.environ['PACKAGE_DIR']
 
 # Read manifest for metadata
-manifest = json.load(open('/tmp/package/model-package.json'))
+manifest = json.load(open(os.path.join(package_dir, 'model-package.json')))
 layer_count = manifest['layer_count']
 
 # Determine catalog entry path: entries/<owner>/<repo-name>.json
@@ -263,7 +284,7 @@ PYTHON
 # ─── Model Card ────────────────────────────────────────────────────────────
 echo ""
 echo "=== [8/9] Uploading model card ==="
-ACTIVATION_WIDTH=$(python3 -c "import json; m=json.load(open('/tmp/package/model-package.json')); print(m.get('activation_width', 'unknown'))")
+ACTIVATION_WIDTH=$(python3 -c "import json, os; m=json.load(open(os.path.join(os.environ['PACKAGE_DIR'], 'model-package.json'))); print(m.get('activation_width', 'unknown'))")
 
 cat > /tmp/README.md << EOF
 ---
