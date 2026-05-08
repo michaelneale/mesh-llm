@@ -170,31 +170,36 @@ struct LayerPackageDownloadProgress {
 struct LayerPackageDownloadScope {
     package: String,
     total_files: usize,
+    state: Mutex<LayerPackageDownloadScopeState>,
 }
 
-static LAYER_PACKAGE_DOWNLOAD_DRAWN_LINES: Mutex<usize> = Mutex::new(0);
+#[derive(Debug)]
+struct LayerPackageDownloadScopeState {
+    announced: bool,
+    drawn_line: bool,
+}
 
 impl LayerPackageDownloadScope {
     fn new(label: &str, total_files: usize) -> Self {
         Self {
             package: layer_package_progress_package(label).to_string(),
             total_files,
+            state: Mutex::new(LayerPackageDownloadScopeState {
+                announced: false,
+                drawn_line: false,
+            }),
         }
     }
 
     fn has_drawn(&self) -> bool {
-        LAYER_PACKAGE_DOWNLOAD_DRAWN_LINES
+        self.state
             .lock()
-            .map(|lines| *lines > 0)
+            .map(|state| state.announced || state.drawn_line)
             .unwrap_or(false)
     }
 
     fn complete_count(&self, completed: usize) -> usize {
         completed.min(self.total_files)
-    }
-
-    fn is_complete(&self, completed: usize) -> bool {
-        completed >= self.total_files
     }
 
     fn draw(
@@ -206,11 +211,15 @@ impl LayerPackageDownloadScope {
         bytes_per_sec: Option<f64>,
         force: bool,
     ) {
-        let Ok(mut drawn_lines) = LAYER_PACKAGE_DOWNLOAD_DRAWN_LINES.lock() else {
+        let Ok(mut scope_state) = self.state.lock() else {
             return;
         };
-        if *drawn_lines > 1 {
-            eprint!("\x1b[{}A", *drawn_lines - 1);
+        if !scope_state.announced {
+            eprintln!(
+                "\r\x1b[K📦 Downloading layer package {} ({} file(s))",
+                self.package, self.total_files
+            );
+            scope_state.announced = true;
         }
         let percent = if total == 0 {
             0
@@ -229,23 +238,21 @@ impl LayerPackageDownloadScope {
             })
             .unwrap_or_default();
         eprint!(
-            "\r\x1b[K📦 Downloading layer package {}\n\r\x1b[K   📄 files {}/{} complete\n\r\x1b[K   ⏬ {} {:>3}.{:01}% ({}/{}){}",
-            self.package,
-            self.complete_count(completed_files),
-            self.total_files,
+            "\r\x1b[K   ⏬ {} {:>3}.{:01}% ({}/{}){}   📄 files {}/{} complete",
             layer_package_artifact_display_for_package(&self.package, file),
             percent_major,
             percent_minor,
             format_layer_package_download_bytes(downloaded),
             format_layer_package_download_bytes(total),
             speed_suffix,
+            self.complete_count(completed_files),
+            self.total_files,
         );
         let _ = std::io::stderr().flush();
+        scope_state.drawn_line = true;
         if force {
             eprintln!();
-            *drawn_lines = 0;
-        } else {
-            *drawn_lines = 3;
+            scope_state.drawn_line = false;
         }
     }
 }
@@ -341,7 +348,7 @@ impl LayerPackageDownloadProgress {
                     total,
                     total,
                     None,
-                    scope.is_complete(self.completed_before + 1),
+                    true,
                 );
             }
             return;
@@ -396,7 +403,7 @@ impl LayerPackageDownloadProgress {
                 state.downloaded,
                 state.total,
                 state.bytes_per_sec,
-                force && scope.is_complete(completed),
+                force,
             );
         } else {
             draw_layer_package_file_progress(
