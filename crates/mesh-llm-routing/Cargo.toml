@@ -1,0 +1,14 @@
+[package]
+name = "mesh-llm-routing"
+version = "0.65.1"
+edition = "2021"
+description = "Shared routing targets and model routing helpers for Mesh LLM"
+license = "Apache-2.0"
+repository = "https://github.com/Mesh-LLM/mesh-llm"
+homepage = "https://github.com/Mesh-LLM/mesh-llm"
+readme = "README.md"
+keywords = ["llm", "mesh", "routing", "inference"]
+categories = ["network-programming"]
+
+[dependencies]
+iroh = "0.98"

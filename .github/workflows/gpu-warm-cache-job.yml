@@ -89,7 +89,7 @@ jobs:
           prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
 
       - name: Prepare UI placeholder
-        run: mkdir -p crates/mesh-llm/ui/dist && printf '<html></html>' > crates/mesh-llm/ui/dist/index.html
+        run: mkdir -p crates/mesh-llm-ui/dist && printf '<html></html>' > crates/mesh-llm-ui/dist/index.html
 
       - name: Restore skippy ABI ${{ inputs.cache_label }} build
         id: llama_cache

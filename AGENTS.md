@@ -70,7 +70,7 @@ libraries. The only durable llama.cpp patch queue is
 ## Project Structure
 
 - `crates/mesh-llm/src/` — Rust source
-- `crates/mesh-llm/ui/` — React web console (shadcn/ui patterns, see https://ui.shadcn.com/llms.txt)
+- `crates/mesh-llm-ui/` — React web console and embedded asset crate (shadcn/ui patterns, see https://ui.shadcn.com/llms.txt)
 - `docs/` — Project docs, grouped by topic
 - `docs/design/` — Architecture, protocol, and testing docs
 - `docs/moe/` — MoE ranking, placement, and CLI plans
@@ -183,7 +183,7 @@ When iterating on the plugin protocol, always consider protocol compatibility.
 
 ## UI Notes
 
-For changes in `crates/mesh-llm/ui/`, use components and compose interfaces consistently with shadcn/ui patterns. Prefer extending existing primitives in `ui/src/components/ui/` over ad-hoc markup.
+For changes in `crates/mesh-llm-ui/`, use components and compose interfaces consistently with shadcn/ui patterns. Prefer extending existing primitives in `src/components/ui/` over ad-hoc markup.
 
 ## Testing
 

@@ -947,6 +947,32 @@ mod tests {
     }
 
     #[test]
+    fn parse_chat_stream_chunk_reads_model_delta_and_usage() {
+        let payload = json!({
+            "model": "qwen",
+            "choices": [{
+                "delta": {"role": "assistant", "content": "hello"},
+                "finish_reason": null
+            }],
+            "usage": {"prompt_tokens": 12, "completion_tokens": 1, "total_tokens": 13}
+        })
+        .to_string();
+
+        let parsed = parse_chat_stream_chunk(&payload).expect("stream chunk parse should succeed");
+        assert_eq!(parsed.model.as_deref(), Some("qwen"));
+        let delta = parsed
+            .choices
+            .first()
+            .and_then(|choice| choice.delta.as_ref())
+            .and_then(|delta| delta.content.as_deref());
+        assert_eq!(delta, Some("hello"));
+        assert_eq!(
+            parsed.usage.as_ref().and_then(|usage| usage.total_tokens),
+            Some(13)
+        );
+    }
+
+    #[test]
     fn usage_to_responses_usage_maps_cached_tokens() {
         let usage = Usage::new(128, 8).with_cached_tokens(96);
         let mapped = usage_to_responses_usage(&usage);

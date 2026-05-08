@@ -125,7 +125,7 @@ Before adding, renaming, or removing OTLP metrics or attributes:
 2. Keep export destination behavior explicit: no default collector and no ambient
    OTel env export unless `telemetry.enabled = true`.
 3. Update `TELEMETRY_ATTRIBUTE_ALLOWLIST` in
-   `crates/mesh-llm/src/runtime/survey.rs`.
+   `crates/mesh-llm-host-runtime/src/runtime/survey.rs`.
 4. Update the attribute inventory above.
 5. Add or update focused tests proving private paths, raw node IDs, raw GPU
    stable IDs, endpoint URLs, prompts, and completions are not exported.

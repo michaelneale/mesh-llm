@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 LLAMA_DIR="${MESH_LLM_LLAMA_DIR:-$REPO_ROOT/.deps/llama.cpp}"
-UI_DIR="$REPO_ROOT/crates/mesh-llm/ui"
+UI_DIR="$REPO_ROOT/crates/mesh-llm-ui"
 
 os_name="$(uname -s)"
 case "$os_name" in

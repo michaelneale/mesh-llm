@@ -3,8 +3,10 @@
 Model artifact resolution over a pluggable repository interface.
 
 `model-artifact` turns a parsed model coordinate into a concrete primary model
-file, artifact file set, and provenance record. It knows artifact-selection
-policy, but it does not know how any particular registry downloads files.
+file, artifact file set, and provenance record. It also owns GGUF artifact
+metadata scanning used for context planning and MoE/stage packaging. It knows
+artifact-selection policy and file metadata formats, but it does not know how
+any particular registry downloads files.
 
 ## Architecture Role
 
@@ -40,6 +42,9 @@ flowchart LR
   primary file, canonical ref, format, and distribution id.
 - `ModelIdentity` is the portable identity shape used by higher-level crates.
 - `ModelArtifactFile` carries path plus optional size and checksum metadata.
+- `gguf::GgufCompactMeta`, `gguf::GgufKvCacheQuant`, and
+  `gguf::scan_gguf_compact_meta()` expose GGUF header metadata without making
+  host or client crates own a GGUF parser.
 
 Concrete Hugging Face behavior lives in `model-hf`; tests and other callers can
 provide small in-memory repository implementations.

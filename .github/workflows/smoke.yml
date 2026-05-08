@@ -46,7 +46,7 @@ jobs:
           cache: npm
           cache-dependency-path: |
             .github/cache-version.txt
-            crates/mesh-llm/ui/package-lock.json
+            crates/mesh-llm-ui/package-lock.json
 
       - name: Install smoke dependencies
         run: |

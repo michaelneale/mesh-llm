@@ -1,0 +1,17 @@
+[package]
+name = "mesh-llm-protocol"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+description = "Mesh LLM wire protocol types, constants, and frame helpers"
+repository = "https://github.com/Mesh-LLM/mesh-llm"
+homepage = "https://github.com/Mesh-LLM/mesh-llm"
+readme = "README.md"
+
+[dependencies]
+anyhow.workspace = true
+hex = "0.4"
+iroh = "0.98"
+prost = "0.14"
+serde_json.workspace = true
+sha2.workspace = true

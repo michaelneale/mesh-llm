@@ -18,10 +18,16 @@ host-io = []
 
 [dependencies]
 # Allowlist enforced by embedded-client-purity CI (Wave 1C)
-# Only add deps from: iroh, tokio, prost, bytes, rustls, quinn, serde, serde_json,
-# thiserror, anyhow, tracing, sha2, ed25519-dalek, hex, uuid, url, http, base64,
-# async-trait, httparse (httparse is a transitive dep of iroh; not in forbidden list)
+# Only add deps from: mesh-llm-identity, mesh-llm-protocol, mesh-llm-routing, mesh-llm-types,
+# model-artifact, iroh, tokio, prost, bytes, rustls, quinn, serde, serde_json, thiserror, anyhow,
+# tracing, sha2, ed25519-dalek, hex, uuid, url, http, base64, async-trait, httparse
+# (httparse is a transitive dep of iroh; not in forbidden list)
 iroh = "0.98"
+mesh-llm-identity = { path = "../mesh-llm-identity" }
+mesh-llm-protocol = { path = "../mesh-llm-protocol" }
+mesh-llm-routing = { path = "../mesh-llm-routing" }
+mesh-llm-types = { path = "../mesh-llm-types" }
+model-artifact = { path = "../model-artifact" }
 async-trait = "0.1"
 httparse = "1"
 tokio = { version = "1", features = ["io-util", "sync", "net", "time", "rt-multi-thread"] }
