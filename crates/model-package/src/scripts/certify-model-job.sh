@@ -20,12 +20,30 @@ set -euo pipefail
 #
 # Volumes:
 #   /source  — source GGUF repo (read-only mount)
+#   /bucket  — writable storage bucket for script + certification workspace
 
 MESH_LLM_REF="${MESH_LLM_REF:-main}"
 SOURCE_REVISION="${SOURCE_REVISION:-main}"
 RUN_ID="${RUN_ID:-hf-cert-$(date +%Y%m%d-%H%M%S)}"
-CERT_ROOT="${CERT_ROOT:-/tmp/family-certify}"
+JOB_WORK_ROOT="${JOB_WORK_ROOT:-/bucket/job-work}"
+if [ -z "${JOB_WORK_DIR:-}" ]; then
+    SAFE_FAMILY="$(printf '%s' "$FAMILY" | tr -c '[:alnum:]._-' '_')"
+    JOB_WORK_DIR="${JOB_WORK_ROOT}/cert-${SAFE_FAMILY}-$(date +%Y%m%d%H%M%S)-$$"
+    CLEANUP_JOB_WORK_DIR="${CLEANUP_JOB_WORK_DIR:-true}"
+else
+    CLEANUP_JOB_WORK_DIR="${CLEANUP_JOB_WORK_DIR:-false}"
+fi
+CERT_ROOT="${CERT_ROOT:-${JOB_WORK_DIR}/family-certify}"
+export JOB_WORK_DIR
 export RUN_ID CERT_ROOT
+
+cleanup_job_work_dir() {
+    if [ "${CLEANUP_JOB_WORK_DIR}" = "true" ] && [ -n "${JOB_WORK_DIR:-}" ]; then
+        echo "Cleaning job work dir: ${JOB_WORK_DIR}"
+        rm -rf "$JOB_WORK_DIR"
+    fi
+}
+trap cleanup_job_work_dir EXIT
 
 echo "╔══════════════════════════════════════════════════════════╗"
 echo "║  Family Certification Job                               ║"
@@ -35,6 +53,7 @@ echo "║  Model:  ${MODEL_ID}"
 echo "║  Family: ${FAMILY}"
 echo "║  Build:  mesh-llm @ ${MESH_LLM_REF}"
 echo "║  Run:    ${RUN_ID}"
+echo "║  Work:   ${JOB_WORK_DIR}"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo ""
 

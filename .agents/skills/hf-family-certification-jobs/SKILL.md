@@ -17,6 +17,8 @@ for skippy staged serving.
    `jobPlan.max_cost_usd`.
 3. Confirmed submissions must pass both `--confirm` and
    `--confirm-max-cost-usd` with a value at least as large as the dry-run max.
+   `certify-family --timeout` is the certification job's hard max-cost timeout;
+   do not rely on package-splitting size floors for certification jobs.
 4. Submit jobs against a pushed branch or exact commit SHA via
    `--mesh-llm-ref`. Prefer exact SHAs once a branch has been pushed.
 5. If the job fails, inspect logs/artifacts, patch the branch, push, and

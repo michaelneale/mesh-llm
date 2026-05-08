@@ -376,15 +376,56 @@ pub async fn plan_cpu_job(
     )
 }
 
+pub async fn plan_certification_cpu_job(
+    endpoint: &str,
+    requested_flavor: &str,
+    requested_timeout_seconds: u64,
+    model_size_bytes: u64,
+) -> Result<CpuJobPlan> {
+    let hardware = fetch_hardware(endpoint).await?;
+    plan_cpu_job_from_hardware_with_timeout_policy(
+        &hardware,
+        requested_flavor,
+        requested_timeout_seconds,
+        model_size_bytes,
+        CpuTimeoutPolicy::Requested,
+    )
+}
+
 pub fn plan_cpu_job_from_hardware(
     hardware: &[HardwareFlavor],
     requested_flavor: &str,
     requested_timeout_seconds: u64,
     model_size_bytes: u64,
 ) -> Result<CpuJobPlan> {
+    plan_cpu_job_from_hardware_with_timeout_policy(
+        hardware,
+        requested_flavor,
+        requested_timeout_seconds,
+        model_size_bytes,
+        CpuTimeoutPolicy::SizeMinimum,
+    )
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CpuTimeoutPolicy {
+    SizeMinimum,
+    Requested,
+}
+
+fn plan_cpu_job_from_hardware_with_timeout_policy(
+    hardware: &[HardwareFlavor],
+    requested_flavor: &str,
+    requested_timeout_seconds: u64,
+    model_size_bytes: u64,
+    timeout_policy: CpuTimeoutPolicy,
+) -> Result<CpuJobPlan> {
     let auto_selected_hardware = requested_flavor == "auto";
     let minimum_timeout_seconds = recommended_cpu_timeout_seconds(model_size_bytes);
-    let timeout_seconds = requested_timeout_seconds.max(minimum_timeout_seconds);
+    let timeout_seconds = match timeout_policy {
+        CpuTimeoutPolicy::SizeMinimum => requested_timeout_seconds.max(minimum_timeout_seconds),
+        CpuTimeoutPolicy::Requested => requested_timeout_seconds,
+    };
     let timeout_bumped_to_minimum = timeout_seconds != requested_timeout_seconds;
 
     let cpu_flavors = hardware
@@ -405,11 +446,7 @@ pub fn plan_cpu_job_from_hardware(
             .ok_or_else(|| {
                 anyhow::anyhow!("Unknown CPU Hugging Face Jobs flavor: {requested_flavor}")
             })?;
-        (
-            flavor,
-            "requested explicitly; CPU hardware only needs to run the splitter/build, not hold the whole model in RAM"
-                .to_string(),
-        )
+        (flavor, "requested explicitly".to_string())
     };
 
     let unit_cost_usd = flavor.resolved_unit_cost_usd()?;
@@ -484,13 +521,13 @@ fn select_cpu_flavor(flavors: &[HardwareFlavor]) -> Result<(HardwareFlavor, Stri
 fn recommended_cpu_timeout_seconds(model_size_bytes: u64) -> u64 {
     let gib = model_size_bytes as f64 / 1024_f64.powi(3);
     if gib <= 8.0 {
-        2 * 60 * 60
+        30 * 60
     } else if gib <= 32.0 {
-        4 * 60 * 60
+        60 * 60
     } else if gib <= 128.0 {
-        8 * 60 * 60
+        2 * 60 * 60
     } else {
-        12 * 60 * 60
+        2 * 60 * 60
     }
 }
 
@@ -564,6 +601,27 @@ mod tests {
         assert_eq!(plan.flavor, "cpu-upgrade");
         assert!(plan.auto_selected_hardware);
         assert!(plan.timeout_bumped_to_minimum);
+        assert_eq!(plan.timeout_seconds, 2 * 60 * 60);
+    }
+
+    #[test]
+    fn certification_plan_honors_requested_timeout() {
+        let hardware = vec![
+            cpu("cpu-basic", "2 vCPU", "16 GB", 0.01),
+            cpu("cpu-upgrade", "8 vCPU", "32 GB", 0.05),
+        ];
+        let plan = plan_cpu_job_from_hardware_with_timeout_policy(
+            &hardware,
+            "auto",
+            30 * 60,
+            200 * 1024 * 1024 * 1024,
+            CpuTimeoutPolicy::Requested,
+        )
+        .unwrap();
+        assert_eq!(plan.flavor, "cpu-upgrade");
+        assert_eq!(plan.requested_timeout_seconds, 30 * 60);
+        assert_eq!(plan.timeout_seconds, 30 * 60);
+        assert!(!plan.timeout_bumped_to_minimum);
     }
 
     #[test]

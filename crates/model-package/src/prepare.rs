@@ -246,7 +246,7 @@ pub async fn resolve(
             volume_type: "bucket".into(),
             source: "meshllm/layer-split-output".into(),
             mount_path: "/bucket".into(),
-            read_only: Some(true),
+            read_only: None,
         },
     ];
 

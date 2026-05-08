@@ -86,7 +86,7 @@ pub enum ModelsCommand {
         /// HF Job hardware flavor. Use auto for the default CPU certification baseline.
         #[arg(long, default_value = "auto")]
         flavor: String,
-        /// Requested job timeout; raised automatically by model-size minimums.
+        /// Requested job timeout; used as the HF max-cost cap for family certification.
         #[arg(long, default_value = "8h")]
         timeout: String,
         /// Branch, tag, or commit SHA of mesh-llm to build in the job.

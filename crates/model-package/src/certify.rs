@@ -74,7 +74,7 @@ pub async fn resolve(
         prepare::resolve_source_quant(client, &params.source_repo, quant, params.model_id.clone())
             .await?;
 
-    let job_plan = crate::jobs::plan_cpu_job(
+    let job_plan = crate::jobs::plan_certification_cpu_job(
         &crate::jobs::hf_endpoint(),
         &params.flavor,
         params.timeout_seconds,
@@ -169,7 +169,7 @@ pub async fn resolve(
             volume_type: "bucket".into(),
             source: "meshllm/layer-split-output".into(),
             mount_path: "/bucket".into(),
-            read_only: Some(true),
+            read_only: None,
         },
     ];
 
