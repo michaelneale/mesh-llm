@@ -10,7 +10,8 @@ use anyhow::{Context, Result};
 /// Resolves endpoint from `HF_ENDPOINT` and token from `HF_TOKEN` /
 /// `HUGGING_FACE_HUB_TOKEN`.
 pub fn build_hf_client() -> Result<hf_hub::HFClient> {
-    let mut builder = hf_hub::HFClientBuilder::new();
+    let mut builder =
+        hf_hub::HFClientBuilder::new().cache_dir(model_hf::huggingface_hub_cache_dir());
 
     if let Some(endpoint) = std::env::var("HF_ENDPOINT")
         .ok()

@@ -606,7 +606,7 @@ pub(crate) enum Command {
     /// Submits an HF Job that builds skippy-model-package from source,
     /// splits the model, publishes the layer package, and updates the
     /// meshllm/catalog.
-    #[command(name = "model-prepare", hide = true)]
+    #[command(name = "model-prepare", hide = true, alias = "model-package")]
     ModelPrepare {
         /// Source HuggingFace model ref (e.g. unsloth/Qwen3-235B-A22B-GGUF:UD-Q4_K_XL).
         source_repo: Option<String>,
@@ -663,7 +663,7 @@ pub(crate) enum Command {
         #[arg(long)]
         cancel: Option<String>,
 
-        /// List recent model-prepare jobs.
+        /// List recent model-package jobs.
         #[arg(long)]
         list: bool,
 

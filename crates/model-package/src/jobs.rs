@@ -21,6 +21,10 @@ pub struct JobSpec {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub arguments: Vec<String>,
     pub environment: HashMap<String, String>,
+    /// Secret environment variables to inject into the job container.
+    ///
+    /// The HF Jobs REST API accepts the secret values here and stores them as
+    /// job secrets server-side; callers must redact this field before printing.
     pub secrets: HashMap<String, String>,
     pub flavor: String,
     #[serde(rename = "timeoutSeconds")]
@@ -172,12 +176,10 @@ pub struct LogEntry {
 impl HfJobsClient {
     /// Build a client from environment.
     ///
-    /// Requires `HF_TOKEN` to be set.
+    /// Requires `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN` to be set.
     pub fn from_env() -> Result<Self> {
-        let token = std::env::var("HF_TOKEN")
-            .ok()
-            .filter(|t| !t.is_empty())
-            .context("HF_TOKEN not set. Export a HuggingFace token with write access.")?;
+        let token = model_hf::hf_token_override()
+            .context("HF_TOKEN not set. Export a Hugging Face token with write access.")?;
 
         let endpoint =
             std::env::var("HF_ENDPOINT").unwrap_or_else(|_| "https://huggingface.co".to_string());

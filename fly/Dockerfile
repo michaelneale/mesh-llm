@@ -44,7 +44,7 @@ COPY crates/mesh-llm-test-harness/ crates/mesh-llm-test-harness/
 COPY crates/model-ref/ crates/model-ref/
 COPY crates/model-artifact/ crates/model-artifact/
 COPY crates/model-hf/ crates/model-hf/
-COPY crates/model-prepare/ crates/model-prepare/
+COPY crates/model-package/ crates/model-package/
 COPY crates/model-resolver/ crates/model-resolver/
 COPY crates/skippy-protocol/ crates/skippy-protocol/
 COPY crates/skippy-topology/ crates/skippy-topology/

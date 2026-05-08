@@ -72,4 +72,4 @@ jobs:
             args+=(--dry-run)
           fi
 
-          cargo run -p model-prepare --bin queue-unsloth-layer-packages -- "${args[@]}"
+          cargo run -p model-package --bin queue-unsloth-layer-packages -- "${args[@]}"

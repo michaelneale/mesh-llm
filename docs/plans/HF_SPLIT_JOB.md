@@ -1,10 +1,10 @@
-# `mesh-llm model-prepare` — Layer Package Preparation via HF Jobs
+# `mesh-llm models package` — Layer Package Preparation via HF Jobs
 
 Status: plan
 
 ## Summary
 
-A new `mesh-llm model-prepare` CLI subcommand that takes a HuggingFace model
+A new `mesh-llm models package` CLI subcommand that takes a HuggingFace model
 repo + quant, submits an HF Job to split it into a per-layer package, publishes
 the result, and updates the `meshllm/catalog` dataset.
 
@@ -15,7 +15,7 @@ into mesh-llm as a first-class command, replacing the standalone shell scripts
 in `hf-mesh-skippy-splitter`.
 
 ```bash
-mesh-llm model-prepare unsloth/Qwen3-235B-A22B-GGUF --quant UD-Q4_K_XL
+mesh-llm models package unsloth/Qwen3-235B-A22B-GGUF --quant UD-Q4_K_XL
 ```
 
 ## Background
@@ -49,7 +49,7 @@ User runs run-split-job.sh
 
 ## Design
 
-### Name: `model-prepare`
+### Name: `model-package`
 
 The user is preparing a model for distributed inference. The implementation
 splits + publishes + catalogs, but the user-facing concept is preparation.
@@ -71,7 +71,7 @@ The job script lives in the `meshllm/layer-split-output` bucket and is
 publicly readable. Everyone references it as a read-only volume mount. The
 script is **not** re-uploaded on every run.
 
-The `model-prepare` crate embeds the canonical script source via
+The `model-package` crate embeds the canonical script source via
 `include_str!` and computes its SHA-256 at build time in `build.rs`. At
 runtime, before submitting a job:
 
@@ -79,7 +79,7 @@ runtime, before submitting a job:
    file's `size` from `BucketTreeEntry::File`.
 2. Compare against the embedded script's size.
 3. If sizes differ, the bucket is stale:
-   - **meshllm member:** warn and suggest `mesh-llm model-prepare --update-script`
+   - **meshllm member:** warn and suggest `mesh-llm models package --update-script`
    - **Non-member:** warn that the bucket script may be out of date; proceed
      anyway since they cannot update it.
 4. If sizes match and exact verification is wanted, download the ~10 KB file
@@ -200,10 +200,10 @@ SSE stream. Each line: `data: { "data": "log line text", "timestamp": "..." }`.
 
 ## Crate structure
 
-### New workspace crate: `crates/model-prepare/`
+### New workspace crate: `crates/model-package/`
 
 ```
-crates/model-prepare/
+crates/model-package/
 ├── Cargo.toml
 ├── README.md
 ├── build.rs                        # Computes SHA-256 of embedded script at build time
@@ -219,14 +219,14 @@ crates/model-prepare/
 
 ### CLI handler
 
-`crates/mesh-llm/src/cli/commands/model_prepare.rs` — wired into the
+`crates/mesh-llm/src/cli/commands/model_package.rs` — wired into the
 `Command` enum and `dispatch()` in the standard way.
 
 ### Dependencies
 
 ```toml
 [package]
-name = "model-prepare"
+name = "model-package"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
@@ -420,7 +420,7 @@ Source file resolution from `--quant`:
 If `--quant` is omitted, list the available quants and exit:
 
 ```bash
-mesh-llm model-prepare unsloth/Qwen3-235B-A22B-GGUF
+mesh-llm models package unsloth/Qwen3-235B-A22B-GGUF
 ```
 
 ```
@@ -432,7 +432,7 @@ mesh-llm model-prepare unsloth/Qwen3-235B-A22B-GGUF
    Q8_0           2 shards,  28.1 GB
 
 Specify one with --quant, e.g.:
-   mesh-llm model-prepare unsloth/Qwen3-235B-A22B-GGUF --quant UD-Q4_K_XL
+   mesh-llm models package unsloth/Qwen3-235B-A22B-GGUF --quant UD-Q4_K_XL
 ```
 
 This replaces the old workflow of manually browsing the HF repo page to
@@ -455,7 +455,7 @@ Target repo auto-derivation:
 /// Submits an HF Job that builds skippy-model-package from source,
 /// splits the model, publishes the layer package, and updates the
 /// meshllm/catalog.
-#[command(name = "model-prepare")]
+#[command(name = "model-package")]
 ModelPrepare {
     /// Source HuggingFace repo (e.g. unsloth/Qwen3-235B-A22B-GGUF).
     source_repo: Option<String>,
@@ -504,7 +504,7 @@ ModelPrepare {
     #[arg(long)]
     cancel: Option<String>,
 
-    /// List recent model-prepare jobs.
+    /// List recent model-package jobs.
     #[arg(long)]
     list: bool,
 
@@ -519,7 +519,7 @@ ModelPrepare {
 Submit a split job (meshllm member):
 
 ```bash
-mesh-llm model-prepare unsloth/Qwen3-235B-A22B-GGUF --quant UD-Q4_K_XL
+mesh-llm models package unsloth/Qwen3-235B-A22B-GGUF --quant UD-Q4_K_XL
 ```
 
 ```
@@ -534,14 +534,14 @@ mesh-llm model-prepare unsloth/Qwen3-235B-A22B-GGUF --quant UD-Q4_K_XL
 📋 Job: cpu-xl, timeout 3h, mesh-llm@main
 
 🚀 Submitted: job-abc123def456
-   Status:  mesh-llm model-prepare --status job-abc123def456
-   Logs:    mesh-llm model-prepare --logs job-abc123def456
+   Status:  mesh-llm models package --status job-abc123def456
+   Logs:    mesh-llm models package --logs job-abc123def456
 ```
 
 Submit a split job (non-member):
 
 ```bash
-mesh-llm model-prepare unsloth/Qwen3-235B-A22B-GGUF --quant UD-Q4_K_XL
+mesh-llm models package unsloth/Qwen3-235B-A22B-GGUF --quant UD-Q4_K_XL
 ```
 
 ```
@@ -556,19 +556,19 @@ mesh-llm model-prepare unsloth/Qwen3-235B-A22B-GGUF --quant UD-Q4_K_XL
 📋 Job: cpu-xl, timeout 3h, mesh-llm@main
 
 🚀 Submitted: job-789xyz
-   Status:  mesh-llm model-prepare --status job-789xyz
-   Logs:    mesh-llm model-prepare --logs job-789xyz
+   Status:  mesh-llm models package --status job-789xyz
+   Logs:    mesh-llm models package --logs job-789xyz
 ```
 
 Stale script warning (meshllm member):
 
 ```bash
-mesh-llm model-prepare unsloth/Qwen3-8B-GGUF --quant Q4_K_M
+mesh-llm models package unsloth/Qwen3-8B-GGUF --quant Q4_K_M
 ```
 
 ```
 ⚠ Bucket script is out of date (bucket: 8341 bytes, expected: 9009 bytes)
-  Run: mesh-llm model-prepare --update-script
+  Run: mesh-llm models package --update-script
 
 🔍 Resolving source...
 ...
@@ -587,37 +587,37 @@ Stale script warning (non-member):
 Dry run:
 
 ```bash
-mesh-llm model-prepare unsloth/Qwen3-8B-GGUF --quant Q4_K_M --dry-run
+mesh-llm models package unsloth/Qwen3-8B-GGUF --quant Q4_K_M --dry-run
 ```
 
 Update the bucket script:
 
 ```bash
-mesh-llm model-prepare --update-script
+mesh-llm models package --update-script
 ```
 
 Check job status:
 
 ```bash
-mesh-llm model-prepare --status job-abc123def456
+mesh-llm models package --status job-abc123def456
 ```
 
 Follow job logs:
 
 ```bash
-mesh-llm model-prepare --logs job-abc123def456
+mesh-llm models package --logs job-abc123def456
 ```
 
 Cancel a running job:
 
 ```bash
-mesh-llm model-prepare --cancel job-abc123def456
+mesh-llm models package --cancel job-abc123def456
 ```
 
 List recent jobs:
 
 ```bash
-mesh-llm model-prepare --list
+mesh-llm models package --list
 ```
 
 ## Job script changes
@@ -646,19 +646,19 @@ repo.
 
 The local repo copy (`hf-mesh-skippy-splitter`) currently has a newer script
 than the bucket — it adds dict-style catalog handling and a model card step
-that the bucket version lacks. The embedded copy in `model-prepare` should
+that the bucket version lacks. The embedded copy in `model-package` should
 start from the local repo's version (the latest).
 
 ## Implementation order
 
 1. Create branch `micn/split-publish`
-2. Create `crates/model-prepare/` with `Cargo.toml`, `build.rs`, module stubs
+2. Create `crates/model-package/` with `Cargo.toml`, `build.rs`, module stubs
 3. Copy `split-model-job.sh` from `hf-mesh-skippy-splitter` into
    `src/scripts/`, add `CATALOG_CREATE_PR` support
 4. Implement `jobs.rs` — HF Jobs REST client
 5. Implement `permissions.rs` — whoami + org check
 6. Implement `script.rs` — embedded hash, freshness check, `--update-script`
 7. Implement `prepare.rs` — source resolution, target derivation, job spec
-8. Add CLI handler `model_prepare.rs`, wire into `Command` and `dispatch`
-9. Add `model-prepare` to workspace `Cargo.toml`
+8. Add CLI handler `model_package.rs`, wire into `Command` and `dispatch`
+9. Add `model-package` to workspace `Cargo.toml`
 10. `cargo check`, `cargo fmt`, verify CLI parses

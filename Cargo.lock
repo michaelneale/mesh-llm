@@ -4078,7 +4078,7 @@ dependencies = [
  "mesh-llm-types",
  "mesh-llm-ui",
  "model-artifact",
- "model-prepare",
+ "model-package",
  "model-ref",
  "model-resolver",
  "nostr-sdk",
@@ -4300,7 +4300,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "model-prepare"
+name = "model-package"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -4314,6 +4314,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tempfile",
  "tokio",
 ]
 

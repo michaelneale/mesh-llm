@@ -7,7 +7,7 @@ metadata:
 
 # HF Layer Package Jobs
 
-Use this skill for the `model-prepare` / `models package` CLI, the `model-prepare` crate, and the daily Unsloth queue workflow.
+Use this skill for the `models package` CLI, the `model-package` crate, and the daily Unsloth queue workflow.
 
 ## Workflow
 
@@ -24,12 +24,12 @@ Run Rust formatting and the focused package checks before committing:
 
 ```bash
 cargo fmt --all -- --check
-cargo test -p model-prepare
+cargo test -p model-package
 cargo check -p mesh-llm-host-runtime
 ```
 
 For behavior smoke tests, use a tiny dry run first:
 
 ```bash
-cargo run -p model-prepare --bin queue-unsloth-layer-packages -- --max-jobs 1 --recent-limit 3 --popular-limit 3 --dry-run
+cargo run -p model-package --bin queue-unsloth-layer-packages -- --max-jobs 1 --recent-limit 3 --popular-limit 3 --dry-run
 ```

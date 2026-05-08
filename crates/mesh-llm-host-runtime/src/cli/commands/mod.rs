@@ -5,7 +5,7 @@ mod discover;
 mod download;
 mod gpus;
 mod integrations;
-mod model_prepare;
+mod model_package;
 mod models;
 mod plugin;
 mod runtime;
@@ -116,7 +116,7 @@ pub(crate) async fn dispatch(cli: &Cli) -> Result<bool> {
             list,
             update_script,
         } => {
-            model_prepare::dispatch_model_prepare(model_prepare::ModelPrepareArgs {
+            model_package::dispatch_model_package(model_package::ModelPrepareArgs {
                 source_repo: source_repo.as_deref(),
                 quant: quant.as_deref(),
                 target: target.as_deref(),

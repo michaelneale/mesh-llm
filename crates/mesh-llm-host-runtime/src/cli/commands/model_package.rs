@@ -1,13 +1,13 @@
 use anyhow::{bail, Context, Result};
 use tokio_stream::StreamExt;
 
-use model_prepare::jobs::HfJobsClient;
-use model_prepare::permissions;
-use model_prepare::prepare::{self, DiscoveredQuant, PrepareParams};
-use model_prepare::script;
+use model_package::jobs::HfJobsClient;
+use model_package::permissions;
+use model_package::prepare::{self, DiscoveredQuant, PrepareParams};
+use model_package::script;
 use serde_json::json;
 
-/// All CLI arguments for `model-prepare`, bundled to avoid too-many-arguments.
+/// All CLI arguments for `model-package`, bundled to avoid too-many-arguments.
 pub(crate) struct ModelPrepareArgs<'a> {
     pub source_repo: Option<&'a str>,
     pub quant: Option<&'a str>,
@@ -27,8 +27,8 @@ pub(crate) struct ModelPrepareArgs<'a> {
     pub update_script: bool,
 }
 
-/// Dispatch the model-prepare command.
-pub(crate) async fn dispatch_model_prepare(args: ModelPrepareArgs<'_>) -> Result<()> {
+/// Dispatch the model-package command.
+pub(crate) async fn dispatch_model_package(args: ModelPrepareArgs<'_>) -> Result<()> {
     let ModelPrepareArgs {
         source_repo,
         quant,
@@ -90,7 +90,7 @@ pub(crate) async fn dispatch_model_prepare(args: ModelPrepareArgs<'_>) -> Result
     };
 
     // Build HF client for API calls.
-    let hf_client = model_prepare::build_hf_client()?;
+    let hf_client = model_package::build_hf_client()?;
 
     // If no quant specified, list available quants and exit.
     // This path doesn't need HF_TOKEN — works for public repos.
@@ -212,7 +212,14 @@ pub(crate) async fn dispatch_model_prepare(args: ModelPrepareArgs<'_>) -> Result
     eprintln!();
     let jobs_client = jobs_client.as_ref().expect("jobs client initialized");
     let info = jobs_client.submit(&job.namespace, &job.spec).await?;
+    let job_url = format!(
+        "{}/jobs/{}/{}",
+        jobs_client.endpoint(),
+        job.namespace,
+        info.id
+    );
     eprintln!("🚀 Submitted: {}", info.id);
+    eprintln!("   Console: {job_url}");
     eprintln!("   Status:  mesh-llm models package --status {}", info.id);
     eprintln!("   Logs:    mesh-llm models package --logs {}", info.id);
 
@@ -222,6 +229,7 @@ pub(crate) async fn dispatch_model_prepare(args: ModelPrepareArgs<'_>) -> Result
             serde_json::to_string_pretty(&json!({
                 "submitted": true,
                 "job": info,
+                "jobUrl": job_url,
                 "namespace": job.namespace,
                 "sourceRepo": job.source_repo,
                 "sourceFile": job.source_file,
@@ -301,7 +309,7 @@ fn print_quant_table(quants: &[DiscoveredQuant]) {
 
 async fn run_update_script() -> Result<()> {
     eprintln!("📤 Uploading embedded script to meshllm/layer-split-output bucket...");
-    let client = model_prepare::build_hf_client()?;
+    let client = model_package::build_hf_client()?;
 
     // Check permissions first.
     let perms = permissions::check_permissions(&client).await?;
@@ -346,29 +354,30 @@ async fn run_status(client: &HfJobsClient, job_id: &str, json_output: bool) -> R
 }
 
 async fn run_logs(client: &HfJobsClient, job_id: &str, json_output: bool) -> Result<()> {
-    use model_prepare::jobs::JobStage;
+    use model_package::jobs::JobStage;
 
     let (namespace, id) = parse_job_id(job_id).await?;
 
-    // Check job status — warn if still running (logs will stream indefinitely).
     let info = client.inspect(&namespace, &id).await?;
     if matches!(info.status.stage, JobStage::Running) && !json_output {
-        eprintln!("⚠ Job is still running — logs will stream until interrupted (Ctrl+C).");
-        eprintln!("  Use --follow for submit-and-wait, or --status to check state.");
+        eprintln!("Job is still running; draining currently buffered logs only.");
+        eprintln!("Use --follow when submitting to stream until completion.");
         eprintln!();
     }
 
     let mut stream = std::pin::pin!(client.stream_logs(&namespace, &id).await?);
-    while let Some(line) = stream.next().await {
-        match line {
-            Ok(text) if json_output => {
+    loop {
+        match tokio::time::timeout(std::time::Duration::from_secs(5), stream.next()).await {
+            Ok(Some(Ok(text))) if json_output => {
                 println!("{}", serde_json::to_string(&json!({ "data": text }))?);
             }
-            Ok(text) => println!("{text}"),
-            Err(e) => {
-                eprintln!("⚠ Log stream error: {e}");
+            Ok(Some(Ok(text))) => println!("{text}"),
+            Ok(Some(Err(e))) => {
+                eprintln!("Log stream error: {e}");
                 break;
             }
+            Ok(None) => break,
+            Err(_) => break,
         }
     }
     Ok(())
@@ -394,7 +403,7 @@ async fn run_cancel(client: &HfJobsClient, job_id: &str, json_output: bool) -> R
 
 async fn run_list(client: &HfJobsClient, json_output: bool) -> Result<()> {
     // We need to know the namespace — resolve via whoami.
-    let hf_client = model_prepare::build_hf_client()?;
+    let hf_client = model_package::build_hf_client()?;
     let perms = permissions::check_permissions(&hf_client).await?;
 
     let jobs = client.list(&perms.namespace).await?;
@@ -424,48 +433,68 @@ async fn run_list(client: &HfJobsClient, json_output: bool) -> Result<()> {
 
 /// Follow job logs until the job reaches a terminal state.
 async fn follow_until_done(client: &HfJobsClient, namespace: &str, job_id: &str) -> Result<()> {
-    use model_prepare::jobs::JobStage;
+    use model_package::jobs::JobStage;
 
-    // First wait briefly for the job to start.
     loop {
+        loop {
+            let info = client.inspect(namespace, job_id).await?;
+            match info.status.stage {
+                JobStage::Running => break,
+                JobStage::Completed => {
+                    eprintln!("Job {} finished: {}", job_id, info.status.stage);
+                    return Ok(());
+                }
+                JobStage::Error | JobStage::Canceled | JobStage::Deleted => {
+                    if let Some(msg) = &info.status.message {
+                        eprintln!("Message: {msg}");
+                    }
+                    anyhow::bail!(
+                        "Job {} finished unsuccessfully: {}",
+                        job_id,
+                        info.status.stage
+                    );
+                }
+                _ => tokio::time::sleep(std::time::Duration::from_secs(3)).await,
+            }
+        }
+
+        let mut stream = std::pin::pin!(client.stream_logs(namespace, job_id).await?);
+        while let Some(line) = stream.next().await {
+            match line {
+                Ok(text) => println!("{text}"),
+                Err(e) => {
+                    eprintln!("Log stream error: {e}");
+                    break;
+                }
+            }
+        }
+
         let info = client.inspect(namespace, job_id).await?;
         match info.status.stage {
-            JobStage::Running => break,
-            JobStage::Completed | JobStage::Error | JobStage::Canceled | JobStage::Deleted => {
+            JobStage::Completed => {
+                eprintln!();
                 eprintln!("Job {} finished: {}", job_id, info.status.stage);
+                return Ok(());
+            }
+            JobStage::Error | JobStage::Canceled | JobStage::Deleted => {
                 if let Some(msg) = &info.status.message {
                     eprintln!("Message: {msg}");
                 }
-                return Ok(());
+                anyhow::bail!(
+                    "Job {} finished unsuccessfully: {}",
+                    job_id,
+                    info.status.stage
+                );
             }
             _ => {
-                // Still starting up — wait and retry.
+                eprintln!(
+                    "Log stream ended while job is still {}; reconnecting...",
+                    info.status.stage
+                );
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             }
         }
     }
-
-    // Stream logs.
-    let mut stream = std::pin::pin!(client.stream_logs(namespace, job_id).await?);
-    while let Some(line) = stream.next().await {
-        match line {
-            Ok(text) => println!("{text}"),
-            Err(e) => {
-                eprintln!("⚠ Log stream error: {e}");
-                break;
-            }
-        }
-    }
-
-    // Check final status.
-    let info = client.inspect(namespace, job_id).await?;
-    eprintln!();
-    eprintln!("Job {} finished: {}", job_id, info.status.stage);
-    if let Some(msg) = &info.status.message {
-        eprintln!("Message: {msg}");
-    }
-
-    Ok(())
 }
 
 async fn ensure_bucket_script_current(client: &hf_hub::HFClient) -> Result<()> {
@@ -473,8 +502,11 @@ async fn ensure_bucket_script_current(client: &hf_hub::HFClient) -> Result<()> {
         Ok(freshness) if freshness.is_current => Ok(()),
         Ok(freshness) => {
             eprintln!(
-                "Bucket script is out of date (bucket: {} bytes, expected: {} bytes); updating it now...",
-                freshness.bucket_size, freshness.expected_size
+                "Bucket script is out of date ({}); updating it now...",
+                freshness
+                    .mismatch_reason
+                    .as_deref()
+                    .unwrap_or("embedded script differs from bucket script")
             );
             script::update_bucket_script(client).await?;
             eprintln!("Bucket script updated.");
@@ -491,7 +523,7 @@ async fn ensure_bucket_script_current(client: &hf_hub::HFClient) -> Result<()> {
     }
 }
 
-fn redacted_spec(spec: &model_prepare::jobs::JobSpec) -> model_prepare::jobs::JobSpec {
+fn redacted_spec(spec: &model_package::jobs::JobSpec) -> model_package::jobs::JobSpec {
     let mut redacted = spec.clone();
     for value in redacted.secrets.values_mut() {
         if value.len() > 8 {
@@ -525,7 +557,7 @@ async fn parse_job_id(job_id: &str) -> Result<(String, String)> {
         Ok((ns.to_string(), id.to_string()))
     } else {
         // Need to figure out namespace from the user's identity.
-        let hf_client = model_prepare::build_hf_client()?;
+        let hf_client = model_package::build_hf_client()?;
         let perms = permissions::check_permissions(&hf_client).await?;
         Ok((perms.namespace, job_id.to_string()))
     }

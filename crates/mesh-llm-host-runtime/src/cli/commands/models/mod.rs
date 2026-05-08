@@ -2,7 +2,7 @@ mod formatters;
 mod formatters_console;
 mod formatters_json;
 
-use crate::cli::commands::model_prepare;
+use crate::cli::commands::model_package;
 use crate::cli::models::ModelSearchSort;
 use crate::cli::models::ModelsCommand;
 use crate::cli::terminal_progress::{clear_stderr_line, start_spinner, DeterminateProgressLine};
@@ -338,7 +338,7 @@ pub async fn dispatch_models_command(command: &ModelsCommand) -> Result<()> {
             update_script,
             json,
         } => {
-            model_prepare::dispatch_model_prepare(model_prepare::ModelPrepareArgs {
+            model_package::dispatch_model_package(model_package::ModelPrepareArgs {
                 source_repo: source_repo.as_deref(),
                 quant: quant.as_deref(),
                 target: target.as_deref(),

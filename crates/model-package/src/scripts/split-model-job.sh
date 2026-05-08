@@ -4,7 +4,7 @@ set -euo pipefail
 # This script runs inside an HF Job container.
 # It clones mesh-llm, builds the splitter, splits the model, validates, and publishes.
 #
-# Environment variables (set by mesh-llm model-prepare job spec):
+# Environment variables (set by mesh-llm model-package job spec):
 #   SOURCE_REPO, SOURCE_FILE, TARGET_REPO, MODEL_ID, SOURCE_REVISION
 #   MESH_LLM_REF — git ref to build from (default: main)
 #   CATALOG_CREATE_PR — "true" to open a PR for catalog updates (non-org members)
@@ -36,9 +36,18 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y > /dev/n
 source /root/.cargo/env
 
 echo "=== [3/9] Cloning mesh-llm and building skippy-model-package ==="
-git clone --depth 1 --branch "$MESH_LLM_REF" \
-    https://github.com/Mesh-LLM/mesh-llm.git /tmp/build
+git clone --filter=blob:none https://github.com/Mesh-LLM/mesh-llm.git /tmp/build
 cd /tmp/build
+if git ls-remote --exit-code --heads origin "$MESH_LLM_REF" >/dev/null 2>&1 || \
+   git ls-remote --exit-code --tags origin "$MESH_LLM_REF" >/dev/null 2>&1; then
+    git fetch --depth 1 origin "$MESH_LLM_REF"
+    git checkout --detach FETCH_HEAD
+elif git cat-file -e "$MESH_LLM_REF^{commit}" 2>/dev/null; then
+    git checkout --detach "$MESH_LLM_REF"
+else
+    git fetch --depth 1 origin "$MESH_LLM_REF"
+    git checkout --detach FETCH_HEAD
+fi
 
 # Full clone needed for git-am patches in prepare-llama
 sed -i 's/--filter=blob:none //' scripts/prepare-llama.sh

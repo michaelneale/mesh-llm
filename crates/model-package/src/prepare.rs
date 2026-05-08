@@ -13,7 +13,7 @@ use serde::Serialize;
 use crate::jobs::{CpuJobPlan, JobSpec, JobVolume};
 use crate::permissions::PermissionCheck;
 
-/// Parameters for a model-prepare job.
+/// Parameters for a model-package job.
 pub struct PrepareParams {
     pub source_repo: String,
     pub quant: Option<String>,
@@ -25,7 +25,7 @@ pub struct PrepareParams {
     pub hf_token: Option<String>,
 }
 
-/// A fully resolved model-prepare job, ready to submit.
+/// A fully resolved model-package job, ready to submit.
 pub struct PrepareJob {
     pub source_repo: String,
     pub source_file: String,
@@ -72,20 +72,18 @@ pub async fn list_quants(client: &HFClient, repo: &str) -> Result<Vec<Discovered
         }
     }
 
-    // Group by quant selector.
+    Ok(discover_quants_from_gguf_files(gguf_files))
+}
+
+/// Group GGUF files into quant variants.
+pub fn discover_quants_from_gguf_files(gguf_files: Vec<(String, u64)>) -> Vec<DiscoveredQuant> {
     let mut quant_map: HashMap<String, Vec<(String, u64)>> = HashMap::new();
-    for (path, size) in &gguf_files {
-        if let Some(selector) = quant_selector_from_gguf_file(path) {
-            quant_map
-                .entry(selector)
-                .or_default()
-                .push((path.clone(), *size));
-        } else if let Some(dist_id) = normalize_gguf_distribution_id(path) {
+    for (path, size) in gguf_files {
+        if let Some(selector) = quant_selector_from_gguf_file(&path) {
+            quant_map.entry(selector).or_default().push((path, size));
+        } else if let Some(dist_id) = normalize_gguf_distribution_id(&path) {
             // Fallback: use the distribution ID as the selector.
-            quant_map
-                .entry(dist_id)
-                .or_default()
-                .push((path.clone(), *size));
+            quant_map.entry(dist_id).or_default().push((path, size));
         }
     }
 
@@ -94,7 +92,7 @@ pub async fn list_quants(client: &HFClient, repo: &str) -> Result<Vec<Discovered
         .map(|(name, mut files)| {
             // Sort so shard -00001 comes first.
             files.sort_by(|a, b| a.0.cmp(&b.0));
-            let total_bytes = files.iter().map(|(_, s)| s).sum();
+            let total_bytes = files.iter().map(|(_, size)| size).sum();
             let shard_count = files.len();
             let first_file = files[0].0.clone();
             DiscoveredQuant {
@@ -108,7 +106,7 @@ pub async fn list_quants(client: &HFClient, repo: &str) -> Result<Vec<Discovered
 
     // Sort by name for stable output.
     quants.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(quants)
+    quants
 }
 
 /// Resolve source files, permissions, target repo, and build the job spec.
@@ -273,4 +271,43 @@ fn parse_repo(repo: &str) -> Result<(String, String)> {
         anyhow::bail!("Invalid repo format: '{}'. Expected 'owner/name'.", repo);
     }
     Ok((parts[0].to_string(), parts[1].to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn groups_sharded_quant_files() {
+        let quants = discover_quants_from_gguf_files(vec![
+            (
+                "UD-Q4_K_XL/Qwen3-32B-UD-Q4_K_XL-00002-of-00002.gguf".to_string(),
+                20,
+            ),
+            (
+                "UD-Q4_K_XL/Qwen3-32B-UD-Q4_K_XL-00001-of-00002.gguf".to_string(),
+                10,
+            ),
+        ]);
+
+        assert_eq!(quants.len(), 1);
+        assert_eq!(quants[0].name, "UD-Q4_K_XL");
+        assert_eq!(quants[0].shard_count, 2);
+        assert_eq!(quants[0].total_bytes, 30);
+        assert!(quants[0].first_file.ends_with("00001-of-00002.gguf"));
+    }
+
+    #[test]
+    fn groups_root_quant_files_by_selector() {
+        let quants = discover_quants_from_gguf_files(vec![
+            ("Qwen3-8B-Q4_K_M.gguf".to_string(), 5),
+            ("Qwen3-8B-Q8_0.gguf".to_string(), 9),
+        ]);
+
+        let names = quants
+            .iter()
+            .map(|quant| quant.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["Q4_K_M", "Q8_0"]);
+    }
 }

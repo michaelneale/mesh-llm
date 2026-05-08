@@ -11,9 +11,9 @@ use hf_hub::types::{
     RepoType, RepoUploadFileParams,
 };
 use hf_hub::{HFClient, HFRepository};
-use model_prepare::jobs::{CpuJobPlan, HfJobsClient, JobInfo, JobSpec, JobStage, JobVolume};
-use model_prepare::prepare::{self, DiscoveredQuant};
-use model_prepare::script;
+use model_package::jobs::{CpuJobPlan, HfJobsClient, JobInfo, JobSpec, JobStage, JobVolume};
+use model_package::prepare::{self, DiscoveredQuant};
+use model_package::script;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -100,7 +100,7 @@ async fn main() -> Result<()> {
         bail!("--max-jobs must be at least 1");
     }
 
-    let hf_client = model_prepare::build_hf_client()?;
+    let hf_client = model_package::build_hf_client()?;
     let submitting = args.confirm && !args.dry_run;
     let jobs_client = if submitting {
         Some(HfJobsClient::from_env()?)
@@ -174,7 +174,7 @@ async fn main() -> Result<()> {
         candidates.len(),
     );
 
-    let hardware = model_prepare::jobs::fetch_hardware(&model_prepare::jobs::hf_endpoint()).await?;
+    let hardware = model_package::jobs::fetch_hardware(&model_package::jobs::hf_endpoint()).await?;
     let mut submitted = 0usize;
     let mut total_max_cost_usd = 0.0f64;
     let mut submitted_jobs = Vec::new();
@@ -213,7 +213,7 @@ async fn main() -> Result<()> {
             QueueStatus::Missing | QueueStatus::StaleQueued => {}
         }
 
-        let job_plan = model_prepare::jobs::plan_cpu_job_from_hardware(
+        let job_plan = model_package::jobs::plan_cpu_job_from_hardware(
             &hardware,
             &args.flavor,
             args.timeout_seconds,
@@ -436,8 +436,11 @@ async fn ensure_bucket_script_current(client: &HFClient) -> Result<()> {
         Ok(freshness) if freshness.is_current => Ok(()),
         Ok(freshness) => {
             eprintln!(
-                "Bucket script is out of date (bucket: {} bytes, expected: {} bytes); updating it now...",
-                freshness.bucket_size, freshness.expected_size
+                "Bucket script is out of date ({}); updating it now...",
+                freshness
+                    .mismatch_reason
+                    .as_deref()
+                    .unwrap_or("embedded script differs from bucket script")
             );
             script::update_bucket_script(client).await?;
             eprintln!("Bucket script updated.");

@@ -17,6 +17,8 @@ pub struct ScriptFreshness {
     pub expected_size: u64,
     /// Whether the bucket script matches the embedded version.
     pub is_current: bool,
+    /// Human-readable reason when the script is not current.
+    pub mismatch_reason: Option<String>,
 }
 
 /// Compare the bucket script's size against the embedded version.
@@ -44,14 +46,16 @@ pub async fn check_bucket_script(client: &HFClient) -> Result<ScriptFreshness> {
             bucket_size,
             expected_size: EMBEDDED_SCRIPT_SIZE,
             is_current: false,
+            mismatch_reason: Some(format!(
+                "size differs: bucket has {bucket_size} bytes, embedded script has {expected_size} bytes",
+                expected_size = EMBEDDED_SCRIPT_SIZE
+            )),
         });
     }
 
-    // Sizes match — download to a temp file and verify SHA-256.
-    let tmp_dir =
-        std::env::temp_dir().join(format!("mesh-llm-script-check-{}", std::process::id()));
-    std::fs::create_dir_all(&tmp_dir)?;
-    let tmp_path = tmp_dir.join("split-model-job.sh");
+    // Sizes match — download to a unique temp file and verify SHA-256.
+    let tmp_dir = tempfile::tempdir().context("create bucket script check temp dir")?;
+    let tmp_path = tmp_dir.path().join("split-model-job.sh");
 
     let download_params = hf_hub::BucketDownloadFilesParams {
         files: vec![("split-model-job.sh".to_string(), tmp_path.clone())],
@@ -66,16 +70,18 @@ pub async fn check_bucket_script(client: &HFClient) -> Result<ScriptFreshness> {
     let hash = Sha256::digest(&bytes);
     let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
 
-    // Clean up.
-    let _ = std::fs::remove_file(&tmp_path);
-    let _ = std::fs::remove_dir(&tmp_dir);
-
     let is_current = hex == EMBEDDED_SCRIPT_SHA256;
 
     Ok(ScriptFreshness {
         bucket_size,
         expected_size: EMBEDDED_SCRIPT_SIZE,
         is_current,
+        mismatch_reason: (!is_current).then(|| {
+            format!(
+                "sha256 differs: bucket has {hex}, embedded script has {expected}",
+                expected = EMBEDDED_SCRIPT_SHA256
+            )
+        }),
     })
 }
 
@@ -85,11 +91,9 @@ pub async fn check_bucket_script(client: &HFClient) -> Result<ScriptFreshness> {
 pub async fn update_bucket_script(client: &HFClient) -> Result<()> {
     let bucket = client.bucket("meshllm", "layer-split-output");
 
-    // Write embedded script to a temp file for upload.
-    let tmp_dir =
-        std::env::temp_dir().join(format!("mesh-llm-script-upload-{}", std::process::id()));
-    std::fs::create_dir_all(&tmp_dir)?;
-    let tmp_path = tmp_dir.join("split-model-job.sh");
+    // Write embedded script to a unique temp file for upload.
+    let tmp_dir = tempfile::tempdir().context("create bucket script upload temp dir")?;
+    let tmp_path = tmp_dir.path().join("split-model-job.sh");
     std::fs::write(&tmp_path, EMBEDDED_SCRIPT)?;
 
     let files = vec![(tmp_path.clone(), "split-model-job.sh".to_string())];
@@ -97,10 +101,6 @@ pub async fn update_bucket_script(client: &HFClient) -> Result<()> {
         .upload_files(&files, &Default::default())
         .await
         .context("upload script to meshllm/layer-split-output bucket")?;
-
-    // Clean up.
-    let _ = std::fs::remove_file(&tmp_path);
-    let _ = std::fs::remove_dir(&tmp_dir);
 
     Ok(())
 }
