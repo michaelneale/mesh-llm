@@ -621,6 +621,28 @@ struct SplitGenerationLoadSpec<'a> {
 async fn load_split_runtime_generation(
     spec: SplitGenerationLoadSpec<'_>,
 ) -> Result<SplitRuntimeGenerationHandle> {
+    let mut cleanup_on_error = false;
+    let result = load_split_runtime_generation_inner(&spec, &mut cleanup_on_error).await;
+    if let Err(error) = &result {
+        if cleanup_on_error {
+            tracing::warn!(
+                model_ref = spec.model_ref,
+                topology_id = %spec.generation.topology_id,
+                run_id = %spec.generation.run_id,
+                generation = spec.generation.generation,
+                error = %error,
+                "cleaning up split runtime generation after failed load"
+            );
+            stop_split_generation(spec.node, spec.generation, spec.generation.generation).await;
+        }
+    }
+    result
+}
+
+async fn load_split_runtime_generation_inner(
+    spec: &SplitGenerationLoadSpec<'_>,
+    cleanup_on_error: &mut bool,
+) -> Result<SplitRuntimeGenerationHandle> {
     let stage0 = spec
         .generation
         .stages
@@ -665,6 +687,7 @@ async fn load_split_runtime_generation(
         skippy_stage_activation_width(spec.package.activation_width, spec.model_ref)?;
 
     for stage in spec.generation.stages.iter().skip(1).rev() {
+        *cleanup_on_error = true;
         let load = skippy::StageLoadRequest {
             topology_id: spec.generation.topology_id.clone(),
             run_id: spec.generation.run_id.clone(),
@@ -777,7 +800,7 @@ async fn load_split_runtime_generation(
         downstream.stage_id,
         downstream.stage_index,
         downstream_endpoint,
-        spec.projector_path,
+        spec.projector_path.clone(),
         spec.ctx_size,
         spec.slots as u32,
         kv_cache,
@@ -2277,6 +2300,7 @@ mod tests {
     use iroh::SecretKey;
     use sha2::{Digest, Sha256};
     use std::fs;
+    use std::sync::{Arc, Mutex as StdMutex};
 
     fn make_id(seed: u8) -> iroh::EndpointId {
         let mut bytes = [0u8; 32];
@@ -2384,6 +2408,135 @@ mod tests {
             layer_start,
             layer_end,
             parameter_bytes: u64::from(layer_end.saturating_sub(layer_start)) * 1_000_000,
+        }
+    }
+
+    fn local_stage(
+        node_id: iroh::EndpointId,
+        stage_index: u32,
+        layer_start: u32,
+        layer_end: u32,
+    ) -> RuntimeSliceStagePlan {
+        RuntimeSliceStagePlan {
+            stage_id: format!("stage-{stage_index}"),
+            stage_index,
+            node_id,
+            layer_start,
+            layer_end,
+            parameter_bytes: u64::from(layer_end.saturating_sub(layer_start)) * 1_000_000,
+        }
+    }
+
+    fn test_stage_status_from_load(
+        load: &skippy::StageLoadRequest,
+        state: skippy::StageRuntimeState,
+    ) -> skippy::StageStatusSnapshot {
+        skippy::StageStatusSnapshot {
+            topology_id: load.topology_id.clone(),
+            run_id: load.run_id.clone(),
+            model_id: load.model_id.clone(),
+            backend: load.backend.clone(),
+            package_ref: Some(load.package_ref.clone()),
+            manifest_sha256: Some(load.manifest_sha256.clone()),
+            source_model_path: load.model_path.clone(),
+            source_model_sha256: None,
+            source_model_bytes: load.source_model_bytes,
+            materialized_path: None,
+            materialized_pinned: false,
+            projector_path: load.projector_path.clone(),
+            stage_id: load.stage_id.clone(),
+            stage_index: load.stage_index,
+            layer_start: load.layer_start,
+            layer_end: load.layer_end,
+            state,
+            bind_addr: "127.0.0.1:31000".to_string(),
+            activation_width: load.activation_width as u32,
+            wire_dtype: load.wire_dtype,
+            selected_device: load.selected_device.clone(),
+            ctx_size: load.ctx_size,
+            lane_count: load.lane_count,
+            n_batch: load.n_batch,
+            n_ubatch: load.n_ubatch,
+            flash_attn_type: load.flash_attn_type,
+            error: None,
+            shutdown_generation: load.shutdown_generation,
+        }
+    }
+
+    fn test_stage_status_from_stop(stop: &skippy::StageStopRequest) -> skippy::StageStatusSnapshot {
+        skippy::StageStatusSnapshot {
+            topology_id: stop.topology_id.clone(),
+            run_id: stop.run_id.clone(),
+            model_id: String::new(),
+            backend: "skippy".to_string(),
+            package_ref: None,
+            manifest_sha256: None,
+            source_model_path: None,
+            source_model_sha256: None,
+            source_model_bytes: None,
+            materialized_path: None,
+            materialized_pinned: false,
+            projector_path: None,
+            stage_id: stop.stage_id.clone(),
+            stage_index: 0,
+            layer_start: 0,
+            layer_end: 0,
+            state: skippy::StageRuntimeState::Stopped,
+            bind_addr: String::new(),
+            activation_width: 0,
+            wire_dtype: skippy::StageWireDType::F16,
+            selected_device: None,
+            ctx_size: 0,
+            lane_count: 0,
+            n_batch: None,
+            n_ubatch: None,
+            flash_attn_type: FlashAttentionType::Auto,
+            error: None,
+            shutdown_generation: stop.shutdown_generation,
+        }
+    }
+
+    fn test_preparation_status_from_load(
+        load: &skippy::StageLoadRequest,
+    ) -> skippy::StagePreparationStatus {
+        skippy::StagePreparationStatus {
+            topology_id: load.topology_id.clone(),
+            run_id: load.run_id.clone(),
+            model_id: load.model_id.clone(),
+            backend: load.backend.clone(),
+            package_ref: load.package_ref.clone(),
+            manifest_sha256: load.manifest_sha256.clone(),
+            stage_id: load.stage_id.clone(),
+            stage_index: load.stage_index,
+            layer_start: load.layer_start,
+            layer_end: load.layer_end,
+            state: skippy::StagePreparationState::Available,
+            bytes_done: load.source_model_bytes,
+            bytes_total: load.source_model_bytes,
+            bind_addr: None,
+            error: None,
+            shutdown_generation: load.shutdown_generation,
+        }
+    }
+
+    fn test_inventory_from_request(
+        request: &skippy::StageInventoryRequest,
+    ) -> skippy::StageLayerInventory {
+        skippy::StageLayerInventory {
+            model_id: request.model_id.clone(),
+            package_ref: request.package_ref.clone(),
+            manifest_sha256: request.manifest_sha256.clone(),
+            layer_count: 40,
+            ready_ranges: Vec::new(),
+            available_ranges: vec![skippy::LayerRange {
+                layer_start: 0,
+                layer_end: 40,
+            }],
+            missing_ranges: Vec::new(),
+            preparing_ranges: Vec::new(),
+            source_model_path: Some("/models/qwen.gguf".to_string()),
+            source_model_bytes: Some(40_000_000),
+            source_model_kind: skippy::SourceModelKind::LayerPackage,
         }
     }
 
@@ -2665,6 +2818,138 @@ mod tests {
             split_missing_active_stage_nodes(&active, &current_participants),
             vec![make_id(2)]
         );
+    }
+
+    #[tokio::test]
+    async fn load_split_runtime_generation_stops_candidate_stages_after_partial_load_failure() {
+        let node = mesh::Node::new_for_tests(NodeRole::Host { http_port: 9337 })
+            .await
+            .unwrap();
+        let (control_tx, mut control_rx) =
+            tokio::sync::mpsc::unbounded_channel::<skippy::StageControlCommand>();
+        node.set_stage_control_sender(control_tx).await;
+
+        let requests = Arc::new(StdMutex::new(Vec::new()));
+        let captured_requests = Arc::clone(&requests);
+        tokio::spawn(async move {
+            while let Some(command) = control_rx.recv().await {
+                captured_requests
+                    .lock()
+                    .unwrap()
+                    .push(command.request.clone());
+                let response = match &command.request {
+                    skippy::StageControlRequest::Prepare(prepare) => {
+                        Ok(skippy::StageControlResponse::PrepareAccepted(
+                            skippy::StagePrepareAcceptedResponse {
+                                accepted: true,
+                                status: test_preparation_status_from_load(&prepare.load),
+                                error: None,
+                            },
+                        ))
+                    }
+                    skippy::StageControlRequest::Inventory(inventory) => {
+                        Ok(skippy::StageControlResponse::Inventory(
+                            test_inventory_from_request(inventory),
+                        ))
+                    }
+                    skippy::StageControlRequest::Load(load) if load.stage_id == "stage-1" => {
+                        Err(anyhow::anyhow!("injected stage load failure"))
+                    }
+                    skippy::StageControlRequest::Load(load) => Ok(
+                        skippy::StageControlResponse::Ready(skippy::StageReadyResponse {
+                            accepted: true,
+                            status: test_stage_status_from_load(
+                                load,
+                                skippy::StageRuntimeState::Ready,
+                            ),
+                            error: None,
+                        }),
+                    ),
+                    skippy::StageControlRequest::Stop(stop) => Ok(
+                        skippy::StageControlResponse::Ready(skippy::StageReadyResponse {
+                            accepted: true,
+                            status: test_stage_status_from_stop(stop),
+                            error: None,
+                        }),
+                    ),
+                    other => panic!("unexpected stage control request: {other:?}"),
+                };
+                let _ = command.resp.send(response);
+            }
+        });
+
+        let mut package = package(40);
+        package.package_ref = "hf://Mesh-LLM/test-split-package".to_string();
+        let local_id = node.id();
+        let generation = SplitTopologyGeneration::new(
+            "candidate-topology".into(),
+            "candidate-run".into(),
+            2,
+            vec![SplitParticipant {
+                node_id: local_id,
+                vram_bytes: 24_000_000_000,
+                first_joined_mesh_ts: None,
+            }],
+            vec![
+                local_stage(local_id, 0, 0, 12),
+                local_stage(local_id, 1, 12, 24),
+                local_stage(local_id, 2, 24, 40),
+            ],
+        );
+
+        let error = match load_split_runtime_generation(SplitGenerationLoadSpec {
+            node: &node,
+            model_ref: "Qwen",
+            model_path: Path::new("/models/qwen.gguf"),
+            package: &package,
+            generation: &generation,
+            projector_path: None,
+            ctx_size: 4096,
+            pinned_gpu: None,
+            slots: 1,
+            cache_type_k_override: None,
+            cache_type_v_override: None,
+            n_batch_override: None,
+            n_ubatch_override: None,
+            flash_attention_override: FlashAttentionType::Auto,
+        })
+        .await
+        {
+            Ok(_) => panic!("candidate split generation load unexpectedly succeeded"),
+            Err(error) => error,
+        };
+
+        let error_chain = format!("{error:#}");
+        assert!(
+            error_chain.contains("injected stage load failure"),
+            "unexpected error: {error_chain}"
+        );
+
+        let requests = requests.lock().unwrap();
+        let load_stage_ids = requests
+            .iter()
+            .filter_map(|request| match request {
+                skippy::StageControlRequest::Load(load) => Some(load.stage_id.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(load_stage_ids, vec!["stage-2", "stage-1"]);
+
+        let stop_requests = requests
+            .iter()
+            .filter_map(|request| match request {
+                skippy::StageControlRequest::Stop(stop) => Some(stop),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(stop_requests.len(), 2);
+        assert_eq!(stop_requests[0].stage_id, "stage-1");
+        assert_eq!(stop_requests[1].stage_id, "stage-2");
+        assert!(stop_requests.iter().all(|stop| {
+            stop.topology_id == generation.topology_id
+                && stop.run_id == generation.run_id
+                && stop.shutdown_generation == generation.generation
+        }));
     }
 
     #[test]
