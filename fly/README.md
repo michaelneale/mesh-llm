@@ -6,7 +6,7 @@ Fly app running mesh-llm in `--client` mode — no GPU, just QUIC tunnels to mes
 |---|---|---|
 | **console** | [mesh-llm-console.fly.dev](https://mesh-llm-console.fly.dev) | `fly/console/fly.toml` |
 
-Also available at [www.mesh-llm.com](https://www.mesh-llm.com) and [www.anarchai.org](https://www.anarchai.org).
+Also available at [www.mesh-llm.com](https://www.mesh-llm.com) and [meshllm.cloud](https://meshllm.cloud).
 
 ## Architecture
 

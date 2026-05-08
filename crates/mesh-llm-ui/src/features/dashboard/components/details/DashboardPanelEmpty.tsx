@@ -1,13 +1,13 @@
-import type { ReactNode } from "react";
+import type { ReactNode } from 'react'
 
 export function DashboardPanelEmpty({
   icon,
   title,
-  description,
+  description
 }: {
-  icon: ReactNode;
-  title: string;
-  description: string;
+  icon: ReactNode
+  title: string
+  description: string
 }) {
   return (
     <div className="flex h-full min-h-[18rem] flex-col items-center justify-center rounded-md border border-dashed bg-muted/20 px-4 text-center md:min-h-[20rem]">
@@ -15,9 +15,7 @@ export function DashboardPanelEmpty({
         {icon}
       </div>
       <div className="text-sm font-medium">{title}</div>
-      <div className="mt-1 max-w-md text-xs text-muted-foreground">
-        {description}
-      </div>
+      <div className="mt-1 max-w-md text-xs text-muted-foreground">{description}</div>
     </div>
-  );
+  )
 }

@@ -1,11 +1,11 @@
-import { type ChangeEvent, type Dispatch, type MutableRefObject, type Ref, type SetStateAction } from "react";
-import { File, FileAudio, ImagePlus, Loader2, Paperclip, RotateCcw, Send, Square } from "lucide-react";
+import { type ChangeEvent, type Dispatch, type MutableRefObject, type Ref, type SetStateAction } from 'react'
+import { File, FileAudio, ImagePlus, Loader2, Paperclip, RotateCcw, Send, Square } from 'lucide-react'
 
-import { Alert, AlertDescription, AlertTitle } from "../../../../components/ui/alert";
-import { Button } from "../../../../components/ui/button";
-import { Textarea } from "../../../../components/ui/textarea";
-import type { ChatAttachment } from "../../lib/chat-types";
-import { PendingAttachmentList } from "./PendingAttachmentList";
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
+import { Textarea } from '@/components/ui/textarea'
+import type { ChatAttachment } from '@/features/chat/lib/chat-types'
+import { PendingAttachmentList } from '@/features/chat/components/composer/PendingAttachmentList'
 
 export function ChatComposer({
   pendingAttachments,
@@ -32,33 +32,33 @@ export function ChatComposer({
   onRegenerate,
   onSubmit,
   onRemovePendingAttachment,
-  onRetryPendingAttachment,
+  onRetryPendingAttachment
 }: {
-  pendingAttachments: ChatAttachment[];
-  composerError: string | null;
-  setComposerError: Dispatch<SetStateAction<string | null>>;
-  attachmentSendIssue: string | null;
-  attachmentPreparationMessage: string | null;
-  input: string;
-  setInput: (value: string) => void;
-  canChat: boolean;
-  isSending: boolean;
-  canRegenerate: boolean;
-  selectedModelAudio: boolean;
-  selectedModelMultimodal: boolean;
-  chatInputRef: MutableRefObject<HTMLTextAreaElement | null>;
-  pdfInputRef: MutableRefObject<HTMLInputElement | null>;
-  imageInputRef: MutableRefObject<HTMLInputElement | null>;
-  audioInputRef: MutableRefObject<HTMLInputElement | null>;
-  fileInputRef: MutableRefObject<HTMLInputElement | null>;
-  onFileSelect: (event: ChangeEvent<HTMLInputElement>) => void;
-  onImageSelect: (event: ChangeEvent<HTMLInputElement>) => void;
-  onAudioSelect: (event: ChangeEvent<HTMLInputElement>) => void;
-  onStop: () => void;
-  onRegenerate: () => void;
-  onSubmit: () => void;
-  onRemovePendingAttachment: (attachmentId: string) => void;
-  onRetryPendingAttachment: (attachmentId: string) => void;
+  pendingAttachments: ChatAttachment[]
+  composerError: string | null
+  setComposerError: Dispatch<SetStateAction<string | null>>
+  attachmentSendIssue: string | null
+  attachmentPreparationMessage: string | null
+  input: string
+  setInput: (value: string) => void
+  canChat: boolean
+  isSending: boolean
+  canRegenerate: boolean
+  selectedModelAudio: boolean
+  selectedModelMultimodal: boolean
+  chatInputRef: MutableRefObject<HTMLTextAreaElement | null>
+  pdfInputRef: MutableRefObject<HTMLInputElement | null>
+  imageInputRef: MutableRefObject<HTMLInputElement | null>
+  audioInputRef: MutableRefObject<HTMLInputElement | null>
+  fileInputRef: MutableRefObject<HTMLInputElement | null>
+  onFileSelect: (event: ChangeEvent<HTMLInputElement>) => void
+  onImageSelect: (event: ChangeEvent<HTMLInputElement>) => void
+  onAudioSelect: (event: ChangeEvent<HTMLInputElement>) => void
+  onStop: () => void
+  onRegenerate: () => void
+  onSubmit: () => void
+  onRemovePendingAttachment: (attachmentId: string) => void
+  onRetryPendingAttachment: (attachmentId: string) => void
 }) {
   return (
     <div className="shrink-0 box-border w-full max-w-full space-y-2 overflow-hidden p-3 md:space-y-3 md:p-4">
@@ -75,39 +75,35 @@ export function ChatComposer({
       ) : composerError || attachmentSendIssue ? (
         <Alert variant="destructive" data-testid="composer-error">
           <AlertTitle>Attachment Issue</AlertTitle>
-          <AlertDescription>
-            {composerError || attachmentSendIssue}
-          </AlertDescription>
+          <AlertDescription>{composerError || attachmentSendIssue}</AlertDescription>
         </Alert>
       ) : null}
       <Textarea
         ref={chatInputRef as Ref<HTMLTextAreaElement>}
         value={input}
         onChange={(e) => {
-          setComposerError(null);
-          setInput(e.target.value);
+          setComposerError(null)
+          setInput(e.target.value)
         }}
         onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) {
-            e.preventDefault();
-            onSubmit();
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault()
+            onSubmit()
           }
-          if (e.key === "Escape" && isSending) {
-            e.preventDefault();
-            onStop();
+          if (e.key === 'Escape' && isSending) {
+            e.preventDefault()
+            onStop()
           }
         }}
         data-testid="chat-input"
         rows={2}
-        placeholder={canChat ? "Ask me anything..." : "Waiting for a warm model..."}
+        placeholder={canChat ? 'Ask me anything...' : 'Waiting for a warm model...'}
         disabled={!canChat}
         className="min-h-[56px] md:min-h-[80px] resize-none text-base md:text-sm"
       />
       <div className="flex items-center justify-between gap-2">
         <div className="hidden md:block text-xs text-muted-foreground">
-          {isSending
-            ? "Esc to stop. Enter to interrupt and send."
-            : "Enter to send. Shift+Enter for newline."}
+          {isSending ? 'Esc to stop. Enter to interrupt and send.' : 'Enter to send. Shift+Enter for newline.'}
         </div>
         <div className="flex items-center gap-2">
           <input
@@ -224,21 +220,13 @@ export function ChatComposer({
             onMouseDown={(e) => e.preventDefault()}
             onClick={onSubmit}
             data-testid="chat-send"
-            disabled={
-              !canChat ||
-              (!input.trim() && pendingAttachments.length === 0) ||
-              !!attachmentPreparationMessage
-            }
+            disabled={!canChat || (!input.trim() && pendingAttachments.length === 0) || !!attachmentPreparationMessage}
           >
-            {isSending ? (
-              <Send className="mr-2 h-4 w-4 text-muted-foreground" />
-            ) : (
-              <Send className="mr-2 h-4 w-4" />
-            )}
-            {isSending ? "Queue" : "Send"}
+            {isSending ? <Send className="mr-2 h-4 w-4 text-muted-foreground" /> : <Send className="mr-2 h-4 w-4" />}
+            {isSending ? 'Queue' : 'Send'}
           </Button>
         </div>
       </div>
     </div>
-  );
+  )
 }

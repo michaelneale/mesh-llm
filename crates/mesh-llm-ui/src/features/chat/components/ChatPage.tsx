@@ -6,136 +6,102 @@ import {
   type SetStateAction,
   useEffect,
   useRef,
-  useState,
-} from "react";
-import {
-  ChevronDown,
-  Cpu,
-  Hash,
-  Loader2,
-  MessageSquarePlus,
-  Network,
-  Square,
-  User,
-} from "lucide-react";
+  useState
+} from 'react'
+import { ChevronDown, Cpu, Hash, Loader2, MessageSquarePlus, Network, Square, User } from 'lucide-react'
 
-import { BrandIcon } from "../../../components/brand-icon";
-import { Button } from "../../../components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/card";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "../../../components/ui/select";
-import { Separator } from "../../../components/ui/separator";
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-} from "../../../components/ui/sheet";
-import { cn } from "../../../lib/utils";
-import {
-  dataUrlToArrayBuffer,
-  extractPdfText,
-  isPdfMimeType,
-  renderPdfPagesToImages,
-} from "../../../lib/pdf";
-import { validateAttachmentFile } from "../../../lib/attachments";
-import {
-  modelDisplayName,
-  modelRefLabel,
-} from "../../app-shell/lib/status-helpers";
-import type {
-  MeshModel,
-  ModelServingStat,
-  StatusPayload,
-} from "../../app-shell/lib/status-types";
-import { parseDataUrl } from "../lib/chat-attachments";
-import { createChatId } from "../lib/chat-id";
+import { BrandIcon } from '@/components/brand-icon'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Separator } from '@/components/ui/separator'
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
+import { cn } from '@/lib/utils'
+import { dataUrlToArrayBuffer, extractPdfText, isPdfMimeType, renderPdfPagesToImages } from '@/lib/pdf'
+import { validateAttachmentFile } from '@/lib/attachments'
+import { modelDisplayName, modelRefLabel } from '@/features/app-shell/lib/status-helpers'
+import type { MeshModel, ModelServingStat, StatusPayload } from '@/features/app-shell/lib/status-types'
+import { parseDataUrl } from '@/features/chat/lib/chat-attachments'
+import { createChatId } from '@/features/chat/lib/chat-id'
 import type {
   AttachmentStatePatch,
   ChatAttachment,
   ChatConversation,
-  ChatMessage,
-} from "../lib/chat-types";
-import { describeImageAttachmentForPrompt, describeRenderedPagesAsText } from "../lib/vision-describe";
-import { ChatComposer } from "./composer/ChatComposer";
-import { ChatBubble } from "./messages/ChatBubble";
-import { ConversationList } from "./sidebar/ConversationList";
+  ChatMessage
+} from '@/features/chat/lib/chat-types'
+import { describeImageAttachmentForPrompt, describeRenderedPagesAsText } from '@/features/chat/lib/vision-describe'
+import { ChatComposer } from '@/features/chat/components/composer/ChatComposer'
+import { ChatBubble } from '@/features/chat/components/messages/ChatBubble'
+import { ConversationList } from '@/features/chat/components/sidebar/ConversationList'
 
-const DOCS_URL = "https://docs.anarchai.org";
+const DOCS_URL = 'https://docs.anarchai.org'
 
 function visionBadge(model?: MeshModel | null) {
-  if (!model) return null;
-  if (model.vision) return { icon: "👁", title: "Vision — understands images" };
-  if (model.vision_status === "likely") {
+  if (!model) return null
+  if (model.vision) return { icon: '👁', title: 'Vision — understands images' }
+  if (model.vision_status === 'likely') {
     return {
-      icon: "👁?",
-      title: "Vision likely — inferred from model metadata",
-    };
+      icon: '👁?',
+      title: 'Vision likely — inferred from model metadata'
+    }
   }
-  return null;
+  return null
 }
 
 function multimodalBadge(model?: MeshModel | null) {
-  if (!model) return null;
+  if (!model) return null
   if (model.multimodal) {
-    return { icon: "🎛️", title: "Multimodal — supports media inputs" };
+    return { icon: '🎛️', title: 'Multimodal — supports media inputs' }
   }
-  return null;
+  return null
 }
 
 function audioBadge(model?: MeshModel | null) {
-  if (!model) return null;
-  if (model.audio) return { icon: "🔊", title: "Audio — understands audio input" };
-  if (model.audio_status === "likely") {
+  if (!model) return null
+  if (model.audio) return { icon: '🔊', title: 'Audio — understands audio input' }
+  if (model.audio_status === 'likely') {
     return {
-      icon: "🔊?",
-      title: "Audio likely — inferred from model metadata",
-    };
+      icon: '🔊?',
+      title: 'Audio likely — inferred from model metadata'
+    }
   }
-  return null;
+  return null
 }
 
 function reasoningBadge(model?: MeshModel | null) {
-  if (!model) return null;
-  if (model.reasoning) return { icon: "🧠", title: "Reasoning-oriented model" };
-  if (model.reasoning_status === "likely") {
+  if (!model) return null
+  if (model.reasoning) return { icon: '🧠', title: 'Reasoning-oriented model' }
+  if (model.reasoning_status === 'likely') {
     return {
-      icon: "🧠?",
-      title: "Reasoning likely — inferred from model metadata",
-    };
+      icon: '🧠?',
+      title: 'Reasoning likely — inferred from model metadata'
+    }
   }
-  return null;
+  return null
 }
 
 function InviteFriendEmptyState({
   inviteToken,
   selectedModel,
-  isPublicMesh,
+  isPublicMesh
 }: {
-  inviteToken: string;
-  selectedModel: string;
-  isPublicMesh: boolean;
+  inviteToken: string
+  selectedModel: string
+  isPublicMesh: boolean
 }) {
-  const [open, setOpen] = useState(false);
-  const [inviteWithModelCopied, setInviteWithModelCopied] = useState(false);
+  const [open, setOpen] = useState(false)
+  const [inviteWithModelCopied, setInviteWithModelCopied] = useState(false)
   const inviteWithModelCommand =
-    inviteToken && selectedModel
-      ? `mesh-llm --join ${inviteToken} --model ${selectedModel}`
-      : "";
+    inviteToken && selectedModel ? `mesh-llm --join ${inviteToken} --model ${selectedModel}` : ''
 
   async function copyInviteWithModelCommand() {
-    if (!inviteWithModelCommand) return;
+    if (!inviteWithModelCommand) return
     try {
-      await navigator.clipboard.writeText(inviteWithModelCommand);
-      setInviteWithModelCopied(true);
-      window.setTimeout(() => setInviteWithModelCopied(false), 1500);
+      await navigator.clipboard.writeText(inviteWithModelCommand)
+      setInviteWithModelCopied(true)
+      window.setTimeout(() => setInviteWithModelCopied(false), 1500)
     } catch {
-      setInviteWithModelCopied(false);
+      setInviteWithModelCopied(false)
     }
   }
 
@@ -146,31 +112,20 @@ function InviteFriendEmptyState({
           <BrandIcon className="h-12 w-12 text-primary/50 animate-wiggle" />
         </div>
         <p className="text-sm text-muted-foreground">
-          Mesh LLM is a project to let people contribute spare compute, build
-          private personal AI, using open models.
+          Mesh LLM is a project to let people contribute spare compute, build private personal AI, using open models.
         </p>
         <button
           type="button"
           onClick={() => setOpen(!open)}
           className="mx-auto flex items-center gap-1.5 text-xs text-muted-foreground/70 hover:text-foreground transition-colors"
         >
-          <ChevronDown
-            className={cn(
-              "h-3 w-3 transition-transform",
-              open ? "" : "-rotate-90",
-            )}
-          />
+          <ChevronDown className={cn('h-3 w-3 transition-transform', open ? '' : '-rotate-90')} />
           <span>Learn more…</span>
         </button>
         {open ? (
           <div className="space-y-4 rounded-md border border-dashed p-3 text-left">
             <div className="text-xs text-muted-foreground">
-              <a
-                href={DOCS_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="underline hover:text-foreground"
-              >
+              <a href={DOCS_URL} target="_blank" rel="noopener noreferrer" className="underline hover:text-foreground">
                 Learn about this project →
               </a>
             </div>
@@ -178,21 +133,15 @@ function InviteFriendEmptyState({
             <div className="space-y-2">
               <div className="text-xs font-medium">Contribute to the pool</div>
               <div className="text-xs text-muted-foreground">
-                Have a spare machine? Add it to this mesh and share compute with
-                others.
+                Have a spare machine? Add it to this mesh and share compute with others.
               </div>
-              <code className="block rounded-md border bg-muted/40 px-2 py-1.5 text-xs">
-                mesh-llm --auto
-              </code>
+              <code className="block rounded-md border bg-muted/40 px-2 py-1.5 text-xs">mesh-llm --auto</code>
             </div>
             <Separator />
             <div className="space-y-2">
-              <div className="text-xs font-medium">
-                Run your own private mesh
-              </div>
+              <div className="text-xs font-medium">Run your own private mesh</div>
               <div className="text-xs text-muted-foreground">
-                Pool machines across your home, office, or friends — fully
-                private, no cloud needed.{" "}
+                Pool machines across your home, office, or friends — fully private, no cloud needed.{' '}
                 <a
                   href={DOCS_URL}
                   target="_blank"
@@ -207,8 +156,7 @@ function InviteFriendEmptyState({
             <div className="space-y-2">
               <div className="text-xs font-medium">Use with coding agents</div>
               <div className="text-xs text-muted-foreground">
-                Works with Claude Code, Goose, pi, and any OpenAI-compatible
-                client.{" "}
+                Works with Claude Code, Goose, pi, and any OpenAI-compatible client.{' '}
                 <a
                   href={`${DOCS_URL}/#agents`}
                   target="_blank"
@@ -223,8 +171,8 @@ function InviteFriendEmptyState({
             <div className="space-y-2">
               <div className="text-xs font-medium">Agent gossip</div>
               <div className="text-xs text-muted-foreground">
-                Let your agents coordinate across machines — share status,
-                findings, and questions. Works with any LLM setup.{" "}
+                Let your agents coordinate across machines — share status, findings, and questions. Works with any LLM
+                setup.{' '}
                 <a
                   href={`${DOCS_URL}/#blackboard`}
                   target="_blank"
@@ -238,7 +186,7 @@ function InviteFriendEmptyState({
           </div>
         ) : null}
       </div>
-    );
+    )
   }
 
   return (
@@ -247,81 +195,67 @@ function InviteFriendEmptyState({
         <BrandIcon className="h-12 w-12 text-primary/50 animate-wiggle" />
       </div>
       <p className="text-sm text-muted-foreground">
-        Mesh LLM lets you build private personal AI, using open models.{" "}
-        <a
-          href={DOCS_URL}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="underline hover:text-foreground"
-        >
+        Mesh LLM lets you build private personal AI, using open models.{' '}
+        <a href={DOCS_URL} target="_blank" rel="noopener noreferrer" className="underline hover:text-foreground">
           Learn more →
         </a>
       </p>
       {inviteWithModelCommand ? (
         <div className="space-y-2 rounded-md border border-dashed p-3 text-left">
-          <div className="text-xs text-muted-foreground">
-            Invite another machine preconfigured for this model.
-          </div>
+          <div className="text-xs text-muted-foreground">Invite another machine preconfigured for this model.</div>
           <div className="rounded-md border bg-muted/40 px-2 py-1.5">
-            <code className="block overflow-x-auto whitespace-nowrap text-xs">
-              {inviteWithModelCommand}
-            </code>
+            <code className="block overflow-x-auto whitespace-nowrap text-xs">{inviteWithModelCommand}</code>
           </div>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => void copyInviteWithModelCommand()}
-          >
-            {inviteWithModelCopied ? "Copied" : "Copy invite command"}
+          <Button type="button" variant="outline" size="sm" onClick={() => void copyInviteWithModelCommand()}>
+            {inviteWithModelCopied ? 'Copied' : 'Copy invite command'}
           </Button>
         </div>
       ) : null}
     </div>
-  );
+  )
 }
 
 export function ChatPage(props: {
-  status: StatusPayload | null;
-  inviteToken: string;
-  isPublicMesh: boolean;
-  isFlyHosted: boolean;
-  inflightRequests: number;
-  warmModels: string[];
-  meshModelByName: Record<string, MeshModel>;
-  modelStatsByName: Record<string, ModelServingStat>;
-  selectedModel: string;
-  setSelectedModel: (v: string) => void;
-  selectedModelNodeCount: number | null;
-  selectedModelVramGb: number | null;
-  selectedModelAudio: boolean;
-  selectedModelMultimodal: boolean;
-  composerError: string | null;
-  setComposerError: Dispatch<SetStateAction<string | null>>;
-  attachmentSendIssue: string | null;
-  attachmentPreparationMessage: string | null;
-  pendingAttachments: ChatAttachment[];
-  setPendingAttachments: Dispatch<SetStateAction<ChatAttachment[]>>;
-  conversations: ChatConversation[];
-  activeConversationId: string;
-  onConversationCreate: () => void;
-  onConversationSelect: (conversationId: string) => void;
-  onConversationRename: (conversationId: string, title: string) => void;
-  onConversationDelete: (conversationId: string) => void;
-  onConversationsClear: () => void;
-  messages: ChatMessage[];
-  reasoningOpen: Record<string, boolean>;
-  setReasoningOpen: Dispatch<SetStateAction<Record<string, boolean>>>;
-  chatScrollRef: MutableRefObject<HTMLDivElement | null>;
-  input: string;
-  setInput: (v: string) => void;
-  isSending: boolean;
-  queuedText: string | null;
-  canChat: boolean;
-  canRegenerate: boolean;
-  onStop: () => void;
-  onRegenerate: () => void;
-  onSubmit: () => void;
+  status: StatusPayload | null
+  inviteToken: string
+  isPublicMesh: boolean
+  isFlyHosted: boolean
+  inflightRequests: number
+  warmModels: string[]
+  meshModelByName: Record<string, MeshModel>
+  modelStatsByName: Record<string, ModelServingStat>
+  selectedModel: string
+  setSelectedModel: (v: string) => void
+  selectedModelNodeCount: number | null
+  selectedModelVramGb: number | null
+  selectedModelAudio: boolean
+  selectedModelMultimodal: boolean
+  composerError: string | null
+  setComposerError: Dispatch<SetStateAction<string | null>>
+  attachmentSendIssue: string | null
+  attachmentPreparationMessage: string | null
+  pendingAttachments: ChatAttachment[]
+  setPendingAttachments: Dispatch<SetStateAction<ChatAttachment[]>>
+  conversations: ChatConversation[]
+  activeConversationId: string
+  onConversationCreate: () => void
+  onConversationSelect: (conversationId: string) => void
+  onConversationRename: (conversationId: string, title: string) => void
+  onConversationDelete: (conversationId: string) => void
+  onConversationsClear: () => void
+  messages: ChatMessage[]
+  reasoningOpen: Record<string, boolean>
+  setReasoningOpen: Dispatch<SetStateAction<Record<string, boolean>>>
+  chatScrollRef: MutableRefObject<HTMLDivElement | null>
+  input: string
+  setInput: (v: string) => void
+  isSending: boolean
+  queuedText: string | null
+  canChat: boolean
+  canRegenerate: boolean
+  onStop: () => void
+  onRegenerate: () => void
+  onSubmit: () => void
 }) {
   const {
     inviteToken,
@@ -359,290 +293,279 @@ export function ChatPage(props: {
     canRegenerate,
     onStop,
     onRegenerate,
-    onSubmit,
-  } = props;
+    onSubmit
+  } = props
 
-  const hasChats = conversations.length > 0;
-  const selectedModelValue = selectedModel || warmModels[0] || "";
-  const [editingConversationId, setEditingConversationId] = useState<string | null>(null);
-  const [editingTitle, setEditingTitle] = useState("");
-  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
-  const editingTitleInputRef = useRef<HTMLInputElement | null>(null);
-  const imageInputRef = useRef<HTMLInputElement | null>(null);
-  const audioInputRef = useRef<HTMLInputElement | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const pdfInputRef = useRef<HTMLInputElement | null>(null);
+  const hasChats = conversations.length > 0
+  const selectedModelValue = selectedModel || warmModels[0] || ''
+  const [editingConversationId, setEditingConversationId] = useState<string | null>(null)
+  const [editingTitle, setEditingTitle] = useState('')
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
+  const chatInputRef = useRef<HTMLTextAreaElement | null>(null)
+  const editingTitleInputRef = useRef<HTMLInputElement | null>(null)
+  const imageInputRef = useRef<HTMLInputElement | null>(null)
+  const audioInputRef = useRef<HTMLInputElement | null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const pdfInputRef = useRef<HTMLInputElement | null>(null)
 
-  function markPendingAttachment(
-    attachmentId: string,
-    patch: AttachmentStatePatch,
-  ) {
+  function markPendingAttachment(attachmentId: string, patch: AttachmentStatePatch) {
     setPendingAttachments((prev) =>
-      prev.map((attachment) =>
-        attachment.id === attachmentId ? { ...attachment, ...patch } : attachment,
-      ),
-    );
+      prev.map((attachment) => (attachment.id === attachmentId ? { ...attachment, ...patch } : attachment))
+    )
   }
 
-  function addPendingAttachment(attachment: Omit<ChatAttachment, "id" | "status" | "error">) {
-    setComposerError(null);
+  function addPendingAttachment(attachment: Omit<ChatAttachment, 'id' | 'status' | 'error'>) {
+    setComposerError(null)
     setPendingAttachments((prev) => [
       ...prev,
       {
         id: createChatId(),
-        status: "pending",
-        ...attachment,
-      },
-    ]);
+        status: 'pending',
+        ...attachment
+      }
+    ])
   }
 
   function removePendingAttachment(attachmentId: string) {
-    setComposerError(null);
-    setPendingAttachments((prev) =>
-      prev.filter((attachment) => attachment.id !== attachmentId),
-    );
+    setComposerError(null)
+    setPendingAttachments((prev) => prev.filter((attachment) => attachment.id !== attachmentId))
   }
 
   function resetAttachmentStatus(attachmentId: string) {
-    const attachment = pendingAttachments.find((item) => item.id === attachmentId);
-    if (!attachment) return;
-    if (attachment.kind === "image" && !attachment.imageDescription) {
+    const attachment = pendingAttachments.find((item) => item.id === attachmentId)
+    if (!attachment) return
+    if (attachment.kind === 'image' && !attachment.imageDescription) {
       markPendingAttachment(attachmentId, {
-        status: "uploading",
+        status: 'uploading',
         error: undefined,
-        extractionSummary: "Describing image...",
-      });
-      void describeImageAttachment(attachmentId, attachment.dataUrl);
-      setComposerError(null);
-      return;
+        extractionSummary: 'Describing image...'
+      })
+      void describeImageAttachment(attachmentId, attachment.dataUrl)
+      setComposerError(null)
+      return
     }
     markPendingAttachment(attachmentId, {
-      status: "pending",
+      status: 'pending',
       error: undefined,
-      extractionSummary: undefined,
-    });
-    setComposerError(null);
+      extractionSummary: undefined
+    })
+    setComposerError(null)
   }
 
-  function addImageAttachment(attachment: Omit<ChatAttachment, "id" | "status" | "error">) {
-    const attachmentId = createChatId();
+  function addImageAttachment(attachment: Omit<ChatAttachment, 'id' | 'status' | 'error'>) {
+    const attachmentId = createChatId()
     setPendingAttachments((prev) => [
       ...prev,
       {
         id: attachmentId,
-        status: "uploading",
-        extractionSummary: "Describing image...",
-        ...attachment,
-      },
-    ]);
-    void describeImageAttachment(attachmentId, attachment.dataUrl);
+        status: 'uploading',
+        extractionSummary: 'Describing image...',
+        ...attachment
+      }
+    ])
+    void describeImageAttachment(attachmentId, attachment.dataUrl)
   }
 
   async function describeImageAttachment(attachmentId: string, dataUrl: string) {
     const result = await describeImageAttachmentForPrompt(dataUrl, {
       onProgress: (message) => {
         setPendingAttachments((prev) =>
-          prev.map((a) =>
-            a.id === attachmentId
-              ? { ...a, extractionSummary: message }
-              : a,
-          ),
-        );
-      },
-    });
+          prev.map((a) => (a.id === attachmentId ? { ...a, extractionSummary: message } : a))
+        )
+      }
+    })
     setPendingAttachments((prev) =>
       prev.map((a) =>
         a.id === attachmentId
           ? {
               ...a,
-              status: result.error ? "failed" : "pending",
+              status: result.error ? 'failed' : 'pending',
               imageDescription: result.imageDescription,
               extractionSummary: result.extractionSummary,
-              error: result.error,
+              error: result.error
             }
-          : a,
-      ),
-    );
+          : a
+      )
+    )
     if (result.error) {
-      console.warn(result.error);
+      console.warn(result.error)
     }
   }
 
   function handleImageSelect(e: ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files ?? []);
-    e.target.value = "";
-    if (!files.length) return;
-    const rejected: string[] = [];
+    const files = Array.from(e.target.files ?? [])
+    e.target.value = ''
+    if (!files.length) return
+    const rejected: string[] = []
     for (const file of files) {
-      const validationError = validateAttachmentFile(file, "image");
+      const validationError = validateAttachmentFile(file, 'image')
       if (validationError) {
-        rejected.push(`${file.name}: ${validationError}`);
-        continue;
+        rejected.push(`${file.name}: ${validationError}`)
+        continue
       }
-      processImageFile(file);
+      processImageFile(file)
     }
     if (rejected.length) {
-      setComposerError(rejected.join(" "));
+      setComposerError(rejected.join(' '))
     }
   }
 
   function processImageFile(file: File) {
-    const reader = new FileReader();
+    const reader = new FileReader()
     reader.onload = () => {
-      const src = reader.result as string;
-      const img = new Image();
+      const src = reader.result as string
+      const img = new Image()
       img.onload = () => {
-        const MAX = 512;
-        let { width, height } = img;
+        const MAX = 512
+        let { width, height } = img
         if (width > MAX || height > MAX) {
-          const scale = MAX / Math.max(width, height);
-          width = Math.round(width * scale);
-          height = Math.round(height * scale);
+          const scale = MAX / Math.max(width, height)
+          width = Math.round(width * scale)
+          height = Math.round(height * scale)
         }
-        const canvas = document.createElement("canvas");
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext("2d");
+        const canvas = document.createElement('canvas')
+        canvas.width = width
+        canvas.height = height
+        const ctx = canvas.getContext('2d')
         if (!ctx) {
           addImageAttachment({
-            kind: "image",
+            kind: 'image',
             dataUrl: src,
-            mimeType: parseDataUrl(src)?.mimeType || file.type || "image/jpeg",
-            fileName: file.name,
-          });
-          return;
+            mimeType: parseDataUrl(src)?.mimeType || file.type || 'image/jpeg',
+            fileName: file.name
+          })
+          return
         }
-        ctx.drawImage(img, 0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height)
         addImageAttachment({
-          kind: "image",
-          dataUrl: canvas.toDataURL("image/jpeg", 0.85),
-          mimeType: "image/jpeg",
-          fileName: file.name,
-        });
-      };
+          kind: 'image',
+          dataUrl: canvas.toDataURL('image/jpeg', 0.85),
+          mimeType: 'image/jpeg',
+          fileName: file.name
+        })
+      }
       img.onerror = () => {
         addImageAttachment({
-          kind: "image",
+          kind: 'image',
           dataUrl: src,
-          mimeType: parseDataUrl(src)?.mimeType || file.type || "image/jpeg",
-          fileName: file.name,
-        });
-      };
-      img.src = src;
-    };
-    reader.readAsDataURL(file);
+          mimeType: parseDataUrl(src)?.mimeType || file.type || 'image/jpeg',
+          fileName: file.name
+        })
+      }
+      img.src = src
+    }
+    reader.readAsDataURL(file)
   }
 
   function handleAudioSelect(e: ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files ?? []);
-    e.target.value = "";
-    if (!files.length) return;
-    const rejected: string[] = [];
+    const files = Array.from(e.target.files ?? [])
+    e.target.value = ''
+    if (!files.length) return
+    const rejected: string[] = []
     for (const file of files) {
-      const validationError = validateAttachmentFile(file, "audio");
+      const validationError = validateAttachmentFile(file, 'audio')
       if (validationError) {
-        rejected.push(`${file.name}: ${validationError}`);
-        continue;
+        rejected.push(`${file.name}: ${validationError}`)
+        continue
       }
-      processAudioFile(file);
+      processAudioFile(file)
     }
     if (rejected.length) {
-      setComposerError(rejected.join(" "));
+      setComposerError(rejected.join(' '))
     }
   }
 
   function processAudioFile(file: File) {
-    const reader = new FileReader();
+    const reader = new FileReader()
     reader.onload = () => {
-      const dataUrl = reader.result as string;
+      const dataUrl = reader.result as string
       addPendingAttachment({
-        kind: "audio",
+        kind: 'audio',
         dataUrl,
-        mimeType: file.type || parseDataUrl(dataUrl)?.mimeType || "audio/wav",
-        fileName: file.name,
-      });
-    };
-    reader.readAsDataURL(file);
+        mimeType: file.type || parseDataUrl(dataUrl)?.mimeType || 'audio/wav',
+        fileName: file.name
+      })
+    }
+    reader.readAsDataURL(file)
   }
 
   function handleFileSelect(e: ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files ?? []);
-    e.target.value = "";
-    if (!files.length) return;
-    const rejected: string[] = [];
+    const files = Array.from(e.target.files ?? [])
+    e.target.value = ''
+    if (!files.length) return
+    const rejected: string[] = []
     for (const file of files) {
-      const validationError = validateAttachmentFile(file, "file");
+      const validationError = validateAttachmentFile(file, 'file')
       if (validationError) {
-        rejected.push(`${file.name}: ${validationError}`);
-        continue;
+        rejected.push(`${file.name}: ${validationError}`)
+        continue
       }
-      processGenericFile(file);
+      processGenericFile(file)
     }
     if (rejected.length) {
-      setComposerError(rejected.join(" "));
+      setComposerError(rejected.join(' '))
     }
   }
 
   function processGenericFile(file: File) {
-    const mimeType = file.type || "application/octet-stream";
-    const reader = new FileReader();
+    const mimeType = file.type || 'application/octet-stream'
+    const reader = new FileReader()
     reader.onload = () => {
-      const dataUrl = reader.result as string;
-      const detectedMime = parseDataUrl(dataUrl)?.mimeType ?? mimeType;
-      const isPdf = isPdfMimeType(detectedMime) || file.name.toLowerCase().endsWith(".pdf");
+      const dataUrl = reader.result as string
+      const detectedMime = parseDataUrl(dataUrl)?.mimeType ?? mimeType
+      const isPdf = isPdfMimeType(detectedMime) || file.name.toLowerCase().endsWith('.pdf')
       if (isPdf) {
-        void handlePdfAttachment(dataUrl, file.name);
+        void handlePdfAttachment(dataUrl, file.name)
       } else {
         addPendingAttachment({
-          kind: "file",
+          kind: 'file',
           dataUrl,
           mimeType: parseDataUrl(dataUrl)?.mimeType || mimeType,
-          fileName: file.name,
-        });
+          fileName: file.name
+        })
       }
-    };
-    reader.readAsDataURL(file);
+    }
+    reader.readAsDataURL(file)
   }
 
   async function handlePdfAttachment(dataUrl: string, fileName: string) {
-    const attachmentId = createChatId();
+    const attachmentId = createChatId()
     setPendingAttachments((prev) => [
       ...prev,
       {
         id: attachmentId,
-        kind: "file",
+        kind: 'file',
         dataUrl,
-        mimeType: "application/pdf",
+        mimeType: 'application/pdf',
         fileName,
-        status: "uploading",
-        extractionSummary: "Extracting text...",
-      },
-    ]);
+        status: 'uploading',
+        extractionSummary: 'Extracting text...'
+      }
+    ])
 
     try {
-      const buffer = dataUrlToArrayBuffer(dataUrl);
-      const result = await extractPdfText(buffer);
+      const buffer = dataUrlToArrayBuffer(dataUrl)
+      const result = await extractPdfText(buffer)
 
       if (result.pagesWithText > 0 && result.wordCount > 20) {
-        const summary = `${result.pageCount} page${result.pageCount !== 1 ? "s" : ""}, ~${result.wordCount.toLocaleString()} words extracted`;
+        const summary = `${result.pageCount} page${result.pageCount !== 1 ? 's' : ''}, ~${result.wordCount.toLocaleString()} words extracted`
         setPendingAttachments((prev) =>
           prev.map((a) =>
             a.id === attachmentId
               ? {
                   ...a,
-                  status: "pending",
+                  status: 'pending',
                   extractedText: result.text,
                   renderedPageImages: undefined,
-                  extractionSummary: summary,
+                  extractionSummary: summary
                 }
-              : a,
-          ),
-        );
+              : a
+          )
+        )
       } else {
         const images = await renderPdfPagesToImages(buffer, {
-          maxPages: 8,
-        });
+          maxPages: 8
+        })
         if (images.length > 0) {
           setPendingAttachments((prev) =>
             prev.map((a) =>
@@ -650,89 +573,83 @@ export function ChatPage(props: {
                 ? {
                     ...a,
                     renderedPageImages: images,
-                    extractionSummary: `Describing ${images.length} page${images.length !== 1 ? "s" : ""}...`,
+                    extractionSummary: `Describing ${images.length} page${images.length !== 1 ? 's' : ''}...`
                   }
-                : a,
-            ),
-          );
+                : a
+            )
+          )
           const combinedText = await describeRenderedPagesAsText(images, {
             onProgress: (message) => {
               setPendingAttachments((prev) =>
-                prev.map((a) =>
-                  a.id === attachmentId
-                    ? { ...a, extractionSummary: message }
-                    : a,
-                ),
-              );
-            },
-          });
-          const summary = `${result.pageCount} page${result.pageCount !== 1 ? "s" : ""}, ${images.length} page${images.length !== 1 ? "s" : ""} described (scanned PDF)`;
+                prev.map((a) => (a.id === attachmentId ? { ...a, extractionSummary: message } : a))
+              )
+            }
+          })
+          const summary = `${result.pageCount} page${result.pageCount !== 1 ? 's' : ''}, ${images.length} page${images.length !== 1 ? 's' : ''} described (scanned PDF)`
           setPendingAttachments((prev) =>
             prev.map((a) =>
               a.id === attachmentId
                 ? {
                     ...a,
-                    status: "pending",
+                    status: 'pending',
                     extractedText: combinedText,
                     renderedPageImages: undefined,
-                    extractionSummary: summary,
+                    extractionSummary: summary
                   }
-                : a,
-            ),
-          );
+                : a
+            )
+          )
         } else {
-          throw new Error("Could not render PDF pages");
+          throw new Error('Could not render PDF pages')
         }
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = err instanceof Error ? err.message : String(err)
       setPendingAttachments((prev) =>
         prev.map((a) =>
-          a.id === attachmentId
-            ? { ...a, status: "failed", error: `PDF extraction failed: ${message}` }
-            : a,
-        ),
-      );
+          a.id === attachmentId ? { ...a, status: 'failed', error: `PDF extraction failed: ${message}` } : a
+        )
+      )
     }
   }
 
   useEffect(() => {
-    if (!activeConversationId || !canChat || isSending) return;
-    chatInputRef.current?.focus();
-  }, [activeConversationId, canChat, isSending]);
+    if (!activeConversationId || !canChat || isSending) return
+    chatInputRef.current?.focus()
+  }, [activeConversationId, canChat, isSending])
 
   useEffect(() => {
-    if (!editingConversationId) return;
+    if (!editingConversationId) return
     const frame = window.requestAnimationFrame(() => {
-      editingTitleInputRef.current?.focus();
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [editingConversationId]);
+      editingTitleInputRef.current?.focus()
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [editingConversationId])
 
   function startInlineRename(conversation: ChatConversation) {
-    setEditingConversationId(conversation.id);
-    setEditingTitle(conversation.title);
+    setEditingConversationId(conversation.id)
+    setEditingTitle(conversation.title)
   }
 
   function cancelInlineRename() {
-    setEditingConversationId(null);
-    setEditingTitle("");
+    setEditingConversationId(null)
+    setEditingTitle('')
   }
 
   function saveInlineRename() {
-    if (!editingConversationId) return;
-    onConversationRename(editingConversationId, editingTitle);
-    cancelInlineRename();
+    if (!editingConversationId) return
+    onConversationRename(editingConversationId, editingTitle)
+    cancelInlineRename()
   }
 
   function handleDelete(conversation: ChatConversation) {
-    if (!window.confirm(`Delete "${conversation.title}"?`)) return;
-    onConversationDelete(conversation.id);
+    if (!window.confirm(`Delete "${conversation.title}"?`)) return
+    onConversationDelete(conversation.id)
   }
 
   function handleClearAll() {
-    if (!window.confirm("Clear all chats?")) return;
-    onConversationsClear();
+    if (!window.confirm('Clear all chats?')) return
+    onConversationsClear()
   }
 
   const conversationListContent = (
@@ -754,7 +671,7 @@ export function ChatPage(props: {
       onConversationsClear={handleClearAll}
       onConversationAction={() => setMobileSidebarOpen(false)}
     />
-  );
+  )
 
   return (
     <Card className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
@@ -765,17 +682,13 @@ export function ChatPage(props: {
             variant="ghost"
             size="sm"
             className="h-8 shrink-0 gap-1.5 md:hidden"
-            onClick={() =>
-              hasChats ? setMobileSidebarOpen(true) : onConversationCreate()
-            }
-            aria-label={hasChats ? "Chats" : "New chat"}
+            onClick={() => (hasChats ? setMobileSidebarOpen(true) : onConversationCreate())}
+            aria-label={hasChats ? 'Chats' : 'New chat'}
           >
             {hasChats ? (
               <>
                 <Hash className="h-4 w-4" />
-                <span className="text-xs tabular-nums">
-                  {conversations.length}
-                </span>
+                <span className="text-xs tabular-nums">{conversations.length}</span>
               </>
             ) : (
               <MessageSquarePlus className="h-4 w-4" />
@@ -794,9 +707,7 @@ export function ChatPage(props: {
               <MessageSquarePlus className="h-4 w-4" />
             </Button>
           ) : null}
-          <CardTitle className="hidden md:block text-base shrink-0">
-            Chat
-          </CardTitle>
+          <CardTitle className="hidden md:block text-base shrink-0">Chat</CardTitle>
           <div className="ml-auto flex items-center gap-2">
             {selectedModelNodeCount != null ? (
               <div className="hidden md:flex h-8 items-center gap-1.5 rounded-md border bg-muted/40 px-2">
@@ -811,31 +722,19 @@ export function ChatPage(props: {
               <div className="hidden md:flex h-8 items-center gap-1.5 rounded-md border bg-muted/40 px-2">
                 <Cpu className="h-3.5 w-3.5 text-muted-foreground" />
                 <div className="text-xs leading-none">
-                  <span className="font-medium">
-                    {selectedModelVramGb.toFixed(1)}
-                  </span>
+                  <span className="font-medium">{selectedModelVramGb.toFixed(1)}</span>
                   <span className="ml-1 text-muted-foreground">GB</span>
                 </div>
               </div>
             ) : null}
-            <span className="hidden md:inline text-xs text-muted-foreground">
-              Model
-            </span>
-            <Select
-              value={selectedModelValue}
-              onValueChange={setSelectedModel}
-              disabled={!warmModels.length}
-            >
+            <span className="hidden md:inline text-xs text-muted-foreground">Model</span>
+            <Select value={selectedModelValue} onValueChange={setSelectedModel} disabled={!warmModels.length}>
               <SelectTrigger className="h-8 w-full min-w-0 max-w-[180px] md:max-w-[320px] md:w-[320px]">
                 <SelectValue placeholder="Select model">
-                  {selectedModelValue === "auto"
-                    ? "✨ Auto (router picks best)"
+                  {selectedModelValue === 'auto'
+                    ? '✨ Auto (router picks best)'
                     : selectedModelValue
-                      ? modelRefLabel(
-                          modelDisplayName(
-                            meshModelByName[selectedModelValue],
-                          ) || selectedModelValue,
-                        )
+                      ? modelRefLabel(modelDisplayName(meshModelByName[selectedModelValue]) || selectedModelValue)
                       : undefined}
                 </SelectValue>
               </SelectTrigger>
@@ -855,13 +754,13 @@ export function ChatPage(props: {
                   </SelectItem>
                 ) : null}
                 {warmModels.map((model) => {
-                  const modelStats = modelStatsByName[model];
-                  const selectedMeshModel = meshModelByName[model];
-                  const displayName = modelDisplayName(selectedMeshModel) || model;
-                  const multimodalInfo = multimodalBadge(selectedMeshModel);
-                  const visionInfo = visionBadge(selectedMeshModel);
-                  const audioInfo = audioBadge(selectedMeshModel);
-                  const reasoningInfo = reasoningBadge(selectedMeshModel);
+                  const modelStats = modelStatsByName[model]
+                  const selectedMeshModel = meshModelByName[model]
+                  const displayName = modelDisplayName(selectedMeshModel) || model
+                  const multimodalInfo = multimodalBadge(selectedMeshModel)
+                  const visionInfo = visionBadge(selectedMeshModel)
+                  const audioInfo = audioBadge(selectedMeshModel)
+                  const reasoningInfo = reasoningBadge(selectedMeshModel)
                   return (
                     <SelectItem
                       key={model}
@@ -917,7 +816,7 @@ export function ChatPage(props: {
                         ) : null}
                       </div>
                     </SelectItem>
-                  );
+                  )
                 })}
               </SelectContent>
             </Select>
@@ -928,41 +827,27 @@ export function ChatPage(props: {
       {props.isFlyHosted ? (
         <div
           className={cn(
-            "border-b px-4 py-2 text-xs",
+            'border-b px-4 py-2 text-xs',
             props.inflightRequests > 2
-              ? "bg-orange-500/10 text-orange-700 dark:text-orange-400"
-              : "bg-muted/40 text-muted-foreground",
+              ? 'bg-orange-500/10 text-orange-700 dark:text-orange-400'
+              : 'bg-muted/40 text-muted-foreground'
           )}
         >
           {props.inflightRequests > 2 ? (
             <>
-              <span className="font-medium">⏳ Busy</span> — {props.inflightRequests} requests in flight, responses may be
-              slow. For direct access run{" "}
-              <code className="rounded bg-muted px-1 py-0.5 font-mono">
-                mesh-llm --auto
-              </code>{" "}
-              <a
-                href={DOCS_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="underline hover:text-foreground"
-              >
+              <span className="font-medium">⏳ Busy</span> — {props.inflightRequests} requests in flight, responses may
+              be slow. For direct access run{' '}
+              <code className="rounded bg-muted px-1 py-0.5 font-mono">mesh-llm --auto</code>{' '}
+              <a href={DOCS_URL} target="_blank" rel="noopener noreferrer" className="underline hover:text-foreground">
                 Learn more →
               </a>
             </>
           ) : (
             <>
-              <span className="font-medium">Community demo</span> — best-effort public instance. For direct, faster access run{" "}
-              <code className="rounded bg-muted px-1 py-0.5 font-mono">
-                mesh-llm --auto
-              </code>{" "}
-              to join the mesh or start your own.{" "}
-              <a
-                href={DOCS_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="underline hover:text-foreground"
-              >
+              <span className="font-medium">Community demo</span> — best-effort public instance. For direct, faster
+              access run <code className="rounded bg-muted px-1 py-0.5 font-mono">mesh-llm --auto</code> to join the
+              mesh or start your own.{' '}
+              <a href={DOCS_URL} target="_blank" rel="noopener noreferrer" className="underline hover:text-foreground">
                 Learn more →
               </a>
             </>
@@ -981,24 +866,22 @@ export function ChatPage(props: {
       <CardContent className="min-h-0 flex-1 p-0">
         <div className="flex h-full min-h-0 min-w-0 md:flex-row">
           {hasChats ? (
-            <aside className="hidden md:block shrink-0 md:w-72 md:border-r">
-              {conversationListContent}
-            </aside>
+            <aside className="hidden md:block shrink-0 md:w-72 md:border-r">{conversationListContent}</aside>
           ) : null}
 
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
             <div
               ref={chatScrollRef as Ref<HTMLDivElement>}
               className={cn(
-                "min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-3 py-4 md:px-6",
-                messages.length === 0 ? "" : "space-y-4",
+                'min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-3 py-4 md:px-6',
+                messages.length === 0 ? '' : 'space-y-4'
               )}
             >
               {messages.length === 0 ? (
                 <div className="flex min-h-full items-center justify-center">
                   <InviteFriendEmptyState
                     inviteToken={inviteToken}
-                    selectedModel={selectedModel || warmModels[0] || ""}
+                    selectedModel={selectedModel || warmModels[0] || ''}
                     isPublicMesh={props.isPublicMesh}
                   />
                 </div>
@@ -1012,7 +895,7 @@ export function ChatPage(props: {
                       onReasoningToggle={(open) =>
                         setReasoningOpen((prev) => ({
                           ...prev,
-                          [message.id]: open,
+                          [message.id]: open
                         }))
                       }
                       streaming={isSending && i === messages.length - 1}
@@ -1083,5 +966,5 @@ export function ChatPage(props: {
         </div>
       </CardContent>
     </Card>
-  );
+  )
 }

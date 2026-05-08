@@ -1,17 +1,87 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark" data-accent="blue" data-density="normal" data-panel-style="solid">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover" />
-    <title>Mesh LLM</title>
-    <meta name="theme-color" content="#0f172a" />
-    <meta name="mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="apple-mobile-web-app-title" content="Mesh LLM" />
-    <link rel="manifest" href="/manifest.json" />
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#fbfaf7" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#171b24" media="(prefers-color-scheme: dark)" />
+    <meta name="description" content="MeshLLM clean-room app UI" />
+    <script>
+      ;(() => {
+        const defaults = { theme: 'dark', accent: 'blue', density: 'normal', panelStyle: 'solid' }
+        const backgrounds = { dark: 'oklch(0.17 0.015 250)', light: 'oklch(0.985 0.003 80)' }
+        const themeColors = { dark: '#171b24', light: '#fbfaf7' }
+        const storageKey = 'mesh-llm:preferences:v1'
+        const root = document.documentElement
+
+        function oneOf(value, values) {
+          return values.indexOf(value) !== -1
+        }
+
+        function apply(preferences) {
+          root.dataset.theme = preferences.theme
+          root.dataset.accent = preferences.accent
+          root.dataset.density = preferences.density
+          root.dataset.panelStyle = preferences.panelStyle
+          root.style.setProperty('--initial-background', backgrounds[preferences.theme])
+          root.style.setProperty('--initial-color-scheme', preferences.theme)
+          let meta = document.querySelector('meta[name="theme-color"][data-mesh-theme-color="runtime"]')
+          if (!meta) {
+            meta = document.createElement('meta')
+            meta.setAttribute('name', 'theme-color')
+            meta.setAttribute('data-mesh-theme-color', 'runtime')
+            document.head.append(meta)
+          }
+          meta.setAttribute('content', themeColors[preferences.theme])
+        }
+
+        try {
+          const stored = window.localStorage.getItem(storageKey)
+          const parsed = stored ? JSON.parse(stored) : defaults
+          apply({
+            theme: oneOf(parsed.theme, ['light', 'dark']) ? parsed.theme : defaults.theme,
+            accent: oneOf(parsed.accent, ['blue', 'cyan', 'violet', 'green', 'amber', 'pink'])
+              ? parsed.accent
+              : defaults.accent,
+            density: oneOf(parsed.density, ['compact', 'normal', 'sparse']) ? parsed.density : defaults.density,
+            panelStyle: oneOf(parsed.panelStyle, ['solid', 'soft'])
+              ? parsed.panelStyle
+              : oneOf(parsed.configPanelStyle, ['solid', 'soft'])
+                ? parsed.configPanelStyle
+                : defaults.panelStyle
+          })
+        } catch {
+          apply(defaults)
+        }
+      })()
+    </script>
+    <style>
+      :root {
+        color-scheme: var(--initial-color-scheme, dark);
+        background: var(--initial-background, oklch(0.17 0.015 250));
+      }
+
+      html,
+      body,
+      #root {
+        min-height: 100%;
+        background: var(--initial-background, oklch(0.17 0.015 250));
+      }
+
+      body {
+        margin: 0;
+      }
+    </style>
+    <link rel="icon" href="/meshllm-favicon.ico?v=20260430" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/meshllm-favicon-32.png?v=20260430" />
+    <link rel="apple-touch-icon" href="/meshllm-apple-touch-icon.png?v=20260430" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+    />
   </head>
   <body>
     <div id="root"></div>

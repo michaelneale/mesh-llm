@@ -1,16 +1,12 @@
-import type { ReactNode } from "react";
+import type { ReactNode } from 'react'
 
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft } from 'lucide-react'
 
-import { Button } from "../../../../components/ui/button";
-import {
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "../../../../components/ui/sheet";
-import { cn } from "../../../../lib/utils";
+import { Button } from '@/components/ui/button'
+import { SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
+import { cn } from '@/lib/utils'
 
-type DetailSidebarHeaderTone = "node" | "model";
+type DetailSidebarHeaderTone = 'node' | 'model'
 
 export function DetailSidebarHeader({
   tone,
@@ -18,22 +14,20 @@ export function DetailSidebarHeader({
   title,
   description,
   onBack,
-  children,
+  children
 }: {
-  tone: DetailSidebarHeaderTone;
-  icon: ReactNode;
-  title: ReactNode;
-  description: ReactNode;
-  onBack?: () => void;
-  children?: ReactNode;
+  tone: DetailSidebarHeaderTone
+  icon: ReactNode
+  title: ReactNode
+  description: ReactNode
+  onBack?: () => void
+  children?: ReactNode
 }) {
   return (
     <div
       className={cn(
-        "border-b bg-gradient-to-br via-background to-background px-6 pb-3 pt-3",
-        tone === "node"
-          ? "from-emerald-50 dark:from-emerald-950/20"
-          : "from-sky-50 dark:from-sky-950/20",
+        'border-b bg-gradient-to-br via-background to-background px-6 pb-3 pt-3',
+        tone === 'node' ? 'from-emerald-50 dark:from-emerald-950/20' : 'from-sky-50 dark:from-sky-950/20'
       )}
     >
       <SheetHeader className="space-y-2 text-left">
@@ -53,13 +47,7 @@ export function DetailSidebarHeader({
             </SheetDescription>
           </div>
           {onBack ? (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="h-8 gap-1.5"
-              onClick={onBack}
-            >
+            <Button type="button" variant="ghost" size="sm" className="h-8 gap-1.5" onClick={onBack}>
               <ArrowLeft className="h-3.5 w-3.5" />
               Back
             </Button>
@@ -67,5 +55,5 @@ export function DetailSidebarHeader({
         </div>
       </SheetHeader>
     </div>
-  );
+  )
 }

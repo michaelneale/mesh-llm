@@ -90,13 +90,17 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-          cache: npm
+          cache: pnpm
           cache-dependency-path: |
             .github/cache-version.txt
-            crates/mesh-llm-ui/package-lock.json
+            crates/mesh-llm-ui/pnpm-lock.yaml
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -153,13 +157,16 @@ jobs:
       MESH_RELEASE_ARCH: aarch64
     steps:
       - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-          cache: npm
+          cache: pnpm
           cache-dependency-path: |
             .github/cache-version.txt
-            crates/mesh-llm-ui/package-lock.json
+            crates/mesh-llm-ui/pnpm-lock.yaml
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@just
       - name: Install dependencies
@@ -199,13 +206,16 @@ jobs:
           done
           rm -rf /var/lib/apt/lists/*
       - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-          cache: npm
+          cache: pnpm
           cache-dependency-path: |
             .github/cache-version.txt
-            crates/mesh-llm-ui/package-lock.json
+            crates/mesh-llm-ui/pnpm-lock.yaml
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@just
       - name: Build CUDA release bundle
@@ -243,13 +253,16 @@ jobs:
           done
           rm -rf /var/lib/apt/lists/*
       - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-          cache: npm
+          cache: pnpm
           cache-dependency-path: |
             .github/cache-version.txt
-            crates/mesh-llm-ui/package-lock.json
+            crates/mesh-llm-ui/pnpm-lock.yaml
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@just
       - name: Build CUDA Blackwell release bundle
@@ -287,13 +300,16 @@ jobs:
           done
           rm -rf /var/lib/apt/lists/*
       - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-          cache: npm
+          cache: pnpm
           cache-dependency-path: |
             .github/cache-version.txt
-            crates/mesh-llm-ui/package-lock.json
+            crates/mesh-llm-ui/pnpm-lock.yaml
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@just
       - name: Build ROCm release bundle
@@ -317,13 +333,16 @@ jobs:
       LLAMA_STAGE_BACKEND: vulkan
     steps:
       - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-          cache: npm
+          cache: pnpm
           cache-dependency-path: |
             .github/cache-version.txt
-            crates/mesh-llm-ui/package-lock.json
+            crates/mesh-llm-ui/pnpm-lock.yaml
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@just
       - name: Install dependencies

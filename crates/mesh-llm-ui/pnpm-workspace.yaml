@@ -1,0 +1,7 @@
+allowBuilds:
+  fsevents: true
+  onnxruntime-common: true
+  onnxruntime-node: true
+  onnxruntime-web: true
+  protobufjs: true
+  sharp: true

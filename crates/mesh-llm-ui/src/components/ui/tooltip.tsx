@@ -1,55 +1,50 @@
-import * as React from 'react';
-import * as TooltipPrimitive from '@radix-ui/react-tooltip';
+import * as RadixTooltip from '@radix-ui/react-tooltip'
+import type { ReactElement, ReactNode } from 'react'
 
-import { cn } from '../../lib/utils';
+// eslint-disable-next-line react-refresh/only-export-components -- re-exports of Radix UI components for convenience
+export const TooltipProvider = RadixTooltip.Provider
+// eslint-disable-next-line react-refresh/only-export-components -- re-exports of Radix UI components for convenience
+export const TooltipRoot = RadixTooltip.Root
+// eslint-disable-next-line react-refresh/only-export-components -- re-exports of Radix UI components for convenience
+export const TooltipTrigger = RadixTooltip.Trigger
+// eslint-disable-next-line react-refresh/only-export-components -- re-exports of Radix UI components for convenience
+export const TooltipPortal = RadixTooltip.Portal
+// eslint-disable-next-line react-refresh/only-export-components -- re-exports of Radix UI components for convenience
+export const TooltipArrow = RadixTooltip.Arrow
 
-function TooltipProvider({
-  delayDuration = 100,
-  skipDelayDuration = 0,
-  ...props
-}: React.ComponentProps<typeof TooltipPrimitive.Provider>) {
-  return (
-    <TooltipPrimitive.Provider
-      data-slot="tooltip-provider"
-      delayDuration={delayDuration}
-      skipDelayDuration={skipDelayDuration}
-      {...props}
-    />
-  );
-}
-
-function Tooltip({
-  ...props
-}: React.ComponentProps<typeof TooltipPrimitive.Root>) {
-  return <TooltipPrimitive.Root data-slot="tooltip" {...props} />;
-}
-
-function TooltipTrigger({
-  ...props
-}: React.ComponentProps<typeof TooltipPrimitive.Trigger>) {
-  return <TooltipPrimitive.Trigger data-slot="tooltip-trigger" {...props} />;
-}
-
-function TooltipContent({
+export function TooltipContent({
   className,
   sideOffset = 6,
   ...props
-}: React.ComponentProps<typeof TooltipPrimitive.Content>) {
+}: React.ComponentPropsWithoutRef<typeof RadixTooltip.Content>) {
   return (
-    <TooltipPrimitive.Portal>
-      <TooltipPrimitive.Content
-        data-slot="tooltip-content"
+    <RadixTooltip.Portal>
+      <RadixTooltip.Content
         sideOffset={sideOffset}
-        className={cn(
-          'z-50 max-w-[16rem] whitespace-normal break-words rounded-md bg-primary px-3 py-1.5 text-center text-xs leading-5 text-primary-foreground',
-          'animate-in fade-in-0 zoom-in-95 data-[state=closed]:animate-out',
-          'data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95',
-          className,
-        )}
+        className={`surface-menu-panel z-50 max-w-[240px] rounded-[var(--radius)] px-2.5 py-1.5 font-mono text-[length:var(--density-type-annotation)] leading-snug text-fg outline-none ${className ?? ''}`}
+        collisionPadding={8}
         {...props}
-      />
-    </TooltipPrimitive.Portal>
-  );
+      >
+        {props.children}
+        <RadixTooltip.Arrow className="fill-panel-strong stroke-border" height={5} width={9} />
+      </RadixTooltip.Content>
+    </RadixTooltip.Portal>
+  )
 }
 
-export { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger };
+type TooltipProps = {
+  children: ReactElement
+  content: ReactNode
+  side?: RadixTooltip.TooltipContentProps['side']
+}
+
+export function Tooltip({ children, content, side = 'top' }: TooltipProps) {
+  return (
+    <RadixTooltip.Provider delayDuration={250} skipDelayDuration={120}>
+      <RadixTooltip.Root>
+        <RadixTooltip.Trigger asChild>{children}</RadixTooltip.Trigger>
+        <TooltipContent side={side}>{content}</TooltipContent>
+      </RadixTooltip.Root>
+    </RadixTooltip.Provider>
+  )
+}

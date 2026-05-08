@@ -10,6 +10,7 @@ tokio = { version = "1", features = ["full"] }
 [dev-dependencies]
 axum = "0.8"
 hex = "0.4"
+reqwest = { version = "0.12", features = ["json"] }
 serial_test = "3"
 mesh-client = { package = "mesh-llm-client", path = "../mesh-client" }
 serde_json = "1"

@@ -1,2 +1,1 @@
-export { default } from './vite.config';
-
+export { default } from './vite.config'

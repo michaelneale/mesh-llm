@@ -8,11 +8,12 @@ NODE_MODULES_DIR="$UI_DIR/node_modules"
 
 ui_build_inputs=(
     "$UI_DIR/package.json"
-    "$UI_DIR/package-lock.json"
+    "$UI_DIR/pnpm-lock.yaml"
     "$UI_DIR/vite.config.ts"
     "$UI_DIR/tsconfig.json"
-    "$UI_DIR/postcss.config.cjs"
-    "$UI_DIR/tailwind.config.ts"
+    "$UI_DIR/tsconfig.app.json"
+    "$UI_DIR/tsconfig.node.json"
+    "$UI_DIR/biome.json"
     "$UI_DIR/index.html"
     "$UI_DIR/src"
     "$UI_DIR/public"
@@ -37,13 +38,13 @@ ui_build_is_stale() {
     return 1
 }
 
-npm_install_is_stale() {
+pnpm_install_is_stale() {
     if [[ ! -d "$NODE_MODULES_DIR" ]]; then
         return 0
     fi
 
     local manifest
-    for manifest in "$UI_DIR/package.json" "$UI_DIR/package-lock.json"; do
+    for manifest in "$UI_DIR/package.json" "$UI_DIR/pnpm-lock.yaml"; do
         [[ -e "$manifest" ]] || continue
         if [[ "$manifest" -nt "$NODE_MODULES_DIR" ]]; then
             return 0
@@ -57,12 +58,11 @@ if ui_build_is_stale; then
     echo "Building mesh-llm UI..."
     cd "$UI_DIR"
 
-    if npm_install_is_stale; then
-        export ONNXRUNTIME_NODE_INSTALL_CUDA="${ONNXRUNTIME_NODE_INSTALL_CUDA:-skip}"
-        npm ci
+    if pnpm_install_is_stale; then
+        pnpm install --frozen-lockfile
     fi
 
-    npm run build
+    pnpm run build
 else
     echo "Skipping mesh-llm UI build; dist is up to date."
 fi

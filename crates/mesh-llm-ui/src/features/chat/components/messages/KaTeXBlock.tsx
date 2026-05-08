@@ -1,37 +1,37 @@
-import { useEffect, useRef, useState } from "react";
-import katex from "katex";
+import { useEffect, useRef, useState } from 'react'
+import katex from 'katex'
 
-import "katex/dist/katex.min.css";
+import 'katex/dist/katex.min.css'
 
 export function KaTeXBlock({ math, display }: { math: string; display: boolean }) {
-  const [rendered, setRendered] = useState(false);
-  const blockRef = useRef<HTMLDivElement | null>(null);
-  const inlineRef = useRef<HTMLSpanElement | null>(null);
+  const [rendered, setRendered] = useState(false)
+  const blockRef = useRef<HTMLDivElement | null>(null)
+  const inlineRef = useRef<HTMLSpanElement | null>(null)
 
   useEffect(() => {
-    setRendered(false);
-    const container = display ? blockRef.current : inlineRef.current;
-    if (!container) return;
+    const container = display ? blockRef.current : inlineRef.current
+    if (!container) return
 
-    container.replaceChildren();
+    container.replaceChildren()
     try {
       katex.render(math, container, {
         displayMode: display,
-        throwOnError: false,
-      });
-      setRendered(true);
+        throwOnError: false
+      })
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- marks rendering complete after DOM mutation
+      setRendered(true)
     } catch {
-      container.replaceChildren();
+      container.replaceChildren()
     }
 
     return () => {
-      container.replaceChildren();
-    };
-  }, [math, display]);
+      container.replaceChildren()
+    }
+  }, [math, display])
 
   return display ? (
     <>
-      <div ref={blockRef} className={rendered ? "my-2 overflow-x-auto" : "hidden"} />
+      <div ref={blockRef} className={rendered ? 'my-2 overflow-x-auto' : 'hidden'} />
       {!rendered && (
         <div className="my-2 overflow-x-auto text-sm">
           <code>{math}</code>
@@ -40,8 +40,8 @@ export function KaTeXBlock({ math, display }: { math: string; display: boolean }
     </>
   ) : (
     <>
-      <span ref={inlineRef} className={rendered ? undefined : "hidden"} />
+      <span ref={inlineRef} className={rendered ? undefined : 'hidden'} />
       {!rendered && <code>{math}</code>}
     </>
-  );
+  )
 }

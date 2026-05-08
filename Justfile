@@ -5,7 +5,7 @@ llama_build_root := env("MESH_LLM_LLAMA_BUILD_ROOT", ".deps/llama-build")
 build_dir := env("LLAMA_STAGE_BUILD_DIR", llama_build_root / "build-stage-abi-cpu")
 mesh_dir := "crates/mesh-llm"
 ui_dir := "crates/mesh-llm-ui"
-ui_preview_dir := ui_dir / "preview"
+ui_legacy_dir := "crates/mesh-llm/ui-legacy"
 benchmark_src_dir := mesh_dir / "benchmarks"
 home_dir := if os_family() == "windows" { env("USERPROFILE") } else { env("HOME") }
 xdg_cache_dir := env("XDG_CACHE_HOME", home_dir / ".cache")
@@ -270,29 +270,107 @@ benchmark-build-intel-windows:
     @echo "WARNING: Intel Arc benchmark is unvalidated — no Intel Arc hardware has been tested"
     @powershell -NoProfile -ExecutionPolicy Bypass -Command "icpx -O3 -fsycl -o 'target/release/membench-fingerprint-intel.exe' '{{ benchmark_src_dir }}/membench-fingerprint-intel.cpp'; if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }; Write-Host 'Built: target/release/membench-fingerprint-intel.exe'"
 
-# Run the UI with Vite HMR and proxy /api to mesh-llm (default: http://127.0.0.1:3131)
+# Run the UI dev server with Vite HMR, proxying /api to mesh-llm (default: http://127.0.0.1:3131)
 ui-dev api="http://127.0.0.1:3131" port="5173":
     #!/usr/bin/env bash
     set -euo pipefail
     cd "{{ ui_dir }}"
-    MESH_UI_API_ORIGIN="{{ api }}" npm run dev -- --host 0.0.0.0 --port {{ port }}
+    MESH_UI_API_ORIGIN="{{ api }}" VITE_API_URL="{{ api }}" pnpm run dev -- --host 0.0.0.0 --port {{ port }}
 
-# Run the preview UI with Vite HMR and proxy /api to mesh-llm (default: http://127.0.0.1:3131)
-ui-dev-preview api="http://127.0.0.1:3131" port="5174" openai_api="http://127.0.0.1:9337":
+# Run the UI dev server proxying to the public meshllm.cloud API
+ui-dev-public: (ui-dev "https://meshllm.cloud")
+
+# Run the legacy UI dev server with Vite HMR (default: http://127.0.0.1:3131)
+ui-legacy api="http://127.0.0.1:3131" port="5174":
     #!/usr/bin/env bash
     set -euo pipefail
-    cd "{{ ui_preview_dir }}"
-    MESH_UI_API_ORIGIN="{{ api }}" VITE_API_URL="{{ openai_api }}" npm run dev -- --port {{ port }}
+    cd "{{ ui_legacy_dir }}"
+    MESH_UI_API_ORIGIN="{{ api }}" npm run dev -- --host 0.0.0.0 --port {{ port }}
 
-# Run the UI with Vite HMR proxying to the public anarchai.org API
-ui-dev-public: (ui-dev "https://www.anarchai.org")
-
-# Run the preview UI with Vite HMR proxying to the public meshllm.cloud API
-ui-preview-public: (ui-dev-preview "https://meshllm.cloud" "5174" "https://meshllm.cloud")
+# Run the legacy UI dev server proxying to the public meshllm.cloud API
+ui-legacy-public: (ui-legacy "https://meshllm.cloud")
 
 # Run UI unit tests (vitest)
 ui-test:
-    cd "{{ ui_dir }}" && npm test
+    cd "{{ ui_dir }}" && pnpm test
+
+# ── Full Validation Gate ───────────────────────────────────────
+
+# Run all checks: Rust tests, fmt, clippy, ESLint, Prettier, E2E smoke.
+test-all:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    # Ensure native llama.cpp libraries exist (required by skippy-ffi → cargo test linking)
+    if [ ! -f "{{ build_dir }}/common/libllama-common.a" ]; then
+        echo "ERROR: Native llama.cpp libraries not found at {{ build_dir }}/"
+        echo "Run 'just llama-build' first to prepare them, then retry."
+        exit 1
+    fi
+
+    export LLAMA_STAGE_BUILD_DIR="{{ build_dir }}"
+
+    # Each UI step runs in a subshell so cd doesn't leak between steps.
+    echo "=== 1/7 Rust format check ==="
+    cargo fmt --all -- --check
+    echo ""
+    echo "=== 2/7 Clippy ==="
+    cargo clippy -p mesh-llm -- -D warnings
+    echo ""
+    echo "=== 3/7 Rust tests ==="
+    cargo test -p mesh-llm
+    echo ""
+    echo "=== 4/7 ESLint + Prettier ==="
+    (cd "{{ ui_dir }}" && pnpm run lint)
+    echo ""
+    echo "=== 5/7 UI type check (tsc) ==="
+    (cd "{{ ui_dir }}" && pnpm run typecheck)
+    echo ""
+    echo "=== 6/7 UI unit tests (vitest) ==="
+    (cd "{{ ui_dir }}" && pnpm test)
+    echo ""
+    echo "=== 7/7 E2E smoke tests (Playwright) ==="
+    if curl -sf http://127.0.0.1:3131/health >/dev/null 2>&1; then
+        (cd "{{ ui_dir }}" && pnpm run test:e2e)
+    else
+        echo "No server on port 3131 — starting UI dev server with public mesh..."
+
+        # Start dev server in background, capture PID tree for cleanup
+        MESH_UI_API_ORIGIN="https://meshllm.cloud" VITE_API_URL="https://meshllm.cloud" bash -c 'cd "{{ ui_dir }}" && pnpm run dev -- --host 0.0.0.0 --port 5173' &
+        DEV_PID=$!
+
+        # Wait for dev server to be ready (up to 30s)
+        READY=false
+        for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:5173/ >/dev/null 2>&1; then
+                READY=true
+                break
+            fi
+            sleep 1
+        done
+
+        # Cleanup function - always stop the dev server
+        cleanup_dev() {
+            kill $DEV_PID 2>/dev/null || true
+            wait $DEV_PID >/dev/null 2>&1 || true
+        }
+
+        if [ "$READY" = true ]; then
+            (cd "{{ ui_dir }}" && PLAYWRIGHT_PORT=5173 pnpm run test:e2e e2e/smoke/home.spec.ts e2e/smoke/topnav-responsive.spec.ts)
+            E2E_EXIT=$?
+            cleanup_dev
+            echo "Stopped UI dev server."
+
+            exit $E2E_EXIT
+        else
+            cleanup_dev
+            echo "WARNING: UI dev server didn't start in time — skipping E2E tests."
+            echo "Run E2E manually:"
+            echo "  cd {{ ui_dir }} && pnpm run test:e2e"
+        fi
+    fi
+    echo ""
+    echo "All checks passed."
 
 # Start a lite client — no GPU, no model, just a local HTTP proxy to the mesh host.
 
@@ -314,14 +392,14 @@ llama-update-pin:
 llama-summary old new:
     scripts/summarize-llama-upstream.sh "{{ old }}" "{{ new }}"
 
-# Clean UI build artifacts (node_modules, dist). Fixes stale npm state.
+# Clean UI build artifacts (node_modules, dist). Fixes stale pnpm state.
 [unix]
-clean-ui:
+ui-clean:
     cd "{{ ui_dir }}" && rm -rf node_modules dist
     echo "Cleaned UI: node_modules + dist removed"
 
 [windows]
-clean-ui:
+ui-clean:
     @powershell -NoProfile -ExecutionPolicy Bypass -Command "Set-Location '{{ ui_dir }}'; Remove-Item -Recurse -Force node_modules,dist -ErrorAction SilentlyContinue"
     echo "Cleaned UI: node_modules + dist removed"
 # Stop mesh-llm processes

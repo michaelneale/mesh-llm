@@ -169,11 +169,12 @@ function Test-UiBuildRequired {
     $distTimestampUtc = (Get-Item $distDir).LastWriteTimeUtc
     $uiBuildInputs = @(
         (Join-Path $UiDirectory "package.json"),
-        (Join-Path $UiDirectory "package-lock.json"),
+        (Join-Path $UiDirectory "pnpm-lock.yaml"),
         (Join-Path $UiDirectory "vite.config.ts"),
         (Join-Path $UiDirectory "tsconfig.json"),
-        (Join-Path $UiDirectory "postcss.config.cjs"),
-        (Join-Path $UiDirectory "tailwind.config.ts"),
+        (Join-Path $UiDirectory "tsconfig.app.json"),
+        (Join-Path $UiDirectory "tsconfig.node.json"),
+        (Join-Path $UiDirectory "biome.json"),
         (Join-Path $UiDirectory "index.html"),
         (Join-Path $UiDirectory "src"),
         (Join-Path $UiDirectory "public")
@@ -203,7 +204,7 @@ function Test-UiBuildRequired {
     return $false
 }
 
-function Test-NpmInstallRequired {
+function Test-PnpmInstallRequired {
     param(
         [Parameter(Mandatory = $true)]
         [string]$UiDirectory
@@ -215,7 +216,7 @@ function Test-NpmInstallRequired {
     }
 
     $nodeModulesTimestampUtc = (Get-Item $nodeModulesDir).LastWriteTimeUtc
-    foreach ($manifestName in @("package.json", "package-lock.json")) {
+    foreach ($manifestName in @("package.json", "pnpm-lock.yaml")) {
         $manifestPath = Join-Path $UiDirectory $manifestName
         if (-not (Test-Path $manifestPath)) {
             continue
@@ -711,10 +712,10 @@ Invoke-InRepo {
             Write-Host "Building mesh-llm UI..."
             Push-Location $meshUiDir
             try {
-                if (Test-NpmInstallRequired -UiDirectory $meshUiDir) {
-                    Invoke-NativeCommand "npm" @("ci")
+                if (Test-PnpmInstallRequired -UiDirectory $meshUiDir) {
+                    Invoke-NativeCommand "pnpm" @("install", "--frozen-lockfile")
                 }
-                Invoke-NativeCommand "npm" @("run", "build")
+                Invoke-NativeCommand "pnpm" @("run", "build")
             } finally {
                 Pop-Location
             }
