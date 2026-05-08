@@ -3491,7 +3491,7 @@ fn initial_console_session_mode_for_surface(
     current_mode: ConsoleSessionMode,
 ) -> ConsoleSessionMode {
     match explicit_surface {
-        Some(RuntimeSurface::Serve) => current_mode,
+        Some(RuntimeSurface::Serve | RuntimeSurface::Client) => current_mode,
         _ => ConsoleSessionMode::None,
     }
 }
@@ -7845,15 +7845,16 @@ mod tests {
     }
 
     #[test]
-    fn test_console_session_mode_non_serve_uses_none() {
+    fn test_console_session_mode_client_uses_interactive_mode() {
         use crate::cli::RuntimeSurface;
 
-        // When explicit_surface is Some(RuntimeSurface::Client), should use None mode
+        // Explicit client mode is a runtime surface, so it should inherit the
+        // detected terminal mode and start the passive/client dashboard.
         let result = initial_console_session_mode_for_surface(
             Some(RuntimeSurface::Client),
             ConsoleSessionMode::InteractiveDashboard,
         );
-        assert_eq!(result, ConsoleSessionMode::None);
+        assert_eq!(result, ConsoleSessionMode::InteractiveDashboard);
     }
 
     #[test]
