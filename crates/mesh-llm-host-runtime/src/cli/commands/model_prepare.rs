@@ -5,6 +5,7 @@ use model_prepare::jobs::HfJobsClient;
 use model_prepare::permissions;
 use model_prepare::prepare::{self, DiscoveredQuant, PrepareParams};
 use model_prepare::script;
+use serde_json::json;
 
 /// All CLI arguments for `model-prepare`, bundled to avoid too-many-arguments.
 pub(crate) struct ModelPrepareArgs<'a> {
@@ -16,7 +17,9 @@ pub(crate) struct ModelPrepareArgs<'a> {
     pub timeout: &'a str,
     pub mesh_llm_ref: &'a str,
     pub dry_run: bool,
+    pub confirm: bool,
     pub follow: bool,
+    pub json: bool,
     pub status: Option<&'a str>,
     pub logs: Option<&'a str>,
     pub cancel: Option<&'a str>,
@@ -35,7 +38,9 @@ pub(crate) async fn dispatch_model_prepare(args: ModelPrepareArgs<'_>) -> Result
         timeout,
         mesh_llm_ref,
         dry_run,
+        confirm,
         follow,
+        json,
         status,
         logs,
         cancel,
@@ -49,25 +54,25 @@ pub(crate) async fn dispatch_model_prepare(args: ModelPrepareArgs<'_>) -> Result
 
     if let Some(job_id) = status {
         let jobs_client = HfJobsClient::from_env()?;
-        return run_status(&jobs_client, job_id).await;
+        return run_status(&jobs_client, job_id, json).await;
     }
     if let Some(job_id) = logs {
         let jobs_client = HfJobsClient::from_env()?;
-        return run_logs(&jobs_client, job_id).await;
+        return run_logs(&jobs_client, job_id, json).await;
     }
     if let Some(job_id) = cancel {
         let jobs_client = HfJobsClient::from_env()?;
-        return run_cancel(&jobs_client, job_id).await;
+        return run_cancel(&jobs_client, job_id, json).await;
     }
     if list {
         let jobs_client = HfJobsClient::from_env()?;
-        return run_list(&jobs_client).await;
+        return run_list(&jobs_client, json).await;
     }
 
     // ── Submit flow (source ref required) ────────────────────────────
     let source_ref = source_repo.context(
         "Source repo is required for job submission.\n\
-         Usage: mesh-llm model-prepare <source_repo>:<quant>",
+         Usage: mesh-llm models package <source_repo>:<quant>",
     )?;
     let source_model_ref = model_ref::ModelRef::parse(source_ref)
         .with_context(|| format!("invalid source model ref: {source_ref}"))?;
@@ -76,7 +81,7 @@ pub(crate) async fn dispatch_model_prepare(args: ModelPrepareArgs<'_>) -> Result
         (Some(selector), Some(quant)) if selector != quant => {
             bail!(
                 "source ref selector '{selector}' conflicts with --quant '{quant}'. \
-                 Use `mesh-llm model-prepare {source_repo}:{selector}`."
+                 Use `mesh-llm models package {source_repo}:{selector}`."
             );
         }
         (Some(selector), _) => Some(selector),
@@ -90,14 +95,15 @@ pub(crate) async fn dispatch_model_prepare(args: ModelPrepareArgs<'_>) -> Result
     // If no quant specified, list available quants and exit.
     // This path doesn't need HF_TOKEN — works for public repos.
     if source_quant.is_none() {
-        return run_list_quants(&hf_client, source_repo).await;
+        return run_list_quants(&hf_client, source_repo, json).await;
     }
 
-    // From here on we need HF_TOKEN for job submission.
-    let jobs_client = HfJobsClient::from_env()?;
-
-    // Check script freshness (non-fatal).
-    check_script_freshness(&hf_client).await;
+    let submitting = confirm && !dry_run;
+    let jobs_client = if submitting {
+        Some(HfJobsClient::from_env()?)
+    } else {
+        None
+    };
 
     // Resolve permissions.
     eprintln!("🔑 Checking permissions...");
@@ -116,6 +122,9 @@ pub(crate) async fn dispatch_model_prepare(args: ModelPrepareArgs<'_>) -> Result
         flavor: flavor.to_string(),
         timeout_seconds,
         mesh_llm_ref: mesh_llm_ref.to_string(),
+        hf_token: jobs_client
+            .as_ref()
+            .map(|client| client.token().to_string()),
     };
 
     let job = prepare::resolve(&hf_client, params, &perms).await?;
@@ -160,29 +169,68 @@ pub(crate) async fn dispatch_model_prepare(args: ModelPrepareArgs<'_>) -> Result
             .map(|s| s.as_str())
             .unwrap_or("main")
     );
+    eprintln!(
+        "   Hardware: {} {} ({})",
+        job.job_plan.pretty_name,
+        hardware_label(job.job_plan.cpu.as_deref(), job.job_plan.ram.as_deref()),
+        job.job_plan.selection_reason
+    );
+    eprintln!(
+        "   Pricing:  ${:.6}/{}, max {}",
+        job.job_plan.unit_cost_usd,
+        job.job_plan.unit_label,
+        format_cost(job.job_plan.max_cost_usd)
+    );
 
-    if dry_run {
-        eprintln!();
-        eprintln!("🔍 Dry run — job spec:");
-        // Redact secrets in dry-run output.
-        let mut redacted = job.spec.clone();
-        for value in redacted.secrets.values_mut() {
-            if value.len() > 8 {
-                *value = format!("{}...{}", &value[..4], &value[value.len() - 4..]);
-            } else {
-                *value = "****".to_string();
-            }
+    if !submitting {
+        let redacted = redacted_spec(&job.spec);
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "dryRun": true,
+                    "confirmRequired": true,
+                    "sourceRepo": job.source_repo,
+                    "sourceFile": job.source_file,
+                    "targetRepo": job.target_repo,
+                    "modelId": job.model_id,
+                    "jobPlan": job.job_plan,
+                    "spec": redacted,
+                }))?
+            );
+        } else {
+            eprintln!();
+            eprintln!("🔍 Dry run — no HF Job was submitted. Add --confirm to submit.");
+            println!("{}", serde_json::to_string_pretty(&redacted)?);
         }
-        println!("{}", serde_json::to_string_pretty(&redacted)?);
         return Ok(());
     }
 
+    ensure_bucket_script_current(&hf_client).await?;
+
     // Submit.
     eprintln!();
+    let jobs_client = jobs_client.as_ref().expect("jobs client initialized");
     let info = jobs_client.submit(&job.namespace, &job.spec).await?;
     eprintln!("🚀 Submitted: {}", info.id);
-    eprintln!("   Status:  mesh-llm model-prepare --status {}", info.id);
-    eprintln!("   Logs:    mesh-llm model-prepare --logs {}", info.id);
+    eprintln!("   Status:  mesh-llm models package --status {}", info.id);
+    eprintln!("   Logs:    mesh-llm models package --logs {}", info.id);
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "submitted": true,
+                "job": info,
+                "namespace": job.namespace,
+                "sourceRepo": job.source_repo,
+                "sourceFile": job.source_file,
+                "targetRepo": job.target_repo,
+                "modelId": job.model_id,
+                "jobPlan": job.job_plan,
+            }))?
+        );
+    }
 
     // Follow logs if requested.
     if follow {
@@ -195,8 +243,23 @@ pub(crate) async fn dispatch_model_prepare(args: ModelPrepareArgs<'_>) -> Result
     Ok(())
 }
 
-async fn run_list_quants(client: &hf_hub::HFClient, source_repo: &str) -> Result<()> {
+async fn run_list_quants(
+    client: &hf_hub::HFClient,
+    source_repo: &str,
+    json_output: bool,
+) -> Result<()> {
     let quants = prepare::list_quants(client, source_repo).await?;
+
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "sourceRepo": source_repo,
+                "quants": quants,
+            }))?
+        );
+        return Ok(());
+    }
 
     if quants.is_empty() {
         eprintln!("No GGUF files found in {source_repo}");
@@ -209,7 +272,7 @@ async fn run_list_quants(client: &hf_hub::HFClient, source_repo: &str) -> Result
     eprintln!();
     eprintln!("Specify one as a model ref, e.g.:");
     eprintln!(
-        "   mesh-llm model-prepare {}:{}",
+        "   mesh-llm models package {}:{}",
         source_repo, quants[0].name
     );
 
@@ -258,9 +321,19 @@ async fn run_update_script() -> Result<()> {
     Ok(())
 }
 
-async fn run_status(client: &HfJobsClient, job_id: &str) -> Result<()> {
+async fn run_status(client: &HfJobsClient, job_id: &str, json_output: bool) -> Result<()> {
     let (namespace, id) = parse_job_id(job_id).await?;
     let info = client.inspect(&namespace, &id).await?;
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "namespace": namespace,
+                "job": info,
+            }))?
+        );
+        return Ok(());
+    }
     eprintln!("Job:     {}", info.id);
     eprintln!("Status:  {}", info.status.stage);
     if let Some(msg) = &info.status.message {
@@ -272,14 +345,14 @@ async fn run_status(client: &HfJobsClient, job_id: &str) -> Result<()> {
     Ok(())
 }
 
-async fn run_logs(client: &HfJobsClient, job_id: &str) -> Result<()> {
+async fn run_logs(client: &HfJobsClient, job_id: &str, json_output: bool) -> Result<()> {
     use model_prepare::jobs::JobStage;
 
     let (namespace, id) = parse_job_id(job_id).await?;
 
     // Check job status — warn if still running (logs will stream indefinitely).
     let info = client.inspect(&namespace, &id).await?;
-    if matches!(info.status.stage, JobStage::Running) {
+    if matches!(info.status.stage, JobStage::Running) && !json_output {
         eprintln!("⚠ Job is still running — logs will stream until interrupted (Ctrl+C).");
         eprintln!("  Use --follow for submit-and-wait, or --status to check state.");
         eprintln!();
@@ -288,6 +361,9 @@ async fn run_logs(client: &HfJobsClient, job_id: &str) -> Result<()> {
     let mut stream = std::pin::pin!(client.stream_logs(&namespace, &id).await?);
     while let Some(line) = stream.next().await {
         match line {
+            Ok(text) if json_output => {
+                println!("{}", serde_json::to_string(&json!({ "data": text }))?);
+            }
             Ok(text) => println!("{text}"),
             Err(e) => {
                 eprintln!("⚠ Log stream error: {e}");
@@ -298,19 +374,40 @@ async fn run_logs(client: &HfJobsClient, job_id: &str) -> Result<()> {
     Ok(())
 }
 
-async fn run_cancel(client: &HfJobsClient, job_id: &str) -> Result<()> {
+async fn run_cancel(client: &HfJobsClient, job_id: &str, json_output: bool) -> Result<()> {
     let (namespace, id) = parse_job_id(job_id).await?;
     client.cancel(&namespace, &id).await?;
-    eprintln!("✅ Job {id} canceled");
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "namespace": namespace,
+                "jobId": id,
+                "canceled": true,
+            }))?
+        );
+    } else {
+        eprintln!("✅ Job {id} canceled");
+    }
     Ok(())
 }
 
-async fn run_list(client: &HfJobsClient) -> Result<()> {
+async fn run_list(client: &HfJobsClient, json_output: bool) -> Result<()> {
     // We need to know the namespace — resolve via whoami.
     let hf_client = model_prepare::build_hf_client()?;
     let perms = permissions::check_permissions(&hf_client).await?;
 
     let jobs = client.list(&perms.namespace).await?;
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "namespace": perms.namespace,
+                "jobs": jobs,
+            }))?
+        );
+        return Ok(());
+    }
     if jobs.is_empty() {
         eprintln!("No jobs found in namespace '{}'", perms.namespace);
         return Ok(());
@@ -371,23 +468,52 @@ async fn follow_until_done(client: &HfJobsClient, namespace: &str, job_id: &str)
     Ok(())
 }
 
-/// Check script freshness and print a warning if stale. Non-fatal.
-async fn check_script_freshness(client: &hf_hub::HFClient) {
+async fn ensure_bucket_script_current(client: &hf_hub::HFClient) -> Result<()> {
     match script::check_bucket_script(client).await {
-        Ok(freshness) if !freshness.is_current => {
+        Ok(freshness) if freshness.is_current => Ok(()),
+        Ok(freshness) => {
             eprintln!(
-                "⚠ Bucket script is out of date (bucket: {} bytes, expected: {} bytes)",
+                "Bucket script is out of date (bucket: {} bytes, expected: {} bytes); updating it now...",
                 freshness.bucket_size, freshness.expected_size
             );
-            eprintln!("  Run: mesh-llm model-prepare --update-script");
-            eprintln!();
+            script::update_bucket_script(client).await?;
+            eprintln!("Bucket script updated.");
+            Ok(())
         }
-        Err(e) => {
-            eprintln!("⚠ Could not check bucket script freshness: {e}");
-            eprintln!();
+        Err(err) => {
+            eprintln!(
+                "Could not check bucket script freshness ({err:#}); uploading current script..."
+            );
+            script::update_bucket_script(client).await?;
+            eprintln!("Bucket script updated.");
+            Ok(())
         }
-        _ => {}
     }
+}
+
+fn redacted_spec(spec: &model_prepare::jobs::JobSpec) -> model_prepare::jobs::JobSpec {
+    let mut redacted = spec.clone();
+    for value in redacted.secrets.values_mut() {
+        if value.len() > 8 {
+            *value = format!("{}...{}", &value[..4], &value[value.len() - 4..]);
+        } else {
+            *value = "****".to_string();
+        }
+    }
+    redacted
+}
+
+fn hardware_label(cpu: Option<&str>, ram: Option<&str>) -> String {
+    match (cpu, ram) {
+        (Some(cpu), Some(ram)) => format!("({cpu}, {ram})"),
+        (Some(cpu), None) => format!("({cpu})"),
+        (None, Some(ram)) => format!("({ram})"),
+        (None, None) => String::new(),
+    }
+}
+
+fn format_cost(value: f64) -> String {
+    format!("${value:.2} USD")
 }
 
 /// Parse a job ID that may or may not include a namespace prefix.

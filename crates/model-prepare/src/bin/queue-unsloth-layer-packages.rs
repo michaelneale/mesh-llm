@@ -11,8 +11,9 @@ use hf_hub::types::{
     RepoType, RepoUploadFileParams,
 };
 use hf_hub::{HFClient, HFRepository};
-use model_prepare::jobs::{HfJobsClient, JobInfo, JobSpec, JobStage, JobVolume};
+use model_prepare::jobs::{CpuJobPlan, HfJobsClient, JobInfo, JobSpec, JobStage, JobVolume};
 use model_prepare::prepare::{self, DiscoveredQuant};
+use model_prepare::script;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -40,6 +41,7 @@ struct Args {
     wait_for_jobs: bool,
     job_poll_interval: Duration,
     catalog_direct: bool,
+    confirm: bool,
     dry_run: bool,
 }
 
@@ -99,11 +101,15 @@ async fn main() -> Result<()> {
     }
 
     let hf_client = model_prepare::build_hf_client()?;
-    let jobs_client = if args.dry_run {
-        None
-    } else {
+    let submitting = args.confirm && !args.dry_run;
+    let jobs_client = if submitting {
         Some(HfJobsClient::from_env()?)
+    } else {
+        None
     };
+    if submitting {
+        ensure_bucket_script_current(&hf_client).await?;
+    }
 
     let recent = list_ranked_models(
         &hf_client,
@@ -140,6 +146,14 @@ async fn main() -> Result<()> {
         "Family diversity: at most {} queued model(s) per family.",
         args.max_per_family
     );
+    println!(
+        "Mode: {}.",
+        if submitting {
+            "confirmed submit"
+        } else {
+            "dry run (use --confirm to submit HF Jobs)"
+        }
+    );
 
     let mut candidates = Vec::new();
     for model in ranked {
@@ -160,7 +174,9 @@ async fn main() -> Result<()> {
         candidates.len(),
     );
 
+    let hardware = model_prepare::jobs::fetch_hardware(&model_prepare::jobs::hf_endpoint()).await?;
     let mut submitted = 0usize;
+    let mut total_max_cost_usd = 0.0f64;
     let mut submitted_jobs = Vec::new();
     let mut submitted_by_family: HashMap<String, usize> = HashMap::new();
     for candidate in candidates {
@@ -197,13 +213,21 @@ async fn main() -> Result<()> {
             QueueStatus::Missing | QueueStatus::StaleQueued => {}
         }
 
-        let action = if args.dry_run {
-            "would queue"
-        } else {
+        let job_plan = model_prepare::jobs::plan_cpu_job_from_hardware(
+            &hardware,
+            &args.flavor,
+            args.timeout_seconds,
+            candidate.quant.total_bytes,
+        )?;
+        total_max_cost_usd += job_plan.max_cost_usd;
+
+        let action = if submitting {
             "queueing"
+        } else {
+            "would queue"
         };
         println!(
-            "{} {} -> {} ({}, {}, {}, {}, family={}, target={})",
+            "{} {} -> {} ({}, {}, {}, {}, family={}, target={}, hardware={} {}, timeout={}, max_cost={})",
             action,
             candidate.model_id,
             candidate.target_repo,
@@ -212,10 +236,14 @@ async fn main() -> Result<()> {
             shard_label(candidate.quant.shard_count),
             rank_label(&candidate.model),
             candidate.family,
-            status_label(status)
+            status_label(status),
+            job_plan.flavor,
+            hardware_label(&job_plan),
+            format_duration(job_plan.timeout_seconds),
+            format_cost(job_plan.max_cost_usd),
         );
 
-        if args.dry_run {
+        if !submitting {
             submitted += 1;
             *submitted_by_family
                 .entry(candidate.family.clone())
@@ -228,7 +256,7 @@ async fn main() -> Result<()> {
         let info = jobs_client
             .submit(
                 &args.job_namespace,
-                &job_spec(&candidate, &args, jobs_client)?,
+                &job_spec(&candidate, &args, jobs_client, &job_plan)?,
             )
             .await?;
         println!(
@@ -247,12 +275,16 @@ async fn main() -> Result<()> {
 
     println!(
         "{} {} job(s).",
-        if args.dry_run {
-            "Would submit"
-        } else {
+        if submitting {
             "Submitted"
+        } else {
+            "Would submit"
         },
         submitted
+    );
+    println!(
+        "Maximum HF Jobs cost for this selection: {}",
+        format_cost(total_max_cost_usd)
     );
 
     if args.wait_for_jobs && !submitted_jobs.is_empty() {
@@ -273,8 +305,8 @@ impl Args {
             max_per_family: 1,
             target_namespace: "meshllm".to_string(),
             job_namespace: "meshllm".to_string(),
-            flavor: "cpu-upgrade".to_string(),
-            timeout_seconds: parse_duration_seconds("8h")?,
+            flavor: "auto".to_string(),
+            timeout_seconds: parse_duration_seconds("1h")?,
             mesh_llm_ref: "main".to_string(),
             retry_queued_after: Duration::from_secs(30 * 60 * 60),
             split_candidate_vram_bytes: DEFAULT_SPLIT_CANDIDATE_VRAM_BYTES,
@@ -285,7 +317,8 @@ impl Args {
             wait_for_jobs: false,
             job_poll_interval: Duration::from_secs(60),
             catalog_direct: true,
-            dry_run: false,
+            confirm: false,
+            dry_run: true,
         };
 
         let mut iter = std::env::args().skip(1);
@@ -334,7 +367,14 @@ impl Args {
                 }
                 "--catalog-direct" => args.catalog_direct = true,
                 "--no-catalog-direct" => args.catalog_direct = false,
-                "--dry-run" => args.dry_run = true,
+                "--confirm" => {
+                    args.confirm = true;
+                    args.dry_run = false;
+                }
+                "--dry-run" => {
+                    args.confirm = false;
+                    args.dry_run = true;
+                }
                 "--help" | "-h" => {
                     print_help();
                     std::process::exit(0);
@@ -374,6 +414,7 @@ fn print_help() {
          Options:\n\
            --max-jobs N\n\
            --max-per-family N\n\
+           --confirm\n\
            --dry-run\n\
            --mesh-llm-ref REF\n\
            --quant-preference CSV\n\
@@ -381,13 +422,36 @@ fn print_help() {
            --popular-limit N\n\
            --target-namespace NAME\n\
            --job-namespace NAME\n\
-           --flavor HF_JOB_FLAVOR\n\
-           --timeout DURATION\n\
+           --flavor HF_JOB_FLAVOR (default: auto CPU)\n\
+           --timeout DURATION (requested; raised by size-based minimum)\n\
            --wait-for-jobs\n\
            --job-poll-seconds N\n\
            --split-candidate-vram-gib GiB\n\
            --no-catalog-direct"
     );
+}
+
+async fn ensure_bucket_script_current(client: &HFClient) -> Result<()> {
+    match script::check_bucket_script(client).await {
+        Ok(freshness) if freshness.is_current => Ok(()),
+        Ok(freshness) => {
+            eprintln!(
+                "Bucket script is out of date (bucket: {} bytes, expected: {} bytes); updating it now...",
+                freshness.bucket_size, freshness.expected_size
+            );
+            script::update_bucket_script(client).await?;
+            eprintln!("Bucket script updated.");
+            Ok(())
+        }
+        Err(err) => {
+            eprintln!(
+                "Could not check bucket script freshness ({err:#}); uploading current script..."
+            );
+            script::update_bucket_script(client).await?;
+            eprintln!("Bucket script updated.");
+            Ok(())
+        }
+    }
 }
 
 async fn wait_for_submitted_jobs(
@@ -774,7 +838,12 @@ async fn write_queue_marker(client: &HFClient, candidate: &Candidate, args: &Arg
     Ok(())
 }
 
-fn job_spec(candidate: &Candidate, args: &Args, jobs_client: &HfJobsClient) -> Result<JobSpec> {
+fn job_spec(
+    candidate: &Candidate,
+    args: &Args,
+    jobs_client: &HfJobsClient,
+    job_plan: &CpuJobPlan,
+) -> Result<JobSpec> {
     let mut environment = HashMap::new();
     environment.insert("SOURCE_REPO".into(), candidate.model.repo_id.clone());
     environment.insert("SOURCE_FILE".into(), candidate.quant.first_file.clone());
@@ -796,8 +865,8 @@ fn job_spec(candidate: &Candidate, args: &Args, jobs_client: &HfJobsClient) -> R
         arguments: vec![],
         environment,
         secrets,
-        flavor: args.flavor.clone(),
-        timeout_seconds: args.timeout_seconds,
+        flavor: job_plan.flavor.clone(),
+        timeout_seconds: job_plan.timeout_seconds,
         volumes: vec![
             JobVolume {
                 volume_type: "model".into(),
@@ -813,6 +882,31 @@ fn job_spec(candidate: &Candidate, args: &Args, jobs_client: &HfJobsClient) -> R
             },
         ],
     })
+}
+
+fn hardware_label(plan: &CpuJobPlan) -> String {
+    match (plan.cpu.as_deref(), plan.ram.as_deref()) {
+        (Some(cpu), Some(ram)) => format!("({cpu}, {ram})"),
+        (Some(cpu), None) => format!("({cpu})"),
+        (None, Some(ram)) => format!("({ram})"),
+        (None, None) => String::new(),
+    }
+}
+
+fn format_cost(value: f64) -> String {
+    format!("${value:.2} USD")
+}
+
+fn format_duration(seconds: u64) -> String {
+    let hours = seconds / 3600;
+    let minutes = (seconds % 3600) / 60;
+    if hours > 0 && minutes > 0 {
+        format!("{hours}h{minutes}m")
+    } else if hours > 0 {
+        format!("{hours}h")
+    } else {
+        format!("{}m", seconds / 60)
+    }
 }
 
 fn parse_repo(repo_id: &str) -> Result<(&str, &str)> {

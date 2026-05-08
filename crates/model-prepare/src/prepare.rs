@@ -8,8 +8,9 @@ use model_ref::{
     gguf_matches_quant_selector, normalize_gguf_distribution_id, quant_selector_from_gguf_file,
     split_gguf_shard_info,
 };
+use serde::Serialize;
 
-use crate::jobs::{JobSpec, JobVolume};
+use crate::jobs::{CpuJobPlan, JobSpec, JobVolume};
 use crate::permissions::PermissionCheck;
 
 /// Parameters for a model-prepare job.
@@ -21,6 +22,7 @@ pub struct PrepareParams {
     pub flavor: String,
     pub timeout_seconds: u64,
     pub mesh_llm_ref: String,
+    pub hf_token: Option<String>,
 }
 
 /// A fully resolved model-prepare job, ready to submit.
@@ -31,11 +33,12 @@ pub struct PrepareJob {
     pub model_id: String,
     pub namespace: String,
     pub catalog_create_pr: bool,
+    pub job_plan: CpuJobPlan,
     pub spec: JobSpec,
 }
 
 /// A discovered quant variant in a HF model repo.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DiscoveredQuant {
     /// The quant selector name (e.g. "Q4_K_M", "UD-Q4_K_XL").
     pub name: String,
@@ -173,6 +176,14 @@ pub async fn resolve(
         model_ref::format_gguf_selection_ref(&params.source_repo, &source_file, &matched.name)
     });
 
+    let job_plan = crate::jobs::plan_cpu_job(
+        &crate::jobs::hf_endpoint(),
+        &params.flavor,
+        params.timeout_seconds,
+        matched.total_bytes,
+    )
+    .await?;
+
     // Build environment variables.
     let mut environment = HashMap::new();
     environment.insert("SOURCE_REPO".into(), params.source_repo.clone());
@@ -192,13 +203,11 @@ pub async fn resolve(
     );
 
     // The HF Jobs API passes secrets as env vars inside the container.
-    // The value must be the actual token, not a placeholder.
-    let hf_token = std::env::var("HF_TOKEN")
-        .ok()
-        .filter(|t| !t.is_empty())
-        .context("HF_TOKEN not set. Export a HuggingFace token with write access.")?;
+    // Dry runs intentionally omit secrets so users can inspect cost/spec first.
     let mut secrets = HashMap::new();
-    secrets.insert("HF_TOKEN".into(), hf_token);
+    if let Some(hf_token) = params.hf_token {
+        secrets.insert("HF_TOKEN".into(), hf_token);
+    }
 
     let volumes = vec![
         JobVolume {
@@ -221,8 +230,8 @@ pub async fn resolve(
         arguments: vec![],
         environment,
         secrets,
-        flavor: params.flavor,
-        timeout_seconds: params.timeout_seconds,
+        flavor: job_plan.flavor.clone(),
+        timeout_seconds: job_plan.timeout_seconds,
         volumes,
     };
 
@@ -233,6 +242,7 @@ pub async fn resolve(
         model_id,
         namespace: permissions.namespace.clone(),
         catalog_create_pr: permissions.catalog_create_pr,
+        job_plan,
         spec,
     })
 }

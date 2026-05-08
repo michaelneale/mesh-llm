@@ -606,7 +606,7 @@ pub(crate) enum Command {
     /// Submits an HF Job that builds skippy-model-package from source,
     /// splits the model, publishes the layer package, and updates the
     /// meshllm/catalog.
-    #[command(name = "model-prepare")]
+    #[command(name = "model-prepare", hide = true)]
     ModelPrepare {
         /// Source HuggingFace model ref (e.g. unsloth/Qwen3-235B-A22B-GGUF:UD-Q4_K_XL).
         source_repo: Option<String>,
@@ -623,25 +623,33 @@ pub(crate) enum Command {
         #[arg(long)]
         model_id: Option<String>,
 
-        /// HF Job hardware flavor [default: cpu-xl].
-        #[arg(long, default_value = "cpu-xl")]
+        /// HF Job hardware flavor. Use auto for the default CPU splitter baseline.
+        #[arg(long, default_value = "auto")]
         flavor: String,
 
-        /// Job timeout [default: 3h].
-        #[arg(long, default_value = "3h")]
+        /// Requested job timeout; raised automatically by model-size minimums.
+        #[arg(long, default_value = "1h")]
         timeout: String,
 
         /// Branch or tag of mesh-llm to build in the job [default: main].
         #[arg(long, default_value = "main")]
         mesh_llm_ref: String,
 
-        /// Print the job spec without submitting.
+        /// Explicitly keep this as a dry run. This is the default unless --confirm is set.
         #[arg(long)]
         dry_run: bool,
+
+        /// Actually submit the HF Job. Without this, the command only prints plan, spec, and max cost.
+        #[arg(long)]
+        confirm: bool,
 
         /// Stream job logs after submission until completion.
         #[arg(long)]
         follow: bool,
+
+        /// Emit JSON output.
+        #[arg(long)]
+        json: bool,
 
         /// Check status of a previously submitted job.
         #[arg(long)]

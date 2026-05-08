@@ -9,8 +9,8 @@ on:
         description: "Maximum HF Jobs to submit"
         required: false
         default: "5"
-      dry_run:
-        description: "Compare candidates without submitting HF Jobs"
+      confirm:
+        description: "Actually submit HF Jobs and wait for completion"
         required: false
         type: boolean
         default: false
@@ -38,7 +38,7 @@ jobs:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       MAX_JOBS: ${{ github.event.inputs.max_jobs || '5' }}
-      DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+      CONFIRM: ${{ github.event.inputs.confirm || 'false' }}
       MESH_LLM_REF: ${{ github.event.inputs.mesh_llm_ref || 'main' }}
       QUANT_PREFERENCE: ${{ github.event.inputs.quant_preference || 'UD-Q4_K_XL,UD-Q4_K_M,Q4_K_XL,Q4_K_M' }}
 
@@ -62,13 +62,14 @@ jobs:
             --quant-preference "$QUANT_PREFERENCE"
           )
 
-          if [[ "$DRY_RUN" == "true" ]]; then
-            args+=(--dry-run)
-          elif [[ -z "${HF_TOKEN:-}" ]]; then
-            echo "HF_TOKEN secret is required to queue HF Jobs." >&2
-            exit 1
+          if [[ "$CONFIRM" == "true" ]]; then
+            if [[ -z "${HF_TOKEN:-}" ]]; then
+              echo "HF_TOKEN secret is required to queue HF Jobs." >&2
+              exit 1
+            fi
+            args+=(--confirm --wait-for-jobs --job-poll-seconds 60)
           else
-            args+=(--wait-for-jobs --job-poll-seconds 60)
+            args+=(--dry-run)
           fi
 
           cargo run -p model-prepare --bin queue-unsloth-layer-packages -- "${args[@]}"

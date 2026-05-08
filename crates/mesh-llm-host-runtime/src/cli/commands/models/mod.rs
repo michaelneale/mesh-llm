@@ -2,6 +2,7 @@ mod formatters;
 mod formatters_console;
 mod formatters_json;
 
+use crate::cli::commands::model_prepare;
 use crate::cli::models::ModelSearchSort;
 use crate::cli::models::ModelsCommand;
 use crate::cli::terminal_progress::{clear_stderr_line, start_spinner, DeterminateProgressLine};
@@ -319,6 +320,44 @@ pub async fn run_model_download(
 
 pub async fn dispatch_models_command(command: &ModelsCommand) -> Result<()> {
     match command {
+        ModelsCommand::Package {
+            source_repo,
+            quant,
+            target,
+            model_id,
+            flavor,
+            timeout,
+            mesh_llm_ref,
+            dry_run,
+            confirm,
+            follow,
+            status,
+            logs,
+            cancel,
+            list,
+            update_script,
+            json,
+        } => {
+            model_prepare::dispatch_model_prepare(model_prepare::ModelPrepareArgs {
+                source_repo: source_repo.as_deref(),
+                quant: quant.as_deref(),
+                target: target.as_deref(),
+                model_id: model_id.as_deref(),
+                flavor,
+                timeout,
+                mesh_llm_ref,
+                dry_run: *dry_run,
+                confirm: *confirm,
+                follow: *follow,
+                json: *json,
+                status: status.as_deref(),
+                logs: logs.as_deref(),
+                cancel: cancel.as_deref(),
+                list: *list,
+                update_script: *update_script,
+            })
+            .await?;
+        }
         ModelsCommand::Recommended { json } | ModelsCommand::List { json } => {
             run_model_recommended(*json)?
         }

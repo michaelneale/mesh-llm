@@ -15,6 +15,56 @@ pub enum ModelSearchSort {
 
 #[derive(Subcommand, Debug)]
 pub enum ModelsCommand {
+    /// Package a GGUF model for distributed inference by splitting it into layer files on Hugging Face Jobs.
+    Package {
+        /// Source Hugging Face model ref (e.g. unsloth/Qwen3-235B-A22B-GGUF:UD-Q4_K_XL).
+        source_repo: Option<String>,
+        /// Quantization variant (deprecated; prefer source refs like repo:Q4_K_M).
+        #[arg(long)]
+        quant: Option<String>,
+        /// Target repo for the layer package (auto-derived if omitted).
+        #[arg(long)]
+        target: Option<String>,
+        /// Override model ID in the manifest.
+        #[arg(long)]
+        model_id: Option<String>,
+        /// HF Job hardware flavor. Use auto for the default CPU splitter baseline.
+        #[arg(long, default_value = "auto")]
+        flavor: String,
+        /// Requested job timeout; raised automatically by model-size minimums.
+        #[arg(long, default_value = "1h")]
+        timeout: String,
+        /// Branch or tag of mesh-llm to build in the job.
+        #[arg(long, default_value = "main")]
+        mesh_llm_ref: String,
+        /// Explicitly keep this as a dry run. This is the default unless --confirm is set.
+        #[arg(long)]
+        dry_run: bool,
+        /// Actually submit the HF Job. Without this, the command only prints plan, spec, and max cost.
+        #[arg(long)]
+        confirm: bool,
+        /// Stream job logs after submission until completion.
+        #[arg(long)]
+        follow: bool,
+        /// Check status of a previously submitted job.
+        #[arg(long)]
+        status: Option<String>,
+        /// Fetch logs for a previously submitted job.
+        #[arg(long)]
+        logs: Option<String>,
+        /// Cancel a running job.
+        #[arg(long)]
+        cancel: Option<String>,
+        /// List recent package jobs.
+        #[arg(long)]
+        list: bool,
+        /// Upload the latest job script to the meshllm bucket (requires org access).
+        #[arg(long)]
+        update_script: bool,
+        /// Emit JSON output.
+        #[arg(long)]
+        json: bool,
+    },
     /// List recommended models from the remote meshllm/catalog.
     Recommended {
         /// Emit JSON output.
