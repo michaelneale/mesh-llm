@@ -1,3 +1,4 @@
+pub mod certify;
 pub mod jobs;
 pub mod permissions;
 pub mod prepare;

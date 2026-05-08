@@ -329,7 +329,11 @@ async fn run_update_script() -> Result<()> {
     Ok(())
 }
 
-async fn run_status(client: &HfJobsClient, job_id: &str, json_output: bool) -> Result<()> {
+pub(crate) async fn run_status(
+    client: &HfJobsClient,
+    job_id: &str,
+    json_output: bool,
+) -> Result<()> {
     let (namespace, id) = parse_job_id(job_id).await?;
     let info = client.inspect(&namespace, &id).await?;
     if json_output {
@@ -353,7 +357,7 @@ async fn run_status(client: &HfJobsClient, job_id: &str, json_output: bool) -> R
     Ok(())
 }
 
-async fn run_logs(client: &HfJobsClient, job_id: &str, json_output: bool) -> Result<()> {
+pub(crate) async fn run_logs(client: &HfJobsClient, job_id: &str, json_output: bool) -> Result<()> {
     use model_package::jobs::JobStage;
 
     let (namespace, id) = parse_job_id(job_id).await?;
@@ -383,7 +387,11 @@ async fn run_logs(client: &HfJobsClient, job_id: &str, json_output: bool) -> Res
     Ok(())
 }
 
-async fn run_cancel(client: &HfJobsClient, job_id: &str, json_output: bool) -> Result<()> {
+pub(crate) async fn run_cancel(
+    client: &HfJobsClient,
+    job_id: &str,
+    json_output: bool,
+) -> Result<()> {
     let (namespace, id) = parse_job_id(job_id).await?;
     client.cancel(&namespace, &id).await?;
     if json_output {
@@ -401,7 +409,7 @@ async fn run_cancel(client: &HfJobsClient, job_id: &str, json_output: bool) -> R
     Ok(())
 }
 
-async fn run_list(client: &HfJobsClient, json_output: bool) -> Result<()> {
+pub(crate) async fn run_list(client: &HfJobsClient, json_output: bool) -> Result<()> {
     // We need to know the namespace — resolve via whoami.
     let hf_client = model_package::build_hf_client()?;
     let perms = permissions::check_permissions(&hf_client).await?;
@@ -432,7 +440,11 @@ async fn run_list(client: &HfJobsClient, json_output: bool) -> Result<()> {
 }
 
 /// Follow job logs until the job reaches a terminal state.
-async fn follow_until_done(client: &HfJobsClient, namespace: &str, job_id: &str) -> Result<()> {
+pub(crate) async fn follow_until_done(
+    client: &HfJobsClient,
+    namespace: &str,
+    job_id: &str,
+) -> Result<()> {
     use model_package::jobs::JobStage;
 
     loop {
@@ -498,32 +510,41 @@ async fn follow_until_done(client: &HfJobsClient, namespace: &str, job_id: &str)
 }
 
 async fn ensure_bucket_script_current(client: &hf_hub::HFClient) -> Result<()> {
-    match script::check_bucket_script(client).await {
+    ensure_bucket_job_script_current(client, script::JobScript::SplitModel).await
+}
+
+pub(crate) async fn ensure_bucket_job_script_current(
+    client: &hf_hub::HFClient,
+    job_script: script::JobScript,
+) -> Result<()> {
+    match script::check_bucket_job_script(client, job_script).await {
         Ok(freshness) if freshness.is_current => Ok(()),
         Ok(freshness) => {
             eprintln!(
-                "Bucket script is out of date ({}); updating it now...",
+                "Bucket script {} is out of date ({}); updating it now...",
+                job_script.bucket_path(),
                 freshness
                     .mismatch_reason
                     .as_deref()
                     .unwrap_or("embedded script differs from bucket script")
             );
-            script::update_bucket_script(client).await?;
+            script::update_bucket_job_script(client, job_script).await?;
             eprintln!("Bucket script updated.");
             Ok(())
         }
         Err(err) => {
             eprintln!(
-                "Could not check bucket script freshness ({err:#}); uploading current script..."
+                "Could not check bucket script {} freshness ({err:#}); uploading current script...",
+                job_script.bucket_path()
             );
-            script::update_bucket_script(client).await?;
+            script::update_bucket_job_script(client, job_script).await?;
             eprintln!("Bucket script updated.");
             Ok(())
         }
     }
 }
 
-fn redacted_spec(spec: &model_package::jobs::JobSpec) -> model_package::jobs::JobSpec {
+pub(crate) fn redacted_spec(spec: &model_package::jobs::JobSpec) -> model_package::jobs::JobSpec {
     let mut redacted = spec.clone();
     for value in redacted.secrets.values_mut() {
         if value.len() > 8 {
@@ -535,7 +556,7 @@ fn redacted_spec(spec: &model_package::jobs::JobSpec) -> model_package::jobs::Jo
     redacted
 }
 
-fn hardware_label(cpu: Option<&str>, ram: Option<&str>) -> String {
+pub(crate) fn hardware_label(cpu: Option<&str>, ram: Option<&str>) -> String {
     match (cpu, ram) {
         (Some(cpu), Some(ram)) => format!("({cpu}, {ram})"),
         (Some(cpu), None) => format!("({cpu})"),
@@ -544,7 +565,7 @@ fn hardware_label(cpu: Option<&str>, ram: Option<&str>) -> String {
     }
 }
 
-fn format_cost(value: f64) -> String {
+pub(crate) fn format_cost(value: f64) -> String {
     format!("${value:.2} USD")
 }
 
@@ -552,7 +573,7 @@ fn format_cost(value: f64) -> String {
 ///
 /// If the job ID contains a `/`, treat the first part as the namespace.
 /// Otherwise, resolve the namespace via whoami.
-async fn parse_job_id(job_id: &str) -> Result<(String, String)> {
+pub(crate) async fn parse_job_id(job_id: &str) -> Result<(String, String)> {
     if let Some((ns, id)) = job_id.split_once('/') {
         Ok((ns.to_string(), id.to_string()))
     } else {
@@ -564,7 +585,7 @@ async fn parse_job_id(job_id: &str) -> Result<(String, String)> {
 }
 
 /// Parse a human-readable timeout string like "3h", "2h30m", "7200" into seconds.
-fn parse_timeout(s: &str) -> Result<u64> {
+pub(crate) fn parse_timeout(s: &str) -> Result<u64> {
     let s = s.trim();
 
     // Pure number → seconds.
@@ -606,7 +627,7 @@ fn parse_timeout(s: &str) -> Result<u64> {
     Ok(total)
 }
 
-fn format_timeout(seconds: u64) -> String {
+pub(crate) fn format_timeout(seconds: u64) -> String {
     let hours = seconds / 3600;
     let minutes = (seconds % 3600) / 60;
     if minutes > 0 {

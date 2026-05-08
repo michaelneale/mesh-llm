@@ -37,6 +37,15 @@ pub struct PrepareJob {
     pub spec: JobSpec,
 }
 
+/// A resolved source GGUF quant, including the first shard to mount/use.
+#[derive(Debug, Clone, Serialize)]
+pub struct ResolvedSourceQuant {
+    pub quant: DiscoveredQuant,
+    pub source_file: String,
+    pub model_id: String,
+    pub distribution_id: String,
+}
+
 /// A discovered quant variant in a HF model repo.
 #[derive(Debug, Clone, Serialize)]
 pub struct DiscoveredQuant {
@@ -109,21 +118,17 @@ pub fn discover_quants_from_gguf_files(gguf_files: Vec<(String, u64)>) -> Vec<Di
     quants
 }
 
-/// Resolve source files, permissions, target repo, and build the job spec.
-pub async fn resolve(
+/// Resolve a source repo plus quant selector to the first GGUF shard and public model ID.
+pub async fn resolve_source_quant(
     client: &HFClient,
-    params: PrepareParams,
-    permissions: &PermissionCheck,
-) -> Result<PrepareJob> {
-    let quant = params
-        .quant
-        .as_deref()
-        .context("--quant is required when submitting a job")?;
-
-    let quants = list_quants(client, &params.source_repo).await?;
+    source_repo: &str,
+    quant: &str,
+    model_id: Option<String>,
+) -> Result<ResolvedSourceQuant> {
+    let quants = list_quants(client, source_repo).await?;
 
     if quants.is_empty() {
-        anyhow::bail!("No GGUF files found in {}", params.source_repo);
+        anyhow::bail!("No GGUF files found in {}", source_repo);
     }
 
     // Find matching quant.
@@ -141,7 +146,7 @@ pub async fn resolve(
             format!(
                 "No quant matching '{}' in {}.\nAvailable: {}",
                 quant,
-                params.source_repo,
+                source_repo,
                 available.join(", ")
             )
         })?;
@@ -151,10 +156,9 @@ pub async fn resolve(
         // Verify it's shard 00001.
         if shard.part != "00001" {
             // Reconstruct the -00001- path.
-            let first = matched
+            matched
                 .first_file
-                .replace(&format!("-{}-of-", shard.part), "-00001-of-");
-            first
+                .replace(&format!("-{}-of-", shard.part), "-00001-of-")
         } else {
             matched.first_file.clone()
         }
@@ -162,32 +166,56 @@ pub async fn resolve(
         matched.first_file.clone()
     };
 
-    // Derive distribution ID and target repo.
-    let dist_id =
+    let distribution_id =
         normalize_gguf_distribution_id(&source_file).unwrap_or_else(|| matched.name.clone());
 
-    let target_repo = params
-        .target
-        .unwrap_or_else(|| format!("{}/{}-layers", permissions.namespace, dist_id));
+    let model_id = model_id.unwrap_or_else(|| {
+        model_ref::format_gguf_selection_ref(source_repo, &source_file, &matched.name)
+    });
 
-    let model_id = params.model_id.unwrap_or_else(|| {
-        model_ref::format_gguf_selection_ref(&params.source_repo, &source_file, &matched.name)
+    Ok(ResolvedSourceQuant {
+        quant: matched.clone(),
+        source_file,
+        model_id,
+        distribution_id,
+    })
+}
+
+/// Resolve source files, permissions, target repo, and build the job spec.
+pub async fn resolve(
+    client: &HFClient,
+    params: PrepareParams,
+    permissions: &PermissionCheck,
+) -> Result<PrepareJob> {
+    let quant = params
+        .quant
+        .as_deref()
+        .context("--quant is required when submitting a job")?;
+
+    let resolved =
+        resolve_source_quant(client, &params.source_repo, quant, params.model_id.clone()).await?;
+
+    let target_repo = params.target.unwrap_or_else(|| {
+        format!(
+            "{}/{}-layers",
+            permissions.namespace, resolved.distribution_id
+        )
     });
 
     let job_plan = crate::jobs::plan_cpu_job(
         &crate::jobs::hf_endpoint(),
         &params.flavor,
         params.timeout_seconds,
-        matched.total_bytes,
+        resolved.quant.total_bytes,
     )
     .await?;
 
     // Build environment variables.
     let mut environment = HashMap::new();
     environment.insert("SOURCE_REPO".into(), params.source_repo.clone());
-    environment.insert("SOURCE_FILE".into(), source_file.clone());
+    environment.insert("SOURCE_FILE".into(), resolved.source_file.clone());
     environment.insert("TARGET_REPO".into(), target_repo.clone());
-    environment.insert("MODEL_ID".into(), model_id.clone());
+    environment.insert("MODEL_ID".into(), resolved.model_id.clone());
     environment.insert("SOURCE_REVISION".into(), "main".into());
     environment.insert("MESH_LLM_REF".into(), params.mesh_llm_ref.clone());
     environment.insert(
@@ -235,9 +263,9 @@ pub async fn resolve(
 
     Ok(PrepareJob {
         source_repo: params.source_repo,
-        source_file,
+        source_file: resolved.source_file,
         target_repo,
-        model_id,
+        model_id: resolved.model_id,
         namespace: permissions.namespace.clone(),
         catalog_create_pr: permissions.catalog_create_pr,
         job_plan,

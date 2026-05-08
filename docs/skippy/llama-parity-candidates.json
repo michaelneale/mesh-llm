@@ -885,12 +885,9 @@
       "llama_model": "mimo2",
       "family": "mimo2",
       "status": "package_or_remote_only",
-      "repo": "AesSedai/MiMo-V2.5-GGUF",
-      "include": [
-        "Q4_K_M/MiMo-V2.5-Q4_K_M-*.gguf",
-        "mmproj-MiMo-V2.5-F16.gguf"
-      ],
-      "notes": "HF re-audit found public MiMo-V2.5 and MiMo-V2-Flash GGUF artifacts, including projector files; package-sized multimodal model, so certify via package/remote staging and projector parity before promotion"
+      "repo": "unsloth/MiMo-V2-Flash-GGUF",
+      "include": "IQ4_XS/MiMo-V2-Flash-IQ4_XS-*.gguf",
+      "notes": "Unsloth-only MiMo 4-bit certification target. The smallest true Unsloth MiMo2 4-bit GGUF candidate is IQ4_XS at 153.15 GiB across four shards; Q4_K_S, UD-Q4_K_XL, Q4_K_M, and Q4_1 are larger. Upstream llama.cpp PR #22493 merged on 2026-05-07 with MiMo V2.5 text-to-text support, and the refreshed pin includes it, but local certification still needs enough storage for the Unsloth MiMo-V2-Flash source shards plus package artifacts. Do not use unsloth/MiMo-VL-7B-RL-GGUF as MiMo2 evidence: its GGUF reports general.architecture=qwen2vl."
     },
     {
       "llama_model": "minicpm",

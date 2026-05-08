@@ -67,6 +67,119 @@ pub enum ModelsCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Certify a GGUF model family on Hugging Face Jobs and optionally publish artifacts.
+    Certify {
+        /// Source Hugging Face model ref (e.g. unsloth/MiMo-V2-Flash-GGUF:IQ4_XS).
+        source_repo: Option<String>,
+        /// Family label to certify (for example mimo2, qwen3-dense, or gemma2).
+        #[arg(long)]
+        family: Option<String>,
+        /// Quantization variant (deprecated; prefer source refs like repo:Q4_K_M).
+        #[arg(long)]
+        quant: Option<String>,
+        /// Dataset repo for certification artifacts. If omitted, artifacts remain in the job workspace.
+        #[arg(long)]
+        artifact_repo: Option<String>,
+        /// Override model ID in certification artifacts.
+        #[arg(long)]
+        model_id: Option<String>,
+        /// HF Job hardware flavor. Use auto for the default CPU certification baseline.
+        #[arg(long, default_value = "auto")]
+        flavor: String,
+        /// Requested job timeout; raised automatically by model-size minimums.
+        #[arg(long, default_value = "8h")]
+        timeout: String,
+        /// Branch, tag, or commit SHA of mesh-llm to build in the job.
+        #[arg(long, default_value = "main")]
+        mesh_llm_ref: String,
+        /// Explicitly keep this as a dry run. This is the default unless --confirm is set.
+        #[arg(long)]
+        dry_run: bool,
+        /// Actually submit the HF Job. Without this, the command only prints plan, spec, and max cost.
+        #[arg(long)]
+        confirm: bool,
+        /// Explicit max HF Jobs cost accepted for this submission; required with --confirm.
+        #[arg(long)]
+        confirm_max_cost_usd: Option<f64>,
+        /// Stream job logs after submission until completion.
+        #[arg(long)]
+        follow: bool,
+        /// Check status of a previously submitted job.
+        #[arg(long)]
+        status: Option<String>,
+        /// Fetch logs for a previously submitted job.
+        #[arg(long)]
+        logs: Option<String>,
+        /// Cancel a running job.
+        #[arg(long)]
+        cancel: Option<String>,
+        /// List recent certification jobs.
+        #[arg(long)]
+        list: bool,
+        /// Upload the latest certification job script to the meshllm bucket.
+        #[arg(long)]
+        update_script: bool,
+        /// Run ID for output artifacts.
+        #[arg(long)]
+        run_id: Option<String>,
+        /// Final layer for staged correctness lanes.
+        #[arg(long)]
+        layer_end: Option<String>,
+        /// Single split layer for single-step and dtype lanes.
+        #[arg(long)]
+        split_layer: Option<String>,
+        /// Chain split layers, for example 10,20.
+        #[arg(long)]
+        splits: Option<String>,
+        /// Hidden width for exact state-handoff lane.
+        #[arg(long)]
+        activation_width: Option<String>,
+        /// Correctness prompt.
+        #[arg(long)]
+        prompt: Option<String>,
+        /// Context size.
+        #[arg(long)]
+        ctx_size: Option<String>,
+        /// llama.cpp GPU layers.
+        #[arg(long)]
+        n_gpu_layers: Option<String>,
+        /// Stage server startup timeout seconds.
+        #[arg(long)]
+        startup_timeout_secs: Option<String>,
+        /// Default activation wire dtype.
+        #[arg(long)]
+        wire_dtype: Option<String>,
+        /// Dtype matrix list, for example f32,f16,q8.
+        #[arg(long)]
+        wire_dtypes: Option<String>,
+        /// Prefix length for state/cache smoke.
+        #[arg(long)]
+        prefix_token_count: Option<String>,
+        /// Repeated cache hits for state/cache smoke.
+        #[arg(long)]
+        cache_hit_repeats: Option<String>,
+        /// Allow mismatch in single-step and chain lanes.
+        #[arg(long)]
+        allow_mismatch: bool,
+        /// Make dtype-matrix mismatch a hard failure.
+        #[arg(long)]
+        strict_dtype: bool,
+        /// Skip correctness/state lanes.
+        #[arg(long)]
+        skip_correctness: bool,
+        /// Skip dtype matrix.
+        #[arg(long)]
+        skip_dtype: bool,
+        /// Skip state handoff.
+        #[arg(long)]
+        skip_state: bool,
+        /// Borrow resident KV sessions for ResidentKv hits.
+        #[arg(long)]
+        borrow_resident_hits: bool,
+        /// Emit JSON output.
+        #[arg(long)]
+        json: bool,
+    },
     /// List recommended models from the remote meshllm/catalog.
     Recommended {
         /// Emit JSON output.

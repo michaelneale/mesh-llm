@@ -325,7 +325,7 @@ or a blocker is discovered.
 | `qwen35moe` | `qwen35moe` | package selected | yes | package validated | package validated | `KvRecurrent` | package validated | `unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_XL` package-only certified; 40-layer package materialized and validated with all 733 tensors accounted for |
 | `xverse` | `xverse` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready; q8 validated |
 | `maincoder` | `maincoder` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready |
-| `mimo2` | `mimo2` | package/remote only | no | package/remote pending | package/remote pending | package-local `ResidentKv` target | pending | HF re-audit found MiMo-V2.5 and MiMo-V2-Flash GGUF artifacts; package-sized multimodal model requiring projector parity |
+| `mimo2` | `mimo2` | Unsloth 4-bit package candidate selected | no | pending storage/remote run | pending | package-local `ResidentKv` target | pending | use `unsloth/MiMo-V2-Flash-GGUF:IQ4_XS` as the smallest true Unsloth MiMo2 4-bit candidate; the local small `unsloth/MiMo-VL-7B-RL-GGUF:IQ4_XS` reports `qwen2vl` and must not be promoted as MiMo2 evidence |
 | `openelm` | `openelm` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready |
 | `minicpm` | `minicpm` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready |
 | `minicpm3` | `minicpm3` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready |
@@ -344,7 +344,9 @@ implementation.
 
 ## Next Batch
 
-1. Finish package or remote certification for MiMo-V2 and Exaone-MoE.
+1. Run package or remote text certification for the Unsloth MiMo2 4-bit
+   candidate after provisioning storage for at least the 153.15 GiB
+   `unsloth/MiMo-V2-Flash-GGUF:IQ4_XS` source shard set plus package artifacts.
 2. Add Gemma3n runtime-slice graph support before attempting text or multimodal
    promotion; its current graph carries 3D AltUp/per-layer state and has no
    stage-filter hooks.

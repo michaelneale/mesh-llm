@@ -5,6 +5,7 @@ mod discover;
 mod download;
 mod gpus;
 mod integrations;
+mod model_certify;
 mod model_package;
 mod models;
 mod plugin;
