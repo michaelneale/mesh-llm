@@ -2600,12 +2600,17 @@ fn resolve_split_layer_package(model_query: &str, model_path: &Path) -> Option<S
         return None;
     }
 
-    // Try remote catalog
-    if let Err(err) = models::remote_catalog::ensure_catalog() {
-        tracing::debug!("remote catalog unavailable: {err:#}");
-        return None;
+    // Try remote catalog first for curated source-model metadata, then probe
+    // Hugging Face directly for uncataloged package repos.
+    match models::remote_catalog::ensure_catalog() {
+        Ok(()) => {
+            if let Some(package_ref) = models::remote_catalog::find_layer_package(model_query) {
+                return Some(package_ref);
+            }
+        }
+        Err(err) => tracing::debug!("remote catalog unavailable: {err:#}"),
     }
-    models::remote_catalog::find_layer_package(model_query)
+    models::remote_catalog::find_huggingface_layer_package(model_query)
 }
 
 fn preflight_config_owned_startup_models(
@@ -5956,6 +5961,54 @@ mod tests {
         assert_eq!(
             resolved,
             Some("hf://meshllm/remote-split-only-model-layers".to_string())
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn split_layer_package_resolution_accepts_package_repo_shorthand() {
+        let _catalog_guard =
+            models::remote_catalog::set_catalog_entries_for_test(vec![remote_catalog_layer_entry(
+                "Qwen3-8B-Q4_K_M",
+                "Qwen3 8B Q4_K_M",
+                "unsloth/Qwen3-8B-GGUF",
+                "meshllm/Qwen3-8B-Q4_K_M-layers",
+            )]);
+
+        let resolved = resolve_split_layer_package(
+            "meshllm/Qwen3-8B-Q4_K_M-layers",
+            Path::new("meshllm/Qwen3-8B-Q4_K_M-layers"),
+        );
+
+        assert_eq!(
+            resolved,
+            Some("hf://meshllm/Qwen3-8B-Q4_K_M-layers".to_string())
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn split_layer_package_resolution_probes_hf_manifest_without_name_heuristic() {
+        let _catalog_guard = models::remote_catalog::set_catalog_entries_for_test(Vec::new());
+        let _probe_guard =
+            models::remote_catalog::set_hf_model_file_probe_for_test(|repo, revision, file| {
+                repo == "meshllm/custom-package"
+                    && revision == "main"
+                    && file == "model-package.json"
+            });
+
+        let resolved = resolve_split_layer_package(
+            "meshllm/custom-package",
+            Path::new("meshllm/custom-package"),
+        );
+
+        assert_eq!(resolved, Some("hf://meshllm/custom-package".to_string()));
+        assert_eq!(
+            resolve_split_layer_package(
+                "meshllm/custom-package:Q4_K_M",
+                Path::new("meshllm/custom-package:Q4_K_M"),
+            ),
+            None
         );
     }
 

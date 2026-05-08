@@ -13,7 +13,10 @@ use std::{
 };
 
 #[cfg(test)]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, LazyLock,
+};
 
 use hf_hub::{RepoDownloadFileParams, RepoInfo, RepoInfoParams};
 
@@ -47,9 +50,21 @@ static CATALOG_ENSURE_LOCK: Mutex<()> = Mutex::new(());
 static CATALOG_ENTRIES_OVERRIDE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 #[cfg(test)]
+type HfModelFileProbe = Arc<dyn Fn(&str, &str, &str) -> bool + Send + Sync>;
+
+#[cfg(test)]
+static HF_MODEL_FILE_PROBE_OVERRIDE: LazyLock<Mutex<Option<HfModelFileProbe>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+#[cfg(test)]
 pub(crate) struct CatalogEntriesOverrideGuard {
     previous_entries: Option<Vec<CatalogEntry>>,
     previous_override_active: bool,
+}
+
+#[cfg(test)]
+pub(crate) struct HfModelFileProbeOverrideGuard {
+    previous_probe: Option<HfModelFileProbe>,
 }
 
 #[cfg(test)]
@@ -70,6 +85,23 @@ impl Drop for CatalogEntriesOverrideGuard {
     fn drop(&mut self) {
         *CATALOG_ENTRIES.write().unwrap() = self.previous_entries.take();
         CATALOG_ENTRIES_OVERRIDE_ACTIVE.store(self.previous_override_active, Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn set_hf_model_file_probe_for_test<F>(probe: F) -> HfModelFileProbeOverrideGuard
+where
+    F: Fn(&str, &str, &str) -> bool + Send + Sync + 'static,
+{
+    let mut slot = HF_MODEL_FILE_PROBE_OVERRIDE.lock().unwrap();
+    let previous_probe = slot.replace(Arc::new(probe));
+    HfModelFileProbeOverrideGuard { previous_probe }
+}
+
+#[cfg(test)]
+impl Drop for HfModelFileProbeOverrideGuard {
+    fn drop(&mut self) {
+        *HF_MODEL_FILE_PROBE_OVERRIDE.lock().unwrap() = self.previous_probe.take();
     }
 }
 
@@ -270,6 +302,7 @@ pub fn ensure_catalog() -> Result<()> {
 /// - variant name (the key in the variants map)
 /// - curated name
 /// - source_repo
+/// - exact layer-package repo
 ///
 /// Returns the first matching layer-package repo as an `hf://` reference.
 /// Catalog entries, variants, and package repos are traversed in sorted order
@@ -286,6 +319,65 @@ pub fn find_layer_package(model_query: &str) -> Option<String> {
             }
             _ => None,
         })
+}
+
+/// Probes a Hugging Face model repo directly and treats it as a layer package
+/// only when the package manifest exists. Repo naming is intentionally ignored.
+pub fn find_huggingface_layer_package(model_query: &str) -> Option<String> {
+    let (repo, revision) = parse_exact_huggingface_repo(model_query)?;
+    let revision_ref = revision.as_deref().unwrap_or("main");
+    match hf_model_repo_has_file(&repo, revision_ref, "model-package.json") {
+        Ok(true) => Some(format_hf_package_ref(&repo, revision.as_deref())),
+        Ok(false) => None,
+        Err(err) => {
+            tracing::debug!(
+                "Hugging Face layer package probe failed for {repo}@{revision_ref}: {err:#}"
+            );
+            None
+        }
+    }
+}
+
+fn parse_exact_huggingface_repo(input: &str) -> Option<(String, Option<String>)> {
+    let (repo, revision, selector) = model_resolver::parse_huggingface_repo_ref(input)
+        .or_else(|| model_resolver::parse_huggingface_repo_url(input))?;
+    selector.is_none().then_some((repo, revision))
+}
+
+fn format_hf_package_ref(repo: &str, revision: Option<&str>) -> String {
+    match revision {
+        Some(revision) => format!("hf://{repo}@{revision}"),
+        None => format!("hf://{repo}"),
+    }
+}
+
+fn hf_model_repo_has_file(repo: &str, revision: &str, file: &str) -> Result<bool> {
+    #[cfg(test)]
+    {
+        let probe = HF_MODEL_FILE_PROBE_OVERRIDE.lock().unwrap().clone();
+        if let Some(probe) = probe {
+            return Ok(probe(repo, revision, file));
+        }
+    }
+
+    let api = super::build_hf_api(false)?;
+    let (owner, name) = repo.split_once('/').unwrap_or(("", repo));
+    let info = api
+        .model(owner, name)
+        .info(
+            &RepoInfoParams::builder()
+                .revision(revision.to_string())
+                .build(),
+        )
+        .with_context(|| format!("fetch Hugging Face model repo {repo}@{revision}"))?;
+    let RepoInfo::Model(detail) = info else {
+        bail!("expected Hugging Face model repo info for {repo}@{revision}");
+    };
+    Ok(detail
+        .siblings
+        .unwrap_or_default()
+        .iter()
+        .any(|sibling| sibling.rfilename == file))
 }
 
 /// A resolved model download reference from the remote catalog.
@@ -884,6 +976,69 @@ mod tests {
         );
 
         *CATALOG_ENTRIES.write().unwrap() = previous;
+    }
+
+    #[test]
+    #[serial]
+    fn layer_package_lookup_matches_exact_package_repo_refs() {
+        let previous = CATALOG_ENTRIES.write().unwrap().take();
+        let mut variants = HashMap::new();
+        variants.insert(
+            "Qwen3-8B-Q4_K_M".to_string(),
+            test_variant(
+                "Qwen3 8B Q4",
+                "unsloth/Qwen3-8B-GGUF",
+                &["meshllm/Qwen3-8B-Q4_K_M-layers"],
+            ),
+        );
+        *CATALOG_ENTRIES.write().unwrap() = Some(vec![CatalogEntry {
+            schema_version: 1,
+            source_repo: "unsloth/Qwen3-8B-GGUF".to_string(),
+            variants,
+        }]);
+
+        assert_eq!(
+            find_layer_package("meshllm/Qwen3-8B-Q4_K_M-layers"),
+            Some("hf://meshllm/Qwen3-8B-Q4_K_M-layers".to_string())
+        );
+
+        *CATALOG_ENTRIES.write().unwrap() = previous;
+    }
+
+    #[test]
+    #[serial]
+    fn hf_layer_package_probe_requires_manifest_not_repo_name() {
+        let _probe_guard = set_hf_model_file_probe_for_test(|repo, revision, file| {
+            repo == "meshllm/arbitrary-package-name"
+                && revision == "main"
+                && file == "model-package.json"
+        });
+
+        assert_eq!(
+            find_huggingface_layer_package("meshllm/arbitrary-package-name"),
+            Some("hf://meshllm/arbitrary-package-name".to_string())
+        );
+        assert_eq!(
+            find_huggingface_layer_package("meshllm/arbitrary-package-name:Q4_K_M"),
+            None
+        );
+        assert_eq!(
+            find_huggingface_layer_package("meshllm/package-name-layers"),
+            None
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn hf_layer_package_probe_preserves_explicit_revision() {
+        let _probe_guard = set_hf_model_file_probe_for_test(|repo, revision, file| {
+            repo == "meshllm/custom-package" && revision == "abc123" && file == "model-package.json"
+        });
+
+        assert_eq!(
+            find_huggingface_layer_package("meshllm/custom-package@abc123"),
+            Some("hf://meshllm/custom-package@abc123".to_string())
+        );
     }
 
     #[test]

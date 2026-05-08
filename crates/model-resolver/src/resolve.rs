@@ -6,7 +6,7 @@ use std::{
 use anyhow::Result;
 use model_ref::{gguf_matches_quant_selector, ModelRef};
 
-use crate::catalog::{CatalogEntry, CatalogSource, CatalogVariant};
+use crate::catalog::{CatalogEntry, CatalogPackage, CatalogSource, CatalogVariant};
 use crate::types::{
     LocalGguf, LocalLayerPackage, ModelArtifactCandidate, RemoteGguf, RemoteLayerPackage,
 };
@@ -114,22 +114,26 @@ impl<C: CatalogProvider> ModelResolver<C> {
                     continue;
                 }
 
+                if let Some(package) =
+                    matching_layer_package_repo(parsed_model_ref.as_ref(), variant)
+                {
+                    candidates.push(remote_layer_package_candidate(
+                        package,
+                        variant,
+                        variant_name,
+                    ));
+                    return Ok(candidates);
+                }
+
                 // Check for layer packages first (preferred)
                 let mut packages: Vec<_> = variant.packages.iter().collect();
                 packages.sort_by(|a, b| a.repo.cmp(&b.repo));
                 for package in &packages {
                     if package.package_type == "layer-package" {
-                        candidates.push(ModelArtifactCandidate::RemoteLayerPackage(
-                            RemoteLayerPackage {
-                                package_repo: package.repo.clone(),
-                                layer_count: package.layer_count,
-                                total_bytes: package.total_bytes,
-                                source: catalog_source_with_default_file(
-                                    &variant.source,
-                                    variant_name,
-                                ),
-                                curated: Some(variant.curated.clone()),
-                            },
+                        candidates.push(remote_layer_package_candidate(
+                            package,
+                            variant,
+                            variant_name,
                         ));
                     }
                 }
@@ -162,6 +166,34 @@ impl<C: CatalogProvider> ModelResolver<C> {
 
         Ok(candidates)
     }
+}
+
+fn matching_layer_package_repo<'a>(
+    parsed_model_ref: Option<&ModelRef>,
+    variant: &'a CatalogVariant,
+) -> Option<&'a CatalogPackage> {
+    let model_ref = parsed_model_ref?;
+    if model_ref.revision.is_some() || model_ref.selector.is_some() {
+        return None;
+    }
+    variant.packages.iter().find(|package| {
+        package.package_type == "layer-package"
+            && package.repo.eq_ignore_ascii_case(&model_ref.repo)
+    })
+}
+
+fn remote_layer_package_candidate(
+    package: &CatalogPackage,
+    variant: &CatalogVariant,
+    variant_name: &str,
+) -> ModelArtifactCandidate {
+    ModelArtifactCandidate::RemoteLayerPackage(RemoteLayerPackage {
+        package_repo: package.repo.clone(),
+        layer_count: package.layer_count,
+        total_bytes: package.total_bytes,
+        source: catalog_source_with_default_file(&variant.source, variant_name),
+        curated: Some(variant.curated.clone()),
+    })
 }
 
 fn local_layer_package_candidate(path: &Path) -> Result<Option<LocalLayerPackage>> {
@@ -223,6 +255,13 @@ fn catalog_variant_matches_model_ref(
     variant_name: &str,
     variant: &CatalogVariant,
 ) -> bool {
+    if variant.packages.iter().any(|package| {
+        package.package_type == "layer-package"
+            && package.repo.eq_ignore_ascii_case(&model_ref.repo)
+    }) {
+        return model_ref.revision.is_none() && model_ref.selector.is_none();
+    }
+
     let repo_matches = entry.source_repo.eq_ignore_ascii_case(&model_ref.repo)
         || variant.source.repo.eq_ignore_ascii_case(&model_ref.repo);
     if !repo_matches {
@@ -366,6 +405,98 @@ mod tests {
         assert!(matches!(
             &candidates[1],
             ModelArtifactCandidate::RemoteGguf(_)
+        ));
+    }
+
+    #[test]
+    fn resolves_exact_package_repo_to_catalog_layer_package() {
+        let entry = make_entry(
+            "unsloth/Qwen3-8B-GGUF",
+            "Qwen3-8B-Q4_K_M",
+            "Qwen3 8B Q4",
+            &[(
+                "meshllm/Qwen3-8B-Q4_K_M-layers",
+                Some(36),
+                Some(8_000_000_000),
+            )],
+        );
+        let catalog = MemoryCatalog::new(vec![entry]);
+        let resolver = ModelResolver::new(catalog, vec![]);
+
+        let candidates = resolver.resolve("meshllm/Qwen3-8B-Q4_K_M-layers").unwrap();
+
+        assert_eq!(candidates.len(), 1);
+        match &candidates[0] {
+            ModelArtifactCandidate::RemoteLayerPackage(package) => {
+                assert_eq!(package.package_repo, "meshllm/Qwen3-8B-Q4_K_M-layers");
+                assert_eq!(package.source.repo, "unsloth/Qwen3-8B-GGUF");
+                assert_eq!(package.source.file.as_deref(), Some("Qwen3-8B-Q4_K_M.gguf"));
+            }
+            other => panic!("expected RemoteLayerPackage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exact_package_repo_selects_that_package_when_variant_has_multiple_packages() {
+        let entry = make_entry(
+            "unsloth/Qwen3-8B-GGUF",
+            "Qwen3-8B-Q4_K_M",
+            "Qwen3 8B Q4",
+            &[
+                ("meshllm/a-other-layers", Some(36), Some(8_000_000_000)),
+                (
+                    "meshllm/Qwen3-8B-Q4_K_M-layers",
+                    Some(36),
+                    Some(8_000_000_000),
+                ),
+            ],
+        );
+        let catalog = MemoryCatalog::new(vec![entry]);
+        let resolver = ModelResolver::new(catalog, vec![]);
+
+        let candidates = resolver.resolve("meshllm/Qwen3-8B-Q4_K_M-layers").unwrap();
+
+        match &candidates[0] {
+            ModelArtifactCandidate::RemoteLayerPackage(package) => {
+                assert_eq!(package.package_repo, "meshllm/Qwen3-8B-Q4_K_M-layers");
+            }
+            other => panic!("expected RemoteLayerPackage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn package_repo_match_does_not_accept_selector_or_revision() {
+        let entry = make_entry(
+            "unsloth/Qwen3-8B-GGUF",
+            "Qwen3-8B-Q4_K_M",
+            "Qwen3 8B Q4",
+            &[(
+                "meshllm/Qwen3-8B-Q4_K_M-layers",
+                Some(36),
+                Some(8_000_000_000),
+            )],
+        );
+        let catalog = MemoryCatalog::new(vec![entry]);
+        let resolver = ModelResolver::new(catalog, vec![]);
+
+        let revisioned = resolver
+            .resolve("meshllm/Qwen3-8B-Q4_K_M-layers@main")
+            .unwrap();
+        assert!(matches!(
+            revisioned.as_slice(),
+            [ModelArtifactCandidate::RemoteGguf(remote)]
+                if remote.source.repo == "meshllm/Qwen3-8B-Q4_K_M-layers"
+                    && remote.source.revision.as_deref() == Some("main")
+        ));
+
+        let selected = resolver
+            .resolve("meshllm/Qwen3-8B-Q4_K_M-layers:Q4_K_M")
+            .unwrap();
+        assert!(matches!(
+            selected.as_slice(),
+            [ModelArtifactCandidate::RemoteGguf(remote)]
+                if remote.source.repo == "meshllm/Qwen3-8B-Q4_K_M-layers"
+                    && remote.source.file.is_none()
         ));
     }
 
