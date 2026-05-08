@@ -287,6 +287,41 @@ fn verify_resolved_hf_package_files(
     Ok(local_ref)
 }
 
+fn missing_cached_package_artifact(error: &anyhow::Error) -> bool {
+    let message = error.to_string();
+    message.starts_with("missing shared metadata:")
+        || message.starts_with("missing shared embeddings:")
+        || message.starts_with("missing shared output:")
+        || message.starts_with("missing layer file:")
+}
+
+fn verify_cached_hf_package_files(
+    package_dir: &Path,
+    layer_start: u32,
+    layer_end: u32,
+    include_embeddings: bool,
+    include_output: bool,
+) -> Result<Option<String>> {
+    match verify_resolved_hf_package_files(
+        package_dir,
+        layer_start,
+        layer_end,
+        include_embeddings,
+        include_output,
+    ) {
+        Ok(local_ref) => Ok(Some(local_ref)),
+        Err(error) if missing_cached_package_artifact(&error) => {
+            tracing::debug!(
+                package_dir = %package_dir.display(),
+                error = %error,
+                "cached HF layer package snapshot is incomplete; downloading missing artifacts"
+            );
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 pub(crate) fn resolve_hf_package_to_local(
     package_ref: &str,
     layer_start: u32,
@@ -328,13 +363,15 @@ pub(crate) fn resolve_hf_package_to_local(
         .join("snapshots")
         .join(&revision_cache_path);
     if direct_snapshot_dir.join("model-package.json").is_file() {
-        return verify_resolved_hf_package_files(
+        if let Some(local_ref) = verify_cached_hf_package_files(
             &direct_snapshot_dir,
             layer_start,
             layer_end,
             include_embeddings,
             include_output,
-        );
+        )? {
+            return Ok(local_ref);
+        }
     }
     if let Ok(commit_hash) = fs::read_to_string(&ref_path) {
         let commit_hash = commit_hash.trim();
@@ -346,13 +383,15 @@ pub(crate) fn resolve_hf_package_to_local(
             .join("snapshots")
             .join(commit_hash_path);
         if snapshot_dir.join("model-package.json").is_file() {
-            return verify_resolved_hf_package_files(
+            if let Some(local_ref) = verify_cached_hf_package_files(
                 &snapshot_dir,
                 layer_start,
                 layer_end,
                 include_embeddings,
                 include_output,
-            );
+            )? {
+                return Ok(local_ref);
+            }
         }
     }
 
@@ -484,13 +523,14 @@ pub(crate) fn resolve_stage_load_package(
     }
     let is_first = load.layer_start == 0;
     let is_final = load.downstream.is_none();
+    let include_embeddings = is_first || is_final;
     // Resolve hf:// to a local package directory, verifying the needed package
     // files exist without materializing them into a single GGUF on disk.
     let local_ref = resolve_hf_package_to_local(
         &load.package_ref,
         load.layer_start,
         load.layer_end,
-        is_first, // include_embeddings
+        include_embeddings,
         is_final, // include_output
     )?;
     let info = package::inspect_layer_package(&local_ref)
@@ -516,7 +556,7 @@ pub(crate) fn materialize_stage_config(
         .context("layer-package config is missing package ref")?;
     let is_first = config.layer_start == 0;
     let is_final = config.downstream.is_none();
-    let include_embeddings = is_first;
+    let include_embeddings = is_first || is_final;
     let include_output = is_final;
     // Resolve hf:// to local dir with needed files downloaded
     let local_ref = resolve_hf_package_to_local(
@@ -1008,6 +1048,30 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("safe relative path"), "{error}");
+    }
+
+    #[test]
+    fn cached_hf_package_verification_treats_missing_artifacts_as_incomplete_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("shared")).unwrap();
+        fs::write(dir.path().join("shared/metadata.gguf"), b"metadata").unwrap();
+        fs::write(
+            dir.path().join("model-package.json"),
+            serde_json::json!({
+                "shared": {
+                    "metadata": { "path": "shared/metadata.gguf" },
+                    "embeddings": { "path": "shared/embeddings.gguf" },
+                    "output": { "path": "shared/output.gguf" }
+                },
+                "layers": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let resolved = verify_cached_hf_package_files(dir.path(), 0, 0, true, false).unwrap();
+
+        assert_eq!(resolved, None);
     }
 
     #[test]
