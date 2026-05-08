@@ -1,7 +1,9 @@
 use std::{
     fs,
+    io::Write,
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use anyhow::{bail, Context, Result};
@@ -13,7 +15,8 @@ use skippy_runtime::package::{
     self, LayerPackageInfo, PackageIntegrityOptions, PackageStageRequest,
 };
 
-use crate::cli::output::{emit_event, ModelProgressStatus, OutputEvent};
+use crate::cli::output::{emit_event, interactive_tui_active, ModelProgressStatus, OutputEvent};
+use crate::cli::terminal_progress::{start_spinner, SpinnerHandle};
 
 use super::StageLoadRequest;
 
@@ -150,22 +153,35 @@ pub(crate) fn materialized_stage_cache_dir() -> PathBuf {
 struct LayerPackageDownloadProgressState {
     downloaded: u64,
     total: u64,
+    bytes_per_sec: Option<f64>,
+    last_draw: Option<Instant>,
+    showed_progress: bool,
 }
 
 struct LayerPackageDownloadProgress {
     label: String,
     file: String,
+    preflight_spinner: Mutex<Option<SpinnerHandle>>,
     state: Mutex<LayerPackageDownloadProgressState>,
 }
 
 impl LayerPackageDownloadProgress {
     fn new(label: String, file: String, total_bytes: Option<u64>) -> Self {
+        let preflight_spinner = if interactive_tui_active() {
+            None
+        } else {
+            Some(start_spinner(&format!("Preparing download {file}")))
+        };
         Self {
             label,
             file,
+            preflight_spinner: Mutex::new(preflight_spinner),
             state: Mutex::new(LayerPackageDownloadProgressState {
                 downloaded: 0,
                 total: total_bytes.unwrap_or(0),
+                bytes_per_sec: None,
+                last_draw: None,
+                showed_progress: false,
             }),
         }
     }
@@ -186,6 +202,9 @@ impl LayerPackageDownloadProgress {
     }
 
     fn emit_ensuring(&self) {
+        if !interactive_tui_active() {
+            return;
+        }
         let total = self
             .state
             .lock()
@@ -204,7 +223,93 @@ impl LayerPackageDownloadProgress {
                     .ok()
                     .and_then(|state| (state.total > 0).then_some(state.total))
             });
-        self.emit(total, total, ModelProgressStatus::Ready);
+        if interactive_tui_active() {
+            self.emit(total, total, ModelProgressStatus::Ready);
+            return;
+        }
+        if let Ok(mut spinner) = self.preflight_spinner.lock() {
+            spinner.take();
+        }
+        let showed_progress = self
+            .state
+            .lock()
+            .map(|state| state.showed_progress)
+            .unwrap_or(false);
+        if !showed_progress {
+            match total {
+                Some(total) if total > 0 => eprintln!(
+                    "   ✅ Ready {} ({})",
+                    self.file,
+                    format_layer_package_download_bytes(total)
+                ),
+                _ => eprintln!("   ✅ Ready {}", self.file),
+            }
+        }
+    }
+
+    fn draw(&self, state: &mut LayerPackageDownloadProgressState, force: bool) {
+        if !force && state.downloaded == 0 && state.total == 0 {
+            return;
+        }
+        let now = Instant::now();
+        if !force
+            && state
+                .last_draw
+                .is_some_and(|last| now.duration_since(last) < Duration::from_millis(150))
+        {
+            return;
+        }
+        state.last_draw = Some(now);
+        state.showed_progress = true;
+        if interactive_tui_active() {
+            self.emit(
+                (state.downloaded > 0).then_some(state.downloaded),
+                (state.total > 0).then_some(state.total),
+                ModelProgressStatus::Downloading,
+            );
+            return;
+        }
+        if let Ok(mut spinner) = self.preflight_spinner.lock() {
+            spinner.take();
+        }
+        let percent = if state.total == 0 {
+            0
+        } else {
+            ((state.downloaded as f64 / state.total as f64) * 1000.0).round() as usize
+        };
+        let percent_major = (percent.min(1000)) / 10;
+        let percent_minor = (percent.min(1000)) % 10;
+        let speed_suffix = state
+            .bytes_per_sec
+            .filter(|bytes_per_sec| *bytes_per_sec > 0.0)
+            .map(|bytes_per_sec| {
+                format!(
+                    " at {}/s",
+                    format_layer_package_download_bytes(bytes_per_sec as u64)
+                )
+            })
+            .unwrap_or_default();
+        eprint!(
+            "\r\x1b[K   ⏬ {} {:>3}.{:01}% ({}/{}){}",
+            self.file,
+            percent_major,
+            percent_minor,
+            format_layer_package_download_bytes(state.downloaded),
+            format_layer_package_download_bytes(state.total),
+            speed_suffix,
+        );
+        let _ = std::io::stderr().flush();
+        if force {
+            eprintln!();
+        }
+    }
+}
+
+impl Drop for LayerPackageDownloadProgress {
+    fn drop(&mut self) {
+        if let Ok(mut spinner) = self.preflight_spinner.lock() {
+            spinner.take();
+        }
     }
 }
 
@@ -235,23 +340,42 @@ impl ProgressHandler for LayerPackageDownloadProgress {
             DownloadEvent::AggregateProgress {
                 bytes_completed,
                 total_bytes,
-                ..
+                bytes_per_sec,
             } => {
                 state.downloaded = state.downloaded.max(*bytes_completed);
                 if *total_bytes > 0 {
                     state.total = state.total.max(*total_bytes);
                 }
+                state.bytes_per_sec = *bytes_per_sec;
             }
             DownloadEvent::Complete => {
                 if state.total > 0 {
                     state.downloaded = state.total;
                 }
+                state.bytes_per_sec = None;
             }
         }
-        let downloaded = (state.downloaded > 0).then_some(state.downloaded);
-        let total = (state.total > 0).then_some(state.total);
-        drop(state);
-        self.emit(downloaded, total, ModelProgressStatus::Downloading);
+        let should_show_progress = state.downloaded > 0 || state.total > 0;
+        let force = matches!(event, DownloadEvent::Complete) && should_show_progress;
+        if should_show_progress {
+            self.draw(&mut state, force);
+        } else if matches!(event, DownloadEvent::Complete) {
+            if let Ok(mut spinner) = self.preflight_spinner.lock() {
+                spinner.take();
+            }
+        }
+    }
+}
+
+fn format_layer_package_download_bytes(bytes: u64) -> String {
+    if bytes >= 1_000_000_000 {
+        format!("{:.1}GB", bytes as f64 / 1e9)
+    } else if bytes >= 1_000_000 {
+        format!("{:.0}MB", bytes as f64 / 1e6)
+    } else if bytes >= 1_000 {
+        format!("{:.0}KB", bytes as f64 / 1e3)
+    } else {
+        format!("{bytes}B")
     }
 }
 
