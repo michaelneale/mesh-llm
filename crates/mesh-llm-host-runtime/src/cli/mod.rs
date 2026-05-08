@@ -608,10 +608,10 @@ pub(crate) enum Command {
     /// meshllm/catalog.
     #[command(name = "model-prepare")]
     ModelPrepare {
-        /// Source HuggingFace repo (e.g. unsloth/Qwen3-235B-A22B-GGUF).
+        /// Source HuggingFace model ref (e.g. unsloth/Qwen3-235B-A22B-GGUF:UD-Q4_K_XL).
         source_repo: Option<String>,
 
-        /// Quantization variant (e.g. UD-Q4_K_XL, Q4_K_M).
+        /// Quantization variant (deprecated; prefer source refs like repo:Q4_K_M).
         #[arg(long)]
         quant: Option<String>,
 

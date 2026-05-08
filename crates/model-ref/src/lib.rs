@@ -84,6 +84,14 @@ pub fn format_model_ref(repo: &str, revision: Option<&str>, selector: Option<&st
     }
 }
 
+pub fn format_gguf_selection_ref(repo: &str, file: &str, selector: &str) -> String {
+    let directory_selector = Path::new(file)
+        .parent()
+        .and_then(Path::to_str)
+        .filter(|directory| !directory.is_empty() && *directory != ".");
+    format_model_ref(repo, None, directory_selector.or(Some(selector)))
+}
+
 pub fn format_canonical_ref(repo: &str, revision: &str, file: &str) -> String {
     format!("{repo}@{revision}/{file}")
 }
@@ -411,6 +419,22 @@ mod tests {
         assert_eq!(
             format_canonical_ref("org/repo", "abc123", "model.gguf"),
             "org/repo@abc123/model.gguf"
+        );
+    }
+
+    #[test]
+    fn formats_selected_gguf_refs() {
+        assert_eq!(
+            format_gguf_selection_ref("unsloth/Qwen3-8B-GGUF", "Qwen3-8B-Q4_K_M.gguf", "Q4_K_M"),
+            "unsloth/Qwen3-8B-GGUF:Q4_K_M"
+        );
+        assert_eq!(
+            format_gguf_selection_ref(
+                "unsloth/LTX-2.3-GGUF",
+                "distilled-1.1/LTX-2.3-UD-Q4_K_M.gguf",
+                "UD-Q4_K_M"
+            ),
+            "unsloth/LTX-2.3-GGUF:distilled-1.1"
         );
     }
 }

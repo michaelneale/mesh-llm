@@ -169,17 +169,8 @@ pub async fn resolve(
         .target
         .unwrap_or_else(|| format!("{}/{}-layers", permissions.namespace, dist_id));
 
-    // Derive model_id.
-    let quant_dir = std::path::Path::new(&source_file)
-        .parent()
-        .and_then(|p| p.to_str())
-        .unwrap_or("");
     let model_id = params.model_id.unwrap_or_else(|| {
-        if quant_dir.is_empty() || quant_dir == "." {
-            params.source_repo.clone()
-        } else {
-            format!("{}:{}", params.source_repo, quant_dir)
-        }
+        model_ref::format_gguf_selection_ref(&params.source_repo, &source_file, &matched.name)
     });
 
     // Build environment variables.

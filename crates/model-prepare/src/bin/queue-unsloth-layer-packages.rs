@@ -594,15 +594,8 @@ async fn build_candidate(
     let distribution_id =
         model_ref::normalize_gguf_distribution_id(&quant.first_file).unwrap_or(quant.name.clone());
     let target_repo = format!("{}/{distribution_id}-layers", args.target_namespace);
-    let quant_dir = std::path::Path::new(&quant.first_file)
-        .parent()
-        .and_then(|path| path.to_str())
-        .unwrap_or("");
-    let model_id = if quant_dir.is_empty() || quant_dir == "." {
-        model.repo_id.clone()
-    } else {
-        format!("{}:{quant_dir}", model.repo_id)
-    };
+    let model_id =
+        model_ref::format_gguf_selection_ref(&model.repo_id, &quant.first_file, &quant.name);
 
     let family = model_family_key(&model.repo_id);
 

@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use tokio_stream::StreamExt;
 
 use model_prepare::jobs::HfJobsClient;
@@ -64,18 +64,32 @@ pub(crate) async fn dispatch_model_prepare(args: ModelPrepareArgs<'_>) -> Result
         return run_list(&jobs_client).await;
     }
 
-    // ── Submit flow (source_repo required) ───────────────────────────
-    let source_repo = source_repo.context(
+    // ── Submit flow (source ref required) ────────────────────────────
+    let source_ref = source_repo.context(
         "Source repo is required for job submission.\n\
-         Usage: mesh-llm model-prepare <source_repo> --quant <quant>",
+         Usage: mesh-llm model-prepare <source_repo>:<quant>",
     )?;
+    let source_model_ref = model_ref::ModelRef::parse(source_ref)
+        .with_context(|| format!("invalid source model ref: {source_ref}"))?;
+    let source_repo = source_model_ref.repo.as_str();
+    let source_quant = match (source_model_ref.selector.as_deref(), quant) {
+        (Some(selector), Some(quant)) if selector != quant => {
+            bail!(
+                "source ref selector '{selector}' conflicts with --quant '{quant}'. \
+                 Use `mesh-llm model-prepare {source_repo}:{selector}`."
+            );
+        }
+        (Some(selector), _) => Some(selector),
+        (None, Some(quant)) => Some(quant),
+        (None, None) => None,
+    };
 
     // Build HF client for API calls.
     let hf_client = model_prepare::build_hf_client()?;
 
     // If no quant specified, list available quants and exit.
     // This path doesn't need HF_TOKEN — works for public repos.
-    if quant.is_none() {
+    if source_quant.is_none() {
         return run_list_quants(&hf_client, source_repo).await;
     }
 
@@ -96,7 +110,7 @@ pub(crate) async fn dispatch_model_prepare(args: ModelPrepareArgs<'_>) -> Result
     eprintln!("🔍 Resolving source...");
     let params = PrepareParams {
         source_repo: source_repo.to_string(),
-        quant: quant.map(|s| s.to_string()),
+        quant: source_quant.map(|s| s.to_string()),
         target: target.map(|s| s.to_string()),
         model_id: model_id.map(|s| s.to_string()),
         flavor: flavor.to_string(),
@@ -193,9 +207,9 @@ async fn run_list_quants(client: &hf_hub::HFClient, source_repo: &str) -> Result
     eprintln!();
     print_quant_table(&quants);
     eprintln!();
-    eprintln!("Specify one with --quant, e.g.:");
+    eprintln!("Specify one as a model ref, e.g.:");
     eprintln!(
-        "   mesh-llm model-prepare {} --quant {}",
+        "   mesh-llm model-prepare {}:{}",
         source_repo, quants[0].name
     );
 
