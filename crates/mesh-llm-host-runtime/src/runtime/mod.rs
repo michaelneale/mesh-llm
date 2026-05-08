@@ -4444,10 +4444,24 @@ async fn run_auto(
                 model_path
             }
         } else {
-            // Nothing on disk matches — go passive, act as proxy
-            // Stop bootstrap proxy first (run_passive binds its own listener)
-            drop(bootstrap_listener_tx.take());
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            // Nothing on disk matches — go passive, act as proxy. If the
+            // bootstrap proxy already owns the API port, hand its listener to
+            // passive mode so joined clients do not see a connection-refused
+            // gap during startup.
+            let passive_api_listener = if let Some(tx) = bootstrap_listener_tx.take() {
+                let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+                if tx.send(resp_tx).await.is_ok() {
+                    Some(
+                        resp_rx
+                            .await
+                            .context("bootstrap API listener handoff was cancelled")?,
+                    )
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
             // If a model becomes unserved while we're standby, we'll promote
             if is_client {
                 let _ = emit_event(OutputEvent::PassiveMode {
@@ -4469,7 +4483,15 @@ async fn run_auto(
                     ),
                 });
             }
-            match run_passive(&cli, node.clone(), is_client, plugin_manager.clone()).await? {
+            match run_passive(
+                &cli,
+                node.clone(),
+                is_client,
+                plugin_manager.clone(),
+                passive_api_listener,
+            )
+            .await?
+            {
                 Some(model_name) => {
                     // Promoted! Resolve the model path and continue to serving
                     models::find_model_path(&model_name)
@@ -5505,6 +5527,7 @@ async fn run_passive(
     node: mesh::Node,
     is_client: bool,
     plugin_manager: plugin::PluginManager,
+    api_listener: Option<tokio::net::TcpListener>,
 ) -> Result<Option<String>> {
     let local_port = cli.port;
     let affinity_router = affinity::AffinityRouter::new();
@@ -5575,9 +5598,13 @@ async fn run_passive(
         });
     }
 
-    let listener = bind_runtime_tcp_listener(local_port, cli.listen_all, "OpenAI-compatible API")
-        .await
-        .with_context(|| format!("Failed to bind to port {local_port}"))?;
+    let listener = if let Some(listener) = api_listener {
+        listener
+    } else {
+        bind_runtime_tcp_listener(local_port, cli.listen_all, "OpenAI-compatible API")
+            .await
+            .with_context(|| format!("Failed to bind to port {local_port}"))?
+    };
     let api_ready_url = listener_http_url(&listener, local_port, "OpenAI-compatible API");
     let cport = cli.console;
     let console_listener = bind_runtime_tcp_listener(cport, cli.listen_all, "Web console").await?;
