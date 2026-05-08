@@ -14,6 +14,8 @@ pub enum ModelSearchSort {
 }
 
 #[derive(Subcommand, Debug)]
+// CLI enums mirror clap's argument shape; boxing these fields would make the parser harder to maintain.
+#[allow(clippy::large_enum_variant)]
 pub enum ModelsCommand {
     /// Package a GGUF model for distributed inference by splitting it into layer files on Hugging Face Jobs.
     Package {
