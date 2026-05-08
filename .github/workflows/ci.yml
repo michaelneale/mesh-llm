@@ -453,6 +453,8 @@ jobs:
         run: cargo build --release -p mesh-llm
       - name: CLI smoke test
         run: |
+          # The stubs dir has libcuda.so but the binary needs libcuda.so.1
+          ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1
           export LD_LIBRARY_PATH="/usr/local/cuda/lib64/stubs:${LD_LIBRARY_PATH:-}"
           target/release/mesh-llm --version
       - name: Build CUDA benchmark binary
