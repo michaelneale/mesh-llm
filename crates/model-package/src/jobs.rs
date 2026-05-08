@@ -524,8 +524,6 @@ fn recommended_cpu_timeout_seconds(model_size_bytes: u64) -> u64 {
         30 * 60
     } else if gib <= 32.0 {
         60 * 60
-    } else if gib <= 128.0 {
-        2 * 60 * 60
     } else {
         2 * 60 * 60
     }
