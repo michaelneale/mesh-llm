@@ -28,6 +28,7 @@ struct Args {
     recent_limit: usize,
     popular_limit: usize,
     max_jobs: usize,
+    max_per_family: usize,
     target_namespace: String,
     job_namespace: String,
     flavor: String,
@@ -55,6 +56,7 @@ struct Candidate {
     quant: DiscoveredQuant,
     target_repo: String,
     model_id: String,
+    family: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,6 +128,10 @@ async fn main() -> Result<()> {
         "Split candidates: selected quant requires more than {} with 10% runtime headroom.",
         prepare::format_size(args.split_candidate_vram_bytes)
     );
+    println!(
+        "Family diversity: at most {} queued model(s) per family.",
+        args.max_per_family
+    );
 
     let mut candidates = Vec::new();
     for model in ranked {
@@ -142,14 +148,27 @@ async fn main() -> Result<()> {
     });
     candidates.reverse();
     println!(
-        "Queue order: {} eligible split candidates by selected quant size descending.",
-        candidates.len()
+        "Queue order: {} eligible split candidates by selected quant size descending, then family-capped.",
+        candidates.len(),
     );
 
     let mut submitted = 0usize;
+    let mut submitted_by_family: HashMap<String, usize> = HashMap::new();
     for candidate in candidates {
         if submitted >= args.max_jobs {
             break;
+        }
+
+        let family_count = submitted_by_family
+            .get(&candidate.family)
+            .copied()
+            .unwrap_or_default();
+        if family_count >= args.max_per_family {
+            println!(
+                "skip {}: family {} already selected {} time(s)",
+                candidate.model_id, candidate.family, args.max_per_family
+            );
+            continue;
         }
 
         let status = candidate_status(&hf_client, &candidate, args.retry_queued_after).await?;
@@ -175,7 +194,7 @@ async fn main() -> Result<()> {
             "queueing"
         };
         println!(
-            "{} {} -> {} ({}, {}, {}, {}, target={})",
+            "{} {} -> {} ({}, {}, {}, {}, family={}, target={})",
             action,
             candidate.model_id,
             candidate.target_repo,
@@ -183,11 +202,15 @@ async fn main() -> Result<()> {
             prepare::format_size(candidate.quant.total_bytes),
             shard_label(candidate.quant.shard_count),
             rank_label(&candidate.model),
+            candidate.family,
             status_label(status)
         );
 
         if args.dry_run {
             submitted += 1;
+            *submitted_by_family
+                .entry(candidate.family.clone())
+                .or_default() += 1;
             continue;
         }
 
@@ -204,6 +227,9 @@ async fn main() -> Result<()> {
             info.id, args.job_namespace, info.id
         );
         submitted += 1;
+        *submitted_by_family
+            .entry(candidate.family.clone())
+            .or_default() += 1;
     }
 
     println!(
@@ -226,6 +252,7 @@ impl Args {
             recent_limit: 80,
             popular_limit: 80,
             max_jobs: 3,
+            max_per_family: 1,
             target_namespace: "meshllm".to_string(),
             job_namespace: "meshllm".to_string(),
             flavor: "cpu-upgrade".to_string(),
@@ -249,6 +276,7 @@ impl Args {
                 "--recent-limit" => args.recent_limit = parse_next(&mut iter, &flag)?,
                 "--popular-limit" => args.popular_limit = parse_next(&mut iter, &flag)?,
                 "--max-jobs" => args.max_jobs = parse_next(&mut iter, &flag)?,
+                "--max-per-family" => args.max_per_family = parse_next(&mut iter, &flag)?,
                 "--target-namespace" => args.target_namespace = next_value(&mut iter, &flag)?,
                 "--job-namespace" => args.job_namespace = next_value(&mut iter, &flag)?,
                 "--flavor" => args.flavor = next_value(&mut iter, &flag)?,
@@ -290,6 +318,9 @@ impl Args {
         if args.quant_preference.is_empty() {
             bail!("--quant-preference must include at least one quant");
         }
+        if args.max_per_family == 0 {
+            bail!("--max-per-family must be at least 1");
+        }
         Ok(args)
     }
 }
@@ -314,6 +345,7 @@ fn print_help() {
         "queue-unsloth-layer-packages\n\n\
          Options:\n\
            --max-jobs N\n\
+           --max-per-family N\n\
            --dry-run\n\
            --mesh-llm-ref REF\n\
            --quant-preference CSV\n\
@@ -467,11 +499,14 @@ async fn build_candidate(
         format!("{}:{quant_dir}", model.repo_id)
     };
 
+    let family = model_family_key(&model.repo_id);
+
     Ok(Some(Candidate {
         model,
         quant,
         target_repo,
         model_id,
+        family,
     }))
 }
 
@@ -714,6 +749,74 @@ fn rank_label(model: &RankedModel) -> String {
     }
 }
 
+fn model_family_key(repo_id: &str) -> String {
+    let repo_name = repo_id.rsplit('/').next().unwrap_or(repo_id);
+    let base_name = repo_name
+        .strip_suffix("-GGUF")
+        .or_else(|| repo_name.strip_suffix("-gguf"))
+        .unwrap_or(repo_name);
+    let lower = base_name.to_ascii_lowercase();
+    let tokens = lower
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+
+    if tokens.iter().any(|token| *token == "kimi") {
+        return "kimi".to_string();
+    }
+    if tokens.iter().any(|token| *token == "deepseek")
+        || tokens.windows(2).any(|window| window == ["deep", "seek"])
+    {
+        return "deepseek".to_string();
+    }
+    if tokens
+        .iter()
+        .any(|token| token.starts_with("qwen") || *token == "qwq")
+    {
+        return "qwen".to_string();
+    }
+    if tokens.iter().any(|token| *token == "llama") {
+        return "llama".to_string();
+    }
+    if tokens.iter().any(|token| token.starts_with("gemma")) {
+        return "gemma".to_string();
+    }
+    if tokens.iter().any(|token| token.starts_with("mistral")) {
+        return "mistral".to_string();
+    }
+    if tokens.iter().any(|token| token.starts_with("mixtral")) {
+        return "mixtral".to_string();
+    }
+    if tokens.iter().any(|token| *token == "glm") {
+        return "glm".to_string();
+    }
+    if tokens.iter().any(|token| *token == "phi") {
+        return "phi".to_string();
+    }
+    if tokens.iter().any(|token| *token == "nemotron") {
+        return "nemotron".to_string();
+    }
+    if tokens.windows(2).any(|window| window == ["gpt", "oss"]) {
+        return "gpt-oss".to_string();
+    }
+    if tokens.windows(2).any(|window| window == ["seed", "oss"]) {
+        return "seed-oss".to_string();
+    }
+
+    tokens
+        .iter()
+        .find(|token| !is_versionish_family_token(token))
+        .copied()
+        .unwrap_or(base_name)
+        .to_string()
+}
+
+fn is_versionish_family_token(token: &str) -> bool {
+    token
+        .chars()
+        .all(|ch| ch.is_ascii_digit() || matches!(ch, 'b' | 'm' | 'x' | 'v'))
+}
+
 fn shard_label(shard_count: usize) -> String {
     if shard_count == 1 {
         "1 file".to_string()
@@ -779,4 +882,35 @@ fn parse_duration_seconds(input: &str) -> Result<u64> {
         bail!("duration must be greater than zero: {input}");
     }
     Ok(total)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::model_family_key;
+
+    #[test]
+    fn model_family_key_collapses_common_unsloth_families() {
+        assert_eq!(model_family_key("unsloth/Kimi-K2-Instruct-GGUF"), "kimi");
+        assert_eq!(
+            model_family_key("unsloth/DeepSeek-V3.1-Terminus-GGUF"),
+            "deepseek"
+        );
+        assert_eq!(
+            model_family_key("unsloth/DeepSeek-R1-Distill-Qwen-14B-GGUF"),
+            "deepseek"
+        );
+        assert_eq!(
+            model_family_key("unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF"),
+            "qwen"
+        );
+        assert_eq!(
+            model_family_key("unsloth/Meta-Llama-3.1-70B-Instruct-GGUF"),
+            "llama"
+        );
+        assert_eq!(model_family_key("unsloth/gpt-oss-120b-GGUF"), "gpt-oss");
+        assert_eq!(
+            model_family_key("unsloth/NVIDIA-Nemotron-3-Super-120B-GGUF"),
+            "nemotron"
+        );
+    }
 }
