@@ -297,7 +297,7 @@ Pre-split layer package for distributed inference with [Mesh LLM](https://github
 
 \`\`\`bash
 # Each node downloads only its assigned layers:
-mesh-llm serve --model "hf://${TARGET_REPO}" --split
+mesh-llm serve --model "${TARGET_REPO}" --split
 \`\`\`
 
 Nodes discover each other on the local network, plan the topology based on available RAM, and each downloads only its portion.
@@ -345,4 +345,4 @@ echo "  Layers:     ${LAYER_COUNT}"
 echo "  Total size: ${TOTAL_SIZE}"
 echo ""
 echo "  Use with mesh-llm:"
-echo "    mesh-llm serve --model hf://${TARGET_REPO} --split"
+echo "    mesh-llm serve --model ${TARGET_REPO} --split"

@@ -104,3 +104,16 @@ pub async fn update_bucket_script(client: &HFClient) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::EMBEDDED_SCRIPT;
+
+    #[test]
+    fn embedded_script_prints_mesh_llm_repo_shorthand() {
+        assert!(EMBEDDED_SCRIPT.contains(r#"mesh-llm serve --model "${TARGET_REPO}" --split"#));
+        assert!(EMBEDDED_SCRIPT.contains("mesh-llm serve --model ${TARGET_REPO} --split"));
+        assert!(!EMBEDDED_SCRIPT.contains(r#"mesh-llm serve --model "hf://${TARGET_REPO}""#));
+        assert!(!EMBEDDED_SCRIPT.contains("mesh-llm serve --model hf://${TARGET_REPO}"));
+    }
+}
