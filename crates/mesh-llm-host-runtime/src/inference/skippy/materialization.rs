@@ -161,13 +161,111 @@ struct LayerPackageDownloadProgressState {
 struct LayerPackageDownloadProgress {
     label: String,
     file: String,
+    package_scope: Option<Arc<LayerPackageDownloadScope>>,
+    completed_before: usize,
     preflight_spinner: Mutex<Option<SpinnerHandle>>,
     state: Mutex<LayerPackageDownloadProgressState>,
 }
 
+struct LayerPackageDownloadScope {
+    package: String,
+    total_files: usize,
+    drawn_lines: Mutex<usize>,
+}
+
+impl LayerPackageDownloadScope {
+    fn new(label: &str, total_files: usize) -> Self {
+        Self {
+            package: label
+                .strip_prefix("layer package ")
+                .unwrap_or(label)
+                .to_string(),
+            total_files,
+            drawn_lines: Mutex::new(0),
+        }
+    }
+
+    fn has_drawn(&self) -> bool {
+        self.drawn_lines
+            .lock()
+            .map(|lines| *lines > 0)
+            .unwrap_or(false)
+    }
+
+    fn complete_count(&self, completed: usize) -> usize {
+        completed.min(self.total_files)
+    }
+
+    fn is_complete(&self, completed: usize) -> bool {
+        completed >= self.total_files
+    }
+
+    fn draw(
+        &self,
+        file: &str,
+        completed_files: usize,
+        downloaded: u64,
+        total: u64,
+        bytes_per_sec: Option<f64>,
+        force: bool,
+    ) {
+        let Ok(mut drawn_lines) = self.drawn_lines.lock() else {
+            return;
+        };
+        if *drawn_lines > 1 {
+            eprint!("\x1b[{}A", *drawn_lines - 1);
+        }
+        let percent = if total == 0 {
+            0
+        } else {
+            ((downloaded as f64 / total as f64) * 1000.0).round() as usize
+        };
+        let percent_major = (percent.min(1000)) / 10;
+        let percent_minor = (percent.min(1000)) % 10;
+        let speed_suffix = bytes_per_sec
+            .filter(|bytes_per_sec| *bytes_per_sec > 0.0)
+            .map(|bytes_per_sec| {
+                format!(
+                    " at {}/s",
+                    format_layer_package_download_bytes(bytes_per_sec as u64)
+                )
+            })
+            .unwrap_or_default();
+        eprint!(
+            "\r\x1b[K📦 Downloading layer package {}\n\r\x1b[K   📄 files {}/{} complete\n\r\x1b[K   ⏬ {} {:>3}.{:01}% ({}/{}){}",
+            self.package,
+            self.complete_count(completed_files),
+            self.total_files,
+            file,
+            percent_major,
+            percent_minor,
+            format_layer_package_download_bytes(downloaded),
+            format_layer_package_download_bytes(total),
+            speed_suffix,
+        );
+        let _ = std::io::stderr().flush();
+        if force {
+            eprintln!();
+            *drawn_lines = 0;
+        } else {
+            *drawn_lines = 3;
+        }
+    }
+}
+
 impl LayerPackageDownloadProgress {
-    fn new(label: String, file: String, total_bytes: Option<u64>) -> Self {
-        let preflight_spinner = if interactive_tui_active() {
+    fn new(
+        label: String,
+        file: String,
+        total_bytes: Option<u64>,
+        package_scope: Option<Arc<LayerPackageDownloadScope>>,
+        completed_before: usize,
+    ) -> Self {
+        let preflight_spinner = if interactive_tui_active()
+            || package_scope
+                .as_ref()
+                .is_some_and(|scope| scope.has_drawn())
+        {
             None
         } else {
             Some(start_spinner(&format!("Preparing download {file}")))
@@ -175,6 +273,8 @@ impl LayerPackageDownloadProgress {
         Self {
             label,
             file,
+            package_scope,
+            completed_before,
             preflight_spinner: Mutex::new(preflight_spinner),
             state: Mutex::new(LayerPackageDownloadProgressState {
                 downloaded: 0,
@@ -235,6 +335,20 @@ impl LayerPackageDownloadProgress {
             .lock()
             .map(|state| state.showed_progress)
             .unwrap_or(false);
+        if let Some(scope) = &self.package_scope {
+            if !showed_progress {
+                let total = total.unwrap_or(0);
+                scope.draw(
+                    &self.file,
+                    self.completed_before + 1,
+                    total,
+                    total,
+                    None,
+                    scope.is_complete(self.completed_before + 1),
+                );
+            }
+            return;
+        }
         if !showed_progress {
             match total {
                 Some(total) if total > 0 => eprintln!(
@@ -272,35 +386,28 @@ impl LayerPackageDownloadProgress {
         if let Ok(mut spinner) = self.preflight_spinner.lock() {
             spinner.take();
         }
-        let percent = if state.total == 0 {
-            0
+        if let Some(scope) = &self.package_scope {
+            let completed = if force {
+                self.completed_before + 1
+            } else {
+                self.completed_before
+            };
+            scope.draw(
+                &self.file,
+                completed,
+                state.downloaded,
+                state.total,
+                state.bytes_per_sec,
+                force && scope.is_complete(completed),
+            );
         } else {
-            ((state.downloaded as f64 / state.total as f64) * 1000.0).round() as usize
-        };
-        let percent_major = (percent.min(1000)) / 10;
-        let percent_minor = (percent.min(1000)) % 10;
-        let speed_suffix = state
-            .bytes_per_sec
-            .filter(|bytes_per_sec| *bytes_per_sec > 0.0)
-            .map(|bytes_per_sec| {
-                format!(
-                    " at {}/s",
-                    format_layer_package_download_bytes(bytes_per_sec as u64)
-                )
-            })
-            .unwrap_or_default();
-        eprint!(
-            "\r\x1b[K   ⏬ {} {:>3}.{:01}% ({}/{}){}",
-            self.file,
-            percent_major,
-            percent_minor,
-            format_layer_package_download_bytes(state.downloaded),
-            format_layer_package_download_bytes(state.total),
-            speed_suffix,
-        );
-        let _ = std::io::stderr().flush();
-        if force {
-            eprintln!();
+            draw_layer_package_file_progress(
+                &self.file,
+                state.downloaded,
+                state.total,
+                state.bytes_per_sec,
+                force,
+            );
         }
     }
 }
@@ -376,6 +483,44 @@ fn format_layer_package_download_bytes(bytes: u64) -> String {
         format!("{:.0}KB", bytes as f64 / 1e3)
     } else {
         format!("{bytes}B")
+    }
+}
+
+fn draw_layer_package_file_progress(
+    file: &str,
+    downloaded: u64,
+    total: u64,
+    bytes_per_sec: Option<f64>,
+    force: bool,
+) {
+    let percent = if total == 0 {
+        0
+    } else {
+        ((downloaded as f64 / total as f64) * 1000.0).round() as usize
+    };
+    let percent_major = (percent.min(1000)) / 10;
+    let percent_minor = (percent.min(1000)) % 10;
+    let speed_suffix = bytes_per_sec
+        .filter(|bytes_per_sec| *bytes_per_sec > 0.0)
+        .map(|bytes_per_sec| {
+            format!(
+                " at {}/s",
+                format_layer_package_download_bytes(bytes_per_sec as u64)
+            )
+        })
+        .unwrap_or_default();
+    eprint!(
+        "\r\x1b[K   ⏬ {} {:>3}.{:01}% ({}/{}){}",
+        file,
+        percent_major,
+        percent_minor,
+        format_layer_package_download_bytes(downloaded),
+        format_layer_package_download_bytes(total),
+        speed_suffix,
+    );
+    let _ = std::io::stderr().flush();
+    if force {
+        eprintln!();
     }
 }
 
@@ -579,11 +724,15 @@ fn download_layer_package_file(
     label: &str,
     file_name: &str,
     total_bytes: Option<u64>,
+    package_scope: Option<Arc<LayerPackageDownloadScope>>,
+    completed_before: usize,
 ) -> Result<PathBuf> {
     let progress = Arc::new(LayerPackageDownloadProgress::new(
         label.to_string(),
         file_name.to_string(),
         total_bytes,
+        package_scope,
+        completed_before,
     ));
     progress.emit_ensuring();
     let progress_handler: Progress = Some(progress.clone());
@@ -685,6 +834,8 @@ pub(crate) fn resolve_hf_package_to_local(
         &progress_label,
         "model-package.json",
         None,
+        None,
+        0,
     )
     .context("download layer package manifest")?;
 
@@ -753,12 +904,17 @@ pub(crate) fn resolve_hf_package_to_local(
         }
     }
 
+    let missing_files: Vec<_> = needed_files
+        .iter()
+        .filter(|(file, _)| !package_dir.join(file).is_file())
+        .collect();
+    let package_scope = Arc::new(LayerPackageDownloadScope::new(
+        &progress_label,
+        missing_files.len() + 1,
+    ));
+
     // Download each needed file
-    for (file, total_bytes) in &needed_files {
-        let local_path = package_dir.join(file);
-        if local_path.is_file() {
-            continue; // already cached
-        }
+    for (index, (file, total_bytes)) in missing_files.into_iter().enumerate() {
         let file_name = file.to_string_lossy().to_string();
         download_layer_package_file(
             &model_api,
@@ -766,6 +922,8 @@ pub(crate) fn resolve_hf_package_to_local(
             &progress_label,
             &file_name,
             *total_bytes,
+            Some(Arc::clone(&package_scope)),
+            index + 1,
         )
         .with_context(|| format!("download layer package file: {file_name}"))?;
     }
