@@ -170,23 +170,20 @@ struct LayerPackageDownloadProgress {
 struct LayerPackageDownloadScope {
     package: String,
     total_files: usize,
-    drawn_lines: Mutex<usize>,
 }
+
+static LAYER_PACKAGE_DOWNLOAD_DRAWN_LINES: Mutex<usize> = Mutex::new(0);
 
 impl LayerPackageDownloadScope {
     fn new(label: &str, total_files: usize) -> Self {
         Self {
-            package: label
-                .strip_prefix("layer package ")
-                .unwrap_or(label)
-                .to_string(),
+            package: layer_package_progress_package(label).to_string(),
             total_files,
-            drawn_lines: Mutex::new(0),
         }
     }
 
     fn has_drawn(&self) -> bool {
-        self.drawn_lines
+        LAYER_PACKAGE_DOWNLOAD_DRAWN_LINES
             .lock()
             .map(|lines| *lines > 0)
             .unwrap_or(false)
@@ -209,7 +206,7 @@ impl LayerPackageDownloadScope {
         bytes_per_sec: Option<f64>,
         force: bool,
     ) {
-        let Ok(mut drawn_lines) = self.drawn_lines.lock() else {
+        let Ok(mut drawn_lines) = LAYER_PACKAGE_DOWNLOAD_DRAWN_LINES.lock() else {
             return;
         };
         if *drawn_lines > 1 {
@@ -236,7 +233,7 @@ impl LayerPackageDownloadScope {
             self.package,
             self.complete_count(completed_files),
             self.total_files,
-            file,
+            layer_package_artifact_display_for_package(&self.package, file),
             percent_major,
             percent_minor,
             format_layer_package_download_bytes(downloaded),
@@ -350,13 +347,14 @@ impl LayerPackageDownloadProgress {
             return;
         }
         if !showed_progress {
+            let file = layer_package_artifact_display(&self.label, &self.file);
             match total {
                 Some(total) if total > 0 => eprintln!(
                     "   ✅ Ready {} ({})",
-                    self.file,
+                    file,
                     format_layer_package_download_bytes(total)
                 ),
-                _ => eprintln!("   ✅ Ready {}", self.file),
+                _ => eprintln!("   ✅ Ready {}", file),
             }
         }
     }
@@ -402,7 +400,7 @@ impl LayerPackageDownloadProgress {
             );
         } else {
             draw_layer_package_file_progress(
-                &self.file,
+                &layer_package_artifact_display(&self.label, &self.file),
                 state.downloaded,
                 state.total,
                 state.bytes_per_sec,
@@ -483,6 +481,30 @@ fn format_layer_package_download_bytes(bytes: u64) -> String {
         format!("{:.0}KB", bytes as f64 / 1e3)
     } else {
         format!("{bytes}B")
+    }
+}
+
+fn layer_package_progress_package(label: &str) -> &str {
+    label.strip_prefix("layer package ").unwrap_or(label)
+}
+
+fn layer_package_progress_repo(package: &str) -> &str {
+    package
+        .split_once('@')
+        .map(|(repo, _)| repo)
+        .unwrap_or(package)
+}
+
+fn layer_package_artifact_display(label: &str, file: &str) -> String {
+    layer_package_artifact_display_for_package(layer_package_progress_package(label), file)
+}
+
+fn layer_package_artifact_display_for_package(package: &str, file: &str) -> String {
+    let repo = layer_package_progress_repo(package);
+    if file.starts_with(repo) || file.starts_with('/') {
+        file.to_string()
+    } else {
+        format!("{repo}/{file}")
     }
 }
 
@@ -1564,6 +1586,24 @@ mod tests {
         assert_eq!(
             hf.as_package_ref().as_deref(),
             Some("hf://Mesh-LLM/demo-package@abc123")
+        );
+    }
+
+    #[test]
+    fn layer_package_artifact_display_names_repo_and_file_without_revision() {
+        assert_eq!(
+            layer_package_artifact_display(
+                "layer package meshllm/demo-package@abc123",
+                "layers/layer-005.gguf"
+            ),
+            "meshllm/demo-package/layers/layer-005.gguf"
+        );
+        assert_eq!(
+            layer_package_artifact_display(
+                "layer package meshllm/demo-package",
+                "model-package.json"
+            ),
+            "meshllm/demo-package/model-package.json"
         );
     }
 
