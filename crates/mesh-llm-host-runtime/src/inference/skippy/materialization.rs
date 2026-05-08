@@ -1,15 +1,19 @@
 use std::{
     fs,
     path::{Component, Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 use anyhow::{bail, Context, Result};
+use hf_hub::{DownloadEvent, Progress, ProgressEvent, ProgressHandler};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use skippy_protocol::{LoadMode, StageConfig};
 use skippy_runtime::package::{
     self, LayerPackageInfo, PackageIntegrityOptions, PackageStageRequest,
 };
+
+use crate::cli::output::{emit_event, ModelProgressStatus, OutputEvent};
 
 use super::StageLoadRequest;
 
@@ -140,6 +144,115 @@ pub(crate) fn configure_materialized_stage_cache() {
 
 pub(crate) fn materialized_stage_cache_dir() -> PathBuf {
     crate::models::mesh_llm_cache_dir().join("skippy-stages")
+}
+
+#[derive(Clone, Debug)]
+struct LayerPackageDownloadProgressState {
+    downloaded: u64,
+    total: u64,
+}
+
+struct LayerPackageDownloadProgress {
+    label: String,
+    file: String,
+    state: Mutex<LayerPackageDownloadProgressState>,
+}
+
+impl LayerPackageDownloadProgress {
+    fn new(label: String, file: String, total_bytes: Option<u64>) -> Self {
+        Self {
+            label,
+            file,
+            state: Mutex::new(LayerPackageDownloadProgressState {
+                downloaded: 0,
+                total: total_bytes.unwrap_or(0),
+            }),
+        }
+    }
+
+    fn emit(
+        &self,
+        downloaded_bytes: Option<u64>,
+        total_bytes: Option<u64>,
+        status: ModelProgressStatus,
+    ) {
+        let _ = emit_event(OutputEvent::ModelDownloadProgress {
+            label: self.label.clone(),
+            file: Some(self.file.clone()),
+            downloaded_bytes,
+            total_bytes,
+            status,
+        });
+    }
+
+    fn emit_ensuring(&self) {
+        let total = self
+            .state
+            .lock()
+            .ok()
+            .and_then(|state| (state.total > 0).then_some(state.total));
+        self.emit(None, total, ModelProgressStatus::Ensuring);
+    }
+
+    fn emit_ready(&self, path: &Path) {
+        let total = fs::metadata(path)
+            .ok()
+            .map(|metadata| metadata.len())
+            .or_else(|| {
+                self.state
+                    .lock()
+                    .ok()
+                    .and_then(|state| (state.total > 0).then_some(state.total))
+            });
+        self.emit(total, total, ModelProgressStatus::Ready);
+    }
+}
+
+impl ProgressHandler for LayerPackageDownloadProgress {
+    fn on_progress(&self, event: &ProgressEvent) {
+        let ProgressEvent::Download(event) = event else {
+            return;
+        };
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        match event {
+            DownloadEvent::Start { total_bytes, .. } => {
+                if *total_bytes > 0 {
+                    state.total = state.total.max(*total_bytes);
+                }
+            }
+            DownloadEvent::Progress { files } => {
+                if !files.is_empty() {
+                    let downloaded: u64 = files.iter().map(|file| file.bytes_completed).sum();
+                    state.downloaded = state.downloaded.max(downloaded);
+                    let total: u64 = files.iter().map(|file| file.total_bytes).sum();
+                    if total > 0 {
+                        state.total = state.total.max(total);
+                    }
+                }
+            }
+            DownloadEvent::AggregateProgress {
+                bytes_completed,
+                total_bytes,
+                ..
+            } => {
+                state.downloaded = state.downloaded.max(*bytes_completed);
+                if *total_bytes > 0 {
+                    state.total = state.total.max(*total_bytes);
+                }
+            }
+            DownloadEvent::Complete => {
+                if state.total > 0 {
+                    state.downloaded = state.total;
+                }
+            }
+        }
+        let downloaded = (state.downloaded > 0).then_some(state.downloaded);
+        let total = (state.total > 0).then_some(state.total);
+        drop(state);
+        self.emit(downloaded, total, ModelProgressStatus::Downloading);
+    }
 }
 
 pub(crate) fn is_layer_package_ref(value: &str) -> bool {
@@ -322,6 +435,47 @@ fn verify_cached_hf_package_files(
     }
 }
 
+fn manifest_artifact_bytes(artifact: &serde_json::Value) -> Option<u64> {
+    artifact
+        .get("artifact_bytes")
+        .and_then(|value| value.as_u64())
+}
+
+fn layer_package_progress_label(repo: &str, revision: &str) -> String {
+    if revision == "main" {
+        format!("layer package {repo}")
+    } else {
+        format!("layer package {repo}@{revision}")
+    }
+}
+
+fn download_layer_package_file(
+    model_api: &hf_hub::HFRepositorySync,
+    revision: &str,
+    label: &str,
+    file_name: &str,
+    total_bytes: Option<u64>,
+) -> Result<PathBuf> {
+    let progress = Arc::new(LayerPackageDownloadProgress::new(
+        label.to_string(),
+        file_name.to_string(),
+        total_bytes,
+    ));
+    progress.emit_ensuring();
+    let progress_handler: Progress = Some(progress.clone());
+    let path = model_api
+        .download_file(
+            &hf_hub::RepoDownloadFileParams::builder()
+                .filename(file_name.to_string())
+                .revision(revision.to_string())
+                .progress(progress_handler)
+                .build(),
+        )
+        .with_context(|| format!("download layer package file: {file_name}"))?;
+    progress.emit_ready(&path);
+    Ok(path)
+}
+
 pub(crate) fn resolve_hf_package_to_local(
     package_ref: &str,
     layer_start: u32,
@@ -398,16 +552,17 @@ pub(crate) fn resolve_hf_package_to_local(
     let api = crate::models::build_hf_api(false)?;
     let (owner, name) = repo.split_once('/').context("invalid HF repo format")?;
     let model_api = api.model(owner, name);
+    let progress_label = layer_package_progress_label(&repo, &revision);
 
     // Download manifest first
-    let manifest_path = model_api
-        .download_file(
-            &hf_hub::RepoDownloadFileParams::builder()
-                .filename("model-package.json".to_string())
-                .revision(revision.clone())
-                .build(),
-        )
-        .context("download layer package manifest")?;
+    let manifest_path = download_layer_package_file(
+        &model_api,
+        &revision,
+        &progress_label,
+        "model-package.json",
+        None,
+    )
+    .context("download layer package manifest")?;
 
     let package_dir = manifest_path
         .parent()
@@ -420,28 +575,38 @@ pub(crate) fn resolve_hf_package_to_local(
         serde_json::from_slice(&manifest_contents).context("parse package manifest")?;
 
     // Collect the files we need to download
-    let mut needed_files: Vec<PathBuf> = Vec::new();
+    let mut needed_files: Vec<(PathBuf, Option<u64>)> = Vec::new();
 
     // Always need shared/metadata.gguf — required for materialization
-    let metadata_path = manifest
-        .pointer("/shared/metadata/path")
+    let metadata_artifact = manifest
+        .pointer("/shared/metadata")
+        .context("manifest missing required /shared/metadata")?;
+    let metadata_path = metadata_artifact
+        .get("path")
         .and_then(|v| v.as_str())
         .context("manifest missing required /shared/metadata/path")?;
-    needed_files.push(safe_manifest_file_path(metadata_path)?);
+    needed_files.push((
+        safe_manifest_file_path(metadata_path)?,
+        manifest_artifact_bytes(metadata_artifact),
+    ));
     if include_embeddings {
-        if let Some(path) = manifest
-            .pointer("/shared/embeddings/path")
-            .and_then(|v| v.as_str())
-        {
-            needed_files.push(safe_manifest_file_path(path)?);
+        if let Some(artifact) = manifest.pointer("/shared/embeddings") {
+            if let Some(path) = artifact.get("path").and_then(|v| v.as_str()) {
+                needed_files.push((
+                    safe_manifest_file_path(path)?,
+                    manifest_artifact_bytes(artifact),
+                ));
+            }
         }
     }
     if include_output {
-        if let Some(path) = manifest
-            .pointer("/shared/output/path")
-            .and_then(|v| v.as_str())
-        {
-            needed_files.push(safe_manifest_file_path(path)?);
+        if let Some(artifact) = manifest.pointer("/shared/output") {
+            if let Some(path) = artifact.get("path").and_then(|v| v.as_str()) {
+                needed_files.push((
+                    safe_manifest_file_path(path)?,
+                    manifest_artifact_bytes(artifact),
+                ));
+            }
         }
     }
 
@@ -455,27 +620,30 @@ pub(crate) fn resolve_hf_package_to_local(
                 .unwrap_or(i as u64) as u32;
             if idx >= layer_start && idx < layer_end {
                 if let Some(path) = layer.get("path").and_then(|a| a.as_str()) {
-                    needed_files.push(safe_manifest_file_path(path)?);
+                    needed_files.push((
+                        safe_manifest_file_path(path)?,
+                        manifest_artifact_bytes(layer),
+                    ));
                 }
             }
         }
     }
 
     // Download each needed file
-    for file in &needed_files {
+    for (file, total_bytes) in &needed_files {
         let local_path = package_dir.join(file);
         if local_path.is_file() {
             continue; // already cached
         }
         let file_name = file.to_string_lossy().to_string();
-        model_api
-            .download_file(
-                &hf_hub::RepoDownloadFileParams::builder()
-                    .filename(file_name.clone())
-                    .revision(revision.clone())
-                    .build(),
-            )
-            .with_context(|| format!("download layer package file: {file_name}"))?;
+        download_layer_package_file(
+            &model_api,
+            &revision,
+            &progress_label,
+            &file_name,
+            *total_bytes,
+        )
+        .with_context(|| format!("download layer package file: {file_name}"))?;
     }
 
     verify_resolved_hf_package_files(

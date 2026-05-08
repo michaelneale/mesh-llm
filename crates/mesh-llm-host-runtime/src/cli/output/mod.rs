@@ -1362,6 +1362,32 @@ fn format_model_download_progress_message(
     status: &ModelProgressStatus,
 ) -> String {
     let target = file.unwrap_or(label);
+    if let Some(package) = label.strip_prefix("layer package ") {
+        return match status {
+            ModelProgressStatus::Ensuring => {
+                format!("ensuring layer package artifact {target} for {package}")
+            }
+            ModelProgressStatus::Downloading => match (downloaded_bytes, total_bytes) {
+                (Some(downloaded), Some(total)) if total > 0 => format!(
+                    "downloading layer package artifact {target} for {package} {}/{}",
+                    format_display_bytes(downloaded),
+                    format_display_bytes(total)
+                ),
+                (Some(downloaded), _) if downloaded > 0 => format!(
+                    "downloading layer package artifact {target} for {package} {}",
+                    format_display_bytes(downloaded)
+                ),
+                _ => format!("downloading layer package artifact {target} for {package}"),
+            },
+            ModelProgressStatus::Ready => match total_bytes {
+                Some(total) if total > 0 => format!(
+                    "layer package artifact {target} ready for {package} ({})",
+                    format_display_bytes(total)
+                ),
+                _ => format!("layer package artifact {target} ready for {package}"),
+            },
+        };
+    }
     match status {
         ModelProgressStatus::Ensuring => format!("ensuring model {target}"),
         ModelProgressStatus::Downloading => match (downloaded_bytes, total_bytes) {
@@ -8544,6 +8570,22 @@ mod tests {
             port,
             pid: u32::from(port) + 1000,
         }
+    }
+
+    #[test]
+    fn layer_package_progress_message_names_artifact_and_package() {
+        let message = format_model_download_progress_message(
+            "layer package meshllm/demo-layers",
+            Some("shared/embeddings.gguf"),
+            Some(256_000_000),
+            Some(512_000_000),
+            &ModelProgressStatus::Downloading,
+        );
+
+        assert_eq!(
+            message,
+            "downloading layer package artifact shared/embeddings.gguf for meshllm/demo-layers 256MB/512MB"
+        );
     }
 
     fn sample_endpoint_row(label: &str, port: u16) -> DashboardEndpointRow {
