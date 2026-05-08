@@ -2,9 +2,10 @@ syntax = "proto3";
 
 package skippy.stage.v1;
 
-// Skippy stage control and activation transport run on QUIC ALPN
-// skippy-stage/1. Each bi-stream starts with a one-byte stream kind owned by
-// this protocol, followed by the relevant length-prefixed protobuf frame.
+// Skippy owns these stage-control, artifact-transfer, and activation frames.
+// Control and artifact streams are carried inside the mesh STREAM_SUBPROTOCOL
+// envelope for skippy-stage/1. Activation transport remains on the
+// skippy-stage/1 QUIC ALPN.
 
 message StageControlRequest {
   uint32 gen = 1;

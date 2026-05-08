@@ -1,8 +1,9 @@
 //! Mesh membership via iroh QUIC connections.
 //!
 //! Mesh control traffic uses QUIC ALPN `mesh-llm/1` and multiplexes bi-streams
-//! by first byte. Skippy stage control and activation transport use the
-//! separate `skippy-stage/1` ALPN.
+//! by first byte. Mesh-owned subsystem streams use `STREAM_SUBPROTOCOL` on the
+//! admitted mesh connection; Skippy activation transport remains on the
+//! latency-sensitive `skippy-stage/1` ALPN.
 
 pub use mesh_client::mesh::{
     infer_available_model_descriptors, infer_local_served_model_descriptor,
@@ -1838,11 +1839,23 @@ impl Node {
                 .await;
         }
         let frame = stage_control_request_to_proto(self.endpoint.id(), request);
-        let conn = self.stage_connection_to_peer(peer_id).await?;
         let response = tokio::time::timeout(timeout, async {
-            let (mut send, mut recv) = conn.open_bi().await?;
-            send.write_all(&[skippy_protocol::STAGE_STREAM_CONTROL])
-                .await?;
+            let (mut send, mut recv) = if self
+                .peer_supports_skippy_subprotocol_feature(
+                    peer_id,
+                    skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STAGE_CONTROL,
+                )
+                .await
+            {
+                self.open_skippy_stage_mesh_stream(peer_id, skippy_protocol::STAGE_STREAM_CONTROL)
+                    .await?
+            } else {
+                let conn = self.stage_connection_to_peer(peer_id).await?;
+                let (mut send, recv) = conn.open_bi().await?;
+                send.write_all(&[skippy_protocol::STAGE_STREAM_CONTROL])
+                    .await?;
+                (send, recv)
+            };
             write_len_prefixed(&mut send, &frame.encode_to_vec()).await?;
             let buf = read_len_prefixed(&mut recv).await?;
             let response =
@@ -3640,6 +3653,44 @@ impl Node {
         }
     }
 
+    async fn open_mesh_subprotocol_stream(
+        &self,
+        peer_id: EndpointId,
+        name: &str,
+        major: u32,
+    ) -> Result<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)> {
+        use prost::Message as _;
+
+        let conn = self.connection_to_peer(peer_id).await?;
+        let (mut send, recv) = conn.open_bi().await?;
+        send.write_all(&[STREAM_SUBPROTOCOL]).await?;
+        let open = crate::proto::node::MeshSubprotocolOpen {
+            gen: NODE_PROTOCOL_GENERATION,
+            name: name.to_string(),
+            major,
+        };
+        open.validate_frame()
+            .map_err(|error| anyhow::anyhow!("invalid mesh subprotocol open: {error}"))?;
+        write_len_prefixed(&mut send, &open.encode_to_vec()).await?;
+        Ok((send, recv))
+    }
+
+    async fn open_skippy_stage_mesh_stream(
+        &self,
+        peer_id: EndpointId,
+        stream_kind: u8,
+    ) -> Result<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)> {
+        let (mut send, recv) = self
+            .open_mesh_subprotocol_stream(
+                peer_id,
+                skippy_protocol::STAGE_SUBPROTOCOL_NAME,
+                skippy_protocol::STAGE_SUBPROTOCOL_MAJOR,
+            )
+            .await?;
+        send.write_all(&[stream_kind]).await?;
+        Ok((send, recv))
+    }
+
     async fn stage_connection_to_peer(&self, peer_id: EndpointId) -> Result<Connection> {
         let addr = {
             let state = self.state.lock().await;
@@ -3821,7 +3872,7 @@ impl Node {
                             .await
                         {
                             tracing::debug!(
-                                "artifact transfer stream error from {}: {e}",
+                                "legacy artifact transfer stream error from {}: {e}",
                                 remote.fmt_short()
                             );
                         }
@@ -4291,10 +4342,74 @@ impl Node {
                         }
                     });
                 }
+                STREAM_SUBPROTOCOL => {
+                    let node = self.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = node
+                            .handle_mesh_subprotocol_stream(remote, send, recv)
+                            .await
+                        {
+                            tracing::debug!(
+                                "subprotocol stream error from {}: {e}",
+                                remote.fmt_short()
+                            );
+                        }
+                    });
+                }
                 other => {
                     tracing::warn!("Unknown stream type {other} from {}", remote.fmt_short());
                 }
             }
+        }
+    }
+
+    async fn handle_mesh_subprotocol_stream(
+        &self,
+        remote: EndpointId,
+        send: iroh::endpoint::SendStream,
+        mut recv: iroh::endpoint::RecvStream,
+    ) -> Result<()> {
+        use prost::Message as _;
+
+        let buf = read_len_prefixed(&mut recv).await?;
+        let open = crate::proto::node::MeshSubprotocolOpen::decode(buf.as_slice())
+            .map_err(|error| anyhow::anyhow!("MeshSubprotocolOpen decode error: {error}"))?;
+        open.validate_frame()
+            .map_err(|error| anyhow::anyhow!("MeshSubprotocolOpen validation error: {error}"))?;
+        match (open.name.as_str(), open.major) {
+            (skippy_protocol::STAGE_SUBPROTOCOL_NAME, skippy_protocol::STAGE_SUBPROTOCOL_MAJOR) => {
+                self.handle_skippy_stage_subprotocol_stream(remote, send, recv)
+                    .await
+            }
+            _ => anyhow::bail!(
+                "unsupported mesh subprotocol {}/{} from {}",
+                open.name,
+                open.major,
+                remote.fmt_short()
+            ),
+        }
+    }
+
+    async fn handle_skippy_stage_subprotocol_stream(
+        &self,
+        remote: EndpointId,
+        send: iroh::endpoint::SendStream,
+        mut recv: iroh::endpoint::RecvStream,
+    ) -> Result<()> {
+        let mut type_buf = [0u8; 1];
+        recv.read_exact(&mut type_buf).await?;
+        match type_buf[0] {
+            skippy_protocol::STAGE_STREAM_CONTROL => {
+                self.handle_stage_control(remote, send, recv).await
+            }
+            skippy_protocol::STAGE_STREAM_ARTIFACT_TRANSFER => {
+                self.handle_artifact_transfer_stream(remote, send, recv)
+                    .await
+            }
+            skippy_protocol::STAGE_STREAM_TRANSPORT => {
+                anyhow::bail!("skippy activation transport stays on skippy-stage/1")
+            }
+            other => anyhow::bail!("unknown skippy stage subprotocol stream kind {other:#04x}"),
         }
     }
 
@@ -4433,18 +4548,38 @@ impl Node {
         if coordinator_id == self.endpoint.id() {
             return Ok(());
         }
-        let supported = {
-            let state = self.state.lock().await;
-            state
-                .peers
-                .get(&coordinator_id)
-                .is_some_and(|peer| peer.artifact_transfer_supported)
-        };
-        if !supported {
+        if !self
+            .peer_supports_skippy_subprotocol_feature(
+                coordinator_id,
+                skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_ARTIFACT_TRANSFER,
+            )
+            .await
+        {
             return Ok(());
         }
         self.fetch_stage_package_artifacts_from_peer(coordinator_id, load)
             .await
+    }
+
+    async fn peer_supports_skippy_subprotocol_feature(
+        &self,
+        peer_id: EndpointId,
+        feature: &str,
+    ) -> bool {
+        let state = self.state.lock().await;
+        let Some(peer) = state.peers.get(&peer_id) else {
+            return false;
+        };
+        match feature {
+            // Current PR peers advertise `stage-control` together with the
+            // artifact-transfer feature. Older peers fall back to the legacy
+            // skippy-stage ALPN control path.
+            skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STAGE_CONTROL
+            | skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_ARTIFACT_TRANSFER => {
+                peer.artifact_transfer_supported
+            }
+            _ => false,
+        }
     }
 
     async fn fetch_stage_package_artifacts_from_peer(
@@ -4542,10 +4677,12 @@ impl Node {
         skippy_protocol::validate_stage_artifact_transfer_request(&frame)
             .map_err(|error| anyhow::anyhow!("invalid artifact transfer request: {error}"))?;
 
-        let conn = self.stage_connection_to_peer(peer_id).await?;
         let response = tokio::time::timeout(ARTIFACT_TRANSFER_OPEN_TIMEOUT, async {
-            let (mut send, mut recv) = conn.open_bi().await?;
-            send.write_all(&[skippy_protocol::STAGE_STREAM_ARTIFACT_TRANSFER])
+            let (mut send, mut recv) = self
+                .open_skippy_stage_mesh_stream(
+                    peer_id,
+                    skippy_protocol::STAGE_STREAM_ARTIFACT_TRANSFER,
+                )
                 .await?;
             write_len_prefixed(&mut send, &frame.encode_to_vec()).await?;
             let _ = send.finish();

@@ -41,14 +41,14 @@ plugins/
 
 - `mesh-llm` owns the user-facing OpenAI-compatible API on `:9337`. Requests are routed by full model ref.
 - The management API and web console live on `:3131`. Pass `--headless` to disable the embedded web UI while keeping the management API (`/api/*`) available on that port.
-- Models that fit run as embedded single-stage skippy runtimes. Larger certified models can run as staged splits over the `skippy-stage/1` control plane.
+- Models that fit run as embedded single-stage skippy runtimes. Larger certified models can run as staged splits with Skippy control and artifact messages carried over the admitted mesh subprotocol stream.
 - Stage topology is planned by mesh from peer/device inventory, package metadata, and reviewed family capability records. Replans withdraw old routes before publishing replacement stage-0 routes.
 - Routing and demand tracking are mesh-wide. Nodes can serve different models at the same time.
 - Discovery is optional and Nostr-backed. Private meshes work with explicit join tokens only.
 
 The mesh control plane uses protocol `mesh-llm/1` with protobuf framing for mesh
-traffic. Staged runtime traffic uses `skippy-stage/1`, keeping the new stage
-protocol separate from mesh gossip compatibility.
+traffic. Skippy stage control/artifact messages ride inside the mesh-owned
+subprotocol envelope, while activation transport stays on `skippy-stage/1`.
 
 ## API surface
 

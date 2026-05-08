@@ -27,9 +27,11 @@ pub(crate) const STREAM_PLUGIN_CHANNEL: u8 = 0x08;
 pub(crate) const STREAM_PLUGIN_BULK_TRANSFER: u8 = 0x09;
 pub(crate) const STREAM_CONFIG_SUBSCRIBE: u8 = 0x0b;
 pub(crate) const STREAM_CONFIG_PUSH: u8 = 0x0c;
+pub(crate) const STREAM_SUBPROTOCOL: u8 = 0x0d;
 const _: () = {
     let _ = STREAM_CONFIG_SUBSCRIBE;
     let _ = STREAM_CONFIG_PUSH;
+    let _ = STREAM_SUBPROTOCOL;
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -302,6 +304,18 @@ impl ValidateControlFrame for crate::proto::node::ConfigPushResponse {
     }
 }
 
+impl ValidateControlFrame for crate::proto::node::MeshSubprotocolOpen {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        if self.gen != NODE_PROTOCOL_GENERATION {
+            return Err(ControlFrameError::BadGeneration { got: self.gen });
+        }
+        if self.name.trim().is_empty() || self.major == 0 {
+            return Err(ControlFrameError::InvalidSubprotocol);
+        }
+        Ok(())
+    }
+}
+
 pub(crate) fn validate_peer_announcement(
     pa: &crate::proto::node::PeerAnnouncement,
 ) -> Result<(), ControlFrameError> {
@@ -467,9 +481,9 @@ mod tests {
     use crate::mesh::{resolve_peer_down, resolve_peer_leaving, PeerInfo};
     use crate::proto::node::{
         ConfigPush, ConfigPushResponse, ConfigSnapshotResponse, ConfigSubscribe,
-        ConfigUpdateNotification, ConfiguredModelRef, GossipFrame, NodeConfigSnapshot,
-        NodeGpuConfig, NodeModelEntry, NodePluginEntry, NodeRole, PeerAnnouncement,
-        RouteTableRequest,
+        ConfigUpdateNotification, ConfiguredModelRef, GossipFrame, MeshSubprotocolOpen,
+        NodeConfigSnapshot, NodeGpuConfig, NodeModelEntry, NodePluginEntry, NodeRole,
+        PeerAnnouncement, RouteTableRequest,
     };
     use iroh::{EndpointAddr, EndpointId, SecretKey};
     use std::collections::{HashMap, HashSet};
@@ -584,6 +598,30 @@ mod tests {
         assert_eq!(decoded.peers.len(), 1);
         assert_eq!(decoded.peers[0].endpoint_id, vec![0u8; 32]);
         assert_eq!(decoded.peers[0].role, NodeRole::Worker as i32);
+    }
+
+    #[test]
+    fn mesh_subprotocol_open_roundtrips_and_validates() {
+        let open = MeshSubprotocolOpen {
+            gen: NODE_PROTOCOL_GENERATION,
+            name: skippy_protocol::STAGE_SUBPROTOCOL_NAME.to_string(),
+            major: skippy_protocol::STAGE_SUBPROTOCOL_MAJOR,
+        };
+        let encoded = encode_control_frame(STREAM_SUBPROTOCOL, &open);
+        let decoded: MeshSubprotocolOpen =
+            decode_control_frame(STREAM_SUBPROTOCOL, &encoded).unwrap();
+        assert_eq!(decoded.name, skippy_protocol::STAGE_SUBPROTOCOL_NAME);
+        assert_eq!(decoded.major, skippy_protocol::STAGE_SUBPROTOCOL_MAJOR);
+
+        let bad = MeshSubprotocolOpen {
+            gen: NODE_PROTOCOL_GENERATION,
+            name: String::new(),
+            major: skippy_protocol::STAGE_SUBPROTOCOL_MAJOR,
+        };
+        let encoded = encode_control_frame(STREAM_SUBPROTOCOL, &bad);
+        let err = decode_control_frame::<MeshSubprotocolOpen>(STREAM_SUBPROTOCOL, &encoded)
+            .expect_err("empty subprotocol names must be rejected");
+        assert!(matches!(err, ControlFrameError::InvalidSubprotocol));
     }
 
     #[test]

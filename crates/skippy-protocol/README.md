@@ -8,9 +8,12 @@ bindings.
 
 ## Architecture Role
 
-`skippy-protocol` is the `skippy-stage/1` binary contract between mesh's stage
-coordinator/diagnostic clients and the stage chain, and between neighboring
-stage servers. It is separate from mesh gossip/control protocol `mesh-llm/1`.
+`skippy-protocol` is the binary contract for Skippy stage control, artifact
+transfer, and activation transport. Mesh owns admission, subprotocol discovery,
+connectivity, and stream muxing; Skippy owns the protobuf schema and semantics.
+Control and artifact frames are carried through the mesh `STREAM_SUBPROTOCOL`
+envelope, while activation transport remains on `skippy-stage/1` between
+neighboring stage servers.
 
 ```mermaid
 sequenceDiagram

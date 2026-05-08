@@ -417,7 +417,7 @@ curl localhost:3131/api/discover # Nostr meshes (current mesh marked by mesh_id)
 
 ## Control-Plane Protocol (Protobuf v1)
 
-The control plane uses QUIC ALPN `mesh-llm/1` with the `meshllm.node.v1` protobuf schema. Scoped control-plane streams use 4-byte LE framing followed by protobuf bytes. Skippy artifact transfer is advertised through gossip subprotocol features and runs on `skippy-stage/1`, not as a mesh control stream.
+The control plane uses QUIC ALPN `mesh-llm/1` with the `meshllm.node.v1` protobuf schema. Scoped control-plane streams use 4-byte LE framing followed by protobuf bytes. Skippy control/artifact streams are advertised through gossip subprotocol features and run through mesh `STREAM_SUBPROTOCOL` (0x0d); activation transport stays on `skippy-stage/1`.
 
 | Stream | Type | Format |
 |--------|------|--------|
@@ -428,6 +428,7 @@ The control plane uses QUIC ALPN `mesh-llm/1` with the `meshllm.node.v1` protobu
 | 0x07 | PEER_LEAVING | protobuf `PeerLeaving` |
 | 0x0b | CONFIG_SUBSCRIBE | protobuf `ConfigSubscribe` / `ConfigSnapshotResponse` |
 | 0x0c | CONFIG_PUSH | protobuf `ConfigPush` / `ConfigPushResponse` |
+| 0x0d | STREAM_SUBPROTOCOL | protobuf `MeshSubprotocolOpen`, then subprotocol-owned bytes |
 
 Raw TCP relay streams (0x02 RPC, 0x04 HTTP) are unchanged.
 
@@ -448,9 +449,12 @@ Absence of JSON-related log lines for streams 0x01/0x03/0x05/0x06/0x07 confirms 
 For a layer-package split where the coordinator already has the HF package
 cached and a worker does not:
 
-- Current/current mesh: the worker may use `skippy-stage/1` artifact-transfer
-  stream 0x03 to fetch only its assigned package files before the normal HF
-  fallback path.
+- Current/current mesh: the worker may use mesh `STREAM_SUBPROTOCOL` (0x0d)
+  to open `skippy-stage/1`, then Skippy artifact-transfer stream 0x03, to
+  fetch only its assigned package files before the normal HF fallback path.
+- Rolling-update compatibility: nodes should still accept the legacy
+  `skippy-stage/1` artifact-transfer stream from an already-running pre-update
+  peer, but new outbound artifact transfer should use `STREAM_SUBPROTOCOL`.
 - Current/released mixed mesh: a released coordinator without
   advertised `skippy-stage/1` `artifact-transfer` support must not be dialed
   for artifact transfer; the worker must fall back to local/HF package

@@ -122,6 +122,17 @@ pub struct MeshSubprotocol {
     pub features: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct MeshSubprotocolOpen {
+    #[prost(uint32, tag = "1")]
+    pub gen: u32,
+    /// e.g. "skippy-stage"
+    #[prost(string, tag = "2")]
+    pub name: ::prost::alloc::string::String,
+    /// subprotocol major version
+    #[prost(uint32, tag = "3")]
+    pub major: u32,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct HardwareInfo {
     /// True for system-on-chip / unified-memory hosts such as Apple Silicon and Jetson
     #[prost(bool, optional, tag = "1")]

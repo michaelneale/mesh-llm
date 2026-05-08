@@ -55,6 +55,15 @@ message MeshSubprotocol {
   repeated string features = 3; // e.g. "artifact-transfer"
 }
 
+// Stream 0x0d — generic admitted subsystem stream.
+// Mesh owns this open frame. The remaining bytes on the stream are opaque to
+// mesh and are owned by the selected subsystem protocol.
+message MeshSubprotocolOpen {
+  uint32 gen = 1;
+  string name = 2;             // e.g. "skippy-stage"
+  uint32 major = 3;            // subprotocol major version
+}
+
 message HardwareInfo {
   optional bool is_soc = 1;                          // True for system-on-chip / unified-memory hosts such as Apple Silicon and Jetson
   optional string hostname = 2;

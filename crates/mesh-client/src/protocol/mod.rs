@@ -20,9 +20,11 @@ pub const STREAM_PLUGIN_CHANNEL: u8 = 0x08;
 pub const STREAM_PLUGIN_BULK_TRANSFER: u8 = 0x09;
 pub const STREAM_CONFIG_SUBSCRIBE: u8 = 0x0b;
 pub const STREAM_CONFIG_PUSH: u8 = 0x0c;
+pub const STREAM_SUBPROTOCOL: u8 = 0x0d;
 const _: () = {
     let _ = STREAM_CONFIG_SUBSCRIBE;
     let _ = STREAM_CONFIG_PUSH;
+    let _ = STREAM_SUBPROTOCOL;
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -282,6 +284,18 @@ impl ValidateControlFrame for crate::proto::node::ConfigPushResponse {
         }
         if self.success || !self.config_hash.is_empty() {
             validate_config_hash_length(self.config_hash.len())?;
+        }
+        Ok(())
+    }
+}
+
+impl ValidateControlFrame for crate::proto::node::MeshSubprotocolOpen {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        if self.gen != NODE_PROTOCOL_GENERATION {
+            return Err(ControlFrameError::BadGeneration { got: self.gen });
+        }
+        if self.name.trim().is_empty() || self.major == 0 {
+            return Err(ControlFrameError::InvalidSubprotocol);
         }
         Ok(())
     }

@@ -189,8 +189,11 @@ Mesh continues to own:
 Skippy owns:
 
 - model/session execution through the stage ABI;
-- stage protocol types, the `skippy-stage/1` QUIC ALPN, protobuf frames in
-  `skippy-protocol`, and activation wire encoding;
+- stage protocol types, protobuf frames in `skippy-protocol`, and activation
+  wire encoding;
+- Skippy control/artifact payload semantics carried through the mesh-owned
+  `STREAM_SUBPROTOCOL` envelope;
+- the `skippy-stage/1` QUIC ALPN for latency-sensitive activation transport;
 - layer package loading/materialization;
 - topology planning primitives and family capability policy;
 - backend telemetry emitted by runtime/stage execution.
@@ -820,18 +823,19 @@ The command should include:
 - bind/listen information;
 - shutdown/reload generation.
 
-The stage protocol is new and does not need backward compatibility. Keep it out
-of `mesh-llm/1` so mixed-version mesh membership, gossip, routing, and public
-OpenAI proxy traffic continue to interoperate even when a peer cannot
-participate in skippy stage execution.
+The stage protocol is new and does not need to become part of the stable mesh
+gossip/control schema. Mesh only owns subprotocol discovery, admission,
+connectivity, and stream muxing; Skippy owns its stage-control, artifact, and
+activation semantics.
 
 ### 8. Wire Stage Transport
 
-Stage traffic uses the `skippy-stage/1` QUIC ALPN. Each accepted stage
-connection carries skippy-owned stream kinds for control and activation
-transport, then length-prefixed `skippy-protocol` protobuf frames. The
-activation transport switches to raw activation bytes after the
-`StageTransportOpen` frame.
+Skippy control and package-artifact streams ride over the admitted `mesh-llm/1`
+connection with mesh stream `STREAM_SUBPROTOCOL`, a length-prefixed
+`MeshSubprotocolOpen { name: "skippy-stage", major: 1 }`, then a Skippy-owned
+stream kind and length-prefixed `skippy-protocol` protobuf frame. Activation
+transport stays on the `skippy-stage/1` QUIC ALPN and switches to raw
+activation bytes after the `StageTransportOpen` frame.
 
 ### 9. Replace Split Serving
 

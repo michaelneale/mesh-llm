@@ -1071,7 +1071,6 @@ async fn artifact_transfer_stream_serves_authorized_stage_artifact() -> Result<(
         })
         .await;
 
-    let conn = client.stage_connection_to_peer(server_id).await?;
     let request = skippy_stage_proto::StageArtifactTransferRequest {
         gen: skippy_protocol::STAGE_PROTOCOL_GENERATION,
         requester_id: client_id.as_bytes().to_vec(),
@@ -1086,8 +1085,8 @@ async fn artifact_transfer_stream_serves_authorized_stage_artifact() -> Result<(
         expected_sha256: Some(sha256_hex(b"layer000")),
     };
 
-    let (mut send, mut recv) = conn.open_bi().await?;
-    send.write_all(&[skippy_protocol::STAGE_STREAM_ARTIFACT_TRANSFER])
+    let (mut send, mut recv) = client
+        .open_skippy_stage_mesh_stream(server_id, skippy_protocol::STAGE_STREAM_ARTIFACT_TRANSFER)
         .await?;
     write_len_prefixed(&mut send, &request.encode_to_vec()).await?;
     send.finish()?;
@@ -1101,6 +1100,30 @@ async fn artifact_transfer_stream_serves_authorized_stage_artifact() -> Result<(
     let mut bytes = vec![0u8; response.total_size as usize];
     recv.read_exact(&mut bytes).await?;
     assert_eq!(bytes, b"layer000");
+
+    let conn = client.stage_connection_to_peer(server_id).await?;
+    let (mut legacy_send, mut legacy_recv) = conn.open_bi().await?;
+    legacy_send
+        .write_all(&[skippy_protocol::STAGE_STREAM_ARTIFACT_TRANSFER])
+        .await?;
+    write_len_prefixed(&mut legacy_send, &request.encode_to_vec()).await?;
+    legacy_send.finish()?;
+    let legacy_response_buf = read_len_prefixed(&mut legacy_recv).await?;
+    let legacy_response =
+        skippy_stage_proto::StageArtifactTransferResponse::decode(legacy_response_buf.as_slice())?;
+    assert!(
+        legacy_response.accepted,
+        "legacy artifact response: {:?}",
+        legacy_response.error
+    );
+    assert_eq!(legacy_response.total_size, 8);
+    assert_eq!(
+        legacy_response.sha256.as_deref(),
+        Some(expected_sha.as_str())
+    );
+    let mut legacy_bytes = vec![0u8; legacy_response.total_size as usize];
+    legacy_recv.read_exact(&mut legacy_bytes).await?;
+    assert_eq!(legacy_bytes, b"layer000");
     assert!(package_dir.join("model-package.json").is_file());
 
     Ok(())

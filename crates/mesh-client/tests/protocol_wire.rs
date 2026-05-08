@@ -2,14 +2,14 @@
 // These tests verify the portable protocol layer that is safe to use on mobile targets.
 
 use mesh_client::proto::node::{
-    GossipFrame, MeshSubprotocol, NodeRole, PeerAnnouncement, PeerDown, PeerLeaving, RouteTable,
-    RouteTableRequest,
+    GossipFrame, MeshSubprotocol, MeshSubprotocolOpen, NodeRole, PeerAnnouncement, PeerDown,
+    PeerLeaving, RouteTable, RouteTableRequest,
 };
 use mesh_client::protocol::{
     decode_control_frame, decode_legacy_tunnel_map_frame, encode_control_frame, ControlFrameError,
     ControlProtocol, ALPN_V0, ALPN_V1, MAX_CONTROL_FRAME_BYTES, NODE_PROTOCOL_GENERATION,
     STREAM_CONFIG_PUSH, STREAM_CONFIG_SUBSCRIBE, STREAM_GOSSIP, STREAM_PEER_DOWN,
-    STREAM_PEER_LEAVING, STREAM_ROUTE_REQUEST, STREAM_TUNNEL_MAP,
+    STREAM_PEER_LEAVING, STREAM_ROUTE_REQUEST, STREAM_SUBPROTOCOL, STREAM_TUNNEL_MAP,
 };
 
 // ── ALPN constants ──────────────────────────────────────────────────────────
@@ -143,6 +143,29 @@ fn gossip_subprotocol_discovery_roundtrip_and_validation() {
     let encoded = encode_control_frame(STREAM_GOSSIP, &invalid);
     let err = decode_control_frame::<GossipFrame>(STREAM_GOSSIP, &encoded)
         .expect_err("invalid subprotocol discovery must be rejected");
+    assert!(matches!(err, ControlFrameError::InvalidSubprotocol));
+}
+
+#[test]
+fn mesh_subprotocol_open_validates_generic_envelope() {
+    let open = MeshSubprotocolOpen {
+        gen: NODE_PROTOCOL_GENERATION,
+        name: "skippy-stage".to_string(),
+        major: 1,
+    };
+    let encoded = encode_control_frame(STREAM_SUBPROTOCOL, &open);
+    let decoded: MeshSubprotocolOpen = decode_control_frame(STREAM_SUBPROTOCOL, &encoded).unwrap();
+    assert_eq!(decoded.name, "skippy-stage");
+    assert_eq!(decoded.major, 1);
+
+    let bad = MeshSubprotocolOpen {
+        gen: NODE_PROTOCOL_GENERATION,
+        name: " ".to_string(),
+        major: 1,
+    };
+    let encoded = encode_control_frame(STREAM_SUBPROTOCOL, &bad);
+    let err = decode_control_frame::<MeshSubprotocolOpen>(STREAM_SUBPROTOCOL, &encoded)
+        .expect_err("empty subprotocol names must be rejected");
     assert!(matches!(err, ControlFrameError::InvalidSubprotocol));
 }
 
