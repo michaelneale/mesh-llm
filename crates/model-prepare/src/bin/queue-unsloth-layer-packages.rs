@@ -251,7 +251,7 @@ impl Args {
             search: "GGUF".to_string(),
             recent_limit: 80,
             popular_limit: 80,
-            max_jobs: 3,
+            max_jobs: 5,
             max_per_family: 1,
             target_namespace: "meshllm".to_string(),
             job_namespace: "meshllm".to_string(),

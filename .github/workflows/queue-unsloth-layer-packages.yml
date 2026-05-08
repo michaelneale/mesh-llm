@@ -8,7 +8,7 @@ on:
       max_jobs:
         description: "Maximum HF Jobs to submit"
         required: false
-        default: "3"
+        default: "5"
       dry_run:
         description: "Compare candidates without submitting HF Jobs"
         required: false
@@ -36,7 +36,7 @@ jobs:
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-      MAX_JOBS: ${{ github.event.inputs.max_jobs || '3' }}
+      MAX_JOBS: ${{ github.event.inputs.max_jobs || '5' }}
       DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
       MESH_LLM_REF: ${{ github.event.inputs.mesh_llm_ref || 'main' }}
       QUANT_PREFERENCE: ${{ github.event.inputs.quant_preference || 'UD-Q4_K_XL,UD-Q4_K_M,Q4_K_XL,Q4_K_M' }}
