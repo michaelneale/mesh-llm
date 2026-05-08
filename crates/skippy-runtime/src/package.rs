@@ -220,6 +220,7 @@ pub fn materialize_layer_package_details(
             .len()
             > 0
         && !env_flag("SKIPPY_FORCE_MATERIALIZE")
+        && crate::ModelInfo::open(&output).is_ok()
     {
         return Ok(MaterializedPackage {
             output_path: output,
@@ -232,10 +233,34 @@ pub fn materialize_layer_package_details(
         fs::create_dir_all(parent)
             .with_context(|| format!("create materialization directory {}", parent.display()))?;
     }
-    write_gguf_from_parts(&selection.absolute_paths, &output).with_context(|| {
+    let tmp_output = output.with_extension(format!(
+        "tmp-{}-{}",
+        std::process::id(),
+        selection.manifest_sha256.get(..12).unwrap_or("manifest")
+    ));
+    if tmp_output.exists() {
+        let _ = fs::remove_file(&tmp_output);
+    }
+    if let Err(error) =
+        write_gguf_from_parts(&selection.absolute_paths, &tmp_output).with_context(|| {
+            format!(
+                "materialize layer package {}",
+                selection.package_dir.display()
+            )
+        })
+    {
+        let _ = fs::remove_file(&tmp_output);
+        return Err(error);
+    }
+    if output.exists() {
+        fs::remove_file(&output)
+            .with_context(|| format!("remove stale materialized model {}", output.display()))?;
+    }
+    fs::rename(&tmp_output, &output).with_context(|| {
         format!(
-            "materialize layer package {}",
-            selection.package_dir.display()
+            "publish materialized model {} -> {}",
+            tmp_output.display(),
+            output.display()
         )
     })?;
 

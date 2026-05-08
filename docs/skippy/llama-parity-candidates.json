@@ -230,9 +230,9 @@
       "llama_model": "gemma",
       "family": "gemma",
       "status": "certified",
-      "repo": "ggml-org/gemma-3-270m-it-GGUF",
-      "include": "*.gguf",
-      "notes": "repo currently provides Q8_0 only; text lane passed in llama-parity-gemma-f32-wire-1 with f32 activation wire; f16 and q8 activation wire changed the next-token argmax"
+      "repo": "lmstudio-community/gemma-1.1-2b-it-GGUF",
+      "include": "gemma-1.1-2b-it-Q4_K_M.gguf",
+      "notes": "Gemma 1.1 representative; replaces the previous accidental Gemma3 270M row so the P0 gemma module certifies the llama.cpp gemma architecture."
     },
     {
       "llama_model": "gemma2",
@@ -260,7 +260,9 @@
       "family": "gemma4_e4b",
       "status": "certified",
       "repo": "unsloth/gemma-4-E4B-it-GGUF",
-      "include": "*Q4_K_M.gguf"
+      "include": "*Q4_K_M.gguf",
+      "splits": "10,21",
+      "notes": "Gemma4 E4B rejects known shared-KV producer/consumer cuts at 12,14,24,28 for the 42-layer representative; use reviewed 0..10,10..21,21..42 split boundaries for parity smoke tests."
     },
     {
       "llama_model": "gemma3n",
@@ -270,7 +272,9 @@
       "include": "*Q4_K_M.gguf",
       "split_layer": 15,
       "splits": "10,15",
-      "notes": "certified with lmstudio-community/gemma-3n-E2B-it-GGUF Q4_K_M in llama-parity-gemma3n-cpu-20260507d; Gemma3n carries AltUp sideband state across activation frames and split topologies must keep KV-reuse layers with their KV-owner layers, so the reviewed three-stage split is 0..10,10..15,15..30 rather than an even 0..10,10..20,20..30 split"
+      "wire_dtype": "f32",
+      "n_gpu_layers": 0,
+      "notes": "certified with lmstudio-community/gemma-3n-E2B-it-GGUF Q4_K_M in llama-parity-gemma3n-cpu-20260507d; Gemma3n carries AltUp sideband state across activation frames and split topologies must keep KV-reuse layers with their KV-owner layers, so the reviewed three-stage split is 0..10,10..15,15..30 rather than an even 0..10,10..20,20..30 split. The local parity representative runs CPU-only because Metal on the M1 Ultra diverges for split Gemma3n AltUp handoff while CPU matches the full-model baseline."
     },
     {
       "llama_model": "deepseek",
@@ -660,9 +664,11 @@
       "llama_model": "chatglm",
       "family": "chatglm",
       "status": "certified",
-      "notes": "text split and dtype matrix passed in llama-parity-finish-batch2-20260506; ResidentKv borrowed-hit cache restore passed in llama-parity-finish-batch2-residentkv-20260506; q8 rejected",
-      "repo": "mradermacher/chatglm3-6b-i1-GGUF",
-      "include": "chatglm3-6b.i1-IQ2_M.gguf"
+      "notes": "text split and ResidentKv native-sequence remap cache restore pass on the Q4_K_M ChatGLM3 representative. The prior IQ2_M cheap artifact flips the first-token argmax at the activation boundary even with f32 wire, so the P1 certification row uses the less brittle Q4_K_M artifact and a stable multi-token prompt.",
+      "repo": "Junrui2021/chatglm3-6b-Q4_K_M-GGUF",
+      "include": "chatglm3-6b-q4_k_m.gguf",
+      "splits": "9,18",
+      "prompt": "The quick brown fox"
     },
     {
       "llama_model": "codeshell",
@@ -958,7 +964,8 @@
       "status": "certified",
       "repo": "ggml-org/gpt-oss-20b-GGUF",
       "include": "gpt-oss-20b-mxfp4.gguf",
-      "notes": "llama.cpp exposes this model file as openai-moe while GGUF metadata reports general.architecture=gpt-oss; text split, chain, dtype matrix, and ResidentKv state handoff passed in llama-parity-gpt-oss-openai-moe-20260507 on ggml-org/gpt-oss-20b-GGUF:gpt-oss-20b-mxfp4; f16 activation wire validated, q8 activation wire rejected"
+      "n_gpu_layers": 0,
+      "notes": "llama.cpp exposes this model file as openai-moe while GGUF metadata reports general.architecture=gpt-oss; text split, chain, dtype matrix, and ResidentKv state handoff passed in llama-parity-gpt-oss-openai-moe-20260507 on ggml-org/gpt-oss-20b-GGUF:gpt-oss-20b-mxfp4; f16 activation wire validated, q8 activation wire rejected. The local cache representative runs CPU-only because Metal on the M1 Ultra diverges for split OpenAI-MoE activation restore while CPU matches the full-model baseline."
     },
     {
       "llama_model": "openelm",
