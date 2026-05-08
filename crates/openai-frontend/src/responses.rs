@@ -666,8 +666,17 @@ pub fn parse_chat_stream_chunk(data: &str) -> Result<ChatCompletionStreamChunk, 
 }
 
 pub fn responses_stream_created_event(model: &str, created_at: i64) -> Value {
+    responses_stream_created_event_with_sequence(model, created_at, 0)
+}
+
+pub fn responses_stream_created_event_with_sequence(
+    model: &str,
+    created_at: i64,
+    sequence_number: i32,
+) -> Value {
     let mut event = serde_json::json!({
         "type": "response.created",
+        "sequence_number": sequence_number,
         "response": {
             "id": format!("resp_{created_at}"),
             "object": "response",
@@ -684,6 +693,36 @@ pub fn responses_stream_created_event(model: &str, created_at: i64) -> Value {
     event
 }
 
+pub fn responses_stream_output_item_added_event(item_id: &str, sequence_number: i32) -> Value {
+    serde_json::json!({
+        "type": "response.output_item.added",
+        "sequence_number": sequence_number,
+        "output_index": 0,
+        "item": {
+            "id": item_id,
+            "type": "message",
+            "status": "in_progress",
+            "role": "assistant",
+            "content": [],
+        },
+    })
+}
+
+pub fn responses_stream_content_part_added_event(item_id: &str, sequence_number: i32) -> Value {
+    serde_json::json!({
+        "type": "response.content_part.added",
+        "sequence_number": sequence_number,
+        "item_id": item_id,
+        "output_index": 0,
+        "content_index": 0,
+        "part": {
+            "type": "output_text",
+            "text": "",
+            "annotations": [],
+        },
+    })
+}
+
 pub fn responses_stream_delta_event(item_id: &str, delta: &str) -> Value {
     responses_stream_delta_event_with_logprobs(item_id, delta, None)
 }
@@ -693,8 +732,18 @@ pub fn responses_stream_delta_event_with_logprobs(
     delta: &str,
     logprobs: Option<Value>,
 ) -> Value {
+    responses_stream_delta_event_with_logprobs_and_sequence(item_id, delta, logprobs, 0)
+}
+
+pub fn responses_stream_delta_event_with_logprobs_and_sequence(
+    item_id: &str,
+    delta: &str,
+    logprobs: Option<Value>,
+    sequence_number: i32,
+) -> Value {
     let mut event = serde_json::json!({
         "type": "response.output_text.delta",
+        "sequence_number": sequence_number,
         "item_id": item_id,
         "output_index": 0,
         "content_index": 0,
@@ -711,10 +760,68 @@ pub fn responses_stream_delta_event_with_logprobs(
 pub fn responses_stream_text_done_event(item_id: &str, text: &str) -> Value {
     serde_json::json!({
         "type": "response.output_text.done",
+        "sequence_number": 0,
         "item_id": item_id,
         "output_index": 0,
         "content_index": 0,
         "text": text,
+    })
+}
+
+pub fn responses_stream_text_done_event_with_sequence(
+    item_id: &str,
+    text: &str,
+    sequence_number: i32,
+) -> Value {
+    serde_json::json!({
+        "type": "response.output_text.done",
+        "sequence_number": sequence_number,
+        "item_id": item_id,
+        "output_index": 0,
+        "content_index": 0,
+        "text": text,
+    })
+}
+
+pub fn responses_stream_content_part_done_event(
+    item_id: &str,
+    text: &str,
+    sequence_number: i32,
+) -> Value {
+    serde_json::json!({
+        "type": "response.content_part.done",
+        "sequence_number": sequence_number,
+        "item_id": item_id,
+        "output_index": 0,
+        "content_index": 0,
+        "part": {
+            "type": "output_text",
+            "text": text,
+            "annotations": [],
+        },
+    })
+}
+
+pub fn responses_stream_output_item_done_event(
+    item_id: &str,
+    text: &str,
+    sequence_number: i32,
+) -> Value {
+    serde_json::json!({
+        "type": "response.output_item.done",
+        "sequence_number": sequence_number,
+        "output_index": 0,
+        "item": {
+            "id": item_id,
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [{
+                "type": "output_text",
+                "text": text,
+                "annotations": [],
+            }],
+        },
     })
 }
 
@@ -726,8 +833,29 @@ pub fn responses_stream_completed_event(
     text: &str,
     usage: Option<Value>,
 ) -> Value {
+    responses_stream_completed_event_with_sequence(
+        response_id,
+        created_at,
+        model,
+        item_id,
+        text,
+        usage,
+        0,
+    )
+}
+
+pub fn responses_stream_completed_event_with_sequence(
+    response_id: &str,
+    created_at: i64,
+    model: &str,
+    item_id: &str,
+    text: &str,
+    usage: Option<Value>,
+    sequence_number: i32,
+) -> Value {
     let mut event = serde_json::json!({
         "type": "response.completed",
+        "sequence_number": sequence_number,
         "response": {
             "id": response_id,
             "object": "response",
@@ -833,10 +961,12 @@ pub struct ResponseSseState {
     pub response_id: String,
     pub item_id: String,
     pub created_at: i64,
+    pub sequence_number: i32,
     pub model: String,
     pub output_text: String,
     pub usage: Option<Value>,
     pub created_emitted: bool,
+    pub output_item_emitted: bool,
 }
 
 impl ResponseSseState {
@@ -846,11 +976,18 @@ impl ResponseSseState {
             response_id: format!("resp_{created_at}"),
             item_id: format!("msg_{created_at}"),
             created_at,
+            sequence_number: 0,
             model: model.into(),
             output_text: String::new(),
             usage: None,
             created_emitted: false,
+            output_item_emitted: false,
         }
+    }
+
+    pub fn next_sequence_number(&mut self) -> i32 {
+        self.sequence_number = self.sequence_number.saturating_add(1);
+        self.sequence_number
     }
 }
 
@@ -1112,6 +1249,7 @@ mod tests {
     #[test]
     fn responses_stream_events_emit_agent_compat_response_fields() {
         let created = responses_stream_created_event("qwen", 123);
+        assert_eq!(created["sequence_number"], 0);
         let created_response = &created["response"];
         assert_eq!(created_response["status"], "in_progress");
         assert!(created_response["completed_at"].is_null());
@@ -1127,5 +1265,34 @@ mod tests {
         assert_eq!(completed_response["output_text"], "hello");
         assert_eq!(completed_response["tool_choice"], "auto");
         assert_eq!(completed_response["tools"], json!([]));
+    }
+
+    #[test]
+    fn responses_stream_events_emit_openai_responses_scaffold() {
+        let item_added = responses_stream_output_item_added_event("msg_123", 2);
+        assert_eq!(item_added["type"], "response.output_item.added");
+        assert_eq!(item_added["sequence_number"], 2);
+        assert_eq!(item_added["item"]["id"], "msg_123");
+        assert_eq!(item_added["item"]["type"], "message");
+        assert_eq!(item_added["item"]["status"], "in_progress");
+
+        let part_added = responses_stream_content_part_added_event("msg_123", 3);
+        assert_eq!(part_added["type"], "response.content_part.added");
+        assert_eq!(part_added["sequence_number"], 3);
+        assert_eq!(part_added["part"]["type"], "output_text");
+
+        let delta =
+            responses_stream_delta_event_with_logprobs_and_sequence("msg_123", "hello", None, 4);
+        assert_eq!(delta["type"], "response.output_text.delta");
+        assert_eq!(delta["sequence_number"], 4);
+        assert_eq!(delta["delta"], "hello");
+
+        let part_done = responses_stream_content_part_done_event("msg_123", "hello", 5);
+        assert_eq!(part_done["type"], "response.content_part.done");
+        assert_eq!(part_done["part"]["text"], "hello");
+
+        let item_done = responses_stream_output_item_done_event("msg_123", "hello", 6);
+        assert_eq!(item_done["type"], "response.output_item.done");
+        assert_eq!(item_done["item"]["content"][0]["text"], "hello");
     }
 }

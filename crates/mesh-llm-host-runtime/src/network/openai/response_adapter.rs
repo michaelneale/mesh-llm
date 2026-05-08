@@ -2,9 +2,12 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 
 pub(crate) use openai_frontend::{
-    responses_stream_completed_event, responses_stream_created_event,
-    responses_stream_delta_event_with_logprobs, responses_stream_text_done_event,
-    stream_usage_to_responses_usage, translate_chat_completion_to_responses,
+    responses_stream_completed_event_with_sequence, responses_stream_content_part_added_event,
+    responses_stream_content_part_done_event, responses_stream_created_event_with_sequence,
+    responses_stream_delta_event_with_logprobs_and_sequence,
+    responses_stream_output_item_added_event, responses_stream_output_item_done_event,
+    responses_stream_text_done_event_with_sequence, stream_usage_to_responses_usage,
+    translate_chat_completion_to_responses,
 };
 
 fn sse_frame(event: Option<&str>, data: &str) -> Vec<u8> {

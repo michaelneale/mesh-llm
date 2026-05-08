@@ -35,10 +35,14 @@ use crate::{
     errors::OpenAiError,
     models::ModelsResponse,
     responses::{
-        chunk_delta_text, normalize_openai_compat_request, responses_stream_completed_event,
-        responses_stream_created_event, responses_stream_delta_event_with_logprobs,
-        responses_stream_text_done_event, translate_chat_completion_response_to_responses,
-        usage_to_responses_usage, ResponseAdapterMode, ResponseSseState,
+        chunk_delta_text, normalize_openai_compat_request,
+        responses_stream_completed_event_with_sequence, responses_stream_content_part_added_event,
+        responses_stream_content_part_done_event, responses_stream_created_event_with_sequence,
+        responses_stream_delta_event_with_logprobs_and_sequence,
+        responses_stream_output_item_added_event, responses_stream_output_item_done_event,
+        responses_stream_text_done_event_with_sequence,
+        translate_chat_completion_response_to_responses, usage_to_responses_usage,
+        ResponseAdapterMode, ResponseSseState,
     },
     sse::{done_event, json_event},
 };
@@ -215,31 +219,60 @@ async fn responses(
                     Ok(chunk) => {
                         if !state_machine.created_emitted {
                             state_machine.model = chunk.model.clone();
+                            let sequence_number = state_machine.next_sequence_number();
                             out.push(
                                 Event::default()
                                     .event("response.created")
-                                    .json_data(responses_stream_created_event(
+                                    .json_data(responses_stream_created_event_with_sequence(
                                         &state_machine.model,
                                         state_machine.created_at,
+                                        sequence_number,
                                     ))
                                     .unwrap_or_else(|_| Event::default().data("{}")),
                             );
                             state_machine.created_emitted = true;
                         }
                         if let Some(delta) = chunk_delta_text(&chunk) {
+                            if !state_machine.output_item_emitted {
+                                let sequence_number = state_machine.next_sequence_number();
+                                out.push(
+                                    Event::default()
+                                        .event("response.output_item.added")
+                                        .json_data(responses_stream_output_item_added_event(
+                                            &state_machine.item_id,
+                                            sequence_number,
+                                        ))
+                                        .unwrap_or_else(|_| Event::default().data("{}")),
+                                );
+                                let sequence_number = state_machine.next_sequence_number();
+                                out.push(
+                                    Event::default()
+                                        .event("response.content_part.added")
+                                        .json_data(responses_stream_content_part_added_event(
+                                            &state_machine.item_id,
+                                            sequence_number,
+                                        ))
+                                        .unwrap_or_else(|_| Event::default().data("{}")),
+                                );
+                                state_machine.output_item_emitted = true;
+                            }
                             let logprobs = chunk
                                 .choices
                                 .first()
                                 .and_then(|choice| choice.logprobs.clone());
                             state_machine.output_text.push_str(&delta);
+                            let sequence_number = state_machine.next_sequence_number();
                             out.push(
                                 Event::default()
                                     .event("response.output_text.delta")
-                                    .json_data(responses_stream_delta_event_with_logprobs(
-                                        &state_machine.item_id,
-                                        &delta,
-                                        logprobs,
-                                    ))
+                                    .json_data(
+                                        responses_stream_delta_event_with_logprobs_and_sequence(
+                                            &state_machine.item_id,
+                                            &delta,
+                                            logprobs,
+                                            sequence_number,
+                                        ),
+                                    )
                                     .unwrap_or_else(|_| Event::default().data("{}")),
                             );
                         }
@@ -264,36 +297,87 @@ async fn responses(
                     .expect("responses stream state lock poisoned");
                 let mut out = Vec::new();
                 if !state_machine.created_emitted {
+                    let sequence_number = state_machine.next_sequence_number();
                     out.push(
                         Event::default()
                             .event("response.created")
-                            .json_data(responses_stream_created_event(
+                            .json_data(responses_stream_created_event_with_sequence(
                                 &state_machine.model,
                                 state_machine.created_at,
+                                sequence_number,
                             ))
                             .unwrap_or_else(|_| Event::default().data("{}")),
                     );
                     state_machine.created_emitted = true;
                 }
+                if !state_machine.output_item_emitted {
+                    let sequence_number = state_machine.next_sequence_number();
+                    out.push(
+                        Event::default()
+                            .event("response.output_item.added")
+                            .json_data(responses_stream_output_item_added_event(
+                                &state_machine.item_id,
+                                sequence_number,
+                            ))
+                            .unwrap_or_else(|_| Event::default().data("{}")),
+                    );
+                    let sequence_number = state_machine.next_sequence_number();
+                    out.push(
+                        Event::default()
+                            .event("response.content_part.added")
+                            .json_data(responses_stream_content_part_added_event(
+                                &state_machine.item_id,
+                                sequence_number,
+                            ))
+                            .unwrap_or_else(|_| Event::default().data("{}")),
+                    );
+                    state_machine.output_item_emitted = true;
+                }
+                let sequence_number = state_machine.next_sequence_number();
                 out.push(
                     Event::default()
                         .event("response.output_text.done")
-                        .json_data(responses_stream_text_done_event(
+                        .json_data(responses_stream_text_done_event_with_sequence(
                             &state_machine.item_id,
                             &state_machine.output_text,
+                            sequence_number,
                         ))
                         .unwrap_or_else(|_| Event::default().data("{}")),
                 );
+                let sequence_number = state_machine.next_sequence_number();
+                out.push(
+                    Event::default()
+                        .event("response.content_part.done")
+                        .json_data(responses_stream_content_part_done_event(
+                            &state_machine.item_id,
+                            &state_machine.output_text,
+                            sequence_number,
+                        ))
+                        .unwrap_or_else(|_| Event::default().data("{}")),
+                );
+                let sequence_number = state_machine.next_sequence_number();
+                out.push(
+                    Event::default()
+                        .event("response.output_item.done")
+                        .json_data(responses_stream_output_item_done_event(
+                            &state_machine.item_id,
+                            &state_machine.output_text,
+                            sequence_number,
+                        ))
+                        .unwrap_or_else(|_| Event::default().data("{}")),
+                );
+                let sequence_number = state_machine.next_sequence_number();
                 out.push(
                     Event::default()
                         .event("response.completed")
-                        .json_data(responses_stream_completed_event(
+                        .json_data(responses_stream_completed_event_with_sequence(
                             &state_machine.response_id,
                             state_machine.created_at,
                             &state_machine.model,
                             &state_machine.item_id,
                             &state_machine.output_text,
                             state_machine.usage.clone(),
+                            sequence_number,
                         ))
                         .unwrap_or_else(|_| Event::default().data("{}")),
                 );
@@ -1216,8 +1300,14 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_body_text(response).await;
         assert!(body.contains("event: response.created"));
+        assert!(body.contains("event: response.output_item.added"));
+        assert!(body.contains("event: response.content_part.added"));
         assert!(body.contains("event: response.output_text.delta"));
+        assert!(body.contains("event: response.output_text.done"));
+        assert!(body.contains("event: response.content_part.done"));
+        assert!(body.contains("event: response.output_item.done"));
         assert!(body.contains("event: response.completed"));
+        assert!(body.contains(r#""sequence_number":1"#));
         assert!(body.contains(r#""output_text":"hello""#));
         assert!(body.contains("data: [DONE]"));
     }

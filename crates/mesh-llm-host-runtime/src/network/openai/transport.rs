@@ -1202,11 +1202,17 @@ async fn relay_translated_responses_stream<R: AsyncRead + Unpin>(
     let mut output_text = String::new();
     let mut usage = None;
     let mut observed_completion_tokens = None;
+    let mut sequence_number = 0i32;
     let header = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
     tcp_stream.write_all(header.as_bytes()).await?;
 
     let mut created_emitted = false;
+    let mut output_item_emitted = false;
     let mut done_seen = false;
+    let mut next_sequence_number = || {
+        sequence_number = sequence_number.saturating_add(1);
+        sequence_number
+    };
     loop {
         let mut processed = 0usize;
         while let Some(frame_end_rel) = carry[processed..].find("\n\n") {
@@ -1240,8 +1246,13 @@ async fn relay_translated_responses_stream<R: AsyncRead + Unpin>(
             }
             // Emit response.created once we have the model from the first chunk.
             if !created_emitted && !model.is_empty() {
+                let sequence_number = next_sequence_number();
                 let created = serde_json::to_string(
-                    &response_adapter::responses_stream_created_event(&model, created_at),
+                    &response_adapter::responses_stream_created_event_with_sequence(
+                        &model,
+                        created_at,
+                        sequence_number,
+                    ),
                 )
                 .context("serialize response.created stream event")?;
                 response_adapter::write_chunked_sse_event(
@@ -1258,14 +1269,49 @@ async fn relay_translated_responses_stream<R: AsyncRead + Unpin>(
                 .and_then(|choice| choice.delta.as_ref())
                 .and_then(|delta| delta.content.as_deref())
             {
+                if !output_item_emitted {
+                    let sequence_number = next_sequence_number();
+                    let item_added = serde_json::to_string(
+                        &response_adapter::responses_stream_output_item_added_event(
+                            &item_id,
+                            sequence_number,
+                        ),
+                    )
+                    .context("serialize response.output_item.added event")?;
+                    response_adapter::write_chunked_sse_event(
+                        tcp_stream,
+                        Some("response.output_item.added"),
+                        &item_added,
+                    )
+                    .await?;
+                    let sequence_number = next_sequence_number();
+                    let part_added = serde_json::to_string(
+                        &response_adapter::responses_stream_content_part_added_event(
+                            &item_id,
+                            sequence_number,
+                        ),
+                    )
+                    .context("serialize response.content_part.added event")?;
+                    response_adapter::write_chunked_sse_event(
+                        tcp_stream,
+                        Some("response.content_part.added"),
+                        &part_added,
+                    )
+                    .await?;
+                    output_item_emitted = true;
+                }
                 let logprobs = chunk
                     .choices
                     .first()
                     .and_then(|choice| choice.logprobs.clone());
                 output_text.push_str(delta);
+                let sequence_number = next_sequence_number();
                 let event = serde_json::to_string(
-                    &response_adapter::responses_stream_delta_event_with_logprobs(
-                        &item_id, delta, logprobs,
+                    &response_adapter::responses_stream_delta_event_with_logprobs_and_sequence(
+                        &item_id,
+                        delta,
+                        logprobs,
+                        sequence_number,
                     ),
                 )
                 .context("serialize response.output_text.delta event")?;
@@ -1312,18 +1358,52 @@ async fn relay_translated_responses_stream<R: AsyncRead + Unpin>(
 
     // If upstream sent no model field at all (e.g. empty stream), still emit response.created.
     if !created_emitted {
-        let created = serde_json::to_string(&response_adapter::responses_stream_created_event(
-            &model, created_at,
-        ))
+        let sequence_number = next_sequence_number();
+        let created = serde_json::to_string(
+            &response_adapter::responses_stream_created_event_with_sequence(
+                &model,
+                created_at,
+                sequence_number,
+            ),
+        )
         .context("serialize response.created stream event")?;
         response_adapter::write_chunked_sse_event(tcp_stream, Some("response.created"), &created)
             .await?;
     }
 
-    let text_done = serde_json::to_string(&response_adapter::responses_stream_text_done_event(
-        &item_id,
-        &output_text,
-    ))
+    if !output_item_emitted {
+        let sequence_number = next_sequence_number();
+        let item_added = serde_json::to_string(
+            &response_adapter::responses_stream_output_item_added_event(&item_id, sequence_number),
+        )
+        .context("serialize response.output_item.added event")?;
+        response_adapter::write_chunked_sse_event(
+            tcp_stream,
+            Some("response.output_item.added"),
+            &item_added,
+        )
+        .await?;
+        let sequence_number = next_sequence_number();
+        let part_added = serde_json::to_string(
+            &response_adapter::responses_stream_content_part_added_event(&item_id, sequence_number),
+        )
+        .context("serialize response.content_part.added event")?;
+        response_adapter::write_chunked_sse_event(
+            tcp_stream,
+            Some("response.content_part.added"),
+            &part_added,
+        )
+        .await?;
+    }
+
+    let sequence_number = next_sequence_number();
+    let text_done = serde_json::to_string(
+        &response_adapter::responses_stream_text_done_event_with_sequence(
+            &item_id,
+            &output_text,
+            sequence_number,
+        ),
+    )
     .context("serialize response.output_text.done event")?;
     response_adapter::write_chunked_sse_event(
         tcp_stream,
@@ -1331,14 +1411,46 @@ async fn relay_translated_responses_stream<R: AsyncRead + Unpin>(
         &text_done,
     )
     .await?;
-    let completed = serde_json::to_string(&response_adapter::responses_stream_completed_event(
-        &response_id,
-        created_at,
-        &model,
-        &item_id,
-        &output_text,
-        usage,
-    ))
+    let sequence_number = next_sequence_number();
+    let part_done =
+        serde_json::to_string(&response_adapter::responses_stream_content_part_done_event(
+            &item_id,
+            &output_text,
+            sequence_number,
+        ))
+        .context("serialize response.content_part.done event")?;
+    response_adapter::write_chunked_sse_event(
+        tcp_stream,
+        Some("response.content_part.done"),
+        &part_done,
+    )
+    .await?;
+    let sequence_number = next_sequence_number();
+    let item_done =
+        serde_json::to_string(&response_adapter::responses_stream_output_item_done_event(
+            &item_id,
+            &output_text,
+            sequence_number,
+        ))
+        .context("serialize response.output_item.done event")?;
+    response_adapter::write_chunked_sse_event(
+        tcp_stream,
+        Some("response.output_item.done"),
+        &item_done,
+    )
+    .await?;
+    let sequence_number = next_sequence_number();
+    let completed = serde_json::to_string(
+        &response_adapter::responses_stream_completed_event_with_sequence(
+            &response_id,
+            created_at,
+            &model,
+            &item_id,
+            &output_text,
+            usage,
+            sequence_number,
+        ),
+    )
     .context("serialize response.completed event")?;
     response_adapter::write_chunked_sse_event(tcp_stream, Some("response.completed"), &completed)
         .await?;
