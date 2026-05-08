@@ -33,6 +33,7 @@ concurrency:
 jobs:
   queue:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -66,6 +67,8 @@ jobs:
           elif [[ -z "${HF_TOKEN:-}" ]]; then
             echo "HF_TOKEN secret is required to queue HF Jobs." >&2
             exit 1
+          else
+            args+=(--wait-for-jobs --job-poll-seconds 60)
           fi
 
           cargo run -p model-prepare --bin queue-unsloth-layer-packages -- "${args[@]}"

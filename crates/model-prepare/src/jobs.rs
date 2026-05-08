@@ -59,6 +59,7 @@ pub struct JobStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum JobStage {
+    Pending,
     Running,
     Completed,
     Error,
@@ -72,6 +73,7 @@ pub enum JobStage {
 impl std::fmt::Display for JobStage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            JobStage::Pending => write!(f, "PENDING"),
             JobStage::Running => write!(f, "RUNNING"),
             JobStage::Completed => write!(f, "COMPLETED"),
             JobStage::Error => write!(f, "ERROR"),
@@ -79,6 +81,19 @@ impl std::fmt::Display for JobStage {
             JobStage::Deleted => write!(f, "DELETED"),
             JobStage::Unknown => write!(f, "UNKNOWN"),
         }
+    }
+}
+
+impl JobStage {
+    pub fn is_success(self) -> bool {
+        matches!(self, JobStage::Completed)
+    }
+
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            JobStage::Completed | JobStage::Error | JobStage::Canceled | JobStage::Deleted
+        )
     }
 }
 

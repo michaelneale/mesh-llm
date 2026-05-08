@@ -11,7 +11,7 @@ use hf_hub::types::{
     RepoType, RepoUploadFileParams,
 };
 use hf_hub::{HFClient, HFRepository};
-use model_prepare::jobs::{HfJobsClient, JobSpec, JobVolume};
+use model_prepare::jobs::{HfJobsClient, JobInfo, JobSpec, JobStage, JobVolume};
 use model_prepare::prepare::{self, DiscoveredQuant};
 use serde::Serialize;
 use serde_json::Value;
@@ -37,6 +37,8 @@ struct Args {
     retry_queued_after: Duration,
     split_candidate_vram_bytes: u64,
     quant_preference: Vec<String>,
+    wait_for_jobs: bool,
+    job_poll_interval: Duration,
     catalog_direct: bool,
     dry_run: bool,
 }
@@ -57,6 +59,12 @@ struct Candidate {
     target_repo: String,
     model_id: String,
     family: String,
+}
+
+#[derive(Debug, Clone)]
+struct SubmittedJob {
+    candidate: Candidate,
+    info: JobInfo,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,6 +161,7 @@ async fn main() -> Result<()> {
     );
 
     let mut submitted = 0usize;
+    let mut submitted_jobs = Vec::new();
     let mut submitted_by_family: HashMap<String, usize> = HashMap::new();
     for candidate in candidates {
         if submitted >= args.max_jobs {
@@ -226,6 +235,10 @@ async fn main() -> Result<()> {
             "submitted HF job {}: https://huggingface.co/jobs/{}/{}",
             info.id, args.job_namespace, info.id
         );
+        submitted_jobs.push(SubmittedJob {
+            candidate: candidate.clone(),
+            info,
+        });
         submitted += 1;
         *submitted_by_family
             .entry(candidate.family.clone())
@@ -241,6 +254,11 @@ async fn main() -> Result<()> {
         },
         submitted
     );
+
+    if args.wait_for_jobs && !submitted_jobs.is_empty() {
+        let jobs_client = jobs_client.as_ref().expect("jobs client initialized");
+        wait_for_submitted_jobs(jobs_client, &args, submitted_jobs).await?;
+    }
     Ok(())
 }
 
@@ -264,6 +282,8 @@ impl Args {
                 .iter()
                 .map(|value| value.to_string())
                 .collect(),
+            wait_for_jobs: false,
+            job_poll_interval: Duration::from_secs(60),
             catalog_direct: true,
             dry_run: false,
         };
@@ -303,6 +323,14 @@ impl Args {
                         .filter(|value| !value.is_empty())
                         .map(str::to_string)
                         .collect();
+                }
+                "--wait-for-jobs" => args.wait_for_jobs = true,
+                "--job-poll-seconds" => {
+                    let seconds: u64 = parse_next(&mut iter, &flag)?;
+                    if seconds == 0 {
+                        bail!("--job-poll-seconds must be at least 1");
+                    }
+                    args.job_poll_interval = Duration::from_secs(seconds);
                 }
                 "--catalog-direct" => args.catalog_direct = true,
                 "--no-catalog-direct" => args.catalog_direct = false,
@@ -355,9 +383,86 @@ fn print_help() {
            --job-namespace NAME\n\
            --flavor HF_JOB_FLAVOR\n\
            --timeout DURATION\n\
+           --wait-for-jobs\n\
+           --job-poll-seconds N\n\
            --split-candidate-vram-gib GiB\n\
            --no-catalog-direct"
     );
+}
+
+async fn wait_for_submitted_jobs(
+    jobs_client: &HfJobsClient,
+    args: &Args,
+    submitted_jobs: Vec<SubmittedJob>,
+) -> Result<()> {
+    let mut pending = submitted_jobs
+        .into_iter()
+        .map(|job| (job.info.id.clone(), job))
+        .collect::<HashMap<_, _>>();
+
+    println!(
+        "Monitoring {} HF job(s) every {}s.",
+        pending.len(),
+        args.job_poll_interval.as_secs()
+    );
+
+    while !pending.is_empty() {
+        let mut finished = Vec::new();
+
+        for (job_id, submitted) in &pending {
+            let info = jobs_client
+                .inspect(&args.job_namespace, job_id)
+                .await
+                .with_context(|| format!("inspect HF job {job_id}"))?;
+            let stage = info.status.stage;
+            println!(
+                "HF job {} for {}: {}{}",
+                job_id,
+                submitted.candidate.model_id,
+                stage,
+                status_message_suffix(info.status.message.as_deref())
+            );
+
+            if stage.is_success() {
+                finished.push(job_id.clone());
+                continue;
+            }
+            if stage.is_terminal() {
+                bail!(
+                    "HF job {} for {} finished unsuccessfully: {}{}",
+                    job_id,
+                    submitted.candidate.model_id,
+                    stage,
+                    status_message_suffix(info.status.message.as_deref())
+                );
+            }
+            if stage == JobStage::Unknown {
+                println!(
+                    "HF job {} reported an unknown non-terminal stage; continuing to poll.",
+                    job_id
+                );
+            }
+        }
+
+        for job_id in finished {
+            pending.remove(&job_id);
+        }
+        if pending.is_empty() {
+            break;
+        }
+
+        tokio::time::sleep(args.job_poll_interval).await;
+    }
+
+    println!("All submitted HF jobs completed successfully.");
+    Ok(())
+}
+
+fn status_message_suffix(message: Option<&str>) -> String {
+    message
+        .filter(|message| !message.trim().is_empty())
+        .map(|message| format!(" ({message})"))
+        .unwrap_or_default()
 }
 
 async fn list_ranked_models(
