@@ -32,6 +32,21 @@ pub struct NodeSpec {
     pub vram_bytes: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct NodePlacementSignal {
+    pub node_id: String,
+    #[serde(default)]
+    pub cached_slice_bytes: u64,
+    #[serde(default)]
+    pub missing_artifact_bytes: u64,
+    #[serde(default)]
+    pub rtt_ms: Option<u32>,
+    #[serde(default)]
+    pub artifact_transfer_supported: bool,
+    #[serde(default)]
+    pub availability_score: u32,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct PlannerPolicy {
@@ -63,6 +78,12 @@ pub struct StagePlan {
     pub migration_policy: MigrationPolicy,
     #[serde(default)]
     pub reason_codes: Vec<PlanReasonCode>,
+    #[serde(default)]
+    pub cached_slice_bytes: u64,
+    #[serde(default)]
+    pub missing_artifact_bytes: u64,
+    #[serde(default)]
+    pub rtt_ms: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -136,6 +157,10 @@ pub enum PlanReasonCode {
     Q8WireRejected,
     ExactStateMobilityAccepted,
     ExactStateMobilityRejected,
+    CacheLocalityPreferred,
+    ArtifactTransferPenalty,
+    NetworkPipelineCost,
+    PeerAvailabilityPreferred,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -859,13 +884,31 @@ pub fn plan_even_contiguous(request: &TopologyPlanRequest) -> Result<TopologyPla
 }
 
 pub fn plan_weighted_contiguous(request: &TopologyPlanRequest) -> Result<TopologyPlan, PlanError> {
+    plan_weighted_contiguous_with_signals(request, &[])
+}
+
+fn plan_weighted_contiguous_with_signals(
+    request: &TopologyPlanRequest,
+    placement_signals: &[NodePlacementSignal],
+) -> Result<TopologyPlan, PlanError> {
     validate_request(request)?;
 
     let stage_count = request.nodes.len().min(request.layers.len());
     let nodes = &request.nodes[..stage_count];
     let total_weight: u64 = nodes.iter().map(|node| node.vram_bytes).sum();
     if total_weight == 0 {
-        return plan_even_contiguous(request);
+        let base = request.layers.len() / stage_count;
+        let remainder = request.layers.len() % stage_count;
+        let mut next_layer = 0usize;
+        let mut ranges = Vec::with_capacity(stage_count);
+
+        for stage_index in 0..stage_count {
+            let layer_count = base + usize::from(stage_index < remainder);
+            ranges.push((next_layer, next_layer + layer_count));
+            next_layer += layer_count;
+        }
+
+        return plan_ranges_with_signals(request, &ranges, placement_signals);
     }
 
     let mut ranges = Vec::with_capacity(stage_count);
@@ -886,7 +929,51 @@ pub fn plan_weighted_contiguous(request: &TopologyPlanRequest) -> Result<Topolog
         layer_start = layer_end;
     }
 
-    plan_ranges(request, &ranges)
+    plan_ranges_with_signals(request, &ranges, placement_signals)
+}
+
+pub fn plan_package_aware_contiguous(
+    request: &TopologyPlanRequest,
+) -> Result<TopologyPlan, PlanError> {
+    plan_package_aware_contiguous_with_signals(request, &[])
+}
+
+pub fn plan_package_aware_contiguous_with_signals(
+    request: &TopologyPlanRequest,
+    placement_signals: &[NodePlacementSignal],
+) -> Result<TopologyPlan, PlanError> {
+    validate_request(request)?;
+
+    if !request.nodes.iter().any(|node| node.cached_slice_bytes > 0)
+        && !placement_signals.iter().any(has_package_aware_signal)
+    {
+        return plan_weighted_contiguous(request);
+    }
+
+    let mut nodes = request
+        .nodes
+        .iter()
+        .cloned()
+        .enumerate()
+        .collect::<Vec<_>>();
+    nodes.sort_by(|(left_index, left), (right_index, right)| {
+        let left_signal = placement_signal_for(placement_signals, &left.node_id);
+        let right_signal = placement_signal_for(placement_signals, &right.node_id);
+        node_package_score(right, right_signal)
+            .cmp(&node_package_score(left, left_signal))
+            .then_with(|| left_index.cmp(right_index))
+            .then_with(|| left.node_id.cmp(&right.node_id))
+    });
+
+    let sorted_request = TopologyPlanRequest {
+        topology_id: request.topology_id.clone(),
+        model_id: request.model_id.clone(),
+        layers: request.layers.clone(),
+        nodes: nodes.into_iter().map(|(_, node)| node).collect(),
+        family: request.family.clone(),
+        policy: request.policy,
+    };
+    plan_weighted_contiguous_with_signals(&sorted_request, placement_signals)
 }
 
 pub fn plan_contiguous_with_splits(
@@ -951,6 +1038,14 @@ fn plan_ranges(
     request: &TopologyPlanRequest,
     ranges: &[(usize, usize)],
 ) -> Result<TopologyPlan, PlanError> {
+    plan_ranges_with_signals(request, ranges, &[])
+}
+
+fn plan_ranges_with_signals(
+    request: &TopologyPlanRequest,
+    ranges: &[(usize, usize)],
+    placement_signals: &[NodePlacementSignal],
+) -> Result<TopologyPlan, PlanError> {
     let mut stages = Vec::with_capacity(ranges.len());
 
     for (stage_index, &(start, end)) in ranges.iter().enumerate() {
@@ -960,9 +1055,12 @@ fn plan_ranges(
         let state_affinity = classify_layers_with_family(layers, request.family.as_ref());
         let migration_policy = migration_policy(state_affinity, request.policy);
         let parameter_bytes = layers.iter().map(|layer| layer.parameter_bytes).sum();
-        let node_id = request.nodes[stage_index].node_id.clone();
-        let reason_codes =
+        let node = &request.nodes[stage_index];
+        let node_id = node.node_id.clone();
+        let placement_signal = placement_signal_for(placement_signals, &node_id);
+        let mut reason_codes =
             stage_reason_codes(state_affinity, migration_policy, request.family.as_ref());
+        reason_codes.extend(node_reason_codes(node, placement_signal));
 
         stages.push(StagePlan {
             stage_id: format!("stage-{stage_index}"),
@@ -975,6 +1073,13 @@ fn plan_ranges(
             state_affinity,
             migration_policy,
             reason_codes,
+            cached_slice_bytes: placement_signal
+                .map(|signal| signal.cached_slice_bytes.max(node.cached_slice_bytes))
+                .unwrap_or(node.cached_slice_bytes),
+            missing_artifact_bytes: placement_signal
+                .map(|signal| signal.missing_artifact_bytes)
+                .unwrap_or_default(),
+            rtt_ms: placement_signal.and_then(|signal| signal.rtt_ms),
         });
     }
 
@@ -997,6 +1102,64 @@ fn plan_ranges(
         boundaries,
         diagnostics,
     })
+}
+
+fn placement_signal_for<'a>(
+    placement_signals: &'a [NodePlacementSignal],
+    node_id: &str,
+) -> Option<&'a NodePlacementSignal> {
+    placement_signals
+        .iter()
+        .find(|signal| signal.node_id == node_id)
+}
+
+fn has_package_aware_signal(signal: &NodePlacementSignal) -> bool {
+    signal.cached_slice_bytes > 0
+        || signal.missing_artifact_bytes > 0
+        || signal.rtt_ms.is_some()
+        || signal.artifact_transfer_supported
+        || signal.availability_score > 0
+}
+
+fn node_package_score(node: &NodeSpec, signal: Option<&NodePlacementSignal>) -> i128 {
+    let mut score = i128::from(node.vram_bytes);
+    let cached_slice_bytes = signal
+        .map(|signal| signal.cached_slice_bytes.max(node.cached_slice_bytes))
+        .unwrap_or(node.cached_slice_bytes);
+    score += i128::from(cached_slice_bytes).saturating_mul(2);
+    if let Some(signal) = signal {
+        score -= i128::from(signal.missing_artifact_bytes).saturating_mul(4);
+        if signal.missing_artifact_bytes > 0 && !signal.artifact_transfer_supported {
+            score -= i128::from(signal.missing_artifact_bytes).saturating_mul(4);
+        }
+        if let Some(rtt_ms) = signal.rtt_ms {
+            score -= i128::from(rtt_ms).saturating_mul(16 * 1024 * 1024);
+        }
+        score += i128::from(signal.availability_score).saturating_mul(1024 * 1024);
+    }
+    score
+}
+
+fn node_reason_codes(node: &NodeSpec, signal: Option<&NodePlacementSignal>) -> Vec<PlanReasonCode> {
+    let mut codes = Vec::new();
+    let cached_slice_bytes = signal
+        .map(|signal| signal.cached_slice_bytes.max(node.cached_slice_bytes))
+        .unwrap_or(node.cached_slice_bytes);
+    if cached_slice_bytes > 0 {
+        codes.push(PlanReasonCode::CacheLocalityPreferred);
+    }
+    if let Some(signal) = signal {
+        if signal.missing_artifact_bytes > 0 {
+            codes.push(PlanReasonCode::ArtifactTransferPenalty);
+        }
+        if signal.rtt_ms.is_some_and(|rtt| rtt > 0) {
+            codes.push(PlanReasonCode::NetworkPipelineCost);
+        }
+        if signal.availability_score > 0 {
+            codes.push(PlanReasonCode::PeerAvailabilityPreferred);
+        }
+    }
+    codes
 }
 
 pub fn classify_layers(layers: &[LayerSpec]) -> StateAffinity {

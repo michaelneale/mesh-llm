@@ -12,7 +12,7 @@ use crate::runtime_data::{
 use anyhow::{Context, Result};
 use skippy_protocol::{FlashAttentionType, LoadMode, PeerConfig, StageConfig};
 use skippy_topology::{
-    infer_family_capability, plan_weighted_contiguous, BoundaryDecision, DiagnosticSeverity,
+    infer_family_capability, plan_package_aware_contiguous, BoundaryDecision, DiagnosticSeverity,
     LayerSpec, NodeSpec, PlannerPolicy, TopologyPlanRequest,
 };
 use std::collections::HashMap;
@@ -1736,7 +1736,7 @@ fn plan_runtime_slice_topology(
         layer_count = package.layer_count,
         "planning split runtime topology"
     );
-    let plan = plan_weighted_contiguous(&request)?;
+    let plan = plan_package_aware_contiguous(&request)?;
     let rejected = plan
         .boundaries
         .iter()

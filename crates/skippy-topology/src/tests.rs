@@ -23,6 +23,24 @@ fn weighted_node(node_id: &str, vram_bytes: u64) -> NodeSpec {
     }
 }
 
+fn placement_signal(node_id: &str) -> NodePlacementSignal {
+    NodePlacementSignal {
+        node_id: node_id.to_string(),
+        cached_slice_bytes: 0,
+        missing_artifact_bytes: 0,
+        rtt_ms: None,
+        artifact_transfer_supported: false,
+        availability_score: 0,
+    }
+}
+
+fn stage_layout(plan: &TopologyPlan) -> Vec<(&str, u32, u32)> {
+    plan.stages
+        .iter()
+        .map(|stage| (stage.node_id.as_str(), stage.layer_start, stage.layer_end))
+        .collect()
+}
+
 #[test]
 fn dense_attention_plan_allows_costed_kv_migration() {
     let request = TopologyPlanRequest {
@@ -94,6 +112,136 @@ fn weighted_contiguous_plan_falls_back_to_even_without_weights() {
             .collect::<Vec<_>>(),
         vec![("node-a", 0, 3), ("node-b", 3, 6)]
     );
+}
+
+#[test]
+fn package_aware_plan_matches_weighted_without_package_signals() {
+    let request = TopologyPlanRequest {
+        topology_id: "topology-a".into(),
+        model_id: "model-a".into(),
+        layers: dense_attention_layers(12, 10),
+        nodes: vec![
+            weighted_node("node-a", 60),
+            weighted_node("node-b", 30),
+            weighted_node("node-c", 30),
+        ],
+        family: None,
+        policy: PlannerPolicy::default(),
+    };
+
+    let weighted_plan = plan_weighted_contiguous(&request).expect("weighted plan");
+    let package_plan =
+        plan_package_aware_contiguous_with_signals(&request, &[]).expect("package-aware plan");
+
+    assert_eq!(stage_layout(&package_plan), stage_layout(&weighted_plan));
+}
+
+#[test]
+fn package_aware_plan_prefers_cached_peer_for_equal_capacity() {
+    let mut cold = placement_signal("cold");
+    cold.missing_artifact_bytes = 32;
+    let mut warm = placement_signal("warm");
+    warm.cached_slice_bytes = 64;
+    warm.artifact_transfer_supported = true;
+    let request = TopologyPlanRequest {
+        topology_id: "topology-a".into(),
+        model_id: "model-a".into(),
+        layers: dense_attention_layers(8, 10),
+        nodes: vec![weighted_node("cold", 40), weighted_node("warm", 40)],
+        family: None,
+        policy: PlannerPolicy::default(),
+    };
+
+    let plan = plan_package_aware_contiguous_with_signals(&request, &[cold, warm]).expect("plan");
+
+    assert_eq!(stage_layout(&plan), vec![("warm", 0, 4), ("cold", 4, 8)]);
+    assert!(plan.stages[0]
+        .reason_codes
+        .contains(&PlanReasonCode::CacheLocalityPreferred));
+    assert!(plan.stages[1]
+        .reason_codes
+        .contains(&PlanReasonCode::ArtifactTransferPenalty));
+}
+
+#[test]
+fn package_aware_plan_penalizes_missing_untransferable_artifacts() {
+    let mut cold = placement_signal("cold-high-vram");
+    cold.missing_artifact_bytes = 64;
+    cold.artifact_transfer_supported = false;
+    let mut ready = placement_signal("ready-lower-vram");
+    ready.cached_slice_bytes = 16;
+    ready.artifact_transfer_supported = true;
+    let request = TopologyPlanRequest {
+        topology_id: "topology-a".into(),
+        model_id: "model-a".into(),
+        layers: dense_attention_layers(8, 10),
+        nodes: vec![
+            weighted_node("cold-high-vram", 100),
+            weighted_node("ready-lower-vram", 80),
+        ],
+        family: None,
+        policy: PlannerPolicy::default(),
+    };
+
+    let plan = plan_package_aware_contiguous_with_signals(&request, &[cold, ready]).expect("plan");
+
+    assert_eq!(plan.stages[0].node_id, "ready-lower-vram");
+    assert!(plan.stages[1]
+        .reason_codes
+        .contains(&PlanReasonCode::ArtifactTransferPenalty));
+}
+
+#[test]
+fn package_aware_plan_treats_high_rtt_as_cost_not_exclusion() {
+    let mut distant = placement_signal("distant");
+    distant.rtt_ms = Some(250);
+    let request = TopologyPlanRequest {
+        topology_id: "topology-a".into(),
+        model_id: "model-a".into(),
+        layers: dense_attention_layers(8, 10),
+        nodes: vec![weighted_node("distant", 100), weighted_node("nearby", 80)],
+        family: None,
+        policy: PlannerPolicy::default(),
+    };
+
+    let plan = plan_package_aware_contiguous_with_signals(&request, &[distant]).expect("plan");
+
+    assert!(plan.stages.iter().any(|stage| stage.node_id == "distant"));
+    let distant_stage = plan
+        .stages
+        .iter()
+        .find(|stage| stage.node_id == "distant")
+        .expect("distant stage");
+    assert!(distant_stage
+        .reason_codes
+        .contains(&PlanReasonCode::NetworkPipelineCost));
+}
+
+#[test]
+fn package_aware_plan_can_promote_extra_cached_peer() {
+    let mut cached_extra = placement_signal("cached-extra");
+    cached_extra.cached_slice_bytes = 100;
+    let request = TopologyPlanRequest {
+        topology_id: "topology-a".into(),
+        model_id: "model-a".into(),
+        layers: dense_attention_layers(2, 10),
+        nodes: vec![
+            weighted_node("cold-a", 40),
+            weighted_node("cold-b", 40),
+            weighted_node("cached-extra", 40),
+        ],
+        family: None,
+        policy: PlannerPolicy::default(),
+    };
+
+    let plan = plan_package_aware_contiguous_with_signals(&request, &[cached_extra]).expect("plan");
+
+    assert_eq!(plan.stages.len(), 2);
+    assert_eq!(plan.stages[0].node_id, "cached-extra");
+    assert!(plan
+        .stages
+        .iter()
+        .any(|stage| stage.node_id == "cold-a" || stage.node_id == "cold-b"));
 }
 
 #[test]
