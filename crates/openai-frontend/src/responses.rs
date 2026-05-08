@@ -504,6 +504,76 @@ fn response_function_call_items(message: &Value, created_at: i64) -> Vec<Value> 
         .collect()
 }
 
+fn insert_absent(object: &mut Map<String, Value>, key: &str, value: Value) {
+    object.entry(key.to_string()).or_insert(value);
+}
+
+fn responses_text_defaults() -> Value {
+    serde_json::json!({
+        "format": {
+            "type": "text",
+        },
+    })
+}
+
+fn responses_reasoning_defaults() -> Value {
+    serde_json::json!({
+        "effort": Value::Null,
+        "summary": Value::Null,
+    })
+}
+
+fn response_completed_at_value(status: &str, created_at: i64) -> Value {
+    if status == "completed" {
+        Value::from(created_at)
+    } else {
+        Value::Null
+    }
+}
+
+fn apply_agent_compat_response_defaults(response: &mut Map<String, Value>, created_at: i64) {
+    let status = response
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("completed")
+        .to_string();
+
+    insert_absent(response, "background", Value::Bool(false));
+    insert_absent(
+        response,
+        "completed_at",
+        response_completed_at_value(&status, created_at),
+    );
+    insert_absent(response, "conversation", Value::Null);
+    insert_absent(response, "error", Value::Null);
+    insert_absent(response, "incomplete_details", Value::Null);
+    insert_absent(response, "instructions", Value::Null);
+    insert_absent(response, "max_output_tokens", Value::Null);
+    insert_absent(response, "max_tool_calls", Value::Null);
+    insert_absent(response, "metadata", Value::Object(Map::new()));
+    insert_absent(response, "parallel_tool_calls", Value::Bool(true));
+    insert_absent(response, "previous_response_id", Value::Null);
+    insert_absent(response, "prompt", Value::Null);
+    insert_absent(response, "prompt_cache_key", Value::Null);
+    insert_absent(response, "prompt_cache_retention", Value::Null);
+    insert_absent(response, "reasoning", responses_reasoning_defaults());
+    insert_absent(response, "safety_identifier", Value::Null);
+    insert_absent(response, "service_tier", Value::Null);
+    insert_absent(response, "temperature", Value::Null);
+    insert_absent(response, "text", responses_text_defaults());
+    insert_absent(response, "tool_choice", Value::String("auto".to_string()));
+    insert_absent(response, "tools", Value::Array(Vec::new()));
+    insert_absent(response, "top_logprobs", Value::Null);
+    insert_absent(response, "top_p", Value::Null);
+    insert_absent(
+        response,
+        "truncation",
+        Value::String("disabled".to_string()),
+    );
+    insert_absent(response, "usage", Value::Null);
+    insert_absent(response, "user", Value::Null);
+}
+
 pub fn translate_chat_completion_to_responses(body: &[u8]) -> Result<Vec<u8>, OpenAiError> {
     let value: Value = serde_json::from_slice(body).map_err(|error| {
         OpenAiError::invalid_request(format!("parse chat completion response body: {error}"))
@@ -570,7 +640,7 @@ fn translate_chat_completion_value_to_responses(value: &Value) -> Result<Vec<u8>
     }
     output.extend(tool_call_items);
 
-    let response = serde_json::json!({
+    let mut response = serde_json::json!({
         "id": id,
         "object": "response",
         "created_at": created_at,
@@ -583,6 +653,9 @@ fn translate_chat_completion_value_to_responses(value: &Value) -> Result<Vec<u8>
         "finish_reason": finish_reason,
         "usage": usage.unwrap_or(Value::Null),
     });
+    if let Some(object) = response.as_object_mut() {
+        apply_agent_compat_response_defaults(object, created_at);
+    }
     serde_json::to_vec(&response)
         .map_err(|error| OpenAiError::internal(format!("serialize /v1/responses body: {error}")))
 }
@@ -593,7 +666,7 @@ pub fn parse_chat_stream_chunk(data: &str) -> Result<ChatCompletionStreamChunk, 
 }
 
 pub fn responses_stream_created_event(model: &str, created_at: i64) -> Value {
-    serde_json::json!({
+    let mut event = serde_json::json!({
         "type": "response.created",
         "response": {
             "id": format!("resp_{created_at}"),
@@ -602,8 +675,13 @@ pub fn responses_stream_created_event(model: &str, created_at: i64) -> Value {
             "status": "in_progress",
             "model": model,
             "output": [],
+            "output_text": "",
         }
-    })
+    });
+    if let Some(response) = event.get_mut("response").and_then(Value::as_object_mut) {
+        apply_agent_compat_response_defaults(response, created_at);
+    }
+    event
 }
 
 pub fn responses_stream_delta_event(item_id: &str, delta: &str) -> Value {
@@ -648,7 +726,7 @@ pub fn responses_stream_completed_event(
     text: &str,
     usage: Option<Value>,
 ) -> Value {
-    serde_json::json!({
+    let mut event = serde_json::json!({
         "type": "response.completed",
         "response": {
             "id": response_id,
@@ -672,7 +750,11 @@ pub fn responses_stream_completed_event(
             "output_text": text,
             "usage": usage.unwrap_or(Value::Null),
         }
-    })
+    });
+    if let Some(response) = event.get_mut("response").and_then(Value::as_object_mut) {
+        apply_agent_compat_response_defaults(response, created_at);
+    }
+    event
 }
 
 pub fn chat_usage_to_responses_usage(usage: &Value) -> Value {
@@ -884,6 +966,52 @@ mod tests {
     }
 
     #[test]
+    fn translate_chat_completion_to_responses_emits_agent_compat_fields() {
+        let translated = translate_chat_completion_to_responses(
+            json!({
+                "id": "chatcmpl_123",
+                "created": 123,
+                "model": "qwen",
+                "choices": [{
+                    "message": {"role": "assistant", "content": "hello"}
+                }]
+            })
+            .to_string()
+            .as_bytes(),
+        )
+        .unwrap();
+        let parsed: Value = serde_json::from_slice(&translated).unwrap();
+
+        assert_eq!(parsed["status"], "completed");
+        assert_eq!(parsed["completed_at"], 123);
+        assert_eq!(parsed["background"], false);
+        assert_eq!(parsed["metadata"], json!({}));
+        assert_eq!(parsed["parallel_tool_calls"], true);
+        assert_eq!(parsed["text"]["format"]["type"], "text");
+        assert_eq!(parsed["tool_choice"], "auto");
+        assert_eq!(parsed["tools"], json!([]));
+        assert_eq!(parsed["truncation"], "disabled");
+        for key in [
+            "conversation",
+            "instructions",
+            "max_output_tokens",
+            "max_tool_calls",
+            "previous_response_id",
+            "prompt",
+            "prompt_cache_key",
+            "prompt_cache_retention",
+            "safety_identifier",
+            "service_tier",
+            "temperature",
+            "top_logprobs",
+            "top_p",
+            "user",
+        ] {
+            assert!(parsed[key].is_null(), "{key} should default to null");
+        }
+    }
+
+    #[test]
     fn translate_chat_completion_to_responses_preserves_tool_calls_and_logprobs() {
         let translated = translate_chat_completion_to_responses(
             json!({
@@ -979,5 +1107,25 @@ mod tests {
 
         assert_eq!(mapped["input_tokens"], 128);
         assert_eq!(mapped["input_tokens_details"]["cached_tokens"], 96);
+    }
+
+    #[test]
+    fn responses_stream_events_emit_agent_compat_response_fields() {
+        let created = responses_stream_created_event("qwen", 123);
+        let created_response = &created["response"];
+        assert_eq!(created_response["status"], "in_progress");
+        assert!(created_response["completed_at"].is_null());
+        assert_eq!(created_response["output_text"], "");
+        assert_eq!(created_response["parallel_tool_calls"], true);
+        assert_eq!(created_response["text"]["format"]["type"], "text");
+
+        let completed =
+            responses_stream_completed_event("resp_123", 123, "qwen", "msg_123", "hello", None);
+        let completed_response = &completed["response"];
+        assert_eq!(completed_response["status"], "completed");
+        assert_eq!(completed_response["completed_at"], 123);
+        assert_eq!(completed_response["output_text"], "hello");
+        assert_eq!(completed_response["tool_choice"], "auto");
+        assert_eq!(completed_response["tools"], json!([]));
     }
 }
