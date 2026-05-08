@@ -133,6 +133,11 @@ Alternatively, add a `mesh` provider to `~/.pi/agent/models.json` by hand:
       "api": "openai-completions",
       "apiKey": "mesh",
       "baseUrl": "http://localhost:9337/v1",
+      "compat": {
+        "supportsStore": false,
+        "supportsDeveloperRole": false,
+        "supportsUsageInStreaming": true
+      },
       "models": [
         {
           "id": "Qwen 3.6 27B",

@@ -451,6 +451,14 @@ fn build_pi_provider_config_with_limits(
     provider.insert("api".to_string(), serde_json::json!("openai-completions"));
     provider.insert("apiKey".to_string(), serde_json::json!("mesh"));
     provider.insert("baseUrl".to_string(), serde_json::json!(api_base_url));
+    provider.insert(
+        "compat".to_string(),
+        serde_json::json!({
+            "supportsStore": false,
+            "supportsDeveloperRole": false,
+            "supportsUsageInStreaming": true,
+        }),
+    );
     provider.insert("models".to_string(), serde_json::Value::Array(models));
 
     serde_json::Value::Object(provider)
@@ -1257,6 +1265,9 @@ mod tests {
         assert_eq!(provider["api"], "openai-completions");
         assert_eq!(provider["apiKey"], "mesh");
         assert_eq!(provider["baseUrl"], "http://localhost:9337/v1");
+        assert_eq!(provider["compat"]["supportsStore"], false);
+        assert_eq!(provider["compat"]["supportsDeveloperRole"], false);
+        assert_eq!(provider["compat"]["supportsUsageInStreaming"], true);
         assert_eq!(provider["models"].as_array().map(Vec::len), Some(2));
         assert_eq!(provider["models"][0]["id"], "Qwen 3.6 27B");
         assert_eq!(provider["models"][0]["name"], "Qwen 3.6 27B");
