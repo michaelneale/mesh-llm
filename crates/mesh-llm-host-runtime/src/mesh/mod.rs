@@ -3648,6 +3648,23 @@ impl Node {
                     .await
                     .connections
                     .insert(peer_id, conn.clone());
+                let node_for_dispatch = self.clone();
+                let conn_for_dispatch = conn.clone();
+                tokio::spawn(async move {
+                    node_for_dispatch
+                        .dispatch_streams(conn_for_dispatch, peer_id)
+                        .await;
+                });
+                if let Err(error) = self
+                    .initiate_gossip_inner(conn.clone(), peer_id, false)
+                    .await
+                {
+                    self.state.lock().await.connections.remove(&peer_id);
+                    anyhow::bail!(
+                        "Failed to complete gossip with {} before opening mesh stream: {error}",
+                        peer_id.fmt_short()
+                    );
+                }
                 Ok(conn)
             }
         }

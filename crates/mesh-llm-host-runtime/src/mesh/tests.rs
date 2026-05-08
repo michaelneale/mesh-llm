@@ -3527,6 +3527,55 @@ async fn test_connect_to_peer_skips_known_peer_without_connection() -> Result<()
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_on_demand_transitive_peer_connection_completes_gossip() -> Result<()> {
+    let host = make_test_node(super::NodeRole::Host { http_port: 9337 }).await?;
+    let bridge = make_test_node(super::NodeRole::Worker).await?;
+    let client = make_test_node(super::NodeRole::Client).await?;
+
+    host.set_hosted_models(vec!["remote-coding-model".to_string()])
+        .await;
+    host.start_accepting();
+    bridge.start_accepting();
+    client.start_accepting();
+
+    bridge.join(&host.invite_token()).await?;
+    wait_for_peer(&bridge, host.id()).await;
+    wait_for_peer(&host, bridge.id()).await;
+
+    client.join(&bridge.invite_token()).await?;
+    wait_for_peer(&client, bridge.id()).await;
+    wait_for_peer(&client, host.id()).await;
+
+    {
+        let state = client.state.lock().await;
+        assert!(
+            !state.connections.contains_key(&host.id()),
+            "setup: host should be known transitively but not directly connected"
+        );
+    }
+    assert!(
+        client
+            .hosts_for_model("remote-coding-model")
+            .await
+            .contains(&host.id()),
+        "setup: client should route the remote model to the transitive host"
+    );
+
+    let _conn = client.connection_to_peer(host.id()).await?;
+
+    wait_for_peer(&host, client.id()).await;
+    {
+        let state = client.state.lock().await;
+        assert!(
+            state.connections.contains_key(&host.id()),
+            "on-demand connection should be retained after gossip succeeds"
+        );
+    }
+
+    Ok(())
+}
+
 #[test]
 fn config_sync_subscribe_snapshot_encode_decode() {
     use crate::proto::node::{ConfigSnapshotResponse, NodeConfigSnapshot, NodeGpuConfig};
