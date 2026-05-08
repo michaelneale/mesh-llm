@@ -8,7 +8,7 @@ REPO_ROOT="${SCRIPT_DIR:h}"
 
 LLAMA_DIR="${MESH_LLM_LLAMA_DIR:-$REPO_ROOT/.deps/llama.cpp}"
 MESH_DIR="$REPO_ROOT/crates/mesh-llm"
-UI_DIR="$MESH_DIR/ui"
+UI_DIR="$REPO_ROOT/crates/mesh-llm-ui"
 
 rustc_wrapper=""
 

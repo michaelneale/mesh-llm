@@ -12,7 +12,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 LLAMA_DIR="${MESH_LLM_LLAMA_DIR:-$REPO_ROOT/.deps/llama.cpp}"
 LLAMA_BUILD_ROOT="${MESH_LLM_LLAMA_BUILD_ROOT:-$REPO_ROOT/.deps/llama-build}"
 MESH_DIR="$REPO_ROOT/crates/mesh-llm"
-UI_DIR="$MESH_DIR/ui"
+UI_DIR="$REPO_ROOT/crates/mesh-llm-ui"
 
 CLEAN=0
 SKIP_UI="${MESH_LLM_SKIP_UI:-0}"
