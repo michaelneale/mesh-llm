@@ -4,16 +4,12 @@ on:
   push:
     branches: [main]
     paths:
-      - 'scripts/build-linux.sh'
-      - 'scripts/build-linux-rocm.sh'
-      - 'scripts/build-llama.sh'
-      - 'third_party/llama.cpp/**'
-      - 'Justfile'
-      - '.github/workflows/ci.yml'
+      - 'third_party/llama.cpp/upstream.txt'
+      - 'third_party/llama.cpp/patches/**'
       - '.github/workflows/warm-caches.yml'
-      - '.github/workflows/gpu-warm-cache-job.yml'
       - '.github/workflows/llama-cache-keys.yml'
-      - '.github/cache-version.txt'
+      - '.github/workflows/gpu-warm-cache-job.yml'
+      - 'scripts/**'
   workflow_dispatch:
     inputs:
       retention:
@@ -35,6 +31,7 @@ env:
 
 jobs:
   resolve_llama_cache_keys:
+    if: ${{ github.ref == 'refs/heads/main' }}
     uses: ./.github/workflows/llama-cache-keys.yml
 
   warm_llama_cuda_slim:
@@ -62,7 +59,7 @@ jobs:
       llama_sha: ${{ needs.resolve_llama_cache_keys.outputs.sha }}
       runs_on: ${{ vars.CACHE_USE_SELF_HOSTED_RUNNER == '1' && '["self-hosted","gpu-nvidia"]' || '"ubuntu-latest"' }}
       cache_key: ${{ needs.resolve_llama_cache_keys.outputs.cuda_fat_cache_key }}
-      cache_path: .deps/llama-build/build-stage-abi-cuda-sm75_80_86_87_89_90_100_120
+      cache_path: .deps/llama-build/build-stage-abi-cuda-sm75_80_86_87_89_90
       backend: cuda
       build_recipe: release-build-cuda
 
@@ -102,7 +99,7 @@ jobs:
       - warm_llama_cuda_fat
       - warm_llama_rocm_slim
       - warm_llama_rocm_fat
-    if: always()
+    if: ${{ always() && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     steps:
       - name: Prune old GPU caches
