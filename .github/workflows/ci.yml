@@ -235,12 +235,13 @@ jobs:
     needs: [changes, linux]
     if: ${{ (vars.MESH_AGENT_BASE_URL != '' || vars.MESH_OPENCODE_BASE_URL != '') && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
     env:
       MESH_AGENT_BASE_URL: ${{ vars.MESH_AGENT_BASE_URL || vars.MESH_OPENCODE_BASE_URL }}
       MESH_AGENT_MODEL: ${{ vars.MESH_AGENT_MODEL || vars.MESH_OPENCODE_MODEL }}
       MESH_OPENCODE_BASE_URL: ${{ vars.MESH_AGENT_BASE_URL || vars.MESH_OPENCODE_BASE_URL }}
       MESH_OPENCODE_MODEL: ${{ vars.MESH_AGENT_MODEL || vars.MESH_OPENCODE_MODEL }}
+      AGENT_SMOKE_LONG_PROMPT_CHARS: ${{ vars.AGENT_SMOKE_LONG_PROMPT_CHARS || vars.OPENCODE_SMOKE_LONG_PROMPT_CHARS || '65536' }}
       OPENCODE_SMOKE_LONG_PROMPT_CHARS: ${{ vars.OPENCODE_SMOKE_LONG_PROMPT_CHARS || '65536' }}
       OPENCODE_DISABLE_AUTOUPDATE: "true"
       OPENCODE_DISABLE_PRUNE: "true"

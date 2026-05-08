@@ -131,6 +131,85 @@ QUESTION=<comma-separated relative paths whose file name contains signal>
 EOF
 }
 
+agent_smoke_long_prompt_soak() {
+    local base_url="${1:?base URL required}"
+    local model="${2:?model required}"
+    local work_dir="${3:?work dir required}"
+    local label="${4:?label required}"
+    local target_chars="${AGENT_SMOKE_LONG_PROMPT_CHARS:-${OPENCODE_SMOKE_LONG_PROMPT_CHARS:-65536}}"
+    local max_time="${AGENT_SMOKE_LONG_PROMPT_MAX_TIME:-180}"
+    local slug
+
+    if [[ ! "$target_chars" =~ ^[0-9]+$ ]]; then
+        echo "${label} long prompt char count must be numeric: ${target_chars}" >&2
+        return 1
+    fi
+    if [[ "$target_chars" -le 0 ]]; then
+        echo "${label} long prompt soak skipped"
+        return 0
+    fi
+    slug="$(printf '%s' "$label" | tr '[:upper:]' '[:lower:]' | tr -c '[:alnum:]_' '-')"
+
+    local payload="${work_dir}/${slug}-long-prompt-payload.json"
+    local response="${work_dir}/${slug}-long-prompt-response.json"
+
+    python3 - "$model" "$target_chars" "$payload" <<'PY'
+import json
+import sys
+
+model, target_chars, path = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+start = "ALPHA-719"
+middle = "MID-482"
+end = "OMEGA-503"
+header = (
+    "This is a long-context CI soak document. Extract the three sentinel values. "
+    "Return exactly LONG_SOAK=ALPHA-719|MID-482|OMEGA-503 and no extra text.\n\n"
+)
+chunk = (
+    "FILLER: mesh long prompt soak line with predictable neutral text. "
+    "Do not use this filler as the answer.\n"
+)
+prefix = f"SENTINEL_START={start}\n"
+mid = f"\nSENTINEL_MIDDLE={middle}\n"
+suffix = f"\nSENTINEL_END={end}\n"
+remaining = max(target_chars - len(header) - len(prefix) - len(mid) - len(suffix), 0)
+left = chunk * max((remaining // 2) // len(chunk), 1)
+right = chunk * max((remaining - len(left)) // len(chunk), 1)
+document = header + prefix + left + mid + right + suffix
+payload = {
+    "model": model,
+    "messages": [
+        {"role": "system", "content": "You are a precise long-context extraction probe."},
+        {"role": "user", "content": document},
+    ],
+    "stream": False,
+    "max_tokens": 64,
+    "temperature": 0,
+}
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump(payload, fh)
+PY
+
+    curl -fsS --max-time "$max_time" \
+        "${base_url%/}/chat/completions" \
+        -H 'content-type: application/json' \
+        -d @"$payload" \
+        -o "$response"
+
+    python3 - "$response" "$label" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as fh:
+    body = json.load(fh)
+content = body.get("choices", [{}])[0].get("message", {}).get("content", "")
+expected = "LONG_SOAK=ALPHA-719|MID-482|OMEGA-503"
+if expected not in content:
+    raise SystemExit(f"{sys.argv[2]} long prompt sentinel validation failed: {content!r}")
+print(f"{sys.argv[2]} long prompt soak passed")
+PY
+}
+
 agent_smoke_validate_fixture() {
     local work_dir="${1:?work dir required}"
     local initial_sha="${2:?initial sha required}"

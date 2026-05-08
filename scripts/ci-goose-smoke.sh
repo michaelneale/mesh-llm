@@ -79,6 +79,8 @@ echo "  goose:    $(goose --version 2>/dev/null || echo unknown)"
 echo "  work dir: ${WORK_DIR}"
 echo "  output:   ${OUTPUT_JSONL}"
 
+agent_smoke_long_prompt_soak "$BASE_URL" "$MODEL" "$WORK_DIR" "Goose"
+
 if command -v timeout >/dev/null 2>&1; then
     GOOSE_COMMAND=(timeout "${TIMEOUT_SECONDS}" goose)
 else
