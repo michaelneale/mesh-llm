@@ -38,9 +38,14 @@ export JOB_WORK_DIR
 export RUN_ID CERT_ROOT
 
 cleanup_job_work_dir() {
+    local exit_code=$?
     if [ "${CLEANUP_JOB_WORK_DIR}" = "true" ] && [ -n "${JOB_WORK_DIR:-}" ]; then
-        echo "Cleaning job work dir: ${JOB_WORK_DIR}"
-        rm -rf "$JOB_WORK_DIR"
+        if [ "$exit_code" -eq 0 ]; then
+            echo "Cleaning job work dir: ${JOB_WORK_DIR}"
+            rm -rf "$JOB_WORK_DIR"
+        else
+            echo "Preserving job work dir after exit ${exit_code}: ${JOB_WORK_DIR}"
+        fi
     fi
 }
 trap cleanup_job_work_dir EXIT
@@ -143,7 +148,11 @@ append_bool SKIP_DTYPE --skip-dtype
 append_bool SKIP_STATE --skip-state
 append_bool BORROW_RESIDENT_HITS --borrow-resident-hits
 
-LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" scripts/family-certify.sh "${CERT_ARGS[@]}"
+CERT_EXIT_CODE=0
+LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" scripts/family-certify.sh "${CERT_ARGS[@]}" || CERT_EXIT_CODE=$?
+if [ "$CERT_EXIT_CODE" -ne 0 ]; then
+    echo "  ! Certification command exited ${CERT_EXIT_CODE}; publishing available artifacts before failing the job."
+fi
 
 ARTIFACT_DIR="$(find "$CERT_ROOT/$RUN_ID" -mindepth 2 -maxdepth 2 -type d | head -1)"
 if [ -z "$ARTIFACT_DIR" ] || [ ! -d "$ARTIFACT_DIR" ]; then
@@ -184,4 +193,9 @@ PYTHON
 fi
 
 echo "=== [8/8] Done ==="
+if [ "$CERT_EXIT_CODE" -ne 0 ]; then
+    echo "Certification run failed for ${MODEL_ID} (${FAMILY}); artifacts were preserved for diagnosis."
+    exit "$CERT_EXIT_CODE"
+fi
+
 echo "Certification run completed for ${MODEL_ID} (${FAMILY})"
