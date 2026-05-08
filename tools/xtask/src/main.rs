@@ -81,7 +81,7 @@ fn fixture_rows(repo_root: &Path) -> DynResult<Vec<FixtureRow>> {
 fn fixture_path(repo_root: &Path) -> PathBuf {
     repo_root
         .join("crates")
-        .join("mesh-llm")
+        .join("mesh-llm-system")
         .join("tests")
         .join("fixtures")
         .join("release-target-matrix.json")

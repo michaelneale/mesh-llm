@@ -4005,8 +4005,10 @@ name = "mesh-llm"
 version = "0.65.1"
 dependencies = [
  "axum",
+ "hex",
  "mesh-llm-client",
  "mesh-llm-host-runtime",
+ "serde_json",
  "serial_test",
  "tempfile",
  "tokio",
