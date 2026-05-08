@@ -13,6 +13,7 @@ use crate::network::router;
 use crate::plugin;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
+use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
@@ -83,6 +84,7 @@ impl BufferedHttpRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResponseAdapter {
     None,
+    OpenAiChatCompletionsStream,
     OpenAiResponsesJson,
     OpenAiResponsesStream,
 }
@@ -149,12 +151,15 @@ struct ParsedResponseHeaders {
     header_end: usize,
     status_code: u16,
     content_length: Option<usize>,
+    content_type: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 struct RequestMetadata {
     #[serde(default)]
     model: Option<String>,
+    #[serde(default)]
+    stream: Option<bool>,
     #[serde(default)]
     max_completion_tokens: Option<u32>,
     #[serde(default)]
@@ -292,6 +297,12 @@ async fn read_http_request_with_limits(
     } else {
         None
     };
+    if response_adapter == ResponseAdapter::None
+        && parsed.path.split('?').next().unwrap_or(&parsed.path) == "/v1/chat/completions"
+        && metadata.as_ref().and_then(|value| value.stream) == Some(true)
+    {
+        response_adapter = ResponseAdapter::OpenAiChatCompletionsStream;
+    }
     let model_name = metadata.as_ref().and_then(|value| value.model.clone());
     let completion_tokens = metadata.as_ref().and_then(|value| {
         value
@@ -949,6 +960,193 @@ fn parse_completion_tokens_from_json_body(body: &[u8]) -> Option<u64> {
         .and_then(|value| value.as_u64())
 }
 
+fn response_is_event_stream(headers: &ParsedResponseHeaders) -> bool {
+    headers
+        .content_type
+        .as_deref()
+        .map(|value| {
+            value
+                .split(';')
+                .next()
+                .unwrap_or(value)
+                .trim()
+                .eq_ignore_ascii_case("text/event-stream")
+        })
+        .unwrap_or(false)
+}
+
+fn synthetic_id_seed() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
+}
+
+#[derive(Debug, Default)]
+struct ChatStreamNormalizationState {
+    completion_id: Option<String>,
+    tool_call_ids: HashMap<u64, String>,
+    synthetic_seed: Option<u128>,
+}
+
+impl ChatStreamNormalizationState {
+    fn seed(&mut self) -> u128 {
+        *self.synthetic_seed.get_or_insert_with(synthetic_id_seed)
+    }
+
+    fn completion_id(&mut self, object: &Map<String, Value>) -> String {
+        if let Some(existing) = self.completion_id.clone() {
+            return existing;
+        }
+        let id = object
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| format!("chatcmpl-mesh-{}", self.seed()));
+        self.completion_id = Some(id.clone());
+        id
+    }
+
+    fn tool_call_id(&mut self, index: u64, tool_call: &Map<String, Value>) -> String {
+        if let Some(existing) = self.tool_call_ids.get(&index) {
+            return existing.clone();
+        }
+        let id = tool_call
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| format!("call_mesh_{}_{}", self.seed(), index));
+        self.tool_call_ids.insert(index, id.clone());
+        id
+    }
+
+    fn normalize_data(&mut self, data: &str) -> String {
+        let Ok(mut value) = serde_json::from_str::<Value>(data) else {
+            return data.to_string();
+        };
+        let Some(object) = value.as_object_mut() else {
+            return data.to_string();
+        };
+
+        let completion_id = self.completion_id(object);
+        object.insert("id".into(), Value::String(completion_id));
+
+        let Some(choices) = object.get_mut("choices").and_then(Value::as_array_mut) else {
+            return serde_json::to_string(&value).unwrap_or_else(|_| data.to_string());
+        };
+        for choice in choices {
+            let Some(tool_calls) = choice
+                .get_mut("delta")
+                .and_then(Value::as_object_mut)
+                .and_then(|delta| delta.get_mut("tool_calls"))
+                .and_then(Value::as_array_mut)
+            else {
+                continue;
+            };
+            for (position, tool_call) in tool_calls.iter_mut().enumerate() {
+                let Some(tool_call_object) = tool_call.as_object_mut() else {
+                    continue;
+                };
+                let index = tool_call_object
+                    .get("index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(position as u64);
+                let id = self.tool_call_id(index, tool_call_object);
+                tool_call_object.insert("id".into(), Value::String(id));
+            }
+        }
+
+        serde_json::to_string(&value).unwrap_or_else(|_| data.to_string())
+    }
+}
+
+async fn relay_normalized_chat_completion_stream<R: AsyncRead + Unpin>(
+    tcp_stream: &mut TcpStream,
+    reader: &mut R,
+    probe: ResponseProbe,
+    retry_context_overflow: bool,
+) -> Result<RouteAttemptResult> {
+    if retry_context_overflow && probe.retryable_context_overflow {
+        return Ok(RouteAttemptResult::RetryableContextOverflow);
+    }
+
+    if !(200..300).contains(&probe.status_code) {
+        return relay_error_response(tcp_stream, reader, probe).await;
+    }
+
+    let parsed = try_parse_response_headers(&probe.buffered)?
+        .ok_or_else(|| anyhow!("incomplete HTTP response"))?;
+    if !response_is_event_stream(&parsed) {
+        return relay_success_response(tcp_stream, reader, probe, parsed).await;
+    }
+
+    let mut carry = String::from_utf8_lossy(&probe.buffered[parsed.header_end..]).to_string();
+    let mut state = ChatStreamNormalizationState::default();
+    let mut observed_completion_tokens = None;
+    let header = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
+    tcp_stream.write_all(header.as_bytes()).await?;
+
+    let mut done_seen = false;
+    loop {
+        let mut processed = 0usize;
+        while let Some(frame_end_rel) = carry[processed..].find("\n\n") {
+            let frame_end = processed + frame_end_rel;
+            let frame = &carry[processed..frame_end];
+            processed = frame_end + 2;
+            let data_lines = frame
+                .lines()
+                .filter_map(|line| line.strip_prefix("data:"))
+                .map(str::trim_start)
+                .collect::<Vec<_>>();
+            if data_lines.is_empty() {
+                continue;
+            }
+            let data = data_lines.join("\n");
+            if data == "[DONE]" {
+                done_seen = true;
+                response_adapter::write_chunked_sse_event(tcp_stream, None, "[DONE]").await?;
+                break;
+            }
+
+            if observed_completion_tokens.is_none() {
+                observed_completion_tokens =
+                    parse_completion_tokens_from_json_body(data.as_bytes());
+            }
+            let normalized = state.normalize_data(&data);
+            response_adapter::write_chunked_sse_event(tcp_stream, None, &normalized).await?;
+        }
+        if processed > 0 {
+            carry = carry[processed..].to_string();
+        }
+
+        if done_seen {
+            break;
+        }
+
+        let mut chunk = [0u8; 8192];
+        let n = reader.read(&mut chunk).await?;
+        if n == 0 {
+            break;
+        }
+        let new_data = String::from_utf8_lossy(&chunk[..n]);
+        carry.push_str(&new_data);
+        if carry.contains('\r') {
+            carry = carry.replace("\r\n", "\n");
+        }
+    }
+
+    let _ = tcp_stream.write_all(b"0\r\n\r\n").await;
+    let _ = tcp_stream.shutdown().await;
+    Ok(RouteAttemptResult::Delivered {
+        status_code: probe.status_code,
+        completion_tokens: observed_completion_tokens,
+    })
+}
+
 fn delivered_attempt_outcome(status_code: u16) -> crate::network::metrics::AttemptOutcome {
     match status_code {
         200..=299 => crate::network::metrics::AttemptOutcome::Success,
@@ -1304,6 +1502,7 @@ fn try_parse_response_headers(buf: &[u8]) -> Result<Option<ParsedResponseHeaders
     match response.parse(buf) {
         Ok(httparse::Status::Complete(header_end)) => {
             let mut content_length = None;
+            let mut content_type = None;
             for header in response.headers.iter() {
                 if header.name.eq_ignore_ascii_case("content-length") {
                     let value = std::str::from_utf8(header.value)
@@ -1312,12 +1511,20 @@ fn try_parse_response_headers(buf: &[u8]) -> Result<Option<ParsedResponseHeaders
                         Some(value.trim().parse::<usize>().with_context(|| {
                             format!("invalid response Content-Length: {value}")
                         })?);
+                } else if header.name.eq_ignore_ascii_case("content-type") {
+                    content_type = Some(
+                        std::str::from_utf8(header.value)
+                            .context("invalid response Content-Type encoding")?
+                            .trim()
+                            .to_string(),
+                    );
                 }
             }
             Ok(Some(ParsedResponseHeaders {
                 header_end,
                 status_code: response.code.unwrap_or(0),
                 content_length,
+                content_type,
             }))
         }
         Ok(httparse::Status::Partial) => Ok(None),
@@ -1512,13 +1719,57 @@ async fn relay_error_response<R: AsyncRead + Unpin>(
     })
 }
 
+async fn relay_success_response<R: AsyncRead + Unpin>(
+    tcp_stream: &mut TcpStream,
+    reader: &mut R,
+    probe: ResponseProbe,
+    parsed: ParsedResponseHeaders,
+) -> Result<RouteAttemptResult> {
+    if let Some(content_length) = parsed.content_length {
+        const MAX_SUCCESS_METRICS_BODY_BYTES: usize = 1024 * 1024;
+        if content_length <= MAX_SUCCESS_METRICS_BODY_BYTES {
+            let mut buffered = probe.buffered;
+            while buffered.len() < parsed.header_end + content_length {
+                read_response_chunk(reader, &mut buffered).await?;
+            }
+            let completion_tokens =
+                parse_completion_tokens_from_json_body(&buffered[parsed.header_end..]);
+            tcp_stream.write_all(&buffered).await?;
+            let _ = tcp_stream.shutdown().await;
+            return Ok(RouteAttemptResult::Delivered {
+                status_code: probe.status_code,
+                completion_tokens,
+            });
+        }
+    }
+
+    tcp_stream.write_all(&probe.buffered).await?;
+    if let Err(err) = tokio::io::copy(reader, &mut *tcp_stream).await {
+        tracing::debug!("response relay ended after headers were committed: {err}");
+    }
+    let _ = tcp_stream.shutdown().await;
+    Ok(RouteAttemptResult::Delivered {
+        status_code: probe.status_code,
+        completion_tokens: None,
+    })
+}
+
 async fn relay_probed_response<R: AsyncRead + Unpin>(
-    mut tcp_stream: &mut TcpStream,
+    tcp_stream: &mut TcpStream,
     reader: &mut R,
     probe: ResponseProbe,
     retry_context_overflow: bool,
     response_adapter: ResponseAdapter,
 ) -> Result<RouteAttemptResult> {
+    if response_adapter == ResponseAdapter::OpenAiChatCompletionsStream {
+        return relay_normalized_chat_completion_stream(
+            tcp_stream,
+            reader,
+            probe,
+            retry_context_overflow,
+        )
+        .await;
+    }
     if response_adapter == ResponseAdapter::OpenAiResponsesJson {
         return relay_translated_responses_json(tcp_stream, reader, probe, retry_context_overflow)
             .await;
@@ -1542,33 +1793,7 @@ async fn relay_probed_response<R: AsyncRead + Unpin>(
 
     let parsed = try_parse_response_headers(&probe.buffered)?
         .ok_or_else(|| anyhow!("incomplete HTTP response"))?;
-    if let Some(content_length) = parsed.content_length {
-        const MAX_SUCCESS_METRICS_BODY_BYTES: usize = 1024 * 1024;
-        if content_length <= MAX_SUCCESS_METRICS_BODY_BYTES {
-            let mut buffered = probe.buffered;
-            while buffered.len() < parsed.header_end + content_length {
-                read_response_chunk(reader, &mut buffered).await?;
-            }
-            let completion_tokens =
-                parse_completion_tokens_from_json_body(&buffered[parsed.header_end..]);
-            tcp_stream.write_all(&buffered).await?;
-            let _ = tcp_stream.shutdown().await;
-            return Ok(RouteAttemptResult::Delivered {
-                status_code: probe.status_code,
-                completion_tokens,
-            });
-        }
-    }
-
-    tcp_stream.write_all(&probe.buffered).await?;
-    if let Err(err) = tokio::io::copy(reader, &mut tcp_stream).await {
-        tracing::debug!("response relay ended after headers were committed: {err}");
-    }
-    let _ = tcp_stream.shutdown().await;
-    Ok(RouteAttemptResult::Delivered {
-        status_code: probe.status_code,
-        completion_tokens: None,
-    })
+    relay_success_response(tcp_stream, reader, probe, parsed).await
 }
 
 async fn route_local_attempt(
@@ -3448,6 +3673,53 @@ mod tests {
         assert_eq!(
             parse_completion_tokens_from_json_body(responses.to_string().as_bytes()),
             Some(4)
+        );
+    }
+
+    #[test]
+    fn chat_stream_normalizer_adds_missing_tool_call_id() {
+        let mut state = ChatStreamNormalizationState::default();
+        state.synthetic_seed = Some(42);
+        let normalized = state.normalize_data(
+            r#"{"id":"chatcmpl-a","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"type":"function","function":{"name":"read_file","arguments":"{\"path\":\"AGENTS.md\"}"}}]},"finish_reason":null}]}"#,
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&normalized).unwrap();
+
+        assert_eq!(parsed["id"], "chatcmpl-a");
+        assert_eq!(
+            parsed["choices"][0]["delta"]["tool_calls"][0]["id"],
+            "call_mesh_42_0"
+        );
+    }
+
+    #[test]
+    fn chat_stream_normalizer_keeps_completion_and_tool_ids_stable() {
+        let mut state = ChatStreamNormalizationState::default();
+        state.synthetic_seed = Some(7);
+
+        let first = state.normalize_data(
+            r#"{"id":"chatcmpl-first","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}"#,
+        );
+        let second = state.normalize_data(
+            r#"{"id":"chatcmpl-second","object":"chat.completion.chunk","created":2,"model":"test","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"type":"function","function":{"arguments":"{}"}}]},"finish_reason":null}]}"#,
+        );
+        let third = state.normalize_data(
+            r#"{"id":"chatcmpl-third","object":"chat.completion.chunk","created":3,"model":"test","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"type":"function","function":{"arguments":" more"}}]},"finish_reason":null}]}"#,
+        );
+        let first: serde_json::Value = serde_json::from_str(&first).unwrap();
+        let second: serde_json::Value = serde_json::from_str(&second).unwrap();
+        let third: serde_json::Value = serde_json::from_str(&third).unwrap();
+
+        assert_eq!(first["id"], "chatcmpl-first");
+        assert_eq!(second["id"], "chatcmpl-first");
+        assert_eq!(third["id"], "chatcmpl-first");
+        assert_eq!(
+            second["choices"][0]["delta"]["tool_calls"][0]["id"],
+            "call_mesh_7_0"
+        );
+        assert_eq!(
+            third["choices"][0]["delta"]["tool_calls"][0]["id"],
+            "call_mesh_7_0"
         );
     }
 
