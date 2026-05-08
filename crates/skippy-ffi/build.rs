@@ -152,30 +152,22 @@ fn link_linux_cuda_libs(cmake_cache: &std::path::Path) {
         link_linux_lib_from_cache(cmake_cache, cache_key, lib);
     }
     // NCCL is conditionally linked by CMake when found on the system.
-    // On driverless CI builds, libnccl transitively requires libcuda.so.1 which
-    // is absent. Set LLAMA_STAGE_SKIP_NCCL=1 to skip NCCL linking.
-    println!("cargo:rerun-if-env-changed=LLAMA_STAGE_SKIP_NCCL");
-    let skip_nccl = std::env::var("LLAMA_STAGE_SKIP_NCCL")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-
-    if !skip_nccl {
-        if let Ok(contents) = std::fs::read_to_string(cmake_cache) {
-            let mut nccl_found = cmake_cache_bool(&contents, "NCCL_FOUND");
-            if let Some(nccl_path) = cmake_cache_value(&contents, "NCCL_LIBRARY") {
-                if !nccl_path.contains("NOTFOUND") && !nccl_path.contains("-NOTFOUND") {
-                    nccl_found = true;
-                    let path = std::path::PathBuf::from(&nccl_path);
-                    if let Some(parent) = path.parent() {
-                        if parent.is_dir() {
-                            println!("cargo:rustc-link-search=native={}", parent.display());
-                        }
+    // Check CMakeCache for NCCL_FOUND or NCCL_LIBRARY to detect this and extract the search path.
+    if let Ok(contents) = std::fs::read_to_string(cmake_cache) {
+        let mut nccl_found = cmake_cache_bool(&contents, "NCCL_FOUND");
+        if let Some(nccl_path) = cmake_cache_value(&contents, "NCCL_LIBRARY") {
+            if !nccl_path.contains("NOTFOUND") && !nccl_path.contains("-NOTFOUND") {
+                nccl_found = true;
+                let path = std::path::PathBuf::from(&nccl_path);
+                if let Some(parent) = path.parent() {
+                    if parent.is_dir() {
+                        println!("cargo:rustc-link-search=native={}", parent.display());
                     }
                 }
             }
-            if nccl_found {
-                println!("cargo:rustc-link-lib=dylib=nccl");
-            }
+        }
+        if nccl_found {
+            println!("cargo:rustc-link-lib=dylib=nccl");
         }
     }
 }
