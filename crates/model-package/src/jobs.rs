@@ -412,11 +412,12 @@ pub async fn plan_certification_cpu_job(
     model_size_bytes: u64,
 ) -> Result<CpuJobPlan> {
     let hardware = fetch_hardware(endpoint).await?;
-    plan_cpu_job_from_hardware_with_timeout_policy(
+    plan_cpu_job_from_hardware_with_policies(
         &hardware,
         requested_flavor,
         requested_timeout_seconds,
         model_size_bytes,
+        CpuSelectionPolicy::CertificationMemory,
         CpuTimeoutPolicy::Requested,
     )
 }
@@ -427,13 +428,20 @@ pub fn plan_cpu_job_from_hardware(
     requested_timeout_seconds: u64,
     model_size_bytes: u64,
 ) -> Result<CpuJobPlan> {
-    plan_cpu_job_from_hardware_with_timeout_policy(
+    plan_cpu_job_from_hardware_with_policies(
         hardware,
         requested_flavor,
         requested_timeout_seconds,
         model_size_bytes,
+        CpuSelectionPolicy::SplitterBaseline,
         CpuTimeoutPolicy::SizeMinimum,
     )
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CpuSelectionPolicy {
+    SplitterBaseline,
+    CertificationMemory,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -442,11 +450,12 @@ enum CpuTimeoutPolicy {
     Requested,
 }
 
-fn plan_cpu_job_from_hardware_with_timeout_policy(
+fn plan_cpu_job_from_hardware_with_policies(
     hardware: &[HardwareFlavor],
     requested_flavor: &str,
     requested_timeout_seconds: u64,
     model_size_bytes: u64,
+    selection_policy: CpuSelectionPolicy,
     timeout_policy: CpuTimeoutPolicy,
 ) -> Result<CpuJobPlan> {
     let auto_selected_hardware = requested_flavor == "auto";
@@ -467,7 +476,12 @@ fn plan_cpu_job_from_hardware_with_timeout_policy(
     }
 
     let (flavor, selection_reason) = if auto_selected_hardware {
-        select_cpu_flavor(&cpu_flavors)?
+        match selection_policy {
+            CpuSelectionPolicy::SplitterBaseline => select_splitter_cpu_flavor(&cpu_flavors)?,
+            CpuSelectionPolicy::CertificationMemory => {
+                select_certification_cpu_flavor(&cpu_flavors, model_size_bytes)?
+            }
+        }
     } else {
         let flavor = cpu_flavors
             .into_iter()
@@ -499,7 +513,7 @@ fn plan_cpu_job_from_hardware_with_timeout_policy(
     })
 }
 
-fn select_cpu_flavor(flavors: &[HardwareFlavor]) -> Result<(HardwareFlavor, String)> {
+fn select_splitter_cpu_flavor(flavors: &[HardwareFlavor]) -> Result<(HardwareFlavor, String)> {
     if let Some(flavor) = flavors.iter().find(|flavor| flavor.name == "cpu-upgrade") {
         return Ok((
             flavor.clone(),
@@ -547,6 +561,52 @@ fn select_cpu_flavor(flavors: &[HardwareFlavor]) -> Result<(HardwareFlavor, Stri
     ))
 }
 
+fn select_certification_cpu_flavor(
+    flavors: &[HardwareFlavor],
+    model_size_bytes: u64,
+) -> Result<(HardwareFlavor, String)> {
+    let required_ram_bytes = certification_recommended_ram_bytes(model_size_bytes);
+    let mut candidates = flavors
+        .iter()
+        .filter(|flavor| flavor.ram_bytes().unwrap_or_default() >= required_ram_bytes)
+        .cloned()
+        .collect::<Vec<_>>();
+    candidates.sort_by(|a, b| {
+        a.resolved_unit_cost_usd()
+            .unwrap_or(f64::INFINITY)
+            .partial_cmp(&b.resolved_unit_cost_usd().unwrap_or(f64::INFINITY))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    if let Some(flavor) = candidates.into_iter().next() {
+        return Ok((
+            flavor,
+            format!(
+                "auto-selected cheapest CPU flavor with enough advertised RAM for certification: at least {}",
+                format_bytes(required_ram_bytes)
+            ),
+        ));
+    }
+
+    let largest = flavors
+        .iter()
+        .max_by_key(|flavor| flavor.ram_bytes().unwrap_or_default())
+        .cloned()
+        .context("choose largest CPU Hugging Face Jobs flavor for certification")?;
+    bail!(
+        "no CPU Hugging Face Jobs flavor advertises enough RAM for certification; model size is {}, heuristic requires at least {}, largest available CPU flavor is {} with {} RAM",
+        format_bytes(model_size_bytes),
+        format_bytes(required_ram_bytes),
+        largest.name,
+        largest.ram.as_deref().unwrap_or("unknown")
+    )
+}
+
+fn certification_recommended_ram_bytes(model_size_bytes: u64) -> u64 {
+    const GIB: u64 = 1024 * 1024 * 1024;
+    let with_headroom = model_size_bytes.saturating_add(model_size_bytes / 4);
+    with_headroom.max(64 * GIB)
+}
+
 fn recommended_cpu_timeout_seconds(model_size_bytes: u64) -> u64 {
     let gib = model_size_bytes as f64 / 1024_f64.powi(3);
     if gib <= 8.0 {
@@ -572,6 +632,15 @@ pub fn estimate_cost_usd(
         other => bail!("Unsupported Hugging Face pricing unit: {other}"),
     };
     Ok(max_cost)
+}
+
+fn format_bytes(bytes: u64) -> String {
+    let gib = bytes as f64 / 1024_f64.powi(3);
+    if gib >= 1.0 {
+        format!("{gib:.1} GiB")
+    } else {
+        format!("{bytes} bytes")
+    }
 }
 
 fn parse_size_bytes(input: &str) -> Option<u64> {
@@ -660,19 +729,62 @@ mod tests {
         let hardware = vec![
             cpu("cpu-basic", "2 vCPU", "16 GB", 0.01),
             cpu("cpu-upgrade", "8 vCPU", "32 GB", 0.05),
+            cpu("cpu-performance", "32 vCPU", "256 GB", 0.30),
         ];
-        let plan = plan_cpu_job_from_hardware_with_timeout_policy(
+        let plan = plan_cpu_job_from_hardware_with_policies(
             &hardware,
             "auto",
             30 * 60,
             200 * 1024 * 1024 * 1024,
+            CpuSelectionPolicy::CertificationMemory,
             CpuTimeoutPolicy::Requested,
         )
         .unwrap();
-        assert_eq!(plan.flavor, "cpu-upgrade");
+        assert_eq!(plan.flavor, "cpu-performance");
         assert_eq!(plan.requested_timeout_seconds, 30 * 60);
         assert_eq!(plan.timeout_seconds, 30 * 60);
         assert!(!plan.timeout_bumped_to_minimum);
+    }
+
+    #[test]
+    fn certification_plan_uses_memory_sane_cpu_for_large_models() {
+        let hardware = vec![
+            cpu("cpu-upgrade", "8 vCPU", "32 GB", 0.05),
+            cpu("cpu-xl", "16 vCPU", "124 GB", 0.20),
+            cpu("cpu-performance", "32 vCPU", "256 GB", 0.30),
+        ];
+        let mimo_iq4_xs_bytes = 164_445_782_752;
+        let plan = plan_cpu_job_from_hardware_with_policies(
+            &hardware,
+            "auto",
+            8 * 60 * 60,
+            mimo_iq4_xs_bytes,
+            CpuSelectionPolicy::CertificationMemory,
+            CpuTimeoutPolicy::Requested,
+        )
+        .unwrap();
+        assert_eq!(plan.flavor, "cpu-performance");
+        assert!(plan.selection_reason.contains("advertised RAM"));
+    }
+
+    #[test]
+    fn certification_plan_rejects_auto_when_no_cpu_has_enough_ram() {
+        let hardware = vec![
+            cpu("cpu-upgrade", "8 vCPU", "32 GB", 0.05),
+            cpu("cpu-xl", "16 vCPU", "124 GB", 0.20),
+        ];
+        let err = plan_cpu_job_from_hardware_with_policies(
+            &hardware,
+            "auto",
+            8 * 60 * 60,
+            164_445_782_752,
+            CpuSelectionPolicy::CertificationMemory,
+            CpuTimeoutPolicy::Requested,
+        )
+        .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("no CPU Hugging Face Jobs flavor advertises enough RAM"));
     }
 
     #[test]
