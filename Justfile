@@ -497,6 +497,24 @@ llama-update-pin:
 llama-summary old new:
     scripts/summarize-llama-upstream.sh "{{ old }}" "{{ new }}"
 
+# Clean Rust, llama.cpp, and UI build artifacts.
+[unix]
+clean:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rm -rf \
+        target \
+        .deps/llama.cpp/build-stage-abi-* \
+        .deps/llama-build/build-stage-abi-* \
+        "{{ ui_dir }}/node_modules" \
+        "{{ ui_dir }}/dist"
+    echo "Cleaned Rust target, llama.cpp build dirs, and UI artifacts"
+
+[windows]
+clean:
+    @powershell -NoProfile -ExecutionPolicy Bypass -Command "Remove-Item -Recurse -Force target,'.deps/llama.cpp/build-stage-abi-*','.deps/llama-build/build-stage-abi-*','{{ ui_dir }}/node_modules','{{ ui_dir }}/dist' -ErrorAction SilentlyContinue"
+    echo "Cleaned Rust target, llama.cpp build dirs, and UI artifacts"
+
 # Clean UI build artifacts (node_modules, dist). Fixes stale pnpm state.
 [unix]
 ui-clean:
