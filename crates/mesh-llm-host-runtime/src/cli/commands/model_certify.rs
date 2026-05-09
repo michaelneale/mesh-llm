@@ -19,7 +19,6 @@ pub(crate) struct ModelCertifyArgs<'a> {
     pub job_image: &'a str,
     pub dry_run: bool,
     pub confirm: bool,
-    pub confirm_max_cost_usd: Option<f64>,
     pub follow: bool,
     pub json: bool,
     pub status: Option<&'a str>,
@@ -44,7 +43,6 @@ pub(crate) async fn dispatch_model_certify(args: ModelCertifyArgs<'_>) -> Result
         job_image,
         dry_run,
         confirm,
-        confirm_max_cost_usd,
         follow,
         json,
         status,
@@ -169,7 +167,6 @@ pub(crate) async fn dispatch_model_certify(args: ModelCertifyArgs<'_>) -> Result
                 serde_json::to_string_pretty(&json!({
                     "dryRun": true,
                     "confirmRequired": true,
-                    "confirmMaxCostUsdRequired": job.job_plan.max_cost_usd,
                     "sourceRepo": job.source_repo,
                     "sourceFile": job.source_file,
                     "family": job.family,
@@ -184,24 +181,12 @@ pub(crate) async fn dispatch_model_certify(args: ModelCertifyArgs<'_>) -> Result
             eprintln!();
             eprintln!("🔍 Dry run — no HF Job was submitted.");
             eprintln!(
-                "To spend up to {}, rerun with --confirm --confirm-max-cost-usd {:.2}.",
-                package_command::format_cost(job.job_plan.max_cost_usd),
-                job.job_plan.max_cost_usd
+                "Add --confirm to submit. Max cost: {}.",
+                package_command::format_cost(job.job_plan.max_cost_usd)
             );
             println!("{}", serde_json::to_string_pretty(&redacted)?);
         }
         return Ok(());
-    }
-
-    let confirmed_max = confirm_max_cost_usd.context(
-        "--confirm-max-cost-usd is required with --confirm so the max HF Jobs spend is explicit",
-    )?;
-    if confirmed_max + f64::EPSILON < job.job_plan.max_cost_usd {
-        bail!(
-            "--confirm-max-cost-usd {:.2} is lower than planned max cost {}; rerun dry-run and confirm the current cost",
-            confirmed_max,
-            package_command::format_cost(job.job_plan.max_cost_usd)
-        );
     }
 
     package_command::ensure_bucket_job_script_current(&hf_client, script::JobScript::CertifyModel)
@@ -244,7 +229,6 @@ pub(crate) async fn dispatch_model_certify(args: ModelCertifyArgs<'_>) -> Result
                 "family": job.family,
                 "artifactRepo": job.artifact_repo,
                 "modelId": job.model_id,
-                "confirmedMaxCostUsd": confirmed_max,
                 "jobPlan": job.job_plan,
             }))?
         );

@@ -1353,8 +1353,6 @@ mod tests {
             "--family",
             "mimo2",
             "--confirm",
-            "--confirm-max-cost-usd",
-            "12.01",
             "--json",
         ]);
 
@@ -1364,13 +1362,11 @@ mod tests {
                     source_repo: Some(source_repo),
                     family: Some(family),
                     confirm: true,
-                    confirm_max_cost_usd: Some(max_cost),
                     json: true,
                     ..
                 } => {
                     assert_eq!(source_repo, "unsloth/MiMo-V2-Flash-GGUF:IQ4_XS");
                     assert_eq!(family, "mimo2");
-                    assert_eq!(*max_cost, 12.01);
                 }
                 other => panic!("unexpected models command: {other:?}"),
             },

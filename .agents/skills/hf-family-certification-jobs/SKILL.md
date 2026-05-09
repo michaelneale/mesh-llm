@@ -15,9 +15,8 @@ for skippy staged serving.
 1. Certification jobs are spend-bearing. Always run a JSON dry run first.
 2. Do not submit unless the user or supervising workflow has accepted the dry-run
    `jobPlan.max_cost_usd`.
-3. Confirmed submissions must pass both `--confirm` and
-   `--confirm-max-cost-usd` with a value at least as large as the dry-run max.
-   `certify-family --timeout` is the certification job's hard max-cost timeout;
+3. Confirmed submissions use `--confirm`. `certify-family --timeout` is the
+   certification job's hard max-cost timeout;
    do not rely on package-splitting size floors for certification jobs.
 4. Submit jobs against a pushed branch or exact commit SHA via
    `--mesh-llm-ref`. Prefer exact SHAs once a branch has been pushed.
@@ -49,7 +48,6 @@ mesh-llm models certify-family ORG/REPO:QUANT \
   --mesh-llm-ref REF \
   --artifact-repo meshllm/family-certification-runs \
   --confirm \
-  --confirm-max-cost-usd MAX_COST_USD \
   --follow \
   --json
 ```
@@ -70,7 +68,7 @@ mesh-llm models certify-family --list --json
 3. Run local focused validation before spending HF money.
 4. Push the branch and record `git rev-parse HEAD`.
 5. Dry-run certification with `--mesh-llm-ref <sha> --json`.
-6. Submit with `--confirm --confirm-max-cost-usd <dry-run max>`.
+6. Submit with `--confirm` after accepting the dry-run max cost.
 7. If the job fails, classify the failing phase, patch locally, push, and
    resubmit the new SHA.
 8. Open a PR only after the certified SHA has passing artifacts.
