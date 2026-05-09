@@ -3066,8 +3066,11 @@ pub(crate) async fn assert_non_serving_dispatch_short_circuit_behavior() {
     assert!(matches!(
         cli.command.as_ref(),
         Some(Command::Models {
-            command: crate::cli::models::ModelsCommand::Installed { json: false }
-        })
+            command
+        }) if matches!(
+            command.as_ref(),
+            crate::cli::models::ModelsCommand::Installed { json: false }
+        )
     ));
 
     let dispatched = crate::cli::commands::dispatch(&cli)

@@ -420,7 +420,7 @@ pub(crate) enum Command {
     /// Manage model storage, migration, and update checks.
     Models {
         #[command(subcommand)]
-        command: models::ModelsCommand,
+        command: Box<models::ModelsCommand>,
     },
     /// Download a model from the remote catalog or Hugging Face
     Download {
@@ -1267,13 +1267,13 @@ mod tests {
         ]);
 
         match cli.command.expect("models command expected") {
-            Command::Models {
-                command:
-                    ModelsCommand::Search {
-                        sort: ModelSearchSort::ParametersDesc,
-                        ..
-                    },
-            } => {}
+            Command::Models { command } => match command.as_ref() {
+                ModelsCommand::Search {
+                    sort: ModelSearchSort::ParametersDesc,
+                    ..
+                } => {}
+                other => panic!("unexpected models command: {other:?}"),
+            },
             other => panic!("unexpected command: {other:?}"),
         }
     }
@@ -1290,13 +1290,13 @@ mod tests {
         ]);
 
         match cli.command.expect("models command expected") {
-            Command::Models {
-                command:
-                    ModelsCommand::Search {
-                        sort: ModelSearchSort::ParametersDesc,
-                        ..
-                    },
-            } => {}
+            Command::Models { command } => match command.as_ref() {
+                ModelsCommand::Search {
+                    sort: ModelSearchSort::ParametersDesc,
+                    ..
+                } => {}
+                other => panic!("unexpected models command: {other:?}"),
+            },
             other => panic!("unexpected command: {other:?}"),
         }
     }
@@ -1319,22 +1319,22 @@ mod tests {
         ]);
 
         match cli.command.expect("models command expected") {
-            Command::Models {
-                command:
-                    ModelsCommand::Certify {
-                        model,
-                        package_only: true,
-                        json: true,
-                        report_out: Some(report_out),
-                        prompt,
-                        max_tokens: 2,
-                        ..
-                    },
-            } => {
-                assert_eq!(model, "hf://meshllm/demo-layers@abc123");
-                assert_eq!(report_out, std::path::PathBuf::from("/tmp/cert.json"));
-                assert_eq!(prompt, "Say ok.");
-            }
+            Command::Models { command } => match command.as_ref() {
+                ModelsCommand::Certify {
+                    model,
+                    package_only: true,
+                    json: true,
+                    report_out: Some(report_out),
+                    prompt,
+                    max_tokens: 2,
+                    ..
+                } => {
+                    assert_eq!(model, "hf://meshllm/demo-layers@abc123");
+                    assert_eq!(*report_out, std::path::PathBuf::from("/tmp/cert.json"));
+                    assert_eq!(prompt, "Say ok.");
+                }
+                other => panic!("unexpected models command: {other:?}"),
+            },
             other => panic!("unexpected command: {other:?}"),
         }
     }
@@ -1355,21 +1355,21 @@ mod tests {
         ]);
 
         match cli.command.expect("models command expected") {
-            Command::Models {
-                command:
-                    ModelsCommand::CertifyFamily {
-                        source_repo: Some(source_repo),
-                        family: Some(family),
-                        confirm: true,
-                        confirm_max_cost_usd: Some(max_cost),
-                        json: true,
-                        ..
-                    },
-            } => {
-                assert_eq!(source_repo, "unsloth/MiMo-V2-Flash-GGUF:IQ4_XS");
-                assert_eq!(family, "mimo2");
-                assert_eq!(max_cost, 12.01);
-            }
+            Command::Models { command } => match command.as_ref() {
+                ModelsCommand::CertifyFamily {
+                    source_repo: Some(source_repo),
+                    family: Some(family),
+                    confirm: true,
+                    confirm_max_cost_usd: Some(max_cost),
+                    json: true,
+                    ..
+                } => {
+                    assert_eq!(source_repo, "unsloth/MiMo-V2-Flash-GGUF:IQ4_XS");
+                    assert_eq!(family, "mimo2");
+                    assert_eq!(*max_cost, 12.01);
+                }
+                other => panic!("unexpected models command: {other:?}"),
+            },
             other => panic!("unexpected command: {other:?}"),
         }
     }
