@@ -247,8 +247,10 @@ jobs:
       OPENCODE_DISABLE_PRUNE: "true"
       OPENCODE_DISABLE_LSP_DOWNLOAD: "true"
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      # Keep the self-hosted live-agent smoke on Node 20 actions so CI does not
+      # depend on the runner being upgraded in lockstep with GitHub-hosted images.
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 24
       - name: Install agent CLIs
