@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { LatencySource } from '@/lib/api/types'
 import { adaptStatusToDashboard } from '@/features/network/api/status-adapter'
 import { buildDashboardMeshNodes } from '@/features/network/lib/dashboard-mesh-nodes'
 import type { StatusPayload } from '@/lib/api/types'
@@ -391,5 +392,64 @@ describe('adaptStatusToDashboard', () => {
       expect.objectContaining({ sharePct: 0 })
     )
     expect(dashboard.peers.find((peer) => peer.id === 'api-client')).toEqual(expect.objectContaining({ sharePct: 0 }))
+  })
+
+  it('maps snake_case latency fields from API to camelCase Peer properties', () => {
+    const dashboard = adaptStatusToDashboard({
+      ...PUBLIC_STATUS_PAYLOAD,
+      peers: [
+        {
+          id: 'latency-peer',
+          role: 'Host',
+          state: 'serving',
+          models: ['Test-Model'],
+          vram_gb: 16,
+          hostname: 'latency-host',
+          latency_ms: 7.2,
+          latency_source: LatencySource.DIRECT,
+          latency_age_ms: 500,
+          latency_observer_id: 'observer-node-id'
+        }
+      ]
+    })
+
+    const peer = dashboard.peers.find((p) => p.id === 'latency-peer')
+    expect(peer).toBeDefined()
+    expect(peer!.latencyMs).toBe(7.2)
+    expect(peer!.latencySource).toBe(LatencySource.DIRECT)
+    expect(peer!.latencyAgeMs).toBe(500)
+    expect(peer!.latencyObserverId).toBe('observer-node-id')
+  })
+
+  it('defaults self peer latency fields to null', () => {
+    const dashboard = adaptStatusToDashboard(PUBLIC_STATUS_PAYLOAD)
+
+    const selfPeer = dashboard.peers.find((p) => p.id === '16ce0bb4de')
+    expect(selfPeer).toBeDefined()
+    expect(selfPeer!.latencyMs).toBe(0)
+    expect(selfPeer!.latencySource).toBeNull()
+    expect(selfPeer!.latencyAgeMs).toBeNull()
+    expect(selfPeer!.latencyObserverId).toBeNull()
+  })
+
+  it('falls back to rtt_ms when latency_ms is absent', () => {
+    const dashboard = adaptStatusToDashboard({
+      ...PUBLIC_STATUS_PAYLOAD,
+      peers: [
+        {
+          id: 'rtt-peer',
+          role: 'Client',
+          state: 'client',
+          models: [],
+          vram_gb: 0,
+          hostname: 'rtt-host',
+          rtt_ms: 12.5
+        }
+      ]
+    })
+
+    const peer = dashboard.peers.find((p) => p.id === 'rtt-peer')
+    expect(peer).toBeDefined()
+    expect(peer!.latencyMs).toBe(12.5)
   })
 })

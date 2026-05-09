@@ -180,6 +180,40 @@ pub(crate) fn resolve_peer_down(
 }
 
 impl Node {
+    const RTT_REFRESH_SECS: u64 = 15;
+
+    pub fn start_rtt_refresh(&self) {
+        let node = self.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(Self::RTT_REFRESH_SECS)).await;
+
+                let connections: Vec<(EndpointId, Connection)> = {
+                    let state = node.state.lock().await;
+                    state
+                        .connections
+                        .iter()
+                        .map(|(id, c)| (*id, c.clone()))
+                        .collect()
+                };
+
+                for (peer_id, conn) in connections {
+                    let mut paths = conn.paths();
+                    let path_list = iroh::Watcher::get(&mut paths);
+                    for path_info in path_list {
+                        if path_info.is_selected() {
+                            if let Some(rtt) = path_info.rtt() {
+                                let rtt_ms = rtt.as_millis() as u32;
+                                node.update_peer_rtt(peer_id, rtt_ms).await;
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     /// Start a background task that watches relay-backed connections and
     /// refreshes one degraded relay path at a time.
     pub fn start_relay_health_monitor(&self) {

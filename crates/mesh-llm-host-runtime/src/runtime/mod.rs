@@ -3992,6 +3992,7 @@ pub(crate) async fn run_plugin_mcp(cli: &Cli) -> Result<()> {
     node.start_accepting();
     node.set_display_name(node_display_name(cli, &node)).await;
     node.start_heartbeat();
+    node.start_rtt_refresh();
     node.start_relay_health_monitor();
     join_mesh_for_mcp(cli, &node).await?;
 
@@ -4109,6 +4110,7 @@ async fn run_auto(
 
     // Start periodic health check to detect dead peers
     node.start_heartbeat();
+    node.start_rtt_refresh();
     node.start_relay_health_monitor();
 
     // Launch memory bandwidth benchmark in background (non-blocking)

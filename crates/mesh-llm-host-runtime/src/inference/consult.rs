@@ -24,6 +24,7 @@ use serde_json::Value;
 /// Returns None if no vision-capable peer exists in the mesh.
 pub async fn find_vision_peer(node: &mesh::Node, exclude_model: &str) -> Option<EndpointId> {
     let peers = node.peers().await;
+    // rtt_ms is the best-seen (minimum) RTT, stable for routing decisions.
     peers
         .iter()
         .filter(|p| {
@@ -39,6 +40,7 @@ pub async fn find_vision_peer(node: &mesh::Node, exclude_model: &str) -> Option<
 /// Returns None if no audio-capable peer exists in the mesh.
 pub async fn find_audio_peer(node: &mesh::Node, exclude_model: &str) -> Option<EndpointId> {
     let peers = node.peers().await;
+    // rtt_ms is the best-seen (minimum) RTT, stable for routing decisions.
     peers
         .iter()
         .filter(|p| {
@@ -72,6 +74,7 @@ pub async fn find_different_model_peers(
                 d.identity.model_name != current_model && !d.identity.model_name.is_empty()
             });
             different.map(|d| {
+                // rtt_ms is the best-seen (minimum) RTT, stable for routing decisions.
                 let rtt = p.rtt_ms.unwrap_or(500);
                 let has_reasoning = d.capabilities.reasoning != CapabilityLevel::None;
                 // Sort key: reasoning models first (0), then non-reasoning (1), then RTT

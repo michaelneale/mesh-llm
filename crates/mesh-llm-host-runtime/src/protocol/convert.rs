@@ -531,6 +531,16 @@ pub(crate) fn local_ann_to_proto_ann(
         gpu_reserved_bytes: ann.gpu_reserved_bytes.clone(),
         hardware,
         first_joined_mesh_ts: ann.first_joined_mesh_ts,
+        latency_ms: ann.latency_ms,
+        latency_source: match ann.latency_source {
+            Some(s) => s as i32,
+            None => 0i32,
+        },
+        latency_age_ms: ann.latency_age_ms.map(|v| v as u32),
+        latency_observer_id: ann
+            .latency_observer_id
+            .as_ref()
+            .map(|id| id.as_bytes().to_vec()),
         subprotocols: skippy_stage_subprotocols(
             ann.artifact_transfer_supported,
             ann.stage_status_list_supported,
@@ -698,6 +708,13 @@ pub(crate) fn proto_ann_to_local(
             .map(proto_owner_attestation_to_local),
         artifact_transfer_supported: supports_skippy_artifact_transfer(&pa.subprotocols),
         stage_status_list_supported: supports_skippy_status_list(&pa.subprotocols),
+        latency_ms: pa.latency_ms,
+        latency_source: crate::proto::node::LatencySource::try_from(pa.latency_source).ok(),
+        latency_age_ms: pa.latency_age_ms.map(|v| v as u64),
+        latency_observer_id: pa.latency_observer_id.as_ref().and_then(|bytes| {
+            let arr: [u8; 32] = bytes.as_slice().try_into().ok()?;
+            iroh::PublicKey::from_bytes(&arr).ok()
+        }),
     };
     crate::mesh::backfill_legacy_descriptors(&mut ann);
     Some((addr, ann))

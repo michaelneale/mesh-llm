@@ -1,3 +1,5 @@
+import type { LatencySource } from '@/lib/api/types'
+
 export type LiveNodeState = 'client' | 'standby' | 'loading' | 'serving'
 
 export type WakeableNodeState = 'sleeping' | 'waking'
@@ -68,6 +70,10 @@ export type Peer = {
   hosted_models?: string[]
   hosted_models_known?: boolean
   rtt_ms?: number | null
+  latency_ms?: number
+  latency_source?: LatencySource | null
+  latency_age_ms?: number
+  latency_observer_id?: string
   hostname?: string
   version?: string
   is_soc?: boolean

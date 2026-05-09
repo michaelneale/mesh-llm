@@ -380,11 +380,28 @@ pub(crate) struct PeerPayload {
     pub(crate) hosted_models_known: bool,
     pub(crate) version: Option<String>,
     pub(crate) rtt_ms: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) latency_ms: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) latency_source: Option<LatencySource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) latency_age_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) latency_observer_id: Option<String>,
     pub(crate) hostname: Option<String>,
     pub(crate) is_soc: Option<bool>,
     pub(crate) gpus: Vec<GpuEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) first_joined_mesh_ts: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum LatencySource {
+    #[default]
+    Direct,
+    Estimated,
+    Unknown,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -889,6 +906,10 @@ mod tests {
             hosted_models_known: false,
             version: Some("0.56.0".to_string()),
             rtt_ms: None,
+            latency_ms: None,
+            latency_source: None,
+            latency_age_ms: None,
+            latency_observer_id: None,
             hostname: None,
             is_soc: None,
             gpus: vec![],
@@ -915,6 +936,10 @@ mod tests {
             hosted_models_known: false,
             version: None,
             rtt_ms: None,
+            latency_ms: None,
+            latency_source: None,
+            latency_age_ms: None,
+            latency_observer_id: None,
             hostname: None,
             is_soc: None,
             gpus: vec![],
@@ -1165,6 +1190,10 @@ mod tests {
             hosted_models_known: true,
             version: Some("0.60.2".to_string()),
             rtt_ms: Some(12),
+            latency_ms: None,
+            latency_source: None,
+            latency_age_ms: None,
+            latency_observer_id: None,
             hostname: Some("peer.local".to_string()),
             is_soc: Some(false),
             gpus: vec![],

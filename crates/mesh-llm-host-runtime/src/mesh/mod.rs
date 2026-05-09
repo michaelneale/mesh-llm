@@ -619,7 +619,7 @@ fn peer_info_to_mesh_peer(peer: &PeerInfo) -> crate::plugin::proto::MeshPeer {
         serving_models: peer.serving_models.clone(),
         available_models: Vec::new(),
         requested_models: peer.requested_models.clone(),
-        rtt_ms: peer.rtt_ms,
+        rtt_ms: peer.current_direct_rtt_ms(),
         model_source: peer.model_source.clone().unwrap_or_default(),
         hosted_models: peer.hosted_models.clone(),
         hosted_models_known: Some(peer.hosted_models_known),
@@ -756,6 +756,43 @@ pub(crate) struct PeerAnnouncement {
     pub(crate) owner_attestation: Option<SignedNodeOwnership>,
     pub(crate) artifact_transfer_supported: bool,
     pub(crate) stage_status_list_supported: bool,
+    pub(crate) latency_ms: Option<u32>,
+    pub(crate) latency_source: Option<crate::proto::node::LatencySource>,
+    pub(crate) latency_age_ms: Option<u64>,
+    pub(crate) latency_observer_id: Option<EndpointId>,
+}
+
+/// A single direct RTT measurement (e.g. from gossip exchange).
+#[derive(Debug, Clone)]
+pub struct DirectLatencyObservation {
+    pub rtt_ms: u32,
+    pub observed_at: std::time::Instant,
+}
+
+/// Latency propagated via transitive gossip (not measured directly).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PropagatedLatencyObservation {
+    pub latency_ms: u32,
+    pub age_ms_at_received: u64,
+    pub received_at: std::time::Instant,
+    pub observer_id: Option<EndpointId>,
+}
+
+/// Which source a display latency value came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplayLatencySource {
+    Direct,
+    Estimated,
+    Unknown,
+}
+
+/// Computed display latency for UI/API consumption.
+#[derive(Debug, Clone)]
+pub struct DisplayLatency {
+    pub latency_ms: Option<u32>,
+    pub source: DisplayLatencySource,
+    pub age_ms: u64,
+    pub observer_id: Option<EndpointId>,
 }
 
 #[derive(Debug, Clone)]
@@ -810,6 +847,10 @@ pub struct PeerInfo {
     pub owner_attestation: Option<SignedNodeOwnership>,
     pub artifact_transfer_supported: bool,
     pub stage_status_list_supported: bool,
+    /// Most recent direct RTT sample for display purposes (refreshed periodically).
+    pub display_rtt: Option<DirectLatencyObservation>,
+    /// Latency propagated via transitive gossip.
+    pub propagated_latency: Option<PropagatedLatencyObservation>,
     pub owner_summary: OwnershipSummary,
 }
 
@@ -867,7 +908,41 @@ impl PeerInfo {
             owner_attestation: ann.owner_attestation.clone(),
             artifact_transfer_supported: ann.artifact_transfer_supported,
             stage_status_list_supported: ann.stage_status_list_supported,
+            display_rtt: None,
+            propagated_latency: None,
             owner_summary,
+        }
+    }
+
+    /// Return the most recent direct RTT sample for display, falling back to best-seen RTT.
+    pub fn current_direct_rtt_ms(&self) -> Option<u32> {
+        self.display_rtt.as_ref().map(|d| d.rtt_ms).or(self.rtt_ms)
+    }
+
+    /// Compute display latency from direct sample or propagated data.
+    pub fn display_latency(&self) -> DisplayLatency {
+        if let Some(ref direct) = self.display_rtt {
+            return DisplayLatency {
+                latency_ms: Some(direct.rtt_ms),
+                source: DisplayLatencySource::Direct,
+                age_ms: direct.observed_at.elapsed().as_millis() as u64,
+                observer_id: None,
+            };
+        }
+        if let Some(ref propagated) = self.propagated_latency {
+            return DisplayLatency {
+                latency_ms: Some(propagated.latency_ms),
+                source: DisplayLatencySource::Estimated,
+                age_ms: propagated.age_ms_at_received
+                    + propagated.received_at.elapsed().as_millis() as u64,
+                observer_id: propagated.observer_id,
+            };
+        }
+        DisplayLatency {
+            latency_ms: self.rtt_ms,
+            source: DisplayLatencySource::Unknown,
+            age_ms: 0,
+            observer_id: None,
         }
     }
 
@@ -2527,7 +2602,7 @@ impl Node {
                 self.merge_remote_demand(&ann.model_demand);
                 self.add_peer(remote_id, ann.addr.clone(), ann).await;
             } else {
-                self.update_transitive_peer(ann.addr.id, &ann.addr, ann)
+                self.update_transitive_peer(ann.addr.id, &ann.addr, ann, remote_id)
                     .await;
             }
         }
@@ -2869,9 +2944,18 @@ impl Node {
                 // correct — if the path truly degrades the peer will be
                 // unreachable and removed via the normal liveness path.
                 if prev.is_some_and(|p| rtt_ms > p) {
+                    // Store display_rtt regardless (for UI refresh), but don't update best RTT.
+                    peer.display_rtt = Some(DirectLatencyObservation {
+                        rtt_ms,
+                        observed_at: std::time::Instant::now(),
+                    });
                     return;
                 }
                 peer.rtt_ms = Some(rtt_ms);
+                peer.display_rtt = Some(DirectLatencyObservation {
+                    rtt_ms,
+                    observed_at: std::time::Instant::now(),
+                });
                 (Some(peer.clone()), prev)
             } else {
                 (None, None)

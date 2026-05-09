@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import type { LatencySource } from '@/lib/api/types'
 import type { ChatMessage } from '@/features/chat/lib/chat-types'
 
 export type ResolvedTheme = 'light' | 'dark'
@@ -30,7 +31,7 @@ export type Peer = {
   status: 'online' | 'degraded' | 'offline'
   hostedModels: string[]
   sharePct: number
-  latencyMs: number
+  latencyMs: number | null
   loadPct: number
   shortId?: string
   role?: 'you' | 'host' | 'peer' | 'client' | 'worker'
@@ -41,6 +42,9 @@ export type Peer = {
   hardwareLabel?: string
   ownership?: string
   owner?: string
+  latencySource?: LatencySource | null
+  latencyAgeMs?: number | null
+  latencyObserverId?: string | null
 }
 export type PeerSummary = { total: number; online: number; capacity: string }
 

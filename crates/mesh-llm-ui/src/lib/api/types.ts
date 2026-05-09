@@ -49,6 +49,13 @@ export interface MeshModelRaw {
   license?: string
 }
 
+export enum LatencySource {
+  UNSPECIFIED = 'unspecified',
+  DIRECT = 'direct',
+  ESTIMATED = 'estimated',
+  UNKNOWN = 'unknown'
+}
+
 export interface PeerInfo {
   node_id?: string
   id?: string
@@ -63,6 +70,9 @@ export interface PeerInfo {
   my_vram_gb?: number
   vram_gb?: number
   latency_ms?: number
+  latency_source?: LatencySource
+  latency_age_ms?: number
+  latency_observer_id?: string
   rtt_ms?: number
   load_pct?: number
   version?: string
