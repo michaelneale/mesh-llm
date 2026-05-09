@@ -256,20 +256,24 @@ pub async fn run_model_certify(
     Ok(())
 }
 
-fn run_model_package_local(
-    model: Option<&str>,
-    out_dir: Option<&Path>,
-    projectors: &[PathBuf],
-    model_id: Option<&str>,
-    source_repo: Option<&str>,
-    source_revision: Option<&str>,
-    source_file: Option<&str>,
+struct LocalPackageRequest<'a> {
+    model: Option<&'a str>,
+    out_dir: Option<&'a Path>,
+    projectors: &'a [PathBuf],
+    model_id: Option<&'a str>,
+    source_repo: Option<&'a str>,
+    source_revision: Option<&'a str>,
+    source_file: Option<&'a str>,
     json_output: bool,
-) -> Result<()> {
-    let model = model.context(
+}
+
+fn run_model_package_local(request: LocalPackageRequest<'_>) -> Result<()> {
+    let model = request.model.context(
         "models package requires a model path or model coordinate, for example `mesh-llm models package ./model.gguf --out-dir ./model-package --model-id org/repo:Q4_K_M`",
     )?;
-    let out_dir = out_dir.context("--out-dir is required for local `models package`")?;
+    let out_dir = request
+        .out_dir
+        .context("--out-dir is required for local `models package`")?;
     let binary = find_skippy_model_package_binary();
 
     let mut command = ProcessCommand::new(&binary);
@@ -278,19 +282,19 @@ fn run_model_package_local(
         .arg(model)
         .arg("--out-dir")
         .arg(out_dir);
-    for projector in projectors {
+    for projector in request.projectors {
         command.arg("--projector").arg(projector);
     }
-    if let Some(value) = model_id {
+    if let Some(value) = request.model_id {
         command.arg("--model-id").arg(value);
     }
-    if let Some(value) = source_repo {
+    if let Some(value) = request.source_repo {
         command.arg("--source-repo").arg(value);
     }
-    if let Some(value) = source_revision {
+    if let Some(value) = request.source_revision {
         command.arg("--source-revision").arg(value);
     }
-    if let Some(value) = source_file {
+    if let Some(value) = request.source_file {
         command.arg("--source-file").arg(value);
     }
 
@@ -301,7 +305,7 @@ fn run_model_package_local(
         bail!("skippy-model-package write-package failed with status {status}");
     }
 
-    if json_output {
+    if request.json_output {
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({
@@ -554,16 +558,16 @@ pub async fn dispatch_models_command(command: &ModelsCommand) -> Result<()> {
                         "local `models package` does not use --confirm, --dry-run, --follow, or --target; add --hf-job for remote packaging"
                     );
                 }
-                run_model_package_local(
-                    source_repo.as_deref(),
-                    out_dir.as_deref(),
+                run_model_package_local(LocalPackageRequest {
+                    model: source_repo.as_deref(),
+                    out_dir: out_dir.as_deref(),
                     projectors,
-                    model_id.as_deref(),
-                    source_identity_repo.as_deref(),
-                    source_revision.as_deref(),
-                    source_file.as_deref(),
-                    *json,
-                )?;
+                    model_id: model_id.as_deref(),
+                    source_repo: source_identity_repo.as_deref(),
+                    source_revision: source_revision.as_deref(),
+                    source_file: source_file.as_deref(),
+                    json_output: *json,
+                })?;
             }
         }
         ModelsCommand::Recommended { json } | ModelsCommand::List { json } => {
