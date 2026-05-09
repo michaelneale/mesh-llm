@@ -428,14 +428,16 @@ jobs:
         run: |
           mkdir -p .cargo
           llvm_prefix="$(brew --prefix llvm)"
+          mkdir -p "$PWD/.cargo/ld64-lld-bin"
+          ln -sf "$llvm_prefix/bin/ld64.lld" "$PWD/.cargo/ld64-lld-bin/ld"
           cat > .cargo/config.toml <<EOF
           [target.aarch64-apple-darwin]
           linker = "$llvm_prefix/bin/clang"
-          rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+          rustflags = ["-C", "link-arg=-B$PWD/.cargo/ld64-lld-bin"]
 
           [target.x86_64-apple-darwin]
           linker = "$llvm_prefix/bin/clang"
-          rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+          rustflags = ["-C", "link-arg=-B$PWD/.cargo/ld64-lld-bin"]
           EOF
       - name: Build UI placeholder
         run: mkdir -p crates/mesh-llm-ui/dist && printf '<html></html>' > crates/mesh-llm-ui/dist/index.html
@@ -501,14 +503,16 @@ jobs:
         run: |
           mkdir -p .cargo
           llvm_prefix="$(brew --prefix llvm)"
+          mkdir -p "$PWD/.cargo/ld64-lld-bin"
+          ln -sf "$llvm_prefix/bin/ld64.lld" "$PWD/.cargo/ld64-lld-bin/ld"
           cat > .cargo/config.toml <<EOF
           [target.aarch64-apple-darwin]
           linker = "$llvm_prefix/bin/clang"
-          rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+          rustflags = ["-C", "link-arg=-B$PWD/.cargo/ld64-lld-bin"]
 
           [target.x86_64-apple-darwin]
           linker = "$llvm_prefix/bin/clang"
-          rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+          rustflags = ["-C", "link-arg=-B$PWD/.cargo/ld64-lld-bin"]
           EOF
       - name: Format check
         run: cargo fmt --all -- --check

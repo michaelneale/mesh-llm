@@ -63,9 +63,12 @@ configure_macos_linker() {
         /opt/homebrew/opt/llvm \
         /usr/local/opt/llvm; do
         if [[ -n "$candidate" && -x "$candidate/bin/clang" && -x "$candidate/bin/ld64.lld" ]]; then
+            local shim_dir="$PWD/.deps/fast-rust-linker/ld64-lld-bin"
+            mkdir -p "$shim_dir"
+            ln -sf "$candidate/bin/ld64.lld" "$shim_dir/ld"
             export CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER="$candidate/bin/clang"
             export CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER="$candidate/bin/clang"
-            append_rustflag "-C link-arg=-fuse-ld=lld"
+            append_rustflag "-C link-arg=-B$shim_dir"
             echo "Using Rust linker: $candidate/bin/ld64.lld"
             return
         fi
