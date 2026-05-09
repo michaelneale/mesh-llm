@@ -477,7 +477,7 @@ pub(super) async fn start_runtime_split_model(
     } else {
         skippy::synthetic_direct_gguf_package(model_ref, spec.model_path)?
     };
-    let participants = wait_for_split_participants(
+    let participant_snapshot = wait_for_split_participants(
         spec.node,
         model_ref,
         model_ref,
@@ -488,9 +488,14 @@ pub(super) async fn start_runtime_split_model(
     .await?;
     let run_id = format!("mesh-split-{}", now_unix_nanos());
     let topology_id = format!("topology-{run_id}");
-    let planned_participants = participants.clone();
-    let stages =
-        plan_runtime_slice_topology(&topology_id, model_ref, &package, &planned_participants)?;
+    let planned_participants = participant_snapshot.participants.clone();
+    let stages = plan_runtime_slice_topology_with_exclusions(
+        &topology_id,
+        model_ref,
+        &package,
+        &planned_participants,
+        &participant_snapshot.excluded,
+    )?;
     anyhow::ensure!(
         split_stages_meet_minimum(&stages),
         "split runtime needs at least two stage participants"
@@ -648,6 +653,53 @@ struct SplitParticipantSnapshot {
 struct SplitParticipantExclusion {
     node_id: iroh::EndpointId,
     reason: SplitParticipantExclusionReason,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SplitCapacityReadinessReport {
+    required_bytes: u64,
+    available_bytes: u64,
+    missing_bytes: u64,
+    participants: Vec<SplitParticipant>,
+    excluded: Vec<SplitParticipantExclusion>,
+}
+
+impl SplitCapacityReadinessReport {
+    fn new(
+        required_bytes: u64,
+        available_bytes: u64,
+        participants: &[SplitParticipant],
+        excluded: &[SplitParticipantExclusion],
+    ) -> Self {
+        Self {
+            required_bytes,
+            available_bytes,
+            missing_bytes: required_bytes.saturating_sub(available_bytes),
+            participants: participants.to_vec(),
+            excluded: excluded.to_vec(),
+        }
+    }
+
+    fn error_message(&self, model_ref: &str) -> String {
+        let mut message = format!(
+            "aggregate split capacity for {model_ref} requires {}, mesh has {} across {} participant(s), short by {}",
+            format_gb(self.required_bytes),
+            format_gb(self.available_bytes),
+            self.participants.len(),
+            format_gb(self.missing_bytes)
+        );
+        if !self.participants.is_empty() {
+            message.push_str("; participants [");
+            message.push_str(&split_participant_labels(&self.participants).join(", "));
+            message.push(']');
+        }
+        if !self.excluded.is_empty() {
+            message.push_str("; excluded [");
+            message.push_str(&split_participant_exclusion_labels(&self.excluded).join(", "));
+            message.push(']');
+        }
+        message
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1612,7 +1664,7 @@ async fn wait_for_split_participants(
     package: &skippy::SkippyPackageIdentity,
     local_vram_override: Option<u64>,
     timeout: Duration,
-) -> Result<Vec<SplitParticipant>> {
+) -> Result<SplitParticipantSnapshot> {
     let deadline = tokio::time::Instant::now() + timeout;
     let mut best: Vec<SplitParticipant> = Vec::new();
     let mut best_excluded: Vec<SplitParticipantExclusion> = Vec::new();
@@ -1649,7 +1701,7 @@ async fn wait_for_split_participants(
                 participants = ?split_participant_labels(&snapshot.participants),
                 "split topology participant set accepted"
             );
-            return Ok(snapshot.participants);
+            return Ok(snapshot);
         }
 
         if now >= deadline {
@@ -1666,7 +1718,10 @@ async fn wait_for_split_participants(
                 excluded = ?split_participant_exclusion_labels(&best_excluded),
                 "split topology participant wait timed out; using best observed set"
             );
-            return Ok(best);
+            return Ok(SplitParticipantSnapshot {
+                participants: best,
+                excluded: best_excluded,
+            });
         }
 
         tokio::time::sleep(SPLIT_PARTICIPANT_POLL_INTERVAL).await;
@@ -1883,11 +1938,11 @@ fn split_participant_labels(participants: &[SplitParticipant]) -> Vec<String> {
         .iter()
         .map(|participant| {
             format!(
-                "{}:{}GB cached={}GB missing={}GB rtt={}ms transfer={}",
+                "{}:{} cached={} missing={} rtt={}ms transfer={}",
                 participant.node_id.fmt_short(),
-                participant.vram_bytes / 1_000_000_000,
-                participant.cached_slice_bytes / 1_000_000_000,
-                participant.missing_artifact_bytes / 1_000_000_000,
+                format_gb(participant.vram_bytes),
+                format_gb(participant.cached_slice_bytes),
+                format_gb(participant.missing_artifact_bytes),
                 participant.rtt_ms.unwrap_or_default(),
                 participant.artifact_transfer_supported
             )
@@ -1920,6 +1975,16 @@ fn plan_runtime_slice_topology(
     model_ref: &str,
     package: &skippy::SkippyPackageIdentity,
     participants: &[SplitParticipant],
+) -> Result<Vec<RuntimeSliceStagePlan>> {
+    plan_runtime_slice_topology_with_exclusions(topology_id, model_ref, package, participants, &[])
+}
+
+fn plan_runtime_slice_topology_with_exclusions(
+    topology_id: &str,
+    model_ref: &str,
+    package: &skippy::SkippyPackageIdentity,
+    participants: &[SplitParticipant],
+    excluded: &[SplitParticipantExclusion],
 ) -> Result<Vec<RuntimeSliceStagePlan>> {
     tracing::info!(
         topology_id,
@@ -1960,7 +2025,7 @@ fn plan_runtime_slice_topology(
         })
         .collect::<Vec<_>>();
     stages.sort_by_key(|stage| stage.stage_index);
-    validate_split_capacity(model_ref, package, participants, &stages)?;
+    validate_split_capacity(model_ref, package, participants, &stages, excluded)?;
     tracing::info!(
         topology_id,
         model_ref,
@@ -1975,6 +2040,7 @@ fn validate_split_capacity(
     package: &skippy::SkippyPackageIdentity,
     participants: &[SplitParticipant],
     stages: &[RuntimeSliceStagePlan],
+    excluded: &[SplitParticipantExclusion],
 ) -> Result<()> {
     let total_vram_bytes = participants
         .iter()
@@ -1983,10 +2049,14 @@ fn validate_split_capacity(
     let required_total_bytes = runtime_model_required_bytes(package.source_model_bytes);
     anyhow::ensure!(
         total_vram_bytes >= required_total_bytes,
-        "aggregate split capacity for {model_ref} requires {}, mesh has {} across {} participant(s)",
-        format_gb(required_total_bytes),
-        format_gb(total_vram_bytes),
-        participants.len()
+        "{}",
+        format_aggregate_split_capacity_error(
+            model_ref,
+            required_total_bytes,
+            total_vram_bytes,
+            participants,
+            excluded
+        )
     );
 
     let vram_by_node = participants
@@ -2009,6 +2079,17 @@ fn validate_split_capacity(
         );
     }
     Ok(())
+}
+
+fn format_aggregate_split_capacity_error(
+    model_ref: &str,
+    required_bytes: u64,
+    available_bytes: u64,
+    participants: &[SplitParticipant],
+    excluded: &[SplitParticipantExclusion],
+) -> String {
+    SplitCapacityReadinessReport::new(required_bytes, available_bytes, participants, excluded)
+        .error_message(model_ref)
 }
 
 fn format_gb(bytes: u64) -> String {
@@ -3028,6 +3109,10 @@ mod tests {
         assert!(error.contains("aggregate split capacity"));
         assert!(error.contains("requires 5.3GB"));
         assert!(error.contains("has 4.0GB"));
+        assert!(error.contains("short by 1.3GB"));
+        assert!(error.contains("participants ["));
+        assert!(error.contains(&format!("{}:2.0GB", make_id(1).fmt_short())));
+        assert!(error.contains(&format!("{}:2.0GB", make_id(2).fmt_short())));
     }
 
     #[test]
@@ -3053,6 +3138,71 @@ mod tests {
 
         assert!(error.contains("stage-1"));
         assert!(error.contains("exceeds node capacity"));
+    }
+
+    #[test]
+    fn aggregate_split_capacity_error_reports_excluded_peers() {
+        let participants = vec![SplitParticipant::new(make_id(1), 2_000_000_000, None)];
+        let excluded = vec![
+            SplitParticipantExclusion {
+                node_id: make_id(2),
+                reason: SplitParticipantExclusionReason::MissingModelInterest,
+            },
+            SplitParticipantExclusion {
+                node_id: make_id(3),
+                reason: SplitParticipantExclusionReason::MissingModelSource,
+            },
+        ];
+
+        let error = format_aggregate_split_capacity_error(
+            "Hermes-2-Pro-Mistral-7B-Q4_K_M",
+            5_280_000_000,
+            2_000_000_000,
+            &participants,
+            &excluded,
+        );
+
+        assert!(error.contains("short by 3.3GB"));
+        assert!(error.contains("excluded ["));
+        assert!(error.contains(&format!(
+            "{}:missing_model_interest",
+            make_id(2).fmt_short()
+        )));
+        assert!(error.contains(&format!("{}:missing_model_source", make_id(3).fmt_short())));
+    }
+
+    #[test]
+    fn split_topology_planner_reports_exclusions_on_capacity_failure() {
+        let participants = vec![
+            SplitParticipant::new(make_id(1), 2_000_000_000, None),
+            SplitParticipant::new(make_id(2), 2_000_000_000, None),
+        ];
+        let excluded = vec![SplitParticipantExclusion {
+            node_id: make_id(3),
+            reason: SplitParticipantExclusionReason::MissingModelInterest,
+        }];
+        let package = skippy::SkippyPackageIdentity {
+            source_model_bytes: 4_800_000_000,
+            layer_count: 48,
+            ..package(48)
+        };
+
+        let error = plan_runtime_slice_topology_with_exclusions(
+            "topology-test",
+            "Hermes-2-Pro-Mistral-7B-Q4_K_M",
+            &package,
+            &participants,
+            &excluded,
+        )
+        .expect_err("aggregate split capacity should be enforced")
+        .to_string();
+
+        assert!(error.contains("short by 1.3GB"));
+        assert!(error.contains("excluded ["));
+        assert!(error.contains(&format!(
+            "{}:missing_model_interest",
+            make_id(3).fmt_short()
+        )));
     }
 
     #[test]
