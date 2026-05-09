@@ -13,6 +13,9 @@ hf_home := env("HF_HOME", xdg_cache_dir / "huggingface")
 models_dir := env("HF_HUB_CACHE", hf_home / "hub")
 model := models_dir / "GLM-4.7-Flash-Q4_K_M.gguf"
 
+# Build for the current platform.
+default: build
+
 [private]
 [unix]
 _lld-cargo-config:
