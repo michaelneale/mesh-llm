@@ -15,12 +15,13 @@
 # syntax=docker/dockerfile:1.7
 
 FROM node:24-alpine AS ui-builder
+RUN npm install -g pnpm
 WORKDIR /app
-COPY crates/mesh-llm-ui/package.json crates/mesh-llm-ui/package-lock.json ./
-RUN --mount=type=cache,id=npm-cache,target=/root/.npm \
-    npm ci
+COPY crates/mesh-llm-ui/package.json crates/mesh-llm-ui/pnpm-lock.yaml crates/mesh-llm-ui/pnpm-workspace.yaml ./
+RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
+    pnpm install --frozen-lockfile
 COPY crates/mesh-llm-ui/ ./
-RUN npm run build
+RUN pnpm run build
 # Output: /app/dist
 
 FROM debian:bookworm-slim AS rust-deps

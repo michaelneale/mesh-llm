@@ -1,31 +1,31 @@
-import { useCallback, useState, type ReactNode } from "react";
+import { useCallback, useState, type ReactNode } from 'react'
 
-import { Button } from "../../../../components/ui/button";
-import { Check, Copy } from "lucide-react";
+import { Button } from '@/components/ui/button'
+import { Check, Copy } from 'lucide-react'
 
 export function ModelMetaItem({
   label,
   value,
   icon,
-  copyValue,
+  copyValue
 }: {
-  label: string;
-  value: string;
-  icon?: ReactNode;
-  copyValue?: string;
+  label: string
+  value: string
+  icon?: ReactNode
+  copyValue?: string
 }) {
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState(false)
 
   const copy = useCallback(async () => {
-    if (!copyValue) return;
+    if (!copyValue) return
     try {
-      await navigator.clipboard.writeText(copyValue);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
+      await navigator.clipboard.writeText(copyValue)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1500)
     } catch {
-      setCopied(false);
+      setCopied(false)
     }
-  }, [copyValue]);
+  }, [copyValue])
 
   return (
     <div className="rounded-lg border bg-muted/25 px-3 py-2">
@@ -42,19 +42,13 @@ export function ModelMetaItem({
             className="h-6 w-6 rounded-full p-0 text-muted-foreground hover:text-foreground"
             onClick={() => void copy()}
             aria-label={copied ? `${label} copied` : `Copy ${label}`}
-            title={copied ? "Copied" : `Copy ${label}`}
+            title={copied ? 'Copied' : `Copy ${label}`}
           >
-            {copied ? (
-              <Check className="h-3 w-3" />
-            ) : (
-              <Copy className="h-3 w-3" />
-            )}
+            {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
           </Button>
         ) : null}
       </div>
-      <div className="mt-1 text-sm font-medium [overflow-wrap:anywhere]">
-        {value}
-      </div>
+      <div className="mt-1 text-sm font-medium [overflow-wrap:anywhere]">{value}</div>
     </div>
-  );
+  )
 }

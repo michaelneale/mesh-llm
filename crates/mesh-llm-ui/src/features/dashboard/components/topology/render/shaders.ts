@@ -1,52 +1,46 @@
 export function createShader(gl: WebGLRenderingContext, type: number, source: string) {
-  const shader = gl.createShader(type);
-  if (!shader) return null;
-  gl.shaderSource(shader, source);
-  gl.compileShader(shader);
+  const shader = gl.createShader(type)
+  if (!shader) return null
+  gl.shaderSource(shader, source)
+  gl.compileShader(shader)
   if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    gl.deleteShader(shader);
-    return null;
+    gl.deleteShader(shader)
+    return null
   }
-  return shader;
+  return shader
 }
 
-export function createProgram(
-  gl: WebGLRenderingContext,
-  vertexSource: string,
-  fragmentSource: string,
-) {
-  const vertexShader = createShader(gl, gl.VERTEX_SHADER, vertexSource);
-  const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
-  if (!vertexShader || !fragmentShader) return null;
+export function createProgram(gl: WebGLRenderingContext, vertexSource: string, fragmentSource: string) {
+  const vertexShader = createShader(gl, gl.VERTEX_SHADER, vertexSource)
+  const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fragmentSource)
+  if (!vertexShader || !fragmentShader) return null
 
-  const program = gl.createProgram();
-  if (!program) return null;
+  const program = gl.createProgram()
+  if (!program) return null
 
-  gl.attachShader(program, vertexShader);
-  gl.attachShader(program, fragmentShader);
-  gl.linkProgram(program);
-  gl.deleteShader(vertexShader);
-  gl.deleteShader(fragmentShader);
+  gl.attachShader(program, vertexShader)
+  gl.attachShader(program, fragmentShader)
+  gl.linkProgram(program)
+  gl.deleteShader(vertexShader)
+  gl.deleteShader(fragmentShader)
 
   if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    gl.deleteProgram(program);
-    return null;
+    gl.deleteProgram(program)
+    return null
   }
 
-  return program;
+  return program
 }
 
 const LINE_SHADER_DERIVATIVE_PREAMBLE = `#extension GL_OES_standard_derivatives : enable
 #define TOPOLOGY_LINE_STANDARD_DERIVATIVES 1
-`;
+`
 
 export function buildLineFragmentShaderSource(
   fragmentSource: string,
-  { useStandardDerivatives }: { useStandardDerivatives: boolean },
+  { useStandardDerivatives }: { useStandardDerivatives: boolean }
 ) {
-  return useStandardDerivatives
-    ? `${LINE_SHADER_DERIVATIVE_PREAMBLE}${fragmentSource}`
-    : fragmentSource;
+  return useStandardDerivatives ? `${LINE_SHADER_DERIVATIVE_PREAMBLE}${fragmentSource}` : fragmentSource
 }
 
 export const POINT_VERTEX_SHADER = `
@@ -71,7 +65,7 @@ void main() {
   v_glow = 0.45 + a_pulse * 0.16;
   v_twinkle = a_twinkle;
 }
-`;
+`
 
 export const DARK_POINT_FRAGMENT_SHADER = `
 precision mediump float;
@@ -112,7 +106,7 @@ void main() {
 
   gl_FragColor = vec4(colorMix, alpha * v_color.a);
 }
-`;
+`
 
 export const LIGHT_POINT_FRAGMENT_SHADER = `
 precision mediump float;
@@ -152,7 +146,7 @@ void main() {
 
   gl_FragColor = vec4(colorMix, min(alpha, 1.0) * v_color.a);
 }
-`;
+`
 
 export const LINE_VERTEX_SHADER = `
 attribute vec2 a_position;
@@ -169,7 +163,7 @@ void main() {
   v_color = a_color;
   v_lineCoord = a_lineCoord;
 }
-`;
+`
 
 export const LIGHT_LINE_FRAGMENT_SHADER = `
 precision mediump float;
@@ -190,7 +184,7 @@ void main() {
   float capFeather = lineSmoothstep(0.0, 0.08, v_lineCoord.x) * (1.0 - lineSmoothstep(0.92, 1.0, v_lineCoord.x));
   gl_FragColor = vec4(v_color.rgb, v_color.a * edgeFeather * capFeather);
 }
-`;
+`
 
 export const DARK_LINE_FRAGMENT_SHADER = `
 precision mediump float;
@@ -220,4 +214,4 @@ void main() {
   vec3 coreColor = mix(glowColor, vec3(1.0, 0.985, 0.955), core * 0.74);
   gl_FragColor = vec4(coreColor, v_color.a * edgeFeather * capFeather);
 }
-`;
+`

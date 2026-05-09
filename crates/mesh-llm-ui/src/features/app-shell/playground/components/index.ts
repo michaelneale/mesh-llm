@@ -1,1 +1,1 @@
-export { default } from "./PlaygroundPage";
+export { default } from '@/features/app-shell/playground/components/PlaygroundPage'

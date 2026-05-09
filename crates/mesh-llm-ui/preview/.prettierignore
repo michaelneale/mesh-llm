@@ -1,7 +1,0 @@
-node_modules
-pnpm-lock.yaml
-dist
-src/routeTree.gen.ts
-playwright-report
-test-results
-coverage

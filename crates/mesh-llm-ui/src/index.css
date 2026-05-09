@@ -115,7 +115,9 @@
     stroke-linecap: round;
     stroke-linejoin: round;
     filter: drop-shadow(0 0 2px hsl(var(--primary) / 0.45));
-    animation: mesh-edge-dash 1.1s linear infinite, mesh-edge-pulse 1.5s ease-in-out infinite;
+    animation:
+      mesh-edge-dash 1.1s linear infinite,
+      mesh-edge-pulse 1.5s ease-in-out infinite;
   }
 
   .react-flow__edge.mesh-edge--serving .react-flow__edge-path {
@@ -128,7 +130,9 @@
 
   .react-flow__edge.mesh-edge--client .react-flow__edge-path {
     filter: drop-shadow(0 0 3px rgba(148, 163, 184, 0.45));
-    animation: mesh-edge-dash 1.0s linear infinite, mesh-edge-pulse 1.7s ease-in-out infinite;
+    animation:
+      mesh-edge-dash 1s linear infinite,
+      mesh-edge-pulse 1.7s ease-in-out infinite;
   }
 
   @keyframes mesh-edge-pulse {
@@ -150,11 +154,22 @@
   }
 
   @keyframes wiggle {
-    0%, 100% { transform: rotate(0deg); }
-    20% { transform: rotate(3deg); }
-    40% { transform: rotate(-3deg); }
-    60% { transform: rotate(2deg); }
-    80% { transform: rotate(-1deg); }
+    0%,
+    100% {
+      transform: rotate(0deg);
+    }
+    20% {
+      transform: rotate(3deg);
+    }
+    40% {
+      transform: rotate(-3deg);
+    }
+    60% {
+      transform: rotate(2deg);
+    }
+    80% {
+      transform: rotate(-1deg);
+    }
   }
 
   .animate-wiggle {

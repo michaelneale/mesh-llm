@@ -447,9 +447,12 @@ This repo carries the llama-side ABI as clean patches on top of upstream
 - `third_party/llama.cpp/patches/*.patch` is the Mesh-LLM stage ABI patch
   stack.
 - `just llama-prepare` checks out the pinned upstream commit into
-  `.deps/llama.cpp` and applies the patches.
+  `.deps/llama.cpp` and applies the patches. Re-running it skips the reset and
+  patch application when the checkout already matches the pin and patch stack.
 - `just llama-build` builds patched llama.cpp as static archives, using
-  `sccache` when it is installed.
+  `sccache` when it is installed. Build outputs default to
+  `.deps/llama-build/` so the generated source checkout can be cleaned without
+  deleting CMake's cache.
 
 Linux GPU backend builds use the same patch stack but should write to distinct
 build directories. `scripts/build-llama.sh` accepts `LLAMA_STAGE_BACKEND`
@@ -461,18 +464,18 @@ just llama-prepare
 LLAMA_STAGE_BACKEND=cuda \
 LLAMA_STAGE_CUDA_ARCHITECTURES=89 \
   scripts/build-llama.sh
-LLAMA_STAGE_BUILD_DIR=.deps/llama.cpp/build-stage-abi-cuda \
+LLAMA_STAGE_BUILD_DIR=.deps/llama-build/build-stage-abi-cuda \
   cargo build --workspace
 
 LLAMA_STAGE_BACKEND=rocm \
 LLAMA_STAGE_AMDGPU_TARGETS=gfx1036 \
   scripts/build-llama.sh
-LLAMA_STAGE_BUILD_DIR=.deps/llama.cpp/build-stage-abi-rocm \
+LLAMA_STAGE_BUILD_DIR=.deps/llama-build/build-stage-abi-rocm \
   cargo build --workspace
 
 LLAMA_STAGE_BACKEND=vulkan \
   scripts/build-llama.sh
-LLAMA_STAGE_BUILD_DIR=.deps/llama.cpp/build-stage-abi-vulkan \
+LLAMA_STAGE_BUILD_DIR=.deps/llama-build/build-stage-abi-vulkan \
   cargo build --workspace
 ```
 
@@ -489,7 +492,7 @@ Rust builds also use `sccache` automatically when it is available and
 that local auto-detection.
 
 By default, `skippy-ffi` statically links the patched `libllama.a` and
-ggml archives from `.deps/llama.cpp/build-stage-abi-static`. Dynamic linking is
+ggml archives from `LLAMA_STAGE_BUILD_DIR`. Dynamic linking is
 kept as an explicit escape hatch with `LLAMA_STAGE_LINK_MODE=dynamic` and
 `LLAMA_STAGE_LIB_DIR=/path/to/lib`.
 On Linux static builds, `skippy-ffi` also detects and links ggml CUDA, HIP, and

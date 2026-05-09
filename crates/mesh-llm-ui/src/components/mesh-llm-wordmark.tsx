@@ -1,8 +1,8 @@
-import { cn } from '../lib/utils';
+import { cn } from '@/lib/utils'
 
 type MeshLlmWordmarkProps = {
-  className?: string;
-};
+  className?: string
+}
 
 export function MeshLlmWordmark({ className }: MeshLlmWordmarkProps) {
   return (
@@ -10,7 +10,7 @@ export function MeshLlmWordmark({ className }: MeshLlmWordmarkProps) {
       <span className="text-primary">mesh</span>
       llm
     </span>
-  );
+  )
 }
 
-MeshLlmWordmark.displayName = 'MeshLlmWordmark';
+MeshLlmWordmark.displayName = 'MeshLlmWordmark'

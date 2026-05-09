@@ -1,22 +1,18 @@
-import type { ReactNode } from "react";
+import type { ReactNode } from 'react'
 
-import { Card, CardContent } from "../../../../components/ui/card";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "../../../../components/ui/tooltip";
+import { Card, CardContent } from '@/components/ui/card'
+import { TooltipContent, TooltipRoot, TooltipTrigger } from '@/components/ui/tooltip'
 
 export function ModelFactCard({
   title,
   value,
   icon,
-  tooltip,
+  tooltip
 }: {
-  title: string;
-  value: string;
-  icon: ReactNode;
-  tooltip?: string;
+  title: string
+  value: string
+  icon: ReactNode
+  tooltip?: string
 }) {
   const card = (
     <Card>
@@ -30,10 +26,10 @@ export function ModelFactCard({
         </div>
       </CardContent>
     </Card>
-  );
-  if (!tooltip) return card;
+  )
+  if (!tooltip) return card
   return (
-    <Tooltip>
+    <TooltipRoot>
       <TooltipTrigger asChild>
         <button
           type="button"
@@ -45,6 +41,6 @@ export function ModelFactCard({
       <TooltipContent side="bottom" align="center" sideOffset={8}>
         {tooltip}
       </TooltipContent>
-    </Tooltip>
-  );
+    </TooltipRoot>
+  )
 }

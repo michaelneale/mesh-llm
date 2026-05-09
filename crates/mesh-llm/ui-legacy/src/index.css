@@ -1,0 +1,172 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 211 39% 16%;
+    --card: 0 0% 100%;
+    --card-foreground: 211 39% 16%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 211 39% 16%;
+    --primary: 211 82% 55%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 94.5%;
+    --secondary-foreground: 211 39% 16%;
+    --muted: 180 5% 93.3%;
+    --muted-foreground: 211 17% 42%;
+    --accent: 204 99% 61%;
+    --accent-foreground: 211 39% 16%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 180 5% 93.3%;
+    --input: 180 5% 93.3%;
+    --ring: 204 99% 61%;
+    --chart-1: 211 82% 55%;
+    --chart-2: 204 99% 61%;
+    --chart-3: 211 39% 35%;
+    --chart-4: 0 0% 94.5%;
+    --chart-5: 180 5% 93.3%;
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 0 0% 3.9%;
+    --foreground: 0 0% 98%;
+    --card: 0 0% 3.9%;
+    --card-foreground: 0 0% 98%;
+    --popover: 0 0% 3.9%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 211 82% 55%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 14.9%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 0 0% 14.9%;
+    --muted-foreground: 0 0% 63.9%;
+    --accent: 204 99% 61%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 0 0% 14.9%;
+    --input: 0 0% 14.9%;
+    --ring: 204 99% 61%;
+    --chart-1: 211 82% 55%;
+    --chart-2: 204 99% 61%;
+    --chart-3: 211 39% 70%;
+    --chart-4: 0 0% 83.1%;
+    --chart-5: 0 0% 63.9%;
+  }
+
+  * {
+    @apply border-border;
+    box-sizing: border-box;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+  }
+
+  html {
+    overflow: hidden;
+  }
+
+  #root {
+    min-height: 100%;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    overflow: hidden;
+    width: 100%;
+    max-width: 100vw;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+  }
+
+  .react-flow__controls {
+    border-color: hsl(var(--border));
+    box-shadow: 0 1px 2px hsl(var(--foreground) / 0.08);
+  }
+
+  .react-flow__controls button {
+    background-color: hsl(var(--card));
+    border-bottom: 1px solid hsl(var(--border));
+    color: hsl(var(--foreground));
+  }
+
+  .react-flow__controls button:hover {
+    background-color: hsl(var(--accent));
+    color: hsl(var(--accent-foreground));
+  }
+
+  .react-flow__controls button:last-child {
+    border-bottom: 0;
+  }
+
+  .react-flow__edge.mesh-edge .react-flow__edge-path {
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    filter: drop-shadow(0 0 2px hsl(var(--primary) / 0.45));
+    animation: mesh-edge-dash 1.1s linear infinite, mesh-edge-pulse 1.5s ease-in-out infinite;
+  }
+
+  .react-flow__edge.mesh-edge--serving .react-flow__edge-path {
+    filter: drop-shadow(0 0 4px rgba(34, 197, 94, 0.55));
+  }
+
+  .react-flow__edge.mesh-edge--worker .react-flow__edge-path {
+    filter: drop-shadow(0 0 4px rgba(56, 189, 248, 0.5));
+  }
+
+  .react-flow__edge.mesh-edge--client .react-flow__edge-path {
+    filter: drop-shadow(0 0 3px rgba(148, 163, 184, 0.45));
+    animation: mesh-edge-dash 1.0s linear infinite, mesh-edge-pulse 1.7s ease-in-out infinite;
+  }
+
+  @keyframes mesh-edge-pulse {
+    0% {
+      stroke-opacity: 0.55;
+    }
+    50% {
+      stroke-opacity: 1;
+    }
+    100% {
+      stroke-opacity: 0.55;
+    }
+  }
+
+  @keyframes mesh-edge-dash {
+    to {
+      stroke-dashoffset: -24;
+    }
+  }
+
+  @keyframes wiggle {
+    0%, 100% { transform: rotate(0deg); }
+    20% { transform: rotate(3deg); }
+    40% { transform: rotate(-3deg); }
+    60% { transform: rotate(2deg); }
+    80% { transform: rotate(-1deg); }
+  }
+
+  .animate-wiggle {
+    animation: wiggle 3s ease-in-out infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .react-flow__edge.mesh-edge .react-flow__edge-path {
+      animation: none;
+    }
+    .animate-wiggle {
+      animation: none;
+    }
+  }
+}

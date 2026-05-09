@@ -1,0 +1,86 @@
+From 0e97eb7cd891a876f7e68a22f9efcc219554c349 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Sat, 9 May 2026 13:23:46 +1000
+Subject: [PATCH] Contain chat grammar sampler exceptions
+
+---
+ src/skippy.cpp | 42 ++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 38 insertions(+), 4 deletions(-)
+
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index e263bf14..083d59ac 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -148,6 +148,20 @@ static void skippy_set_error(
+     }
+ }
+ 
++static void skippy_disable_chat_grammar_after_exception(
++        skippy_session * session,
++        const char * operation,
++        const char * message) {
++    if (session == nullptr || session->grammar_sampler == nullptr) {
++        return;
++    }
++    fprintf(stderr, "skippy: disabling chat grammar after %s failed: %s\n",
++            operation != nullptr ? operation : "grammar operation",
++            message != nullptr ? message : "unknown native exception");
++    llama_sampler_free(session->grammar_sampler);
++    session->grammar_sampler = nullptr;
++}
++
+ static enum skippy_status skippy_success(skippy_error ** out_error) {
+     if (out_error != nullptr) {
+         *out_error = nullptr;
+@@ -1317,8 +1331,16 @@ static bool skippy_init_chat_grammar_sampler(
+ 
+     if (!grammar_lazy) {
+         const std::string generation_prompt = metadata.value("generation_prompt", std::string());
+-        for (const llama_token token : skippy_tokenize_text(vocab, generation_prompt, false, true)) {
+-            llama_sampler_accept(session->grammar_sampler, token);
++        try {
++            for (const llama_token token : skippy_tokenize_text(vocab, generation_prompt, false, true)) {
++                llama_sampler_accept(session->grammar_sampler, token);
++            }
++        } catch (const std::exception & e) {
++            skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, e.what());
++            return false;
++        } catch (...) {
++            skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to prefill chat grammar sampler");
++            return false;
+         }
+     }
+     return true;
+@@ -1333,7 +1355,13 @@ static void skippy_sync_chat_sampling_history(skippy_session * session) {
+         const llama_token token = session->token_history[index];
+         llama_sampler_accept(session->sampling_chain, token);
+         if (session->grammar_sampler != nullptr && index >= session->grammar_generated_start) {
+-            llama_sampler_accept(session->grammar_sampler, token);
++            try {
++                llama_sampler_accept(session->grammar_sampler, token);
++            } catch (const std::exception & e) {
++                skippy_disable_chat_grammar_after_exception(session, "accept", e.what());
++            } catch (...) {
++                skippy_disable_chat_grammar_after_exception(session, "accept", nullptr);
++            }
+         }
+         session->sampling_accepted_token_count++;
+     }
+@@ -1361,7 +1389,13 @@ static llama_token skippy_chat_sample_token(skippy_session * session) {
+         false,
+     };
+     if (session->grammar_sampler != nullptr) {
+-        llama_sampler_apply(session->grammar_sampler, &cur);
++        try {
++            llama_sampler_apply(session->grammar_sampler, &cur);
++        } catch (const std::exception & e) {
++            skippy_disable_chat_grammar_after_exception(session, "apply", e.what());
++        } catch (...) {
++            skippy_disable_chat_grammar_after_exception(session, "apply", nullptr);
++        }
+     }
+     llama_sampler_apply(session->sampling_chain, &cur);
+     if (cur.selected < 0 || static_cast<size_t>(cur.selected) >= cur.size) {
+-- 
+2.50.1 (Apple Git-155)
+

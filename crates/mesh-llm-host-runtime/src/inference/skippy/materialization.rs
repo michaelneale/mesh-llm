@@ -851,15 +851,35 @@ pub(crate) fn resolve_hf_package_to_local(
         }
     }
 
+    crate::models::run_hf_sync(move || {
+        download_hf_package_to_local_sync(
+            &repo,
+            &revision,
+            layer_start,
+            layer_end,
+            include_embeddings,
+            include_output,
+        )
+    })
+}
+
+fn download_hf_package_to_local_sync(
+    repo: &str,
+    revision: &str,
+    layer_start: u32,
+    layer_end: u32,
+    include_embeddings: bool,
+    include_output: bool,
+) -> Result<String> {
     let api = crate::models::build_hf_api(false)?;
     let (owner, name) = repo.split_once('/').context("invalid HF repo format")?;
     let model_api = api.model(owner, name);
-    let progress_label = layer_package_progress_label(&repo, &revision);
+    let progress_label = layer_package_progress_label(repo, revision);
 
     // Download manifest first
     let manifest_path = download_layer_package_file(
         &model_api,
-        &revision,
+        revision,
         &progress_label,
         "model-package.json",
         None,
@@ -959,7 +979,7 @@ pub(crate) fn resolve_hf_package_to_local(
         let file_name = file.to_string_lossy().to_string();
         download_layer_package_file(
             &model_api,
-            &revision,
+            revision,
             &progress_label,
             &file_name,
             *total_bytes,

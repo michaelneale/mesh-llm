@@ -1,54 +1,30 @@
-import { useState } from "react";
-import { AlertCircle, Bell, AlertTriangle } from "lucide-react";
-import { Button, type ButtonProps } from "../../../../components/ui/button";
-import { Input } from "../../../../components/ui/input";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-} from "../../../../components/ui/dialog";
-import { Badge } from "../../../../components/ui/badge";
-import {
-  ToggleGroup,
-  ToggleGroupItem,
-} from "../../../../components/ui/toggle-group";
-import {
-  Alert,
-  AlertDescription,
-  AlertTitle,
-} from "../../../../components/ui/alert";
+import { useState } from 'react'
+import { AlertCircle, Bell, AlertTriangle } from 'lucide-react'
+import { Button, type ButtonProps } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 
-type ButtonVariant = NonNullable<ButtonProps["variant"]>;
-type ButtonSize = NonNullable<ButtonProps["size"]>;
+type ButtonVariant = NonNullable<ButtonProps['variant']>
+type ButtonSize = NonNullable<ButtonProps['size']>
 
-const buttonVariants: ButtonVariant[] = [
-  "default",
-  "secondary",
-  "outline",
-  "destructive",
-];
-const buttonSizes: ButtonSize[] = ["sm", "default", "lg"];
+const buttonVariants: ButtonVariant[] = ['default', 'secondary', 'outline', 'destructive']
+const buttonSizes: ButtonSize[] = ['sm', 'default', 'lg']
 
-function PreviewCard({
-  title,
-  children,
-}: {
-  title: string;
-  children: React.ReactNode;
-}) {
+function PreviewCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="rounded-lg border bg-card p-4 space-y-3">
       <h3 className="font-medium text-sm">{title}</h3>
       {children}
     </div>
-  );
+  )
 }
 
 function ButtonPreview() {
-  const [variant, setVariant] = useState<ButtonVariant>("default");
-  const [size, setSize] = useState<ButtonSize>("default");
-  const [disabled, setDisabled] = useState(false);
+  const [variant, setVariant] = useState<ButtonVariant>('default')
+  const [size, setSize] = useState<ButtonSize>('default')
+  const [disabled, setDisabled] = useState(false)
 
   return (
     <PreviewCard title="Button">
@@ -59,14 +35,8 @@ function ButtonPreview() {
       </div>
 
       <div className="space-y-2">
-        <span className="block text-xs text-muted-foreground font-medium">
-          Variant
-        </span>
-        <ToggleGroup
-          type="single"
-          value={variant}
-          onValueChange={(v: string) => v && setVariant(v as ButtonVariant)}
-        >
+        <span className="block text-xs text-muted-foreground font-medium">Variant</span>
+        <ToggleGroup type="single" value={variant} onValueChange={(v: string) => v && setVariant(v as ButtonVariant)}>
           {buttonVariants.map((v) => (
             <ToggleGroupItem key={v} value={v} aria-label={v}>
               {v}
@@ -74,14 +44,8 @@ function ButtonPreview() {
           ))}
         </ToggleGroup>
 
-        <span className="block text-xs text-muted-foreground font-medium">
-          Size
-        </span>
-        <ToggleGroup
-          type="single"
-          value={size}
-          onValueChange={(v: string) => v && setSize(v as ButtonSize)}
-        >
+        <span className="block text-xs text-muted-foreground font-medium">Size</span>
+        <ToggleGroup type="single" value={size} onValueChange={(v: string) => v && setSize(v as ButtonSize)}>
           {buttonSizes.map((s) => (
             <ToggleGroupItem key={s} value={s} aria-label={s}>
               {s}
@@ -94,38 +58,32 @@ function ButtonPreview() {
           <input
             type="checkbox"
             checked={disabled}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-              setDisabled(e.target.checked)
-            }
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDisabled(e.target.checked)}
             className="h-4 w-4 rounded border-border accent-primary ml-auto"
           />
         </label>
       </div>
     </PreviewCard>
-  );
+  )
 }
 
 function InputPreview() {
-  const [placeholder, setPlaceholder] = useState("Enter some text…");
-  const [type, setType] = useState<"text" | "email" | "password">("text");
-  const [disabled, setDisabled] = useState(false);
+  const [placeholder, setPlaceholder] = useState('Enter some text…')
+  const [type, setType] = useState<'text' | 'email' | 'password'>('text')
+  const [disabled, setDisabled] = useState(false)
 
   return (
     <PreviewCard title="Input">
       <Input type={type} placeholder={placeholder} disabled={disabled} />
 
       <div className="space-y-2">
-        <span className="block text-xs text-muted-foreground font-medium">
-          Type
-        </span>
+        <span className="block text-xs text-muted-foreground font-medium">Type</span>
         <ToggleGroup
           type="single"
           value={type}
-          onValueChange={(v: string) =>
-            v && setType(v as "text" | "email" | "password")
-          }
+          onValueChange={(v: string) => v && setType(v as 'text' | 'email' | 'password')}
         >
-          {(["text", "email", "password"] as const).map((t) => (
+          {(['text', 'email', 'password'] as const).map((t) => (
             <ToggleGroupItem key={t} value={t} aria-label={t}>
               {t}
             </ToggleGroupItem>
@@ -134,18 +92,13 @@ function InputPreview() {
       </div>
 
       <div className="space-y-1.5">
-        <label
-          htmlFor="input-placeholder"
-          className="text-xs text-muted-foreground font-medium"
-        >
+        <label htmlFor="input-placeholder" className="text-xs text-muted-foreground font-medium">
           Placeholder
         </label>
         <Input
           id="input-placeholder"
           value={placeholder}
-          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-            setPlaceholder(e.target.value)
-          }
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPlaceholder(e.target.value)}
           className="h-8 text-xs"
         />
       </div>
@@ -154,23 +107,19 @@ function InputPreview() {
         <input
           type="checkbox"
           checked={disabled}
-          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-            setDisabled(e.target.checked)
-          }
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDisabled(e.target.checked)}
           className="h-4 w-4 rounded border-border accent-primary"
         />
         Disabled
       </label>
     </PreviewCard>
-  );
+  )
 }
 
 function DialogPreview() {
-  const [open, setOpen] = useState(false);
-  const [title, setTitle] = useState("Dialog Title");
-  const [description, setDescription] = useState(
-    "A short description of this dialog.",
-  );
+  const [open, setOpen] = useState(false)
+  const [title, setTitle] = useState('Dialog Title')
+  const [description, setDescription] = useState('A short description of this dialog.')
 
   return (
     <>
@@ -180,35 +129,25 @@ function DialogPreview() {
         </Button>
 
         <div className="space-y-2">
-          <label
-            htmlFor="dialog-title"
-            className="text-xs text-muted-foreground font-medium"
-          >
+          <label htmlFor="dialog-title" className="text-xs text-muted-foreground font-medium">
             Title
           </label>
           <Input
             id="dialog-title"
             value={title}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-              setTitle(e.target.value)
-            }
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTitle(e.target.value)}
             className="h-8 text-xs"
           />
         </div>
 
         <div className="space-y-1.5">
-          <label
-            htmlFor="dialog-desc"
-            className="text-xs text-muted-foreground font-medium"
-          >
+          <label htmlFor="dialog-desc" className="text-xs text-muted-foreground font-medium">
             Description
           </label>
           <Input
             id="dialog-desc"
             value={description}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-              setDescription(e.target.value)
-            }
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDescription(e.target.value)}
             className="h-8 text-xs"
           />
         </div>
@@ -229,20 +168,20 @@ function DialogPreview() {
         </DialogContent>
       </Dialog>
     </>
-  );
+  )
 }
 
-type BadgeVariant = "default" | "secondary" | "outline";
+type BadgeVariant = 'default' | 'secondary' | 'outline'
 
 const badgeVariantStyles: Record<BadgeVariant, string> = {
-  default: "",
-  secondary: "bg-secondary text-secondary-foreground",
-  outline: "border-transparent bg-primary/10 text-primary",
-};
+  default: '',
+  secondary: 'bg-secondary text-secondary-foreground',
+  outline: 'border-transparent bg-primary/10 text-primary'
+}
 
 function BadgePreview() {
-  const [variant, setVariant] = useState<BadgeVariant>("default");
-  const [label, setLabel] = useState("Badge");
+  const [variant, setVariant] = useState<BadgeVariant>('default')
+  const [label, setLabel] = useState('Badge')
 
   return (
     <PreviewCard title="Badge">
@@ -250,78 +189,59 @@ function BadgePreview() {
         <span
           className={`inline-flex items-center rounded-full border border-border/70 px-2.5 py-1 text-xs font-medium ${badgeVariantStyles[variant]}`}
         >
-          {label || "(empty)"}
+          {label || '(empty)'}
         </span>
       </div>
 
       <div className="space-y-2">
-        <span className="block text-xs text-muted-foreground font-medium">
-          Variant
-        </span>
-        <ToggleGroup
-          type="single"
-          value={variant}
-          onValueChange={(v: string) => v && setVariant(v as BadgeVariant)}
-        >
-          {(["default", "secondary", "outline"] as const).map((v) => (
+        <span className="block text-xs text-muted-foreground font-medium">Variant</span>
+        <ToggleGroup type="single" value={variant} onValueChange={(v: string) => v && setVariant(v as BadgeVariant)}>
+          {(['default', 'secondary', 'outline'] as const).map((v) => (
             <ToggleGroupItem key={v} value={v} aria-label={v}>
               {v}
             </ToggleGroupItem>
           ))}
         </ToggleGroup>
 
-        <span className="block text-xs text-muted-foreground font-medium">
-          Label
-        </span>
+        <span className="block text-xs text-muted-foreground font-medium">Label</span>
         <Input
           id="badge-label"
           value={label}
-          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-            setLabel(e.target.value)
-          }
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setLabel(e.target.value)}
           className="h-8 text-xs"
         />
       </div>
     </PreviewCard>
-  );
+  )
 }
 
 function AlertPreview() {
-  const [variant, setVariant] = useState<
-    "default" | "primary" | "amber" | "destructive"
-  >("primary");
-  const [title, setTitle] = useState("Welcome to the public mesh");
-  const [description, setDescription] = useState(
-    "Mesh LLM is a project to let people contribute spare compute.",
-  );
+  const [variant, setVariant] = useState<'default' | 'primary' | 'amber' | 'destructive'>('primary')
+  const [title, setTitle] = useState('Welcome to the public mesh')
+  const [description, setDescription] = useState('Mesh LLM is a project to let people contribute spare compute.')
 
   return (
     <PreviewCard title="Alert / Banner">
       <Alert variant={variant}>
-        {variant === "destructive" ? (
+        {variant === 'destructive' ? (
           <AlertCircle className="h-4 w-4" />
-        ) : variant === "amber" ? (
+        ) : variant === 'amber' ? (
           <AlertTriangle className="h-4 w-4" />
         ) : (
           <Bell className="h-4 w-4" />
         )}
-        <AlertTitle>{title || "(empty)"}</AlertTitle>
-        <AlertDescription>{description || "(no description)"}</AlertDescription>
+        <AlertTitle>{title || '(empty)'}</AlertTitle>
+        <AlertDescription>{description || '(no description)'}</AlertDescription>
       </Alert>
 
       <div className="space-y-2">
-        <span className="block text-xs text-muted-foreground font-medium">
-          Variant
-        </span>
+        <span className="block text-xs text-muted-foreground font-medium">Variant</span>
         <ToggleGroup
           type="single"
           value={variant}
-          onValueChange={(v: string) =>
-            v &&
-            setVariant(v as "default" | "primary" | "amber" | "destructive")
-          }
+          onValueChange={(v: string) => v && setVariant(v as 'default' | 'primary' | 'amber' | 'destructive')}
         >
-          {(["primary", "amber", "destructive"] as const).map((v) => (
+          {(['primary', 'amber', 'destructive'] as const).map((v) => (
             <ToggleGroupItem key={v} value={v} aria-label={v}>
               {v}
             </ToggleGroupItem>
@@ -329,41 +249,31 @@ function AlertPreview() {
         </ToggleGroup>
 
         <div className="space-y-1.5">
-          <label
-            htmlFor="alert-title"
-            className="text-xs text-muted-foreground font-medium"
-          >
+          <label htmlFor="alert-title" className="text-xs text-muted-foreground font-medium">
             Title
           </label>
           <Input
             id="alert-title"
             value={title}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-              setTitle(e.target.value)
-            }
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTitle(e.target.value)}
             className="h-8 text-xs"
           />
         </div>
 
         <div className="space-y-1.5">
-          <label
-            htmlFor="alert-desc"
-            className="text-xs text-muted-foreground font-medium"
-          >
+          <label htmlFor="alert-desc" className="text-xs text-muted-foreground font-medium">
             Description
           </label>
           <Input
             id="alert-desc"
             value={description}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-              setDescription(e.target.value)
-            }
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDescription(e.target.value)}
             className="h-8 text-xs"
           />
         </div>
       </div>
     </PreviewCard>
-  );
+  )
 }
 
 export default function PlaygroundBaseUI() {
@@ -375,5 +285,5 @@ export default function PlaygroundBaseUI() {
       <BadgePreview />
       <AlertPreview />
     </div>
-  );
+  )
 }

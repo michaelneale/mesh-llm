@@ -1,11 +1,5 @@
-import {
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
-import { createPortal } from "react-dom";
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   AlertTriangle,
   Copy,
@@ -18,39 +12,20 @@ import {
   Minimize2,
   Network,
   Shield,
-  Sparkles,
-} from "lucide-react";
+  Sparkles
+} from 'lucide-react'
 
-import { Alert, AlertDescription, AlertTitle } from "../../../components/ui/alert";
-import { Button } from "../../../components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/card";
-import { ModelCard } from "./details";
-import { ScrollArea } from "../../../components/ui/scroll-area";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "../../../components/ui/select";
-import {
-  Sheet,
-  SheetContent,
-} from "../../../components/ui/sheet";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "../../../components/ui/table";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "../../../components/ui/tooltip";
-import { cn } from "../../../lib/utils";
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { ModelCard } from '@/features/dashboard/components/details'
+import { ScrollArea } from '@/components/ui/scroll-area'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Sheet, SheetContent } from '@/components/ui/sheet'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { TooltipContent, TooltipRoot, TooltipTrigger } from '@/components/ui/tooltip'
+import { cn } from '@/lib/utils'
+import { useBooleanFeatureFlag } from '@/lib/feature-flags/hooks'
 import {
   formatLiveNodeState,
   formatLatency,
@@ -69,61 +44,56 @@ import {
   topologyNodeRole,
   topologyStatusTone,
   topologyStatusTooltip,
-  uniqueModels,
-} from "../../app-shell/lib/status-helpers";
+  uniqueModels
+} from '@/features/app-shell/lib/status-helpers'
 import type {
   LiveNodeState,
   MeshModel,
   Ownership,
   StatusPayload,
-  ThemeMode,
-} from "../../app-shell/lib/status-types";
-import type { TopologyNode } from "../../app-shell/lib/topology-types";
-import {
-  DashboardPanelEmpty,
-  ModelSidebar,
-  NodeSidebar,
-  StatusPill,
-} from "./details";
-import { MeshTopologyDiagram } from "./topology";
-import { useDashboardDetailStack } from "../hooks/useDashboardDetailStack";
-import { useLlamaRuntime } from "../hooks/useLlamaRuntime";
-import { WakeableCapacity } from "./WakeableCapacity";
+  ThemeMode
+} from '@/features/app-shell/lib/status-types'
+import type { TopologyNode } from '@/features/app-shell/lib/topology-types'
+import { DashboardPanelEmpty, ModelSidebar, NodeSidebar, StatusPill } from '@/features/dashboard/components/details'
+import { MeshTopologyDiagram } from '@/features/dashboard/components/topology'
+import { useDashboardDetailStack } from '@/features/dashboard/hooks/useDashboardDetailStack'
+import { useLlamaRuntime } from '@/features/dashboard/hooks/useLlamaRuntime'
+import { WakeableCapacity } from '@/features/dashboard/components/WakeableCapacity'
 
-const DOCS_URL = "https://docs.anarchai.org";
+const DOCS_URL = 'https://docs.anarchai.org'
 
 type ActivePeerRow = {
-  id: string;
-  latencyLabel: string;
-  vramLabel: string;
-  shareLabel: string;
-};
+  id: string
+  latencyLabel: string
+  vramLabel: string
+  shareLabel: string
+}
 
 type NodeSidebarRecord = {
-  id: string;
-  title: string;
-  hostname?: string;
-  self: boolean;
-  state: LiveNodeState;
-  role: string;
-  latencyLabel: string;
-  vramGb: number;
-  vramSharePct: number | null;
-  isSoc?: boolean;
-  gpus: { name: string; vram_bytes: number; bandwidth_gbps?: number }[];
-  hostedModels: string[];
-  hotModels: string[];
-  servingModels: string[];
-  requestedModels: string[];
-  availableModels: string[];
-  version?: string;
-  latestVersion?: string | null;
-  llamaReady?: boolean;
-  apiPort?: number;
-  inflightRequests?: number;
-  owner: Ownership;
-  privacyLimited: boolean;
-};
+  id: string
+  title: string
+  hostname?: string
+  self: boolean
+  state: LiveNodeState
+  role: string
+  latencyLabel: string
+  vramGb: number
+  vramSharePct: number | null
+  isSoc?: boolean
+  gpus: { name: string; vram_bytes: number; bandwidth_gbps?: number }[]
+  hostedModels: string[]
+  hotModels: string[]
+  servingModels: string[]
+  requestedModels: string[]
+  availableModels: string[]
+  version?: string
+  latestVersion?: string | null
+  llamaReady?: boolean
+  apiPort?: number
+  inflightRequests?: number
+  owner: Ownership
+  privacyLimited: boolean
+}
 
 export function DashboardPage({
   status,
@@ -135,149 +105,133 @@ export function DashboardPage({
   themeMode,
   isPublicMesh,
   inviteToken,
-  isLocalhost,
+  isLocalhost
 }: {
-  status: StatusPayload | null;
-  meshModels: MeshModel[];
-  modelsLoading: boolean;
-  topologyNodes: TopologyNode[];
-  selectedModel: string;
-  meshModelByName: Record<string, MeshModel>;
-  themeMode: ThemeMode;
-  isPublicMesh: boolean;
-  inviteToken: string;
-  isLocalhost: boolean;
+  status: StatusPayload | null
+  meshModels: MeshModel[]
+  modelsLoading: boolean
+  topologyNodes: TopologyNode[]
+  selectedModel: string
+  meshModelByName: Record<string, MeshModel>
+  themeMode: ThemeMode
+  isPublicMesh: boolean
+  inviteToken: string
+  isLocalhost: boolean
 }) {
-  const [modelFilter, setModelFilter] = useState<"all" | "warm" | "cold">("all");
-  const [isMeshOverviewFullscreen, setIsMeshOverviewFullscreen] = useState(false);
-  const [selectedTopologyNodeId, setSelectedTopologyNodeId] = useState<string>("");
+  const [modelFilter, setModelFilter] = useState<'all' | 'warm' | 'cold'>('all')
+  const [isMeshOverviewFullscreen, setIsMeshOverviewFullscreen] = useState(false)
+  const [selectedTopologyNodeId, setSelectedTopologyNodeId] = useState<string>('')
   const {
     activeDetail,
     closeDetailPanel,
     detailPanelStack,
     goBackDetailPanel,
     openModelDetail,
-    openNodeDetail: openNodeDetailFromStack,
+    openNodeDetail: openNodeDetailFromStack
   } = useDashboardDetailStack({
     isMeshOverviewFullscreen,
-    meshModelByName,
-  });
+    meshModelByName
+  })
 
   const openNodeDetail = useCallback(
     (nodeId: string) => {
-      setSelectedTopologyNodeId(nodeId);
-      openNodeDetailFromStack(nodeId);
+      setSelectedTopologyNodeId(nodeId)
+      openNodeDetailFromStack(nodeId)
     },
-    [openNodeDetailFromStack],
-  );
+    [openNodeDetailFromStack]
+  )
 
-  const highlightedNodeId =
-    activeDetail?.kind === "node" ? activeDetail.nodeId : selectedTopologyNodeId;
+  const highlightedNodeId = activeDetail?.kind === 'node' ? activeDetail.nodeId : selectedTopologyNodeId
 
-  const topologyDiagramNodes = topologyNodes;
+  const topologyDiagramNodes = topologyNodes
   const filteredModels = useMemo(() => {
-    const models = meshModels;
+    const models = meshModels
     return [...models]
-      .filter((model) => (modelFilter === "all" ? true : model.status === modelFilter))
-      .sort((a, b) => b.node_count - a.node_count || a.name.localeCompare(b.name));
-  }, [meshModels, modelFilter]);
-  const totalMeshVramGb = useMemo(() => meshGpuVram(status), [status]);
+      .filter((model) => (modelFilter === 'all' ? true : model.status === modelFilter))
+      .sort((a, b) => b.node_count - a.node_count || a.name.localeCompare(b.name))
+  }, [meshModels, modelFilter])
+  const totalMeshVramGb = useMemo(() => meshGpuVram(status), [status])
   const distinctMeshVersions = useMemo(() => {
-    const versions = new Set<string>();
-    if (status?.version) versions.add(status.version);
+    const versions = new Set<string>()
+    if (status?.version) versions.add(status.version)
     status?.peers?.forEach((peer) => {
-      if (peer.version) versions.add(peer.version);
-    });
-    return versions;
-  }, [status]);
+      if (peer.version) versions.add(peer.version)
+    })
+    return versions
+  }, [status])
   const sortedPeers = useMemo(() => {
     return [...(status?.peers ?? [])].sort((a, b) => {
-      const bOverviewVramGb = displayVramGb(b.state === "client", b.vram_gb, b.gpus);
-      const aOverviewVramGb = displayVramGb(a.state === "client", a.vram_gb, a.gpus);
-      return bOverviewVramGb - aOverviewVramGb || a.id.localeCompare(b.id);
-    });
-  }, [status?.peers]);
+      const bOverviewVramGb = displayVramGb(b.state === 'client', b.vram_gb, b.gpus)
+      const aOverviewVramGb = displayVramGb(a.state === 'client', a.vram_gb, a.gpus)
+      return bOverviewVramGb - aOverviewVramGb || a.id.localeCompare(b.id)
+    })
+  }, [status?.peers])
   const peerRows = useMemo(() => {
     return sortedPeers.map((peer) => {
-      const primaryModel = peerPrimaryModel(peer);
-      const modelLabel =
-        primaryModel && primaryModel !== "(idle)" ? modelRefLabel(primaryModel) : "idle";
-      const latencyLabel = formatLatency(peer.rtt_ms);
-      const peerDisplayVramGb = displayVramGb(peer.state === "client", peer.vram_gb, peer.gpus);
+      const primaryModel = peerPrimaryModel(peer)
+      const modelLabel = primaryModel && primaryModel !== '(idle)' ? modelRefLabel(primaryModel) : 'idle'
+      const latencyLabel = formatLatency(peer.rtt_ms)
+      const peerDisplayVramGb = displayVramGb(peer.state === 'client', peer.vram_gb, peer.gpus)
       const sharePct =
-        peer.state !== "client" && totalMeshVramGb > 0
-          ? Math.round((peerDisplayVramGb / totalMeshVramGb) * 100)
-          : null;
+        peer.state !== 'client' && totalMeshVramGb > 0 ? Math.round((peerDisplayVramGb / totalMeshVramGb) * 100) : null
       return {
         ...peer,
         displayVramGb: peerDisplayVramGb,
         modelLabel,
         latencyLabel,
-        shareLabel: sharePct == null ? "n/a" : `${sharePct}%`,
-      };
-    });
-  }, [sortedPeers, totalMeshVramGb]);
+        shareLabel: sharePct == null ? 'n/a' : `${sharePct}%`
+      }
+    })
+  }, [sortedPeers, totalMeshVramGb])
   const activePeerRows = useMemo(() => {
-    const activeModelName = activeDetail?.kind === "model" ? activeDetail.modelName : null;
-    const selectedCatalogModel = activeModelName
-      ? meshModelByName[activeModelName] ?? null
-      : null;
-    if (!selectedCatalogModel || selectedCatalogModel.status !== "warm" || !status) {
-      return [] as ActivePeerRow[];
+    const activeModelName = activeDetail?.kind === 'model' ? activeDetail.modelName : null
+    const selectedCatalogModel = activeModelName ? (meshModelByName[activeModelName] ?? null) : null
+    if (!selectedCatalogModel || selectedCatalogModel.status !== 'warm' || !status) {
+      return [] as ActivePeerRow[]
     }
-    const targetModel = selectedCatalogModel.name;
-    const totalModelVram = selectedCatalogModel.mesh_vram_gb ?? 0;
-    const rows: ActivePeerRow[] = [];
-    const localServing = localRoutableModels(status).includes(targetModel);
-    const localServingVramGb = normalizeVramGb(status.my_vram_gb);
-    if (localServing && status.node_state !== "client") {
+    const targetModel = selectedCatalogModel.name
+    const totalModelVram = selectedCatalogModel.mesh_vram_gb ?? 0
+    const rows: ActivePeerRow[] = []
+    const localServing = localRoutableModels(status).includes(targetModel)
+    const localServingVramGb = normalizeVramGb(status.my_vram_gb)
+    if (localServing && status.node_state !== 'client') {
       rows.push({
         id: status.node_id,
-        latencyLabel: "local",
+        latencyLabel: 'local',
         vramLabel: `${localServingVramGb.toFixed(1)} GB`,
-        shareLabel:
-          totalModelVram > 0
-            ? `${Math.round((localServingVramGb / totalModelVram) * 100)}%`
-            : "n/a",
-      });
+        shareLabel: totalModelVram > 0 ? `${Math.round((localServingVramGb / totalModelVram) * 100)}%` : 'n/a'
+      })
     }
     for (const peer of peerRows) {
       const servesTarget =
-        peerRoutableModels(peer).includes(targetModel) ||
-        peerAssignedModels(peer).includes(targetModel);
-      if (!servesTarget || peer.state === "client") continue;
-      const peerServingVramGb = normalizeVramGb(peer.vram_gb);
+        peerRoutableModels(peer).includes(targetModel) || peerAssignedModels(peer).includes(targetModel)
+      if (!servesTarget || peer.state === 'client') continue
+      const peerServingVramGb = normalizeVramGb(peer.vram_gb)
       rows.push({
         id: peer.id,
         latencyLabel: peer.latencyLabel,
         vramLabel: `${peerServingVramGb.toFixed(1)} GB`,
-        shareLabel:
-          totalModelVram > 0
-            ? `${Math.round((peerServingVramGb / totalModelVram) * 100)}%`
-            : "n/a",
-      });
+        shareLabel: totalModelVram > 0 ? `${Math.round((peerServingVramGb / totalModelVram) * 100)}%` : 'n/a'
+      })
     }
-    return rows;
-  }, [activeDetail, meshModelByName, peerRows, status]);
+    return rows
+  }, [activeDetail, meshModelByName, peerRows, status])
 
-  const activeModel =
-    activeDetail?.kind === "model" ? meshModelByName[activeDetail.modelName] ?? null : null;
+  const activeModel = activeDetail?.kind === 'model' ? (meshModelByName[activeDetail.modelName] ?? null) : null
   const activeNode = useMemo(() => {
-    if (!status || activeDetail?.kind !== "node") return null;
-    const topologyNode = topologyNodes.find((node) => node.id === activeDetail.nodeId);
-    if (!topologyNode) return null;
-    const peer = topologyNode.self
-      ? null
-      : status.peers.find((candidate) => candidate.id === topologyNode.id);
+    if (!status || activeDetail?.kind !== 'node') return null
+    const topologyNode = topologyNodes.find((node) => node.id === activeDetail.nodeId)
+    if (!topologyNode) return null
+    const peer = topologyNode.self ? null : status.peers.find((candidate) => candidate.id === topologyNode.id)
     const hostedModels = topologyNode.self
       ? uniqueModels(localRoutableModels(status))
-      : uniqueModels(peer ? peerRoutableModels(peer) : []);
+      : uniqueModels(peer ? peerRoutableModels(peer) : [])
     const servingModels = topologyNode.self
       ? uniqueModels(status.serving_models)
-      : uniqueModels(peer ? peerAssignedModels(peer) : []);
+      : uniqueModels(peer ? peerAssignedModels(peer) : [])
     const requestedModels = topologyNode.self
       ? uniqueModels(status.requested_models)
-      : uniqueModels(peer?.requested_models);
+      : uniqueModels(peer?.requested_models)
     return {
       id: topologyNode.id,
       title: topologyNode.hostname || topologyNode.id,
@@ -285,82 +239,76 @@ export function DashboardPage({
       self: topologyNode.self,
       state: topologyNode.state,
       role: topologyNodeRole(topologyNode),
-      latencyLabel: topologyNode.self ? "local" : formatLatency(topologyNode.latencyMs),
+      latencyLabel: topologyNode.self ? 'local' : formatLatency(topologyNode.latencyMs),
       vramGb: Math.max(0, topologyNode.vram),
-      vramSharePct: topologyNode.state === "client"
-        ? null
-        : totalMeshVramGb <= 0
-          ? 0
-          : Math.round((Math.max(0, topologyNode.vram) / totalMeshVramGb) * 100),
+      vramSharePct:
+        topologyNode.state === 'client'
+          ? null
+          : totalMeshVramGb <= 0
+            ? 0
+            : Math.round((Math.max(0, topologyNode.vram) / totalMeshVramGb) * 100),
       isSoc: topologyNode.isSoc,
       gpus: topologyNode.gpus ?? [],
       hostedModels,
       hotModels: uniqueModels(hostedModels, servingModels, requestedModels),
       servingModels,
       requestedModels,
-      availableModels: topologyNode.self
-        ? uniqueModels(status.available_models)
-        : uniqueModels(peer?.available_models),
+      availableModels: topologyNode.self ? uniqueModels(status.available_models) : uniqueModels(peer?.available_models),
       version: topologyNode.self ? status.version : peer?.version,
       latestVersion: topologyNode.self ? status.latest_version : undefined,
       llamaReady: topologyNode.self ? status.llama_ready : undefined,
       apiPort: topologyNode.self ? status.api_port : undefined,
       inflightRequests: topologyNode.self ? status.inflight_requests : undefined,
       owner: topologyNode.self
-        ? status.owner ?? { status: "unsigned", verified: false }
-        : peer?.owner ?? { status: "unsigned", verified: false },
-      privacyLimited:
-        !topologyNode.self && !topologyNode.hostname && !(topologyNode.gpus?.length ?? 0),
-    } satisfies NodeSidebarRecord;
-  }, [activeDetail, status, topologyNodes, totalMeshVramGb]);
-  const llamaRuntime = useLlamaRuntime(activeDetail?.kind === "node" && activeNode?.self === true);
+        ? (status.owner ?? { status: 'unsigned', verified: false })
+        : (peer?.owner ?? { status: 'unsigned', verified: false }),
+      privacyLimited: !topologyNode.self && !topologyNode.hostname && !(topologyNode.gpus?.length ?? 0)
+    } satisfies NodeSidebarRecord
+  }, [activeDetail, status, topologyNodes, totalMeshVramGb])
+  const llamaRuntime = useLlamaRuntime(activeDetail?.kind === 'node' && activeNode?.self === true)
+  const wakeableCapacityEnabled = useBooleanFeatureFlag('dashboard/wakeableCapacity')
 
   useEffect(() => {
-    const prevOverflow = document.body.style.overflow;
-    if (isMeshOverviewFullscreen) document.body.style.overflow = "hidden";
+    const prevOverflow = document.body.style.overflow
+    if (isMeshOverviewFullscreen) document.body.style.overflow = 'hidden'
     return () => {
-      document.body.style.overflow = prevOverflow;
-    };
-  }, [isMeshOverviewFullscreen]);
+      document.body.style.overflow = prevOverflow
+    }
+  }, [isMeshOverviewFullscreen])
 
   useEffect(() => {
-    if (!isMeshOverviewFullscreen) return;
+    if (!isMeshOverviewFullscreen) return
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      setIsMeshOverviewFullscreen(false);
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [isMeshOverviewFullscreen]);
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      setIsMeshOverviewFullscreen(false)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [isMeshOverviewFullscreen])
 
   function toggleMeshOverviewFullscreen() {
-    setIsMeshOverviewFullscreen((prev) => !prev);
+    setIsMeshOverviewFullscreen((prev) => !prev)
   }
 
-  const gpuNodeCount = topologyDiagramNodes.filter((node) => node.state !== "client").length;
-  const clientCount = topologyDiagramNodes.filter((node) => node.state === "client").length;
+  const gpuNodeCount = topologyDiagramNodes.filter((node) => node.state !== 'client').length
+  const clientCount = topologyDiagramNodes.filter((node) => node.state === 'client').length
 
   return (
     <div className="space-y-4">
       <Alert variant="primary">
         <Network className="h-4 w-4" />
         <AlertTitle className="text-sm font-medium">
-          {isPublicMesh ? "Welcome to the public mesh" : "Your private mesh"}
+          {isPublicMesh ? 'Welcome to the public mesh' : 'Your private mesh'}
         </AlertTitle>
         <AlertDescription className="text-xs text-muted-foreground">
           {isPublicMesh
-            ? "Mesh LLM is a project to let people contribute spare compute, build private personal AI, using open models."
-            : "Mesh LLM lets you build private personal AI, using open models. Pool machines across your home, office, or friends, no cloud needed."}{" "}
-          <a
-            href={DOCS_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="underline hover:text-foreground"
-          >
+            ? 'Mesh LLM is a project to let people contribute spare compute, build private personal AI, using open models.'
+            : 'Mesh LLM lets you build private personal AI, using open models. Pool machines across your home, office, or friends, no cloud needed.'}{' '}
+          <a href={DOCS_URL} target="_blank" rel="noopener noreferrer" className="underline hover:text-foreground">
             Learn more →
           </a>
-          {" · "}
+          {' · '}
           <a
             href="https://github.com/Mesh-LLM/mesh-llm"
             target="_blank"
@@ -376,20 +324,18 @@ export function DashboardPage({
           <AlertTriangle className="h-4 w-4" />
           <AlertTitle className="text-sm font-medium">Mesh has mixed versions</AlertTitle>
           <AlertDescription className="text-xs text-muted-foreground">
-            Detected {distinctMeshVersions.size} distinct mesh-llm versions: {" "}
-            {[...distinctMeshVersions].join(", ")}. Functionality may vary between nodes.
+            Detected {distinctMeshVersions.size} distinct mesh-llm versions: {[...distinctMeshVersions].join(', ')}.
+            Functionality may vary between nodes.
           </AlertDescription>
         </Alert>
       )}
       {(status?.local_instances?.length ?? 0) >= 2 && (
         <Alert data-testid="multi-instance-banner" variant="blue">
           <Info className="h-4 w-4" />
-          <AlertTitle className="text-sm font-medium">
-            Multiple mesh-llm instances on this host
-          </AlertTitle>
+          <AlertTitle className="text-sm font-medium">Multiple mesh-llm instances on this host</AlertTitle>
           <AlertDescription className="text-xs text-muted-foreground">
-            Detected {status!.local_instances!.length} local mesh-llm processes sharing this
-            machine. Each runs in an isolated scope.
+            Detected {status!.local_instances!.length} local mesh-llm processes sharing this machine. Each runs in an
+            isolated scope.
           </AlertDescription>
         </Alert>
       )}
@@ -398,26 +344,26 @@ export function DashboardPage({
           <Loader2 className="h-4 w-4 animate-spin" />
           <AlertTitle className="text-sm font-medium">Loading model catalog</AlertTitle>
           <AlertDescription className="space-y-2">
-            <div className="text-xs text-muted-foreground">
-              Scanning local models and assembling mesh metadata.
-            </div>
+            <div className="text-xs text-muted-foreground">Scanning local models and assembling mesh metadata.</div>
           </AlertDescription>
         </Alert>
       ) : null}
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
         <StatCard
           title="Node ID"
-          value={status?.node_id ?? "n/a"}
+          value={status?.node_id ?? 'n/a'}
           valueSuffix={
             <StatusPill
-              label={status ? formatLiveNodeState(status.node_state) : "n/a"}
-              tone={status ? topologyStatusTone(status.node_state) : "neutral"}
+              label={status ? formatLiveNodeState(status.node_state) : 'n/a'}
+              tone={status ? topologyStatusTone(status.node_state) : 'neutral'}
             />
           }
           icon={<Hash className="h-4 w-4" />}
-          tooltip={status
-            ? `Current node identifier in this mesh. ${topologyStatusTooltip(status.node_state)}`
-            : "Current node identifier in this mesh."}
+          tooltip={
+            status
+              ? `Current node identifier in this mesh. ${topologyStatusTooltip(status.node_state)}`
+              : 'Current node identifier in this mesh.'
+          }
         />
         <StatCard
           title="Owner"
@@ -433,7 +379,7 @@ export function DashboardPage({
         />
         <StatCard
           title="Active Models"
-          value={`${meshModels.filter((model) => model.status === "warm").length}`}
+          value={`${meshModels.filter((model) => model.status === 'warm').length}`}
           icon={<Sparkles className="h-4 w-4" />}
           tooltip="Models currently loaded and serving across the mesh."
         />
@@ -449,7 +395,7 @@ export function DashboardPage({
           valueSuffix={
             clientCount > 0 ? (
               <span className="text-xs font-normal text-muted-foreground">
-                +{clientCount} client{clientCount === 1 ? "" : "s"}
+                +{clientCount} client{clientCount === 1 ? '' : 's'}
               </span>
             ) : undefined
           }
@@ -511,10 +457,7 @@ export function DashboardPage({
               <CardTitle className="text-sm">Model Catalog</CardTitle>
               <div className="ml-auto flex shrink-0 items-center gap-2">
                 <span className="text-xs text-muted-foreground">Filter</span>
-                <Select
-                  value={modelFilter}
-                  onValueChange={(value) => setModelFilter(value as "all" | "warm" | "cold")}
-                >
+                <Select value={modelFilter} onValueChange={(value) => setModelFilter(value as 'all' | 'warm' | 'cold')}>
                   <SelectTrigger className="h-8 w-[110px]">
                     <SelectValue />
                   </SelectTrigger>
@@ -550,13 +493,13 @@ export function DashboardPage({
               <div className="min-h-[360px] flex-1 md:min-h-[420px] lg:min-h-0">
                 <DashboardPanelEmpty
                   icon={<Sparkles className="h-4 w-4" />}
-                  title={meshModels.length > 0 ? `No ${modelFilter} models` : "No model catalog data"}
+                  title={meshModels.length > 0 ? `No ${modelFilter} models` : 'No model catalog data'}
                   description={
                     meshModels.length > 0
-                      ? "Try changing the model filter."
+                      ? 'Try changing the model filter.'
                       : modelsLoading
-                        ? "The model catalog will appear once the local scan completes."
-                        : "Model metadata will appear once the mesh reports available models."
+                        ? 'The model catalog will appear once the local scan completes.'
+                        : 'Model metadata will appear once the mesh reports available models.'
                   }
                 />
               </div>
@@ -593,15 +536,15 @@ export function DashboardPage({
                         data-id={peer.id}
                         tabIndex={0}
                         className={cn(
-                          "cursor-pointer focus-visible:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-                          peer.id === highlightedNodeId && "bg-muted/50 hover:bg-muted/60",
+                          'cursor-pointer focus-visible:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+                          peer.id === highlightedNodeId && 'bg-muted/50 hover:bg-muted/60'
                         )}
                         onClick={() => setSelectedTopologyNodeId(peer.id)}
                         onKeyDown={(event) => {
-                          if (event.target !== event.currentTarget) return;
-                          if (event.key === "Enter" || event.key === " ") {
-                            event.preventDefault();
-                            setSelectedTopologyNodeId(peer.id);
+                          if (event.target !== event.currentTarget) return
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault()
+                            setSelectedTopologyNodeId(peer.id)
                           }
                         }}
                       >
@@ -610,9 +553,9 @@ export function DashboardPage({
                             type="button"
                             className="rounded-sm text-left underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                             onClick={(event) => {
-                              event.stopPropagation();
-                              setSelectedTopologyNodeId(peer.id);
-                              openNodeDetail(peer.id);
+                              event.stopPropagation()
+                              setSelectedTopologyNodeId(peer.id)
+                              openNodeDetail(peer.id)
                             }}
                           >
                             {peer.id}
@@ -620,21 +563,15 @@ export function DashboardPage({
                         </TableCell>
                         <TableCell>{peer.role}</TableCell>
                         <TableCell className="font-mono text-xs">
-                          {peer.version ?? (
-                            <span className="text-muted-foreground">unknown</span>
-                          )}
+                          {peer.version ?? <span className="text-muted-foreground">unknown</span>}
                         </TableCell>
                         <TableCell>{formatLiveNodeState(peer.state)}</TableCell>
-                        <TableCell className="max-w-[180px] truncate">
-                          {peer.modelLabel}
-                        </TableCell>
+                        <TableCell className="max-w-[180px] truncate">{peer.modelLabel}</TableCell>
                         <TableCell className="text-right">{peer.latencyLabel}</TableCell>
                         <TableCell className="text-right">
-                          {peer.state === "client" ? "n/a" : `${peer.displayVramGb.toFixed(1)} GB`}
+                          {peer.state === 'client' ? 'n/a' : `${peer.displayVramGb.toFixed(1)} GB`}
                         </TableCell>
-                        <TableCell className="text-right whitespace-nowrap">
-                          {peer.shareLabel}
-                        </TableCell>
+                        <TableCell className="text-right whitespace-nowrap">{peer.shareLabel}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -651,9 +588,9 @@ export function DashboardPage({
         </CardContent>
       </Card>
 
-      <WakeableCapacity wakeableNodes={status?.wakeable_nodes} />
+      <WakeableCapacity wakeableNodes={wakeableCapacityEnabled ? status?.wakeable_nodes : undefined} />
 
-      {isMeshOverviewFullscreen && typeof document !== "undefined"
+      {isMeshOverviewFullscreen && typeof document !== 'undefined'
         ? createPortal(
             <div className="fixed inset-0 z-[120] bg-black/55 backdrop-blur-sm">
               <div className="h-full w-full p-3 md:p-4">
@@ -686,16 +623,16 @@ export function DashboardPage({
                       fullscreen
                       heightClass="min-h-[420px]"
                       containerStyle={{
-                        width: "100%",
-                        height: "calc(100dvh - 8rem)",
-                        minHeight: 420,
+                        width: '100%',
+                        height: 'calc(100dvh - 8rem)',
+                        minHeight: 420
                       }}
                     />
                   </CardContent>
                 </Card>
               </div>
             </div>,
-            document.body,
+            document.body
           )
         : null}
 
@@ -707,11 +644,11 @@ export function DashboardPage({
           side="right"
           className="w-full overflow-y-auto border-l bg-background/95 p-0 backdrop-blur sm:max-w-2xl"
           onOpenAutoFocus={(event) => {
-            event.preventDefault();
-            (event.currentTarget as HTMLElement).focus();
+            event.preventDefault()
+            ;(event.currentTarget as HTMLElement).focus()
           }}
         >
-          {activeDetail?.kind === "node" && activeNode ? (
+          {activeDetail?.kind === 'node' && activeNode ? (
             <NodeSidebar
               node={activeNode}
               meshModelByName={meshModelByName}
@@ -721,21 +658,21 @@ export function DashboardPage({
               onOpenModel={openModelDetail}
               onBack={detailPanelStack.length > 1 ? goBackDetailPanel : undefined}
             />
-          ) : activeDetail?.kind === "node" && !activeNode ? (
+          ) : activeDetail?.kind === 'node' && !activeNode ? (
             <MissingDetailState
               canGoBack={detailPanelStack.length > 1}
               label="This node is no longer available."
               onAction={detailPanelStack.length > 1 ? goBackDetailPanel : closeDetailPanel}
             />
           ) : null}
-          {activeDetail?.kind === "model" && activeModel ? (
+          {activeDetail?.kind === 'model' && activeModel ? (
             <ModelSidebar
               model={activeModel}
               activePeers={activePeerRows}
               onOpenNode={openNodeDetail}
               onBack={detailPanelStack.length > 1 ? goBackDetailPanel : undefined}
             />
-          ) : activeDetail?.kind === "model" && !activeModel ? (
+          ) : activeDetail?.kind === 'model' && !activeModel ? (
             <MissingDetailState
               canGoBack={detailPanelStack.length > 1}
               label="This model is no longer available."
@@ -749,8 +686,7 @@ export function DashboardPage({
         <CardHeader className="pb-2">
           <CardTitle className="text-sm">Connect</CardTitle>
           <div className="text-xs text-muted-foreground">
-            Run mesh-llm on your machine to get a local OpenAI-compatible API and contribute
-            compute to the mesh.
+            Run mesh-llm on your machine to get a local OpenAI-compatible API and contribute compute to the mesh.
           </div>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -770,14 +706,10 @@ export function DashboardPage({
           <div className="space-y-1.5">
             <div className="text-xs font-medium">2. Run</div>
             {(() => {
-              const cmd = isPublicMesh
-                ? "mesh-llm --auto"
-                : `mesh-llm --auto --join ${inviteToken || "(token)"}`;
+              const cmd = isPublicMesh ? 'mesh-llm --auto' : `mesh-llm --auto --join ${inviteToken || '(token)'}`
               return (
                 <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-2 py-1.5">
-                  <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-xs">
-                    {cmd}
-                  </code>
+                  <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-xs">{cmd}</code>
                   <Button
                     type="button"
                     size="icon"
@@ -789,21 +721,16 @@ export function DashboardPage({
                     <Copy className="h-3 w-3" />
                   </Button>
                 </div>
-              );
+              )
             })()}
             <div className="text-xs text-muted-foreground">
-              This auto-selects a model for your hardware, joins the mesh, and serves a local
-              API at <code className="text-[0.7rem]">http://127.0.0.1:9337/v1</code>
+              This auto-selects a model for your hardware, joins the mesh, and serves a local API at{' '}
+              <code className="text-[0.7rem]">http://127.0.0.1:9337/v1</code>
             </div>
           </div>
           {isLocalhost ? null : (
             <div className="text-xs text-muted-foreground">
-              <a
-                href={DOCS_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="underline hover:text-foreground"
-              >
+              <a href={DOCS_URL} target="_blank" rel="noopener noreferrer" className="underline hover:text-foreground">
                 Full docs →
               </a>
             </div>
@@ -849,30 +776,26 @@ export function DashboardPage({
         </a>
       </div>
     </div>
-  );
+  )
 }
 
 function MissingDetailState({
   canGoBack,
   label,
-  onAction,
+  onAction
 }: {
-  canGoBack: boolean;
-  label: string;
-  onAction: () => void;
+  canGoBack: boolean
+  label: string
+  onAction: () => void
 }) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-4 p-8 text-center">
       <p className="text-sm text-muted-foreground">{label}</p>
-      <button
-        type="button"
-        className="text-xs underline hover:text-foreground"
-        onClick={onAction}
-      >
-        {canGoBack ? "Go back" : "Close"}
+      <button type="button" className="text-xs underline hover:text-foreground" onClick={onAction}>
+        {canGoBack ? 'Go back' : 'Close'}
       </button>
     </div>
-  );
+  )
 }
 
 function StatCard({
@@ -880,13 +803,13 @@ function StatCard({
   value,
   valueSuffix,
   icon,
-  tooltip,
+  tooltip
 }: {
-  title: string;
-  value: string;
-  valueSuffix?: ReactNode;
-  icon: ReactNode;
-  tooltip?: string;
+  title: string
+  value: string
+  valueSuffix?: ReactNode
+  icon: ReactNode
+  tooltip?: string
 }) {
   const card = (
     <Card>
@@ -901,10 +824,10 @@ function StatCard({
         </div>
       </CardContent>
     </Card>
-  );
-  if (!tooltip) return card;
+  )
+  if (!tooltip) return card
   return (
-    <Tooltip>
+    <TooltipRoot>
       <TooltipTrigger asChild>
         <button
           type="button"
@@ -916,6 +839,6 @@ function StatCard({
       <TooltipContent side="bottom" align="center" sideOffset={8}>
         {tooltip}
       </TooltipContent>
-    </Tooltip>
-  );
+    </TooltipRoot>
+  )
 }

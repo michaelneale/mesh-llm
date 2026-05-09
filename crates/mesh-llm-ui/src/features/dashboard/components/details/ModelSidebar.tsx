@@ -13,55 +13,44 @@ import {
   MessageSquarePlus,
   Network,
   Sparkles,
-  TextCursorInput,
-} from "lucide-react";
+  TextCursorInput
+} from 'lucide-react'
 
-import { Button } from "../../../../components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "../../../../components/ui/card";
-import {
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "../../../../components/ui/sheet";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "../../../../components/ui/table";
-import { formatShortDuration } from "../../../../lib/format-duration";
-import { cn } from "../../../../lib/utils";
-import { modelStatusTooltip } from "../../../app-shell/lib/status-helpers";
-import type { MeshModel } from "../../../app-shell/lib/status-types";
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { formatShortDuration } from '@/lib/format-duration'
+import { cn } from '@/lib/utils'
+import { modelStatusTooltip } from '@/features/app-shell/lib/status-helpers'
+import type { MeshModel } from '@/features/app-shell/lib/status-types'
 
-import { CapabilityBadge } from "./CapabilityBadge";
-import { ModelFactCard } from "./ModelFactCard";
-import { ModelMetaItem } from "./ModelMetaItem";
-import { ModelMetaLinkItem } from "./ModelMetaLinkItem";
-import { StatusPill } from "./StatusPill";
+import { CapabilityBadge } from '@/features/dashboard/components/details/CapabilityBadge'
+import { ModelFactCard } from '@/features/dashboard/components/details/ModelFactCard'
+import { ModelMetaItem } from '@/features/dashboard/components/details/ModelMetaItem'
+import { ModelMetaLinkItem } from '@/features/dashboard/components/details/ModelMetaLinkItem'
+import { StatusPill } from '@/features/dashboard/components/details/StatusPill'
 
 type ActivePeerRow = {
-  id: string;
-  latencyLabel: string;
-  vramLabel: string;
-  shareLabel: string;
-};
+  id: string
+  latencyLabel: string
+  vramLabel: string
+  shareLabel: string
+}
 
 export function ModelSidebar({
   model,
   activePeers,
   onOpenNode,
-  onBack,
+  onBack
 }: {
-  model: MeshModel;
-  activePeers: ActivePeerRow[];
-  onOpenNode: (nodeId: string) => void;
-  onBack?: () => void;
+  model: MeshModel
+  activePeers: ActivePeerRow[]
+  onOpenNode: (nodeId: string) => void
+  onBack?: () => void
 }) {
-  const fullFileName = modelFullFileName(model);
-  const revisionFileName = modelRevisionFileName(model);
+  const fullFileName = modelFullFileName(model)
+  const revisionFileName = modelRevisionFileName(model)
 
   return (
     <div className="flex min-h-full flex-col">
@@ -78,27 +67,17 @@ export function ModelSidebar({
                 </SheetTitle>
                 <StatusPill
                   label={
-                    model.status === "warm"
-                      ? "Warm"
-                      : model.status === "cold"
-                        ? "Cold"
-                        : model.status || "Unknown"
+                    model.status === 'warm' ? 'Warm' : model.status === 'cold' ? 'Cold' : model.status || 'Unknown'
                   }
-                  tone={
-                    model.status === "warm"
-                      ? "warm"
-                      : model.status === "cold"
-                        ? "cold"
-                        : "neutral"
-                  }
+                  tone={model.status === 'warm' ? 'warm' : model.status === 'cold' ? 'cold' : 'neutral'}
                   dot
                   tooltip={modelStatusTooltip(model.status)}
                 />
                 <StatusPill
-                  label={headerFitLabel(model.fit_label ?? "Unknown")}
-                  tone={fitLabelTone(model.fit_label ?? "Unknown")}
+                  label={headerFitLabel(model.fit_label ?? 'Unknown')}
+                  tone={fitLabelTone(model.fit_label ?? 'Unknown')}
                   icon={<Check className="h-3 w-3" />}
-                  tooltip={fitLabelTooltip(model.fit_label ?? "Unknown")}
+                  tooltip={fitLabelTooltip(model.fit_label ?? 'Unknown')}
                 />
               </div>
               <SheetDescription className="mt-1.5 text-sm text-muted-foreground [overflow-wrap:anywhere]">
@@ -106,13 +85,7 @@ export function ModelSidebar({
               </SheetDescription>
             </div>
             {onBack ? (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-8 gap-1.5"
-                onClick={onBack}
-              >
+              <Button type="button" variant="ghost" size="sm" className="h-8 gap-1.5" onClick={onBack}>
                 <ArrowLeft className="h-3.5 w-3.5" />
                 Back
               </Button>
@@ -122,15 +95,10 @@ export function ModelSidebar({
       </div>
 
       <div className="flex-1 space-y-5 px-6 py-5">
-        <div
-          className={cn(
-            "grid gap-3",
-            model.context_length ? "sm:grid-cols-4" : "sm:grid-cols-3",
-          )}
-        >
+        <div className={cn('grid gap-3', model.context_length ? 'sm:grid-cols-4' : 'sm:grid-cols-3')}>
           <ModelFactCard
             title="Mesh Availability"
-            value={`${model.node_count} node${model.node_count === 1 ? "" : "s"}`}
+            value={`${model.node_count} node${model.node_count === 1 ? '' : 's'}`}
             icon={<Network className="h-4 w-4" />}
             tooltip="Warm nodes currently serving this model."
           />
@@ -142,7 +110,7 @@ export function ModelSidebar({
           />
           <ModelFactCard
             title="File size"
-            value={model.size_gb > 0 ? `${model.size_gb.toFixed(1)} GB` : "Unknown"}
+            value={model.size_gb > 0 ? `${model.size_gb.toFixed(1)} GB` : 'Unknown'}
             icon={<MemoryStick className="h-4 w-4" />}
             tooltip={fileSizeTooltip(model.source_file)}
           />
@@ -209,12 +177,12 @@ export function ModelSidebar({
           </CardContent>
         </Card>
 
-        {(model.description ||
-          model.architecture ||
-          model.quantization ||
-          model.draft_model ||
-          model.source_ref ||
-          model.source_revision) ? (
+        {model.description ||
+        model.architecture ||
+        model.quantization ||
+        model.draft_model ||
+        model.source_ref ||
+        model.source_revision ? (
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="flex items-center gap-2 text-sm">
@@ -223,9 +191,7 @@ export function ModelSidebar({
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3 text-sm">
-              {model.description ? (
-                <p className="leading-7 text-muted-foreground">{model.description}</p>
-              ) : null}
+              {model.description ? <p className="leading-7 text-muted-foreground">{model.description}</p> : null}
               <div className="grid gap-3 sm:grid-cols-2">
                 {model.architecture ? (
                   <ModelMetaItem
@@ -252,11 +218,7 @@ export function ModelSidebar({
                   <ModelMetaLinkItem
                     label="Model Source"
                     href={model.source_page_url}
-                    text={
-                      huggingFacePathFromUrl(model.source_page_url) ??
-                      model.source_ref ??
-                      model.name
-                    }
+                    text={huggingFacePathFromUrl(model.source_page_url) ?? model.source_ref ?? model.name}
                     icon={
                       isHuggingFaceUrl(model.source_page_url) ? (
                         <span aria-hidden="true" className="text-sm leading-none">
@@ -289,28 +251,15 @@ export function ModelSidebar({
             </CardHeader>
             <CardContent className="space-y-3 text-sm">
               <p className="text-sm leading-6 text-muted-foreground">
-                The same model file shown as the mesh shorthand, repository path, and
-                pinned revision.
+                The same model file shown as the mesh shorthand, repository path, and pinned revision.
               </p>
               <div className="grid gap-3">
-                <ModelMetaItem
-                  label="Shorthand"
-                  value={model.name}
-                  copyValue={model.name}
-                />
+                <ModelMetaItem label="Shorthand" value={model.name} copyValue={model.name} />
                 {fullFileName ? (
-                  <ModelMetaItem
-                    label="Full name"
-                    value={fullFileName}
-                    copyValue={fullFileName}
-                  />
+                  <ModelMetaItem label="Full name" value={fullFileName} copyValue={fullFileName} />
                 ) : null}
                 {revisionFileName ? (
-                  <ModelMetaItem
-                    label="Revision"
-                    value={revisionFileName}
-                    copyValue={revisionFileName}
-                  />
+                  <ModelMetaItem label="Revision" value={revisionFileName} copyValue={revisionFileName} />
                 ) : null}
               </div>
             </CardContent>
@@ -360,108 +309,103 @@ export function ModelSidebar({
 
         {model.request_count != null || model.last_active_secs_ago != null ? (
           <div className="px-1 text-xs text-muted-foreground">
-            {model.request_count != null
-              ? `${model.request_count} requests seen`
-              : "No request count"}
+            {model.request_count != null ? `${model.request_count} requests seen` : 'No request count'}
             {model.last_active_secs_ago != null
-              ? ` · active ${model.last_active_secs_ago < 1 ? "just now" : `${formatShortDuration(model.last_active_secs_ago)} ago`}`
-              : ""}
+              ? ` · active ${model.last_active_secs_ago < 1 ? 'just now' : `${formatShortDuration(model.last_active_secs_ago)} ago`}`
+              : ''}
           </div>
         ) : null}
       </div>
     </div>
-  );
+  )
 }
 
 function huggingFacePathFromUrl(url?: string) {
-  if (!url) return null;
-  return url.replace(/^https?:\/\/huggingface\.co\//, "").replace(/\/$/, "");
+  if (!url) return null
+  return url.replace(/^https?:\/\/huggingface\.co\//, '').replace(/\/$/, '')
 }
 
 function isHuggingFaceUrl(url?: string) {
-  return !!url && /^https?:\/\/huggingface\.co\//.test(url);
+  return !!url && /^https?:\/\/huggingface\.co\//.test(url)
 }
 
 function modelFullFileName(model?: MeshModel | null) {
-  if (!model) return null;
+  if (!model) return null
   if (model.source_ref && model.source_file) {
-    return `${model.source_ref}/${model.source_file}`;
+    return `${model.source_ref}/${model.source_file}`
   }
-  return model.source_file || model.source_ref || null;
+  return model.source_file || model.source_ref || null
 }
 
 function modelRevisionFileName(model?: MeshModel | null) {
-  if (!model?.source_revision) return null;
+  if (!model?.source_revision) return null
   if (model.source_ref && model.source_file) {
-    return `${model.source_ref}@${model.source_revision}/${model.source_file}`;
+    return `${model.source_ref}@${model.source_revision}/${model.source_file}`
   }
-  const fullName = modelFullFileName(model);
-  if (!fullName) return null;
-  return `${fullName}@${model.source_revision}`;
+  const fullName = modelFullFileName(model)
+  if (!fullName) return null
+  return `${fullName}@${model.source_revision}`
 }
 
-
 function formatContextLength(value?: number) {
-  if (!value || !Number.isFinite(value)) return "Unknown";
+  if (!value || !Number.isFinite(value)) return 'Unknown'
   if (value >= 1000) {
-    const rounded = value / 1000;
-    return Number.isInteger(rounded) ? `${rounded}K` : `${rounded.toFixed(1)}K`;
+    const rounded = value / 1000
+    return Number.isInteger(rounded) ? `${rounded}K` : `${rounded.toFixed(1)}K`
   }
-  return `${value}`;
+  return `${value}`
 }
 
 function headerFitLabel(label?: string) {
-  if (label === "Likely comfortable" || label === "Likely fits") {
-    return "Suitable for this node";
+  if (label === 'Likely comfortable' || label === 'Likely fits') {
+    return 'Suitable for this node'
   }
-  if (label === "Possible with tradeoffs") {
-    return "May fit this node";
+  if (label === 'Possible with tradeoffs') {
+    return 'May fit this node'
   }
-  if (label === "Likely too large") {
-    return "Too large for this node";
+  if (label === 'Likely too large') {
+    return 'Too large for this node'
   }
-  return "Check fit";
+  return 'Check fit'
 }
 
-function fitLabelTone(
-  label?: string,
-): "good" | "info" | "warn" | "bad" | "neutral" {
-  if (label === "Likely comfortable") return "good";
-  if (label === "Likely fits") return "good";
-  if (label === "Possible with tradeoffs") return "warn";
-  if (label === "Likely too large") return "bad";
-  return "neutral";
+function fitLabelTone(label?: string): 'good' | 'info' | 'warn' | 'bad' | 'neutral' {
+  if (label === 'Likely comfortable') return 'good'
+  if (label === 'Likely fits') return 'good'
+  if (label === 'Possible with tradeoffs') return 'warn'
+  if (label === 'Likely too large') return 'bad'
+  return 'neutral'
 }
 
 function fitLabelTooltip(label?: string) {
-  if (label === "Likely comfortable") {
-    return "Should run comfortably on this node.";
+  if (label === 'Likely comfortable') {
+    return 'Should run comfortably on this node.'
   }
-  if (label === "Likely fits") {
-    return "Should fit on this node, but tightly.";
+  if (label === 'Likely fits') {
+    return 'Should fit on this node, but tightly.'
   }
-  if (label === "Possible with tradeoffs") {
-    return "May fit, with tighter memory or performance tradeoffs.";
+  if (label === 'Possible with tradeoffs') {
+    return 'May fit, with tighter memory or performance tradeoffs.'
   }
-  if (label === "Likely too large") {
-    return "Likely too large for this node alone.";
+  if (label === 'Likely too large') {
+    return 'Likely too large for this node alone.'
   }
-  return "Estimated fit for this node.";
+  return 'Estimated fit for this node.'
 }
 
 function fileSizeTooltip(fileName?: string) {
-  const ext = fileName?.split(".").pop()?.toUpperCase();
-  if (ext === "GGUF") return "GGUF model file size on disk.";
-  if (ext) return `${ext} model file size on disk.`;
-  return "Primary model file size on disk.";
+  const ext = fileName?.split('.').pop()?.toUpperCase()
+  if (ext === 'GGUF') return 'GGUF model file size on disk.'
+  if (ext) return `${ext} model file size on disk.`
+  return 'Primary model file size on disk.'
 }
 
 function toolUseTooltip(status?: string) {
-  if (status === "supported") {
-    return "Supports tool or function calling.";
+  if (status === 'supported') {
+    return 'Supports tool or function calling.'
   }
-  if (status === "likely") {
-    return "Likely supports tool or function calling.";
+  if (status === 'likely') {
+    return 'Likely supports tool or function calling.'
   }
-  return "Tool or function calling support.";
+  return 'Tool or function calling support.'
 }

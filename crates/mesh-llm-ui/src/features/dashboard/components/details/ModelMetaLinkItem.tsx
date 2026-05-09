@@ -1,17 +1,17 @@
-import type { ReactNode } from "react";
+import type { ReactNode } from 'react'
 
-import { ExternalLink } from "lucide-react";
+import { ExternalLink } from 'lucide-react'
 
 export function ModelMetaLinkItem({
   label,
   href,
   text,
-  icon,
+  icon
 }: {
-  label: string;
-  href: string;
-  text: string;
-  icon?: ReactNode;
+  label: string
+  href: string
+  text: string
+  icon?: ReactNode
 }) {
   return (
     <div className="rounded-lg border bg-muted/25 px-3 py-2">
@@ -29,5 +29,5 @@ export function ModelMetaLinkItem({
         <ExternalLink className="h-3 w-3 shrink-0" />
       </a>
     </div>
-  );
+  )
 }

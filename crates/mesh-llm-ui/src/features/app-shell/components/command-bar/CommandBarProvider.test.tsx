@@ -1,19 +1,19 @@
 // @vitest-environment jsdom
 
-import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import '@testing-library/jest-dom/vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { CommandBarProvider } from './CommandBarProvider';
-import { useCommandBar } from './useCommandBar';
+import { CommandBarProvider } from '@/features/app-shell/components/command-bar/CommandBarProvider'
+import { useCommandBar } from '@/features/app-shell/components/command-bar/useCommandBar'
 
 function HookConsumerOutsideProvider() {
-  useCommandBar();
-  return null;
+  useCommandBar()
+  return null
 }
 
 function CommandBarTestConsumer() {
-  const { isOpen, activeModeId, openCommandBar, closeCommandBar } = useCommandBar();
+  const { isOpen, activeModeId, openCommandBar, closeCommandBar } = useCommandBar()
 
   return (
     <div>
@@ -29,59 +29,59 @@ function CommandBarTestConsumer() {
       <button type="button">Secondary target</button>
       <input aria-label="Editable target" />
     </div>
-  );
+  )
 }
 
 function renderProvider() {
   return render(
     <CommandBarProvider>
       <CommandBarTestConsumer />
-    </CommandBarProvider>,
-  );
+    </CommandBarProvider>
+  )
 }
 
-  describe('CommandBarProvider', () => {
-   const originalUserAgent = navigator.userAgent;
+describe('CommandBarProvider', () => {
+  const originalUserAgent = navigator.userAgent
 
-   beforeEach(() => {
-     Object.defineProperty(navigator, 'userAgent', {
-       configurable: true,
-       value: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)',
-     });
-   });
+  beforeEach(() => {
+    Object.defineProperty(navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)'
+    })
+  })
 
-   afterEach(() => {
-     Object.defineProperty(navigator, 'userAgent', {
-       configurable: true,
-       value: originalUserAgent,
-     });
-     cleanup();
-   });
+  afterEach(() => {
+    Object.defineProperty(navigator, 'userAgent', {
+      configurable: true,
+      value: originalUserAgent
+    })
+    cleanup()
+  })
 
-   it('throws a clear error when the hook is used outside the provider', () => {
-     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+  it('throws a clear error when the hook is used outside the provider', () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
 
-     expect(() => render(<HookConsumerOutsideProvider />)).toThrow(
-       'useCommandBar must be used within a CommandBarProvider.',
-     );
+    expect(() => render(<HookConsumerOutsideProvider />)).toThrow(
+      'useCommandBar must be used within a CommandBarProvider.'
+    )
 
-     consoleError.mockRestore();
-   });
+    consoleError.mockRestore()
+  })
 
-   it('closes on Escape and restores focus to the previously focused element', () => {
-    renderProvider();
+  it('closes on Escape and restores focus to the previously focused element', () => {
+    renderProvider()
 
-    const primaryTrigger = screen.getByRole('button', { name: 'Primary trigger' });
-    const secondaryTarget = screen.getByRole('button', { name: 'Secondary target' });
-    const openButton = screen.getByRole('button', { name: 'Open models' });
+    const primaryTrigger = screen.getByRole('button', { name: 'Primary trigger' })
+    const secondaryTarget = screen.getByRole('button', { name: 'Secondary target' })
+    const openButton = screen.getByRole('button', { name: 'Open models' })
 
-    primaryTrigger.focus();
-    fireEvent.click(openButton);
-    secondaryTarget.focus();
-    fireEvent.keyDown(window, { key: 'Escape' });
+    primaryTrigger.focus()
+    fireEvent.click(openButton)
+    secondaryTarget.focus()
+    fireEvent.keyDown(window, { key: 'Escape' })
 
-    expect(screen.getByTestId('command-bar-state')).toHaveTextContent('closed');
-    expect(screen.getByTestId('command-bar-mode')).toHaveTextContent('none');
-    expect(primaryTrigger).toHaveFocus();
-  });
-});
+    expect(screen.getByTestId('command-bar-state')).toHaveTextContent('closed')
+    expect(screen.getByTestId('command-bar-mode')).toHaveTextContent('none')
+    expect(primaryTrigger).toHaveFocus()
+  })
+})

@@ -90,13 +90,17 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-          cache: npm
+          cache: pnpm
           cache-dependency-path: |
             .github/cache-version.txt
-            crates/mesh-llm-ui/package-lock.json
+            crates/mesh-llm-ui/pnpm-lock.yaml
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -106,11 +110,11 @@ jobs:
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev curl
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev curl lld
 
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
-        run: brew install cmake ninja
+        run: brew install cmake ninja lld
 
       - name: Build release bundle
         env:
@@ -153,17 +157,20 @@ jobs:
       MESH_RELEASE_ARCH: aarch64
     steps:
       - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-          cache: npm
+          cache: pnpm
           cache-dependency-path: |
             .github/cache-version.txt
-            crates/mesh-llm-ui/package-lock.json
+            crates/mesh-llm-ui/pnpm-lock.yaml
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@just
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev curl
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev curl lld
       - name: Build ARM64 CPU release bundle
         env:
           RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
@@ -190,7 +197,7 @@ jobs:
         run: |
           for attempt in 1 2 3; do
             apt-get -o Acquire::Retries=5 update &&
-              DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --fix-missing ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential &&
+              DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --fix-missing ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential lld &&
               break
             if [ "$attempt" -eq 3 ]; then
               exit 1
@@ -199,13 +206,16 @@ jobs:
           done
           rm -rf /var/lib/apt/lists/*
       - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-          cache: npm
+          cache: pnpm
           cache-dependency-path: |
             .github/cache-version.txt
-            crates/mesh-llm-ui/package-lock.json
+            crates/mesh-llm-ui/pnpm-lock.yaml
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@just
       - name: Build CUDA release bundle
@@ -234,7 +244,7 @@ jobs:
         run: |
           for attempt in 1 2 3; do
             apt-get -o Acquire::Retries=5 update &&
-              DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --fix-missing ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential &&
+              DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --fix-missing ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential lld &&
               break
             if [ "$attempt" -eq 3 ]; then
               exit 1
@@ -243,13 +253,16 @@ jobs:
           done
           rm -rf /var/lib/apt/lists/*
       - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-          cache: npm
+          cache: pnpm
           cache-dependency-path: |
             .github/cache-version.txt
-            crates/mesh-llm-ui/package-lock.json
+            crates/mesh-llm-ui/pnpm-lock.yaml
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@just
       - name: Build CUDA Blackwell release bundle
@@ -278,7 +291,7 @@ jobs:
         run: |
           for attempt in 1 2 3; do
             apt-get -o Acquire::Retries=5 update &&
-              DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --fix-missing ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential &&
+              DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --fix-missing ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential lld &&
               break
             if [ "$attempt" -eq 3 ]; then
               exit 1
@@ -287,13 +300,16 @@ jobs:
           done
           rm -rf /var/lib/apt/lists/*
       - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-          cache: npm
+          cache: pnpm
           cache-dependency-path: |
             .github/cache-version.txt
-            crates/mesh-llm-ui/package-lock.json
+            crates/mesh-llm-ui/pnpm-lock.yaml
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@just
       - name: Build ROCm release bundle
@@ -317,17 +333,20 @@ jobs:
       LLAMA_STAGE_BACKEND: vulkan
     steps:
       - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-          cache: npm
+          cache: pnpm
           cache-dependency-path: |
             .github/cache-version.txt
-            crates/mesh-llm-ui/package-lock.json
+            crates/mesh-llm-ui/pnpm-lock.yaml
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@just
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev curl glslc libvulkan-dev spirv-headers
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev curl glslc libvulkan-dev spirv-headers lld
       - name: Build Vulkan release bundle
         env:
           RELEASE_TAG: ${{ needs.metadata.outputs.tag }}

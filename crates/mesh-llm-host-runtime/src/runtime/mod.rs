@@ -4114,7 +4114,6 @@ async fn run_auto(
     ))))
     .await;
     node.start_accepting();
-    let token = node.invite_token();
     node.set_display_name(node_display_name(&cli, &node)).await;
     let (plugin_mesh_tx, plugin_mesh_rx) = tokio::sync::mpsc::channel(256);
     let plugin_manager =
@@ -4295,7 +4294,7 @@ async fn run_auto(
             .await
             .unwrap_or_else(|| "pending".to_string());
         let _ = emit_event(OutputEvent::InviteToken {
-            token: token.clone(),
+            token: node.invite_token(),
             mesh_id,
             mesh_name: cli.mesh_name.clone(),
         });
@@ -4349,7 +4348,7 @@ async fn run_auto(
         mesh::save_last_mesh_id(&mesh_id);
         tracing::info!("Mesh ID: {mesh_id}");
         let _ = emit_event(OutputEvent::InviteToken {
-            token: token.clone(),
+            token: node.invite_token(),
             mesh_id: mesh_id.clone(),
             mesh_name: cli.mesh_name.clone(),
         });

@@ -1,81 +1,76 @@
-import { useEffect, useId, useRef, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { useEffect, useId, useRef, useState } from 'react'
+import { Loader2 } from 'lucide-react'
 
-import { useResolvedTheme } from "../../../../lib/resolved-theme";
+import { useResolvedTheme } from '@/lib/resolved-theme'
 
-type MermaidApi = (typeof import("mermaid"))["default"];
+type MermaidApi = (typeof import('mermaid'))['default']
 
-let mermaidPromise: Promise<MermaidApi | null> | null = null;
+let mermaidPromise: Promise<MermaidApi | null> | null = null
 
 function loadMermaid() {
   if (!mermaidPromise) {
-    mermaidPromise = import("mermaid").then((module) => module.default).catch(() => null);
+    mermaidPromise = import('mermaid').then((module) => module.default).catch(() => null)
   }
 
-  return mermaidPromise;
+  return mermaidPromise
 }
 
 export function MermaidBlock({ code }: { code: string }) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const renderId = useId().replace(/[^a-zA-Z0-9_-]/g, "");
-  const [error, setError] = useState<string | null>(null);
-  const [rendered, setRendered] = useState(false);
-  const resolvedTheme = useResolvedTheme();
+  const containerRef = useRef<HTMLDivElement>(null)
+  const renderId = useId().replace(/[^a-zA-Z0-9_-]/g, '')
+  const [error, setError] = useState<string | null>(null)
+  const [rendered, setRendered] = useState(false)
+  const resolvedTheme = useResolvedTheme()
 
   useEffect(() => {
-    let cancelled = false;
-    const container = containerRef.current;
+    let cancelled = false
+    const container = containerRef.current
 
-    setError(null);
-    setRendered(false);
-    container?.replaceChildren();
+    if (container) container.replaceChildren()
 
     loadMermaid().then(async (mermaid) => {
       if (cancelled || !mermaid) {
-        if (!cancelled) setError("Mermaid failed to load");
-        return;
+        if (!cancelled) setError('Mermaid failed to load')
+        return
       }
 
       try {
         mermaid.initialize({
           startOnLoad: false,
-          theme: resolvedTheme === "dark" ? "dark" : "default",
-          securityLevel: "strict",
-        });
-        const { svg } = await mermaid.render(`mermaid-${renderId}`, code);
-        if (cancelled || !container) return;
+          theme: resolvedTheme === 'dark' ? 'dark' : 'default',
+          securityLevel: 'strict'
+        })
+        const { svg } = await mermaid.render(`mermaid-${renderId}`, code)
+        if (cancelled || !container) return
 
-        const parsed = new DOMParser().parseFromString(svg, "image/svg+xml");
-        const root = parsed.documentElement;
-        if (
-          parsed.querySelector("parsererror") ||
-          root.nodeName.toLowerCase() !== "svg"
-        ) {
-          throw new Error("Render failed");
+        const parsed = new DOMParser().parseFromString(svg, 'image/svg+xml')
+        const root = parsed.documentElement
+        if (parsed.querySelector('parsererror') || root.nodeName.toLowerCase() !== 'svg') {
+          throw new Error('Render failed')
         }
 
-        container.replaceChildren(document.importNode(root, true));
-        setRendered(true);
+        container.replaceChildren(document.importNode(root, true))
+        setRendered(true)
       } catch (e: unknown) {
         if (!cancelled) {
-          container?.replaceChildren();
-          setError(e instanceof Error ? e.message : "Render failed");
+          container?.replaceChildren()
+          setError(e instanceof Error ? e.message : 'Render failed')
         }
       }
-    });
+    })
 
     return () => {
-      cancelled = true;
-      container?.replaceChildren();
-    };
-  }, [code, renderId, resolvedTheme]);
+      cancelled = true
+      container?.replaceChildren()
+    }
+  }, [code, renderId, resolvedTheme])
 
   if (error)
     return (
       <pre className="my-2 rounded-lg border border-border/70 bg-background/80 p-3 text-xs text-muted-foreground">
         <code>{code}</code>
       </pre>
-    );
+    )
   return (
     <div className="my-2 rounded-lg border border-border/70 bg-background/80 p-3">
       {!rendered ? (
@@ -84,10 +79,7 @@ export function MermaidBlock({ code }: { code: string }) {
           Rendering diagram…
         </div>
       ) : null}
-      <div
-        ref={containerRef}
-        className={rendered ? "overflow-x-auto [&_svg]:max-w-full" : "hidden"}
-      />
+      <div ref={containerRef} className={rendered ? 'overflow-x-auto [&_svg]:max-w-full' : 'hidden'} />
     </div>
-  );
+  )
 }

@@ -1,159 +1,138 @@
 /**
- * PDF text extraction via pdf.js, loaded lazily from the app bundle.
+ * PDF text extraction and scanned-page rendering via pdf.js.
  *
- * Only loaded when a user actually attaches a PDF, so initial bundle cost
- * stays low while avoiding runtime execution of third-party CDN code.
+ * Loaded lazily so the preview console does not pay for PDF support until a
+ * user attaches a PDF.
  */
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
+import pdfjsWorkerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+import type { PDFDocumentProxy, TextItem, TextMarkedContent } from 'pdfjs-dist/types/src/display/api'
 
-import pdfjsWorkerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+type PdfJs = typeof import('pdfjs-dist')
 
-let pdfjsLib: any | null = null;
+let pdfjsLib: PdfJs | null = null
 
-async function loadPdfJs(): Promise<any> {
-  if (pdfjsLib) return pdfjsLib;
+async function loadPdfJs(): Promise<PdfJs> {
+  if (pdfjsLib) return pdfjsLib
+
   try {
-    pdfjsLib = await import("pdfjs-dist");
-    pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerSrc;
-    return pdfjsLib;
+    pdfjsLib = await import('pdfjs-dist')
+    pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerSrc
+    return pdfjsLib
   } catch {
-    throw new Error(
-      "Could not load PDF.js. Check that the application assets are available.",
-    );
+    throw new Error('Could not load PDF.js. Check that the application assets are available.')
   }
 }
 
 export type PdfExtractionResult = {
-  /** Concatenated text across all pages. */
-  text: string;
-  /** Number of pages in the PDF. */
-  pageCount: number;
-  /** Number of pages that yielded meaningful text. */
-  pagesWithText: number;
-  /** Approximate word count. */
-  wordCount: number;
-};
+  text: string
+  pageCount: number
+  pagesWithText: number
+  wordCount: number
+}
 
-/**
- * Extract text from a PDF provided as an ArrayBuffer.
- *
- * Uses pdf.js to read every page's text content and concatenates it with
- * page markers so the LLM can reference "page N".
- */
-export async function extractPdfText(
-  buffer: ArrayBuffer,
-): Promise<PdfExtractionResult> {
-  const lib = await loadPdfJs();
-  let doc: any | null = null;
+export async function extractPdfText(buffer: ArrayBuffer): Promise<PdfExtractionResult> {
+  const lib = await loadPdfJs()
+  let doc: PDFDocumentProxy | null = null
 
   try {
-    doc = await lib.getDocument({ data: new Uint8Array(buffer) }).promise;
-    const pageCount: number = doc.numPages;
+    doc = await lib.getDocument({ data: new Uint8Array(buffer) }).promise
+    const pageCount = doc.numPages
+    const pages: string[] = []
+    let pagesWithText = 0
 
-    const pages: string[] = [];
-    let pagesWithText = 0;
-
-    for (let i = 1; i <= pageCount; i++) {
-      const page = await doc.getPage(i);
+    for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
+      const page = await doc.getPage(pageNumber)
       try {
-        const content = await page.getTextContent();
-        const items = content.items;
+        const content = await page.getTextContent()
+        let pageText = ''
 
-        // Join text items, respecting line breaks the PDF declares.
-        // Guard against non-text entries (e.g. marked-content items) that
-        // lack a `str` field.
-        let pageText = "";
-        for (const item of items) {
-          if (typeof (item as any).str === "string") {
-            pageText += (item as any).str;
-            if ((item as any).hasEOL) pageText += "\n";
+        for (const item of content.items) {
+          if (isTextItem(item)) {
+            pageText += item.str
+            if (item.hasEOL) pageText += '\n'
           }
         }
 
-        const trimmed = pageText.trim();
+        const trimmed = pageText.trim()
         if (trimmed.length > 0) {
-          pagesWithText++;
-          pages.push(`--- Page ${i} ---\n${trimmed}`);
+          pagesWithText += 1
+          pages.push(`--- Page ${pageNumber} ---\n${trimmed}`)
         }
       } finally {
-        page.cleanup();
+        page.cleanup()
       }
     }
 
-    const text = pages.join("\n\n");
-    const wordCount = text.split(/\s+/).filter(Boolean).length;
+    const text = pages.join('\n\n')
+    const wordCount = text.split(/\s+/).filter(Boolean).length
 
-    return { text, pageCount, pagesWithText, wordCount };
+    return { text, pageCount, pagesWithText, wordCount }
   } finally {
     if (doc) {
-      await doc.destroy();
+      await doc.destroy()
     }
   }
 }
 
-/**
- * Render PDF pages as JPEG images.
- *
- * Useful for scanned PDFs that have no extractable text — if a vision
- * model is available we can send the pages as images instead.
- *
- * Returns an array of data URLs (image/jpeg), one per page.
- */
 export async function renderPdfPagesToImages(
   buffer: ArrayBuffer,
-  opts?: { maxPages?: number; scale?: number; quality?: number },
+  opts?: { maxPages?: number; scale?: number; quality?: number }
 ): Promise<string[]> {
-  const lib = await loadPdfJs();
-  const doc = await lib.getDocument({ data: new Uint8Array(buffer) }).promise;
+  const lib = await loadPdfJs()
+  const doc = await lib.getDocument({ data: new Uint8Array(buffer) }).promise
 
   try {
-    const pageCount: number = doc.numPages;
-    const maxPages = opts?.maxPages ?? 10;
-    const scale = opts?.scale ?? 1.5; // ~150 DPI for typical PDFs
-    const quality = opts?.quality ?? 0.85;
+    const pageCount = doc.numPages
+    const maxPages = opts?.maxPages ?? 4
+    const scale = opts?.scale ?? 1
+    const quality = opts?.quality ?? 0.72
+    const images: string[] = []
 
-    const images: string[] = [];
-
-    for (let i = 1; i <= Math.min(pageCount, maxPages); i++) {
-      const page = await doc.getPage(i);
+    for (let pageNumber = 1; pageNumber <= Math.min(pageCount, maxPages); pageNumber += 1) {
+      const page = await doc.getPage(pageNumber)
+      let canvas: HTMLCanvasElement | undefined
       try {
-        const viewport = page.getViewport({ scale });
-        const canvas = document.createElement("canvas");
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) continue;
-        await page.render({ canvasContext: ctx, viewport }).promise;
-        images.push(canvas.toDataURL("image/jpeg", quality));
+        const viewport = page.getViewport({ scale })
+        canvas = document.createElement('canvas')
+        canvas.width = viewport.width
+        canvas.height = viewport.height
+        const ctx = canvas.getContext('2d')
+        if (!ctx) continue
+
+        await page.render({ canvasContext: ctx, viewport }).promise
+        images.push(canvas.toDataURL('image/jpeg', quality))
       } finally {
-        page.cleanup();
+        if (canvas) {
+          canvas.width = 0
+          canvas.height = 0
+        }
+        page.cleanup()
       }
     }
 
-    return images;
+    return images
   } finally {
-    await doc.destroy();
+    await doc.destroy()
   }
 }
 
-/**
- * True if the given MIME type is a PDF.
- */
+function isTextItem(item: TextItem | TextMarkedContent): item is TextItem {
+  return 'str' in item && typeof item.str === 'string'
+}
+
 export function isPdfMimeType(mimeType: string): boolean {
-  return mimeType === "application/pdf" || mimeType === "application/x-pdf";
+  return mimeType === 'application/pdf' || mimeType === 'application/x-pdf'
 }
 
-/**
- * Convert a data URL to an ArrayBuffer.
- */
 export function dataUrlToArrayBuffer(dataUrl: string): ArrayBuffer {
-  const base64 = dataUrl.split(",")[1];
-  if (!base64) throw new Error("Invalid data URL");
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
+  const base64 = dataUrl.split(',')[1]
+  if (!base64) throw new Error('Invalid data URL')
+
+  const binary = atob(base64)
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index)
   }
-  return bytes.buffer;
+  return bytes.buffer
 }

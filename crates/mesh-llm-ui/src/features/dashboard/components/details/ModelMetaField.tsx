@@ -1,15 +1,15 @@
-import type { ReactNode } from "react";
+import type { ReactNode } from 'react'
 
 export function ModelMetaField({
   label,
   icon,
   action,
-  children,
+  children
 }: {
-  label: string;
-  icon?: ReactNode;
-  action?: ReactNode;
-  children: ReactNode;
+  label: string
+  icon?: ReactNode
+  action?: ReactNode
+  children: ReactNode
 }) {
   return (
     <div className="rounded-lg border bg-muted/25 px-3 py-2">
@@ -22,5 +22,5 @@ export function ModelMetaField({
       </div>
       {children}
     </div>
-  );
+  )
 }

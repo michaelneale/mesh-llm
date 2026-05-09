@@ -1,26 +1,26 @@
-import { useState } from "react";
+import { useState } from 'react'
 
-import { ModelCard } from "../../../dashboard/components/details";
-import { Input } from "../../../../components/ui/input";
+import { ModelCard } from '@/features/dashboard/components/details'
+import { Input } from '@/components/ui/input'
 
-type ModelStatus = "warm" | "cold" | "loading";
-import { ToggleGroup, ToggleGroupItem } from "../../../../components/ui/toggle-group";
+type ModelStatus = 'warm' | 'cold' | 'loading'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 
 const modelDisplayNames: Record<string, string> = {
-  "llama-3.2-1b": "Llama 3.2 1B",
-  "gemma-2-2b": "Gemma 2 2B",
-};
+  'llama-3.2-1b': 'Llama 3.2 1B',
+  'gemma-2-2b': 'Gemma 2 2B'
+}
 
 function ModelPreview() {
-  const [modelName, setModelName] = useState("llama-3.2-1b");
-  const [subtitle, setSubtitle] = useState("");
-  const [sizeGb, setSizeGb] = useState(1.2);
-  const [nodeCount, setNodeCount] = useState(1);
-  const [status, setStatus] = useState<ModelStatus>("warm");
-  const [vision, setVision] = useState(false);
-  const [reasoning, setReasoning] = useState(false);
+  const [modelName, setModelName] = useState('llama-3.2-1b')
+  const [subtitle, setSubtitle] = useState('')
+  const [sizeGb, setSizeGb] = useState(1.2)
+  const [nodeCount, setNodeCount] = useState(1)
+  const [status, setStatus] = useState<ModelStatus>('warm')
+  const [vision, setVision] = useState(false)
+  const [reasoning, setReasoning] = useState(false)
 
-  const cardWidth = "w-[380px]";
+  const cardWidth = 'w-[380px]'
 
   return (
     <div className="space-y-2">
@@ -40,33 +40,33 @@ function ModelPreview() {
       <hr className="my-2" />
 
       <div className="space-y-3">
-<div className="space-y-1.5">
-            <label htmlFor="model-name-input" className="text-xs text-muted-foreground font-medium block">
-              Model Name
-            </label>
-            <Input
-              id="model-name-input"
-              value={modelName}
-              onChange={(e) => setModelName(e.target.value)}
-              className="h-8 text-xs"
-              placeholder="llama-3.2-1b"
-            />
-          </div>
+        <div className="space-y-1.5">
+          <label htmlFor="model-name-input" className="text-xs text-muted-foreground font-medium block">
+            Model Name
+          </label>
+          <Input
+            id="model-name-input"
+            value={modelName}
+            onChange={(e) => setModelName(e.target.value)}
+            className="h-8 text-xs"
+            placeholder="llama-3.2-1b"
+          />
+        </div>
 
-          <div className="space-y-1.5">
-            <label htmlFor="subtitle-input" className="text-xs text-muted-foreground font-medium block">
-              Subtitle (optional)
-            </label>
-            <Input
-              id="subtitle-input"
-              value={subtitle}
-              onChange={(e) => setSubtitle(e.target.value)}
-              className="h-8 text-xs"
-              placeholder="Custom subtitle or leave empty for model name"
-            />
-          </div>
+        <div className="space-y-1.5">
+          <label htmlFor="subtitle-input" className="text-xs text-muted-foreground font-medium block">
+            Subtitle (optional)
+          </label>
+          <Input
+            id="subtitle-input"
+            value={subtitle}
+            onChange={(e) => setSubtitle(e.target.value)}
+            className="h-8 text-xs"
+            placeholder="Custom subtitle or leave empty for model name"
+          />
+        </div>
 
-          <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-2 gap-2">
           <div className="space-y-1">
             <label htmlFor="model-size" className="text-xs text-muted-foreground font-medium block">
               Size (GB)
@@ -136,7 +136,7 @@ function ModelPreview() {
         </div>
       </div>
     </div>
-  );
+  )
 }
 
 export default function PlaygroundCards() {
@@ -144,5 +144,5 @@ export default function PlaygroundCards() {
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 overflow-auto p-1">
       <ModelPreview />
     </div>
-  );
+  )
 }

@@ -291,7 +291,10 @@ def split_args(layer_count: int) -> tuple[int, str]:
 def default_stage_build_dir() -> str | None:
     if os.environ.get("LLAMA_STAGE_BUILD_DIR"):
         return os.environ["LLAMA_STAGE_BUILD_DIR"]
-    llama_root = ROOT / ".deps/llama.cpp"
+    llama_build_roots = (
+        ROOT / ".deps/llama-build",
+        ROOT / ".deps/llama.cpp",
+    )
     for name in (
         "build-stage-abi-metal",
         "build-stage-abi-static",
@@ -299,9 +302,10 @@ def default_stage_build_dir() -> str | None:
         "build-stage-abi-vulkan",
         "build-stage-abi-rocm",
     ):
-        candidate = llama_root / name
-        if candidate.is_dir():
-            return str(candidate)
+        for llama_root in llama_build_roots:
+            candidate = llama_root / name
+            if candidate.is_dir():
+                return str(candidate)
     return None
 
 

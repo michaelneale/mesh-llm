@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-LLAMA_BUILD_DIR="${LLAMA_STAGE_BUILD_DIR:-.deps/llama.cpp/build-stage-abi-static}"
+LLAMA_BUILD_DIR="${LLAMA_STAGE_BUILD_DIR:-.deps/llama-build/build-stage-abi-static}"
 MODEL_REPO="${MODEL_REPO:-jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF}"
 MODEL_FILE="${MODEL_FILE:-SmolLM2-135M-Instruct.Q4_K_M.gguf}"
 MODEL_SELECTOR="${MODEL_SELECTOR:-Q4_K_M}"

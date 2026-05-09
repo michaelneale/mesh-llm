@@ -13,21 +13,21 @@
  * fails with "Unknown or expired blob token".
  */
 export function hasBlobContent(input: unknown): boolean {
-  if (!Array.isArray(input)) return false;
+  if (!Array.isArray(input)) return false
   return input.some(
     (msg: unknown) =>
-      typeof msg === "object" &&
+      typeof msg === 'object' &&
       msg !== null &&
       Array.isArray((msg as Record<string, unknown>).content) &&
       ((msg as Record<string, unknown>).content as Array<unknown>).some(
         (block) =>
-          typeof block === "object" &&
+          typeof block === 'object' &&
           block !== null &&
           Object.values(block as Record<string, unknown>).some(
-            (v) => typeof v === "string" && v.startsWith("mesh://blob/"),
-          ),
-      ),
-  );
+            (v) => typeof v === 'string' && v.startsWith('mesh://blob/')
+          )
+      )
+  )
 }
 
 /**
@@ -38,68 +38,60 @@ export function hasBlobContent(input: unknown): boolean {
  * - `"HTTP <status>"` as a final fallback
  */
 export async function parseApiErrorBody(response: Response): Promise<string> {
-  const fallback = `HTTP ${response.status}`;
+  const fallback = `HTTP ${response.status}`
   try {
-    const errorBody = await response.text();
-    if (errorBody.length === 0) return fallback;
+    const errorBody = await response.text()
+    if (errorBody.length === 0) return fallback
     try {
-      const parsed = JSON.parse(errorBody) as unknown;
-      if (
-        typeof parsed === "object" &&
-        parsed !== null &&
-        "error" in parsed
-      ) {
-        const err = (parsed as Record<string, unknown>).error;
-        if (
-          typeof err === "object" &&
-          err !== null &&
-          typeof (err as Record<string, unknown>).message === "string"
-        ) {
-          return (err as Record<string, unknown>).message as string;
+      const parsed = JSON.parse(errorBody) as unknown
+      if (typeof parsed === 'object' && parsed !== null && 'error' in parsed) {
+        const err = (parsed as Record<string, unknown>).error
+        if (typeof err === 'object' && err !== null && typeof (err as Record<string, unknown>).message === 'string') {
+          return (err as Record<string, unknown>).message as string
         }
-        if (typeof err === "string") {
-          return err;
+        if (typeof err === 'string') {
+          return err
         }
       }
-      if (errorBody.length < 500) return errorBody;
+      if (errorBody.length < 500) return errorBody
     } catch {
-      if (errorBody.length < 500) return errorBody;
+      if (errorBody.length < 500) return errorBody
     }
   } catch {
     // Body couldn't be read — keep the status code message.
   }
-  return fallback;
+  return fallback
 }
 
 /** Schedule a callback at most once per animation frame. */
 export function createRafBatcher(callback: (text: string) => void) {
-  let raf = 0;
-  let latest = "";
+  let raf = 0
+  let latest = ''
 
   return {
     /** Call on every stream update — stores the latest text snapshot + raf check. */
     push(text: string) {
-      latest = text;
+      latest = text
       if (!raf) {
         raf = window.requestAnimationFrame(() => {
-          raf = 0;
-          callback(latest);
-        });
+          raf = 0
+          callback(latest)
+        })
       }
     },
     /** Flush any pending update synchronously (call when stream ends). */
     flush() {
       if (raf) {
-        window.cancelAnimationFrame(raf);
-        raf = 0;
+        window.cancelAnimationFrame(raf)
+        raf = 0
       }
-      callback(latest);
+      callback(latest)
     },
     cancel() {
       if (raf) {
-        window.cancelAnimationFrame(raf);
-        raf = 0;
+        window.cancelAnimationFrame(raf)
+        raf = 0
       }
-    },
-  };
+    }
+  }
 }

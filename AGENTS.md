@@ -193,7 +193,7 @@ Testing matters more than usual in this project because:
 
 - Nodes run on different machines with different hardware and OS versions. Bugs that don't reproduce locally can appear in real deployments.
 - The mesh protocol is a distributed system — gossip, election, and routing interact across nodes. Single-node unit tests don't catch protocol-level regressions.
-- The public mesh at anarchai.org runs continuously. Breaking changes that pass local tests can take down live inference for real users.
+- The public mesh at meshllm.cloud runs continuously. Breaking changes that pass local tests can take down live inference for real users.
 - Multimodal, MoE splitting, and multi-model routing all have complex interaction paths that are hard to reason about statically.
 
 When making changes that touch gossip, routing, proxy, election, or capability advertisement, test against at least two nodes before merging. The deploy checklist above is not optional.

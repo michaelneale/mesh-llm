@@ -1,7 +1,8 @@
 param(
     [string]$Backend = "",
     [string]$CudaArch = "",
-    [string]$RocmArch = ""
+    [string]$RocmArch = "",
+    [string]$BuildProfile = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,10 +10,12 @@ $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $scriptDir ".."))
 $llamaDir = if ($env:MESH_LLM_LLAMA_DIR) { $env:MESH_LLM_LLAMA_DIR } else { Join-Path $repoRoot ".deps\llama.cpp" }
-$buildDir = if ($env:LLAMA_STAGE_BUILD_DIR) { $env:LLAMA_STAGE_BUILD_DIR } else { Join-Path $llamaDir "build-stage-abi" }
+$llamaBuildRoot = if ($env:MESH_LLM_LLAMA_BUILD_ROOT) { $env:MESH_LLM_LLAMA_BUILD_ROOT } else { Join-Path $repoRoot ".deps\llama-build" }
+$buildDir = if ($env:LLAMA_STAGE_BUILD_DIR) { $env:LLAMA_STAGE_BUILD_DIR } else { Join-Path $llamaBuildRoot "build-stage-abi" }
 $meshUiDir = Join-Path $repoRoot "crates\mesh-llm-ui"
 $compilerLauncherArgs = @()
 $compilerCacheBin = $null
+$buildProfile = if ($BuildProfile) { $BuildProfile.ToLowerInvariant() } elseif ($env:MESH_LLM_BUILD_PROFILE) { $env:MESH_LLM_BUILD_PROFILE.ToLowerInvariant() } else { "debug" }
 
 function Prepare-Llama {
     $pinFile = Join-Path $repoRoot "third_party\llama.cpp\upstream.txt"
@@ -101,6 +104,59 @@ function Resolve-CommandPath {
     return $null
 }
 
+function Show-LldInstallInstructions {
+    throw @"
+LLVM lld was not found for the Windows MSVC target.
+
+lld is required for faster Rust builds (measured up to 26% faster locally).
+
+Install one of these, then rerun the just command:
+  rustup component add llvm-tools-preview
+
+Or install LLVM lld-link:
+  winget install LLVM.LLVM
+  choco install llvm
+
+The build requires lld. It looks for rust-lld.exe in the active Rust sysroot first, then falls
+back to rust-lld.exe or lld-link.exe on PATH.
+"@
+}
+
+function Resolve-LldLinker {
+    try {
+        $sysroot = (& rustc --print sysroot).Trim()
+        if ($LASTEXITCODE -eq 0 -and $sysroot) {
+            foreach ($target in @("x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc")) {
+                $candidate = Join-Path $sysroot "lib\rustlib\$target\bin\rust-lld.exe"
+                if (Test-Path $candidate) {
+                    return $candidate
+                }
+            }
+        }
+    } catch {
+    }
+
+    foreach ($name in @("rust-lld.exe", "lld-link.exe")) {
+        $command = Resolve-CommandPath $name
+        if ($command) {
+            return $command
+        }
+    }
+
+    return $null
+}
+
+function Configure-LldLinker {
+    $linker = Resolve-LldLinker
+    if (-not $linker) {
+        Show-LldInstallInstructions
+    }
+
+    $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = $linker
+    $env:CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER = $linker
+    Write-Host "Using Rust linker: $linker"
+}
+
 function Configure-CompilerCache {
     $script:compilerCacheBin = Resolve-CommandPath "sccache"
     if (-not $script:compilerCacheBin) {
@@ -169,11 +225,12 @@ function Test-UiBuildRequired {
     $distTimestampUtc = (Get-Item $distDir).LastWriteTimeUtc
     $uiBuildInputs = @(
         (Join-Path $UiDirectory "package.json"),
-        (Join-Path $UiDirectory "package-lock.json"),
+        (Join-Path $UiDirectory "pnpm-lock.yaml"),
         (Join-Path $UiDirectory "vite.config.ts"),
         (Join-Path $UiDirectory "tsconfig.json"),
-        (Join-Path $UiDirectory "postcss.config.cjs"),
-        (Join-Path $UiDirectory "tailwind.config.ts"),
+        (Join-Path $UiDirectory "tsconfig.app.json"),
+        (Join-Path $UiDirectory "tsconfig.node.json"),
+        (Join-Path $UiDirectory "biome.json"),
         (Join-Path $UiDirectory "index.html"),
         (Join-Path $UiDirectory "src"),
         (Join-Path $UiDirectory "public")
@@ -203,7 +260,7 @@ function Test-UiBuildRequired {
     return $false
 }
 
-function Test-NpmInstallRequired {
+function Test-PnpmInstallRequired {
     param(
         [Parameter(Mandatory = $true)]
         [string]$UiDirectory
@@ -215,7 +272,7 @@ function Test-NpmInstallRequired {
     }
 
     $nodeModulesTimestampUtc = (Get-Item $nodeModulesDir).LastWriteTimeUtc
-    foreach ($manifestName in @("package.json", "package-lock.json")) {
+    foreach ($manifestName in @("package.json", "pnpm-lock.yaml")) {
         $manifestPath = Join-Path $UiDirectory $manifestName
         if (-not (Test-Path $manifestPath)) {
             continue
@@ -606,10 +663,11 @@ $CudaArch = Normalize-RecipeArgument $CudaArch @("cuda_arch", "cudaarch")
 $RocmArch = Normalize-RecipeArgument $RocmArch @("rocm_arch", "rocmarch", "amd_arch", "amdarch")
 
 $backendName = Resolve-Backend $Backend
-$buildDir = if ($env:LLAMA_STAGE_BUILD_DIR) { $env:LLAMA_STAGE_BUILD_DIR } else { Join-Path $llamaDir "build-stage-abi-$backendName" }
+$buildDir = if ($env:LLAMA_STAGE_BUILD_DIR) { $env:LLAMA_STAGE_BUILD_DIR } else { Join-Path $llamaBuildRoot "build-stage-abi-$backendName" }
 Write-Host "Using Windows backend: $backendName"
 
 Ensure-MsvcToolchain
+Configure-LldLinker
 Configure-CompilerCache
 
 switch ($backendName) {
@@ -711,10 +769,10 @@ Invoke-InRepo {
             Write-Host "Building mesh-llm UI..."
             Push-Location $meshUiDir
             try {
-                if (Test-NpmInstallRequired -UiDirectory $meshUiDir) {
-                    Invoke-NativeCommand "npm" @("ci")
+                if (Test-PnpmInstallRequired -UiDirectory $meshUiDir) {
+                    Invoke-NativeCommand "pnpm" @("install", "--frozen-lockfile")
                 }
-                Invoke-NativeCommand "npm" @("run", "build")
+                Invoke-NativeCommand "pnpm" @("run", "build")
             } finally {
                 Pop-Location
             }
@@ -725,6 +783,21 @@ Invoke-InRepo {
 
     Write-Host "Building mesh-llm..."
     $env:LLAMA_STAGE_BUILD_DIR = $buildDir
-    Invoke-NativeCommand "cargo" @("build", "--release", "--locked", "-p", "mesh-llm")
-    Write-Host "Mesh binary: target\release\mesh-llm.exe"
+    switch ($buildProfile) {
+        "dev" {
+            Invoke-NativeCommand "cargo" @("build", "-p", "mesh-llm", "--bin", "mesh-llm")
+            Write-Host "Mesh binary: target\debug\mesh-llm.exe"
+        }
+        "debug" {
+            Invoke-NativeCommand "cargo" @("build", "-p", "mesh-llm", "--bin", "mesh-llm")
+            Write-Host "Mesh binary: target\debug\mesh-llm.exe"
+        }
+        "release" {
+            Invoke-NativeCommand "cargo" @("build", "--release", "--locked", "-p", "mesh-llm")
+            Write-Host "Mesh binary: target\release\mesh-llm.exe"
+        }
+        default {
+            throw "Unsupported MESH_LLM_BUILD_PROFILE/BuildProfile '$buildProfile'. Expected debug, dev, or release."
+        }
+    }
 }

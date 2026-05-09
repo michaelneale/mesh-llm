@@ -50,6 +50,20 @@ detect_jobs() {
   fi
 }
 
+required_archives() {
+  printf '%s\n' \
+    "$LLAMA_BUILD_DIR/src/libllama.a" \
+    "$LLAMA_BUILD_DIR/common/libllama-common.a" \
+    "$LLAMA_BUILD_DIR/tools/mtmd/libmtmd.a"
+}
+
+required_archives_exist() {
+  local archive
+  while IFS= read -r archive; do
+    [[ -f "$archive" ]] || return 1
+  done < <(required_archives)
+}
+
 if [[ -z "${LLAMA_BUILD_DIR:-}" ]]; then
   if [[ -n "${LLAMA_STAGE_BUILD_DIR:-}" ]]; then
     LLAMA_BUILD_DIR="$LLAMA_STAGE_BUILD_DIR"
@@ -139,9 +153,39 @@ if [[ "$#" -gt 0 ]]; then
   CMAKE_ARGS+=("$@")
 fi
 
+PATCHED_SHA="$(tr -d '[:space:]' < "$LLAMA_WORKDIR/.mesh-llm-patched-sha" 2>/dev/null || git -C "$LLAMA_WORKDIR" rev-parse HEAD)"
+BUILD_STAMP="$LLAMA_BUILD_DIR/.mesh-llm-build-stamp"
+CURRENT_BUILD_STAMP="$(
+  printf 'stamp-version=1\n'
+  printf 'patched-sha=%s\n' "$PATCHED_SHA"
+  printf 'backend=%s\n' "$LLAMA_BACKEND"
+  printf 'build-type=%s\n' "${CMAKE_BUILD_TYPE:-Release}"
+  printf 'ggml-native=%s\n' "${LLAMA_STAGE_GGML_NATIVE:-${SKIPPY_GGML_NATIVE:-OFF}}"
+  printf 'cuda-architectures=%s\n' "${LLAMA_STAGE_CUDA_ARCHITECTURES:-${SKIPPY_CUDA_ARCHITECTURES:-}}"
+  printf 'amdgpu-targets=%s\n' "${LLAMA_STAGE_AMDGPU_TARGETS:-${SKIPPY_AMDGPU_TARGETS:-}}"
+  printf 'cuda-no-vmm=%s\n' "${GGML_CUDA_NO_VMM:-}"
+  printf 'use-sccache=%s\n' "$USE_SCCACHE"
+  for arg in "${CMAKE_ARGS[@]}"; do
+    printf 'cmake-arg=%s\n' "$arg"
+  done
+)"
+
+if [[ "${LLAMA_STAGE_FORCE_BUILD:-${SKIPPY_FORCE_LLAMA_BUILD:-0}}" != "1" &&
+      -f "$BUILD_STAMP" &&
+      "$(cat "$BUILD_STAMP")" == "$CURRENT_BUILD_STAMP" ]] &&
+   git -C "$LLAMA_WORKDIR" diff-index --quiet HEAD -- &&
+   required_archives_exist; then
+  echo "patched llama.cpp ABI already built"
+  echo "  backend:   $LLAMA_BACKEND"
+  echo "  build dir: $LLAMA_BUILD_DIR"
+  exit 0
+fi
+
 cmake "${CMAKE_ARGS[@]}"
 
 cmake --build "$LLAMA_BUILD_DIR" --config "${CMAKE_BUILD_TYPE:-Release}" --parallel "$(detect_jobs)" --target llama llama-common mtmd
+
+printf '%s\n' "$CURRENT_BUILD_STAMP" > "$BUILD_STAMP"
 
 echo "built patched llama.cpp"
 echo "  backend:   $LLAMA_BACKEND"

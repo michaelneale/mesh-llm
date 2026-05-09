@@ -1,21 +1,20 @@
-import { Sparkles } from "lucide-react";
-import type { ReactNode } from "react";
+import { Sparkles } from 'lucide-react'
+import type { ReactNode } from 'react'
 
-import { Badge } from "../../../../components/ui/badge";
-import { StatusPill } from "./StatusPill";
+import { StatusPill } from '@/features/dashboard/components/details/StatusPill'
 
-export type ModelStatus = "warm" | "cold" | "loading" | string;
+export type ModelStatus = 'warm' | 'cold' | 'loading' | string
 
 interface ModelCardProps {
-  name: string;
-  displayName?: string;
-  subtitle?: ReactNode;
-  sizeGb: number;
-  nodeCount: number;
-  status: ModelStatus;
-  vision?: boolean;
-  reasoning?: boolean;
-  onClick?: () => void;
+  name: string
+  displayName?: string
+  subtitle?: ReactNode
+  sizeGb: number
+  nodeCount: number
+  status: ModelStatus
+  vision?: boolean
+  reasoning?: boolean
+  onClick?: () => void
 }
 
 export function ModelCard({
@@ -27,9 +26,9 @@ export function ModelCard({
   status,
   vision,
   reasoning,
-  onClick,
+  onClick
 }: ModelCardProps) {
-  const displayText = displayName || name;
+  const displayText = displayName || name
 
   return (
     <button
@@ -45,8 +44,16 @@ export function ModelCard({
           <div className="flex flex-wrap items-center gap-2">
             <div className="text-sm font-medium leading-5 [overflow-wrap:anywhere]">{displayText}</div>
             <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
-              {vision && <span role="img" aria-label="Vision">👁</span>}
-              {reasoning && <span role="img" aria-label="Reasoning">🧠</span>}
+              {vision && (
+                <span role="img" aria-label="Vision">
+                  👁
+                </span>
+              )}
+              {reasoning && (
+                <span role="img" aria-label="Reasoning">
+                  🧠
+                </span>
+              )}
             </div>
           </div>
           {subtitle ? (
@@ -57,18 +64,24 @@ export function ModelCard({
         </div>
         <StatusPill
           className="self-start"
-          label={status === "warm" ? "Warm" : status === "cold" ? "Cold" : status}
-          tone={status === "warm" ? "warm" : status === "cold" ? "cold" : "neutral"}
+          label={status === 'warm' ? 'Warm' : status === 'cold' ? 'Cold' : status}
+          tone={status === 'warm' ? 'warm' : status === 'cold' ? 'cold' : 'neutral'}
           dot
         />
       </div>
       <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-        <span>{nodeCount} node{nodeCount === 1 ? "" : "s"}</span>
+        <span>
+          {nodeCount} node{nodeCount === 1 ? '' : 's'}
+        </span>
         <span className="flex items-center gap-2">
-          {vision && <span role="img" aria-label="Vision">👁</span>}
+          {vision && (
+            <span role="img" aria-label="Vision">
+              👁
+            </span>
+          )}
           {sizeGb.toFixed(1)} GB
         </span>
       </div>
     </button>
-  );
+  )
 }

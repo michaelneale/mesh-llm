@@ -1,15 +1,10 @@
 interface BrandIconProps {
-  className?: string;
+  className?: string
 }
 
 export function BrandIcon({ className = 'h-4 w-4' }: BrandIconProps) {
   return (
-    <svg
-      viewBox="0 0 64 64"
-      aria-hidden="true"
-      className={className}
-      xmlns="http://www.w3.org/2000/svg"
-    >
+    <svg viewBox="0 0 64 64" aria-hidden="true" className={className} xmlns="http://www.w3.org/2000/svg">
       <g fill="currentColor">
         <path d="M32 8c-12.8 0-23 8.2-23 18.4 0 3.1.9 5.9 2.6 8.4l.2.3c2.6-2.5 6.9-4 11.8-4h16.8c4.9 0 9.2 1.5 11.8 4l.2-.3c1.7-2.5 2.6-5.3 2.6-8.4C55 16.2 44.8 8 32 8Z" />
         <path d="M11.9 35.8c1.6 2.2 3.6 4.1 6 5.6 2.6 1.6 5.4 2.4 8.3 2.4h11.6c2.9 0 5.8-.8 8.3-2.4 2.4-1.5 4.4-3.4 6-5.6-2.3-2.1-6.4-3.4-10.8-3.4H22.7c-4.4 0-8.5 1.3-10.8 3.4Z" />
@@ -20,7 +15,7 @@ export function BrandIcon({ className = 'h-4 w-4' }: BrandIconProps) {
         <path d="M46.5 38.8c1.3 0 2.3 1 2.3 2.3v8.4c0 1 .4 1.9 1 3 .7 1.4 1.4 2.8 1.4 4.8 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-1.2-.5-2.2-1.1-3.3-.6-1.3-1.3-2.7-1.3-4.5v-8.4c0-1.3 1-2.3 2.3-2.3Z" />
       </g>
     </svg>
-  );
+  )
 }
 
-BrandIcon.displayName = 'BrandIcon';
+BrandIcon.displayName = 'BrandIcon'

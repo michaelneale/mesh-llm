@@ -1,13 +1,13 @@
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../../../components/ui/tabs";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
-type PlaygroundPageProps = Record<string, unknown>;
+type PlaygroundPageProps = Record<string, unknown>
 
-import PlaygroundBaseUI from "./PlaygroundBaseUI";
-import PlaygroundCards from "./PlaygroundCards";
+import PlaygroundBaseUI from '@/features/app-shell/playground/components/PlaygroundBaseUI'
+import PlaygroundCards from '@/features/app-shell/playground/components/PlaygroundCards'
 
 export default function PlaygroundPage(_props: PlaygroundPageProps) {
   if (!import.meta.env.DEV) {
-    return null;
+    return null
   }
 
   return (
@@ -36,16 +36,11 @@ export default function PlaygroundPage(_props: PlaygroundPageProps) {
             <PlaygroundBaseUI />
           </TabsContent>
 
-          <TabsContent
-            value="cards"
-            id="tabpanel-cards"
-            aria-labelledby="tab-cards"
-            className="mt-0 h-full flex-1"
-          >
+          <TabsContent value="cards" id="tabpanel-cards" aria-labelledby="tab-cards" className="mt-0 h-full flex-1">
             <PlaygroundCards />
           </TabsContent>
         </div>
       </Tabs>
     </div>
-  );
+  )
 }

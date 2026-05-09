@@ -1,7 +1,7 @@
-import type { SelfNodeAccentProps } from "../types";
+import type { SelfNodeAccentProps } from '@/features/dashboard/components/topology/types'
 
-import { color } from "../helpers";
-import { SCENE_PALETTES } from "../theme/scene";
+import { color } from '@/features/dashboard/components/topology/helpers'
+import { SCENE_PALETTES } from '@/features/dashboard/components/topology/theme/scene'
 
 export function DarkSelfNodeAccent({ style }: SelfNodeAccentProps) {
   return (
@@ -10,23 +10,20 @@ export function DarkSelfNodeAccent({ style }: SelfNodeAccentProps) {
       style={{
         ...style,
         background:
-          "radial-gradient(circle, rgba(255,255,255,0.18) 0%, rgba(192,132,252,0.14) 18%, rgba(59,130,246,0.08) 42%, transparent 72%)",
-        filter: "blur(10px)",
+          'radial-gradient(circle, rgba(255,255,255,0.18) 0%, rgba(192,132,252,0.14) 18%, rgba(59,130,246,0.08) 42%, transparent 72%)',
+        filter: 'blur(10px)'
       }}
     />
-  );
+  )
 }
 
-export function LightSelfNodeAccent({
-  style,
-  selectedModelMatch,
-}: SelfNodeAccentProps) {
-  const selfNodeColor = SCENE_PALETTES.light.nodes.self;
-  const [lr, lg, lb] = color(selfNodeColor.line, 1).map((v, i) => (i < 3 ? Math.round(v * 255) : v));
-  const [fr, fg, fb] = color(selfNodeColor.fill, 1).map((v, i) => (i < 3 ? Math.round(v * 255) : v));
-  const accentBorder = `rgba(${lr}, ${lg}, ${lb}, ${selectedModelMatch ? 0.44 : 0.34})`;
-  const accentFill = `rgba(${fr}, ${fg}, ${fb}, ${selectedModelMatch ? 0.12 : 0.08})`;
-  const accentInset = `rgba(${fr}, ${fg}, ${fb}, ${selectedModelMatch ? 0.18 : 0.12})`;
+export function LightSelfNodeAccent({ style, selectedModelMatch }: SelfNodeAccentProps) {
+  const selfNodeColor = SCENE_PALETTES.light.nodes.self
+  const [lr, lg, lb] = color(selfNodeColor.line, 1).map((v, i) => (i < 3 ? Math.round(v * 255) : v))
+  const [fr, fg, fb] = color(selfNodeColor.fill, 1).map((v, i) => (i < 3 ? Math.round(v * 255) : v))
+  const accentBorder = `rgba(${lr}, ${lg}, ${lb}, ${selectedModelMatch ? 0.44 : 0.34})`
+  const accentFill = `rgba(${fr}, ${fg}, ${fb}, ${selectedModelMatch ? 0.12 : 0.08})`
+  const accentInset = `rgba(${fr}, ${fg}, ${fb}, ${selectedModelMatch ? 0.18 : 0.12})`
 
   return (
     <div className="pointer-events-none absolute" style={style}>
@@ -35,9 +32,9 @@ export function LightSelfNodeAccent({
         style={{
           background: `linear-gradient(180deg, rgba(255,255,255,0.98), ${accentFill})`,
           border: `1px solid ${accentBorder}`,
-          boxShadow: `inset 0 1px 0 rgba(255,255,255,0.86), inset 0 0 0 1px ${accentInset}, 0 12px 28px rgba(15,23,42,0.12)`,
+          boxShadow: `inset 0 1px 0 rgba(255,255,255,0.86), inset 0 0 0 1px ${accentInset}, 0 12px 28px rgba(15,23,42,0.12)`
         }}
       />
     </div>
-  );
+  )
 }

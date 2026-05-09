@@ -1,7 +1,7 @@
-import { EmptyPanel } from "../details";
+import { EmptyPanel } from '@/features/dashboard/components/details'
 
-import type { MeshTopologyDiagramProps } from "./types";
-import { MeshRadarField } from "./ui/MeshRadarField";
+import type { MeshTopologyDiagramProps } from '@/features/dashboard/components/topology/types'
+import { MeshRadarField } from '@/features/dashboard/components/topology/ui/MeshRadarField'
 
 export function MeshTopologyDiagram({
   status,
@@ -12,13 +12,13 @@ export function MeshTopologyDiagram({
   highlightedNodeId,
   fullscreen,
   heightClass,
-  containerStyle,
+  containerStyle
 }: MeshTopologyDiagramProps) {
   if (!status) {
-    return <EmptyPanel text="No topology data yet." />;
+    return <EmptyPanel text="No topology data yet." />
   }
   if (!nodes.length) {
-    return <EmptyPanel text="No host or worker nodes visible yet." />;
+    return <EmptyPanel text="No host or worker nodes visible yet." />
   }
 
   return (
@@ -33,5 +33,5 @@ export function MeshTopologyDiagram({
       heightClass={heightClass}
       containerStyle={containerStyle}
     />
-  );
+  )
 }

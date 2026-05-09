@@ -40,13 +40,17 @@ jobs:
             .github/cache-version.txt
             ci/requirements-ci-python.txt
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-          cache: npm
+          cache: pnpm
           cache-dependency-path: |
             .github/cache-version.txt
-            crates/mesh-llm-ui/package-lock.json
+            crates/mesh-llm-ui/pnpm-lock.yaml
 
       - name: Install smoke dependencies
         run: |

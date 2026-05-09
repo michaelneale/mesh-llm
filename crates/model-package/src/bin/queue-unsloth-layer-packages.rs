@@ -847,9 +847,19 @@ fn job_spec(
     jobs_client: &HfJobsClient,
     job_plan: &CpuJobPlan,
 ) -> Result<JobSpec> {
+    job_spec_with_token(candidate, args, jobs_client.token(), job_plan)
+}
+
+fn job_spec_with_token(
+    candidate: &Candidate,
+    args: &Args,
+    hf_token: &str,
+    job_plan: &CpuJobPlan,
+) -> Result<JobSpec> {
     let mut environment = HashMap::new();
     environment.insert("SOURCE_REPO".into(), candidate.model.repo_id.clone());
     environment.insert("SOURCE_FILE".into(), candidate.quant.first_file.clone());
+    environment.insert("SOURCE_QUANT".into(), candidate.quant.name.clone());
     environment.insert("TARGET_REPO".into(), candidate.target_repo.clone());
     environment.insert("MODEL_ID".into(), candidate.model_id.clone());
     environment.insert("SOURCE_REVISION".into(), "main".into());
@@ -860,7 +870,7 @@ fn job_spec(
     );
 
     let mut secrets = HashMap::new();
-    secrets.insert("HF_TOKEN".into(), jobs_client.token().to_string());
+    secrets.insert("HF_TOKEN".into(), hf_token.to_string());
 
     Ok(JobSpec {
         docker_image: "ubuntu:22.04".into(),
@@ -870,20 +880,12 @@ fn job_spec(
         secrets,
         flavor: job_plan.flavor.clone(),
         timeout_seconds: job_plan.timeout_seconds,
-        volumes: vec![
-            JobVolume {
-                volume_type: "model".into(),
-                source: candidate.model.repo_id.clone(),
-                mount_path: "/source".into(),
-                read_only: Some(true),
-            },
-            JobVolume {
-                volume_type: "bucket".into(),
-                source: "meshllm/layer-split-output".into(),
-                mount_path: "/bucket".into(),
-                read_only: None,
-            },
-        ],
+        volumes: vec![JobVolume {
+            volume_type: "bucket".into(),
+            source: "meshllm/layer-split-output".into(),
+            mount_path: "/bucket".into(),
+            read_only: None,
+        }],
     })
 }
 
@@ -1081,7 +1083,13 @@ fn parse_duration_seconds(input: &str) -> Result<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::model_family_key;
+    use std::time::Duration;
+
+    use model_package::jobs::CpuJobPlan;
+
+    use super::{
+        job_spec_with_token, model_family_key, Args, Candidate, DiscoveredQuant, RankedModel,
+    };
 
     #[test]
     fn model_family_key_collapses_common_unsloth_families() {
@@ -1107,5 +1115,78 @@ mod tests {
             model_family_key("unsloth/NVIDIA-Nemotron-3-Super-120B-GGUF"),
             "nemotron"
         );
+    }
+
+    #[test]
+    fn job_spec_uses_bucket_cache_without_model_volume() {
+        let candidate = Candidate {
+            model: RankedModel {
+                repo_id: "unsloth/GLM-5-GGUF".to_string(),
+                downloads: 0,
+                likes: 0,
+                recent_rank: None,
+                popular_rank: None,
+            },
+            quant: DiscoveredQuant {
+                name: "UD-Q4_K_XL".to_string(),
+                shard_count: 10,
+                total_bytes: 401,
+                first_file: "UD-Q4_K_XL/GLM-5-UD-Q4_K_XL-00001-of-00010.gguf".to_string(),
+            },
+            target_repo: "meshllm/GLM-5-UD-Q4_K_XL-layers".to_string(),
+            model_id: "unsloth/GLM-5-GGUF:UD-Q4_K_XL".to_string(),
+            family: "glm".to_string(),
+        };
+        let args = Args {
+            author: "unsloth".to_string(),
+            search: "GGUF".to_string(),
+            recent_limit: 1,
+            popular_limit: 1,
+            max_jobs: 1,
+            max_per_family: 1,
+            target_namespace: "meshllm".to_string(),
+            job_namespace: "meshllm".to_string(),
+            flavor: "cpu-upgrade".to_string(),
+            timeout_seconds: 43_200,
+            mesh_llm_ref: "main".to_string(),
+            retry_queued_after: Duration::from_secs(1),
+            split_candidate_vram_bytes: 8,
+            quant_preference: vec!["UD-Q4_K_XL".to_string()],
+            wait_for_jobs: true,
+            job_poll_interval: Duration::from_secs(60),
+            catalog_direct: true,
+            confirm: true,
+            dry_run: false,
+        };
+        let job_plan = CpuJobPlan {
+            flavor: "cpu-upgrade".to_string(),
+            pretty_name: "cpu-upgrade".to_string(),
+            cpu: Some("8 vCPU".to_string()),
+            ram: Some("32 GB".to_string()),
+            unit_cost_usd: 0.0005,
+            unit_label: "minute".to_string(),
+            max_cost_usd: 0.36,
+            timeout_seconds: 43_200,
+            minimum_timeout_seconds: 43_200,
+            requested_timeout_seconds: 43_200,
+            timeout_bumped_to_minimum: false,
+            auto_selected_hardware: true,
+            selection_reason: "test".to_string(),
+            model_size_bytes: 401,
+        };
+
+        let spec = job_spec_with_token(&candidate, &args, "hf_test", &job_plan).unwrap();
+
+        assert_eq!(
+            spec.environment.get("SOURCE_QUANT").map(String::as_str),
+            Some("UD-Q4_K_XL")
+        );
+        assert_eq!(spec.volumes.len(), 1);
+        assert_eq!(spec.volumes[0].volume_type, "bucket");
+        assert_eq!(spec.volumes[0].mount_path, "/bucket");
+        assert!(!spec
+            .volumes
+            .iter()
+            .any(|volume| volume.volume_type == "model"));
     }
 }
