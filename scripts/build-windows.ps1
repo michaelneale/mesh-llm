@@ -10,11 +10,12 @@ $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $scriptDir ".."))
 $llamaDir = if ($env:MESH_LLM_LLAMA_DIR) { $env:MESH_LLM_LLAMA_DIR } else { Join-Path $repoRoot ".deps\llama.cpp" }
-$buildDir = if ($env:LLAMA_STAGE_BUILD_DIR) { $env:LLAMA_STAGE_BUILD_DIR } else { Join-Path $llamaDir "build-stage-abi" }
+$llamaBuildRoot = if ($env:MESH_LLM_LLAMA_BUILD_ROOT) { $env:MESH_LLM_LLAMA_BUILD_ROOT } else { Join-Path $repoRoot ".deps\llama-build" }
+$buildDir = if ($env:LLAMA_STAGE_BUILD_DIR) { $env:LLAMA_STAGE_BUILD_DIR } else { Join-Path $llamaBuildRoot "build-stage-abi" }
 $meshUiDir = Join-Path $repoRoot "crates\mesh-llm-ui"
 $compilerLauncherArgs = @()
 $compilerCacheBin = $null
-$buildProfile = if ($BuildProfile) { $BuildProfile } elseif ($env:MESH_LLM_BUILD_PROFILE) { $env:MESH_LLM_BUILD_PROFILE } else { "debug" }
+$buildProfile = if ($BuildProfile) { $BuildProfile.ToLowerInvariant() } elseif ($env:MESH_LLM_BUILD_PROFILE) { $env:MESH_LLM_BUILD_PROFILE.ToLowerInvariant() } else { "debug" }
 
 function Prepare-Llama {
     $pinFile = Join-Path $repoRoot "third_party\llama.cpp\upstream.txt"
@@ -662,7 +663,7 @@ $CudaArch = Normalize-RecipeArgument $CudaArch @("cuda_arch", "cudaarch")
 $RocmArch = Normalize-RecipeArgument $RocmArch @("rocm_arch", "rocmarch", "amd_arch", "amdarch")
 
 $backendName = Resolve-Backend $Backend
-$buildDir = if ($env:LLAMA_STAGE_BUILD_DIR) { $env:LLAMA_STAGE_BUILD_DIR } else { Join-Path $llamaDir "build-stage-abi-$backendName" }
+$buildDir = if ($env:LLAMA_STAGE_BUILD_DIR) { $env:LLAMA_STAGE_BUILD_DIR } else { Join-Path $llamaBuildRoot "build-stage-abi-$backendName" }
 Write-Host "Using Windows backend: $backendName"
 
 Ensure-MsvcToolchain
@@ -782,14 +783,18 @@ Invoke-InRepo {
 
     Write-Host "Building mesh-llm..."
     $env:LLAMA_STAGE_BUILD_DIR = $buildDir
-    switch ($buildProfile.ToLowerInvariant()) {
+    switch ($buildProfile) {
+        "dev" {
+            Invoke-NativeCommand "cargo" @("build", "-p", "mesh-llm", "--bin", "mesh-llm")
+            Write-Host "Mesh binary: target\debug\mesh-llm.exe"
+        }
+        "debug" {
+            Invoke-NativeCommand "cargo" @("build", "-p", "mesh-llm", "--bin", "mesh-llm")
+            Write-Host "Mesh binary: target\debug\mesh-llm.exe"
+        }
         "release" {
             Invoke-NativeCommand "cargo" @("build", "--release", "--locked", "-p", "mesh-llm")
             Write-Host "Mesh binary: target\release\mesh-llm.exe"
-        }
-        { $_ -eq "debug" -or $_ -eq "dev" } {
-            Invoke-NativeCommand "cargo" @("build", "-p", "mesh-llm", "--bin", "mesh-llm")
-            Write-Host "Mesh binary: target\debug\mesh-llm.exe"
         }
         default {
             throw "Unsupported MESH_LLM_BUILD_PROFILE/BuildProfile '$buildProfile'. Expected debug, dev, or release."

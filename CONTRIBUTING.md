@@ -29,6 +29,19 @@ Build everything (patched llama.cpp, mesh binary, and UI production build):
 just build
 ```
 
+`just build` builds the mesh binary in release mode. For day-to-day iteration
+where the final release link is the slow step, use the debug-profile shortcut:
+
+```bash
+just build-dev
+```
+
+You can also keep the normal recipe shape and select the profile explicitly:
+
+```bash
+MESH_LLM_BUILD_PROFILE=dev just build
+```
+
 On Linux, `just build` auto-detects CUDA vs ROCm vs Vulkan. For NVIDIA, make sure `nvcc` is in your `PATH` first:
 
 ```bash

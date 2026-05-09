@@ -124,6 +124,11 @@ _lld-cargo-config:
 [macos]
 build: build-mac
 
+# Fast local iteration build: patched llama.cpp + UI + debug mesh-llm.
+[macos]
+build-dev:
+    @MESH_LLM_BUILD_PROFILE=dev scripts/build-mac.sh
+
 # Linux overrides:
 #   just build backend=cpu
 #   just build backend=cuda cuda_arch='120;86'
@@ -133,6 +138,11 @@ build: build-mac
 build backend="" cuda_arch="" rocm_arch="":
     @scripts/build-linux.sh --backend "{{ backend }}" --cuda-arch "{{ cuda_arch }}" --rocm-arch "{{ rocm_arch }}"
 
+# Fast local iteration build: patched llama.cpp + UI + debug mesh-llm.
+[linux]
+build-dev backend="" cuda_arch="" rocm_arch="":
+    @MESH_LLM_BUILD_PROFILE=dev scripts/build-linux.sh --backend "{{ backend }}" --cuda-arch "{{ cuda_arch }}" --rocm-arch "{{ rocm_arch }}"
+
 # Windows overrides:
 #   just build backend=cpu
 #   just build backend=cuda cuda_arch='120;86'
@@ -141,6 +151,11 @@ build backend="" cuda_arch="" rocm_arch="":
 [windows]
 build backend="" cuda_arch="" rocm_arch="":
     @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend "{{backend}}" -CudaArch "{{cuda_arch}}" -RocmArch "{{rocm_arch}}"
+
+# Fast local iteration build: patched llama.cpp + UI + debug mesh-llm.
+[windows]
+build-dev backend="" cuda_arch="" rocm_arch="":
+    @powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:MESH_LLM_BUILD_PROFILE='dev'; & './scripts/build-windows.ps1' -Backend '{{backend}}' -CudaArch '{{cuda_arch}}' -RocmArch '{{rocm_arch}}'"
 
 # Build on macOS Apple Silicon (Metal ABI)
 build-mac:
@@ -226,8 +241,8 @@ family-certify *ARGS: _lld-cargo-config
 
 # Run target/draft speculative compatibility checks.
 spec-bench target draft *ARGS: _lld-cargo-config
-    LLAMA_STAGE_BUILD_DIR=".deps/llama.cpp/build-stage-abi-static" cargo build -p llama-spec-bench
-    LLAMA_STAGE_BUILD_DIR=".deps/llama.cpp/build-stage-abi-static" target/debug/llama-spec-bench --target-model-path "{{ target }}" --draft-model-path "{{ draft }}" {{ ARGS }}
+    LLAMA_STAGE_BUILD_DIR=".deps/llama-build/build-stage-abi-static" cargo build -p llama-spec-bench
+    LLAMA_STAGE_BUILD_DIR=".deps/llama-build/build-stage-abi-static" target/debug/llama-spec-bench --target-model-path "{{ target }}" --draft-model-path "{{ draft }}" {{ ARGS }}
 
 # Smoke a standalone skippy OpenAI frontend stage.
 skippy-openai-smoke *ARGS: _lld-cargo-config

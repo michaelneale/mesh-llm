@@ -61,6 +61,26 @@ pub(crate) fn build_hf_api(_progress: bool) -> Result<HFClientSync> {
         .context("Build Hugging Face sync API client")
 }
 
+pub(crate) fn run_hf_sync<T, F>(operation: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T> + Send + 'static,
+{
+    if tokio::runtime::Handle::try_current().is_ok() {
+        std::thread::spawn(operation).join().map_err(|panic| {
+            if let Some(message) = panic.downcast_ref::<&str>() {
+                anyhow::anyhow!("Hugging Face sync task panicked: {message}")
+            } else if let Some(message) = panic.downcast_ref::<String>() {
+                anyhow::anyhow!("Hugging Face sync task panicked: {message}")
+            } else {
+                anyhow::anyhow!("Hugging Face sync task panicked")
+            }
+        })?
+    } else {
+        operation()
+    }
+}
+
 pub(crate) fn build_hf_tokio_api(_progress: bool) -> Result<HFClient> {
     let mut builder = HFClientBuilder::new().cache_dir(huggingface_hub_cache_dir());
     if let Ok(endpoint) = std::env::var("HF_ENDPOINT") {
@@ -136,5 +156,12 @@ mod tests {
         assert_eq!(repo, "Qwen/Qwen3-8B-GGUF");
         assert_eq!(revision.as_deref(), Some("main"));
         assert_eq!(file, "Qwen3-8B-Q4_K_M.gguf");
+    }
+
+    #[tokio::test]
+    async fn run_hf_sync_leaves_tokio_runtime_context() {
+        let saw_runtime = super::run_hf_sync(|| Ok(tokio::runtime::Handle::try_current().is_ok()))
+            .expect("sync operation should run");
+        assert!(!saw_runtime);
     }
 }

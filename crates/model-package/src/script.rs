@@ -139,4 +139,17 @@ mod tests {
         assert!(EMBEDDED_SCRIPT.contains("Package manifest SHA-256"));
         assert!(EMBEDDED_SCRIPT.contains("skippy-model-package validate-package"));
     }
+
+    #[test]
+    fn embedded_script_keeps_large_source_cache_on_bucket_volume() {
+        assert!(EMBEDDED_SCRIPT.contains("SOURCE_QUANT"));
+        assert!(EMBEDDED_SCRIPT.contains(r#"HF_HUB_CACHE="${HF_HUB_CACHE:-${HF_HOME}/hub}""#));
+        assert!(EMBEDDED_SCRIPT.contains(r#"HF_XET_CACHE="${HF_XET_CACHE:-${HF_HOME}/xet}""#));
+        assert!(EMBEDDED_SCRIPT.contains(r#"SOURCE_REF="${SOURCE_REPO}:${SOURCE_QUANT}""#));
+        assert!(EMBEDDED_SCRIPT
+            .contains(r#"SOURCE_REF="${SOURCE_REPO}@${SOURCE_REVISION}:${SOURCE_QUANT}""#));
+        assert!(EMBEDDED_SCRIPT.contains(r#"time $SLICER write-package "$SOURCE_REF""#));
+        assert!(!EMBEDDED_SCRIPT.contains(r#"SOURCE_PATH="/source/${SOURCE_FILE}""#));
+        assert!(!EMBEDDED_SCRIPT.contains(r#"time $SLICER write-package "$SOURCE_PATH""#));
+    }
 }

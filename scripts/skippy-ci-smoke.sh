@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-LLAMA_BUILD_DIR="${LLAMA_STAGE_BUILD_DIR:-.deps/llama.cpp/build-stage-abi-static}"
+LLAMA_BUILD_DIR="${LLAMA_STAGE_BUILD_DIR:-.deps/llama-build/build-stage-abi-static}"
 WORK_DIR="${WORK_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/skippy-ci-smoke}"
 REPORT_DIR="${WORK_DIR}/reports"
 MODEL_DIR="${WORK_DIR}/models"
