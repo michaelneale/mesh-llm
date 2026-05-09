@@ -133,7 +133,7 @@ jobs:
         run: python -m pip install --upgrade "huggingface_hub[cli]"
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev curl jq lsof mold
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev curl jq lsof lld
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -144,7 +144,7 @@ jobs:
           mkdir -p .cargo
           cat > .cargo/config.toml <<'EOF'
           [target.x86_64-unknown-linux-gnu]
-          rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+          rustflags = ["-C", "link-arg=-fuse-ld=lld"]
           EOF
 
       - uses: mozilla-actions/sccache-action@v0.0.9
@@ -336,13 +336,13 @@ jobs:
           python-version: "3.12"
       - uses: dtolnay/rust-toolchain@stable
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y build-essential libdbus-1-dev curl jq lsof mold
+        run: sudo apt-get update && sudo apt-get install -y build-essential libdbus-1-dev curl jq lsof lld
       - name: Configure Linux Rust linker
         run: |
           mkdir -p .cargo
           cat > .cargo/config.toml <<'EOF'
           [target.x86_64-unknown-linux-gnu]
-          rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+          rustflags = ["-C", "link-arg=-fuse-ld=lld"]
           EOF
       - uses: actions/download-artifact@v7
         with:
@@ -383,13 +383,13 @@ jobs:
           java-version: '21'
       - uses: dtolnay/rust-toolchain@stable
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y build-essential libdbus-1-dev curl jq lsof mold
+        run: sudo apt-get update && sudo apt-get install -y build-essential libdbus-1-dev curl jq lsof lld
       - name: Configure Linux Rust linker
         run: |
           mkdir -p .cargo
           cat > .cargo/config.toml <<'EOF'
           [target.x86_64-unknown-linux-gnu]
-          rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+          rustflags = ["-C", "link-arg=-fuse-ld=lld"]
           EOF
       - uses: actions/download-artifact@v7
         with:
@@ -423,26 +423,17 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - name: Install tools
-        run: brew install cmake ninja jq llvm lld
+        run: brew install cmake ninja jq lld
       - name: Configure macOS Rust linker
         run: |
           mkdir -p .cargo
-          llvm_prefix="$(brew --prefix llvm)"
           lld_prefix="$(brew --prefix lld)"
-          mkdir -p "$PWD/.cargo/ld64-lld-bin"
-          cat > "$PWD/.cargo/ld64-lld-bin/ld" <<EOF
-          #!/usr/bin/env bash
-          exec "$lld_prefix/bin/ld64.lld" "\$@"
-          EOF
-          chmod +x "$PWD/.cargo/ld64-lld-bin/ld"
           cat > .cargo/config.toml <<EOF
           [target.aarch64-apple-darwin]
-          linker = "$llvm_prefix/bin/clang"
-          rustflags = ["-C", "link-arg=-B$PWD/.cargo/ld64-lld-bin"]
+          rustflags = ["-C", "link-arg=-fuse-ld=$lld_prefix/bin/ld64.lld"]
 
           [target.x86_64-apple-darwin]
-          linker = "$llvm_prefix/bin/clang"
-          rustflags = ["-C", "link-arg=-B$PWD/.cargo/ld64-lld-bin"]
+          rustflags = ["-C", "link-arg=-fuse-ld=$lld_prefix/bin/ld64.lld"]
           EOF
       - name: Build UI placeholder
         run: mkdir -p crates/mesh-llm-ui/dist && printf '<html></html>' > crates/mesh-llm-ui/dist/index.html
@@ -503,26 +494,17 @@ jobs:
         run: pnpm test
       - uses: dtolnay/rust-toolchain@stable
       - name: Install build dependencies
-        run: brew install cmake ninja jq llvm lld
+        run: brew install cmake ninja jq lld
       - name: Configure macOS Rust linker
         run: |
           mkdir -p .cargo
-          llvm_prefix="$(brew --prefix llvm)"
           lld_prefix="$(brew --prefix lld)"
-          mkdir -p "$PWD/.cargo/ld64-lld-bin"
-          cat > "$PWD/.cargo/ld64-lld-bin/ld" <<EOF
-          #!/usr/bin/env bash
-          exec "$lld_prefix/bin/ld64.lld" "\$@"
-          EOF
-          chmod +x "$PWD/.cargo/ld64-lld-bin/ld"
           cat > .cargo/config.toml <<EOF
           [target.aarch64-apple-darwin]
-          linker = "$llvm_prefix/bin/clang"
-          rustflags = ["-C", "link-arg=-B$PWD/.cargo/ld64-lld-bin"]
+          rustflags = ["-C", "link-arg=-fuse-ld=$lld_prefix/bin/ld64.lld"]
 
           [target.x86_64-apple-darwin]
-          linker = "$llvm_prefix/bin/clang"
-          rustflags = ["-C", "link-arg=-B$PWD/.cargo/ld64-lld-bin"]
+          rustflags = ["-C", "link-arg=-fuse-ld=$lld_prefix/bin/ld64.lld"]
           EOF
       - name: Format check
         run: cargo fmt --all -- --check
@@ -573,7 +555,7 @@ jobs:
         run: |
           for attempt in 1 2 3; do
             apt-get -o Acquire::Retries=5 update &&
-              DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --fix-missing ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential mold &&
+              DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --fix-missing ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential lld &&
               break
             if [ "$attempt" -eq 3 ]; then
               exit 1
@@ -596,7 +578,7 @@ jobs:
           mkdir -p .cargo
           cat > .cargo/config.toml <<'EOF'
           [target.x86_64-unknown-linux-gnu]
-          rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+          rustflags = ["-C", "link-arg=-fuse-ld=lld"]
           EOF
       - uses: taiki-e/install-action@just
       - uses: mozilla-actions/sccache-action@v0.0.9
@@ -648,7 +630,7 @@ jobs:
         run: |
           for attempt in 1 2 3; do
             apt-get -o Acquire::Retries=5 update &&
-              DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --fix-missing ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential mold &&
+              DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --fix-missing ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential lld &&
               break
             if [ "$attempt" -eq 3 ]; then
               exit 1
@@ -671,7 +653,7 @@ jobs:
           mkdir -p .cargo
           cat > .cargo/config.toml <<'EOF'
           [target.x86_64-unknown-linux-gnu]
-          rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+          rustflags = ["-C", "link-arg=-fuse-ld=lld"]
           EOF
       - uses: taiki-e/install-action@just
       - uses: mozilla-actions/sccache-action@v0.0.9
@@ -714,14 +696,14 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Install Vulkan build packages
-        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev glslc libvulkan-dev spirv-headers mold
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev glslc libvulkan-dev spirv-headers lld
       - uses: dtolnay/rust-toolchain@stable
       - name: Configure Linux Rust linker
         run: |
           mkdir -p .cargo
           cat > .cargo/config.toml <<'EOF'
           [target.x86_64-unknown-linux-gnu]
-          rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+          rustflags = ["-C", "link-arg=-fuse-ld=lld"]
           EOF
       - uses: taiki-e/install-action@just
       - uses: mozilla-actions/sccache-action@v0.0.9

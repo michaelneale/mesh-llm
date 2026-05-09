@@ -1,7 +1,8 @@
 param(
     [string]$Backend = "",
     [string]$CudaArch = "",
-    [string]$RocmArch = ""
+    [string]$RocmArch = "",
+    [string]$BuildProfile = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -13,6 +14,7 @@ $buildDir = if ($env:LLAMA_STAGE_BUILD_DIR) { $env:LLAMA_STAGE_BUILD_DIR } else 
 $meshUiDir = Join-Path $repoRoot "crates\mesh-llm-ui"
 $compilerLauncherArgs = @()
 $compilerCacheBin = $null
+$buildProfile = if ($BuildProfile) { $BuildProfile } elseif ($env:MESH_LLM_BUILD_PROFILE) { $env:MESH_LLM_BUILD_PROFILE } else { "debug" }
 
 function Prepare-Llama {
     $pinFile = Join-Path $repoRoot "third_party\llama.cpp\upstream.txt"
@@ -101,9 +103,9 @@ function Resolve-CommandPath {
     return $null
 }
 
-function Show-FastLinkerInstallInstructions {
+function Show-LldInstallInstructions {
     throw @"
-Rust fast linker was not found for the Windows MSVC target.
+LLVM lld was not found for the Windows MSVC target.
 
 Install one of these, then rerun the just command:
   rustup component add llvm-tools-preview
@@ -112,12 +114,12 @@ Or install LLVM lld-link:
   winget install LLVM.LLVM
   choco install llvm
 
-The build looks for rust-lld.exe in the active Rust sysroot first, then falls
+The build requires lld. It looks for rust-lld.exe in the active Rust sysroot first, then falls
 back to rust-lld.exe or lld-link.exe on PATH.
 "@
 }
 
-function Resolve-FastRustLinker {
+function Resolve-LldLinker {
     try {
         $sysroot = (& rustc --print sysroot).Trim()
         if ($LASTEXITCODE -eq 0 -and $sysroot) {
@@ -141,10 +143,10 @@ function Resolve-FastRustLinker {
     return $null
 }
 
-function Configure-FastRustLinker {
-    $linker = Resolve-FastRustLinker
+function Configure-LldLinker {
+    $linker = Resolve-LldLinker
     if (-not $linker) {
-        Show-FastLinkerInstallInstructions
+        Show-LldInstallInstructions
     }
 
     $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = $linker
@@ -662,6 +664,7 @@ $buildDir = if ($env:LLAMA_STAGE_BUILD_DIR) { $env:LLAMA_STAGE_BUILD_DIR } else 
 Write-Host "Using Windows backend: $backendName"
 
 Ensure-MsvcToolchain
+Configure-LldLinker
 Configure-CompilerCache
 
 switch ($backendName) {
@@ -777,7 +780,17 @@ Invoke-InRepo {
 
     Write-Host "Building mesh-llm..."
     $env:LLAMA_STAGE_BUILD_DIR = $buildDir
-    Configure-FastRustLinker
-    Invoke-NativeCommand "cargo" @("build", "--release", "--locked", "-p", "mesh-llm")
-    Write-Host "Mesh binary: target\release\mesh-llm.exe"
+    switch ($buildProfile.ToLowerInvariant()) {
+        "release" {
+            Invoke-NativeCommand "cargo" @("build", "--release", "--locked", "-p", "mesh-llm")
+            Write-Host "Mesh binary: target\release\mesh-llm.exe"
+        }
+        { $_ -eq "debug" -or $_ -eq "dev" } {
+            Invoke-NativeCommand "cargo" @("build", "-p", "mesh-llm", "--bin", "mesh-llm")
+            Write-Host "Mesh binary: target\debug\mesh-llm.exe"
+        }
+        default {
+            throw "Unsupported MESH_LLM_BUILD_PROFILE/BuildProfile '$buildProfile'. Expected debug, dev, or release."
+        }
+    }
 }
