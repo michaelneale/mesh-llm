@@ -1758,6 +1758,9 @@ enum DashboardAction {
     SnapshotUpdated(DashboardSnapshot),
     FocusNextPanel,
     FocusPreviousPanel,
+    EnterFullScreenPanel(DashboardPanel),
+    ExitFullScreenPanel,
+    ToggleFullScreenPanel,
     ToggleEventsFollow,
     StartEventsFilterEdit,
     InsertEventsFilterChar(char),
@@ -1799,6 +1802,7 @@ pub struct DashboardState {
     startup_history: VecDeque<MeshEventState>,
     startup_history_limit: usize,
     panel_focus: DashboardPanel,
+    full_screen_panel: Option<DashboardPanel>,
     panel_layout: DashboardLayoutState,
     panel_view_states: [DashboardPanelViewState; PRETTY_DASHBOARD_PANEL_COUNT],
     events_follow: bool,
@@ -1840,6 +1844,7 @@ impl Default for DashboardState {
             startup_history: VecDeque::new(),
             startup_history_limit: PRETTY_TUI_STARTUP_HISTORY_LIMIT,
             panel_focus: DashboardPanel::Events,
+            full_screen_panel: None,
             panel_layout,
             panel_view_states: [DashboardPanelViewState::default(); PRETTY_DASHBOARD_PANEL_COUNT],
             events_follow: true,
@@ -2066,14 +2071,41 @@ impl DashboardState {
             DashboardAction::SnapshotUpdated(snapshot) => self.apply_snapshot(&snapshot),
             DashboardAction::FocusNextPanel => {
                 self.panel_focus = self.panel_focus.next();
+                if self.full_screen_panel.is_some() {
+                    self.full_screen_panel = Some(self.panel_focus);
+                    self.sync_full_screen_panel_viewport();
+                }
                 if self.panel_focus != DashboardPanel::Events {
                     self.events_filter.editing = false;
                 }
             }
             DashboardAction::FocusPreviousPanel => {
                 self.panel_focus = self.panel_focus.previous();
+                if self.full_screen_panel.is_some() {
+                    self.full_screen_panel = Some(self.panel_focus);
+                    self.sync_full_screen_panel_viewport();
+                }
                 if self.panel_focus != DashboardPanel::Events {
                     self.events_filter.editing = false;
+                }
+            }
+            DashboardAction::EnterFullScreenPanel(panel) => {
+                self.panel_focus = panel;
+                self.full_screen_panel = Some(panel);
+                self.sync_full_screen_panel_viewport();
+                if self.panel_focus != DashboardPanel::Events {
+                    self.events_filter.editing = false;
+                }
+            }
+            DashboardAction::ExitFullScreenPanel => {
+                self.full_screen_panel = None;
+                self.apply_layout(self.panel_layout);
+            }
+            DashboardAction::ToggleFullScreenPanel => {
+                if self.full_screen_panel.is_some() {
+                    self.reduce(DashboardAction::ExitFullScreenPanel);
+                } else {
+                    self.reduce(DashboardAction::EnterFullScreenPanel(self.panel_focus));
                 }
             }
             DashboardAction::ToggleEventsFollow => {
@@ -2082,6 +2114,10 @@ impl DashboardState {
             }
             DashboardAction::StartEventsFilterEdit => {
                 self.panel_focus = DashboardPanel::Events;
+                if self.full_screen_panel.is_some() {
+                    self.full_screen_panel = Some(DashboardPanel::Events);
+                    self.sync_full_screen_panel_viewport();
+                }
                 self.events_filter.editing = true;
                 self.sync_events_panel();
             }
@@ -2150,7 +2186,37 @@ impl DashboardState {
             };
             self.clamp_panel_view(panel);
         }
+        self.sync_full_screen_panel_viewport();
         self.sync_events_panel();
+    }
+
+    fn sync_full_screen_panel_viewport(&mut self) {
+        let Some(panel) = self.full_screen_panel else {
+            return;
+        };
+        let viewport_rows = self.full_screen_panel_viewport_rows(panel);
+        self.panel_view_state_mut(panel).viewport_rows = viewport_rows;
+        self.clamp_panel_view(panel);
+    }
+
+    fn full_screen_panel_viewport_rows(&self, panel: DashboardPanel) -> usize {
+        let Some((columns, rows)) = self.terminal_size else {
+            return self.panel_view_state(panel).viewport_rows.max(1);
+        };
+        let panel_area = Rect::new(0, 0, columns, rows);
+        let inner_rows = usize::from(rows.saturating_sub(2)).max(1);
+        match panel {
+            DashboardPanel::JoinToken => usize::from(join_token_content_width(
+                panel_area,
+                tui_join_token_copy_button_area(panel_area),
+            ))
+            .max(1),
+            DashboardPanel::LlamaCpp | DashboardPanel::Webserver => {
+                inner_rows.saturating_sub(1).max(1)
+            }
+            DashboardPanel::Models => tui_panel_viewport_rows(DashboardPanel::Models, inner_rows),
+            DashboardPanel::Events | DashboardPanel::Requests => inner_rows,
+        }
     }
 
     fn apply_snapshot(&mut self, snapshot: &DashboardSnapshot) {
@@ -3492,6 +3558,10 @@ impl DashboardState {
         let Some((columns, rows)) = self.terminal_size else {
             return false;
         };
+        if self.full_screen_panel == Some(DashboardPanel::JoinToken) {
+            let panel_area = Rect::new(0, 0, columns, rows);
+            return point_in_rect(column, row, tui_join_token_copy_button_area(panel_area));
+        }
         let areas = tui_layout(
             Rect {
                 x: 0,
@@ -3508,6 +3578,9 @@ impl DashboardState {
         let Some((columns, rows)) = self.terminal_size else {
             return false;
         };
+        if self.full_screen_panel == Some(DashboardPanel::JoinToken) {
+            return point_in_rect(column, row, Rect::new(0, 0, columns, rows));
+        }
         let areas = tui_layout(
             Rect {
                 x: 0,
@@ -3541,6 +3614,12 @@ impl DashboardState {
                 self.events_filter.editing = false;
                 TuiControlFlow::Continue
             }
+            TuiEvent::Key(TuiKeyEvent::Escape)
+                if !self.events_filter.editing && self.full_screen_panel.is_some() =>
+            {
+                self.reduce(DashboardAction::ExitFullScreenPanel);
+                TuiControlFlow::Continue
+            }
             TuiEvent::Key(TuiKeyEvent::Interrupt) => {
                 self.mark_runtime_shutting_down();
                 TuiControlFlow::Quit
@@ -3555,6 +3634,12 @@ impl DashboardState {
             }
             TuiEvent::Key(TuiKeyEvent::BackTab) => {
                 self.reduce(DashboardAction::FocusPreviousPanel);
+                TuiControlFlow::Continue
+            }
+            TuiEvent::Key(TuiKeyEvent::Enter) | TuiEvent::Key(TuiKeyEvent::Char('z'))
+                if !self.events_filter.editing =>
+            {
+                self.reduce(DashboardAction::ToggleFullScreenPanel);
                 TuiControlFlow::Continue
             }
             TuiEvent::Key(TuiKeyEvent::Char('/')) if !self.events_filter.editing => {
@@ -4308,6 +4393,11 @@ fn render_tui_frame(frame: &mut Frame, state: &DashboardState) {
         return;
     }
 
+    if let Some(panel) = state.full_screen_panel {
+        render_full_screen_panel(frame, state, panel);
+        return;
+    }
+
     if let Some(logo_area) = areas.logo {
         render_tui_logo(frame, logo_area, true);
     }
@@ -4335,6 +4425,33 @@ fn render_tui_frame(frame: &mut Frame, state: &DashboardState) {
     );
     render_models_panel(frame, state, areas.models.0, areas.models.1);
     render_requests_panel(frame, state, areas.requests.0, areas.requests.1);
+}
+
+fn render_full_screen_panel(frame: &mut Frame, state: &DashboardState, panel: DashboardPanel) {
+    let panel_area = frame.area();
+    if panel_area.width == 0 || panel_area.height == 0 {
+        return;
+    }
+
+    let [title_area, body_area] = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .areas(panel_area);
+
+    match panel {
+        DashboardPanel::JoinToken => render_join_token_panel(
+            frame,
+            state,
+            panel_area,
+            tui_join_token_copy_button_area(panel_area),
+        ),
+        DashboardPanel::Events => render_events_panel(frame, state, title_area, body_area),
+        DashboardPanel::LlamaCpp | DashboardPanel::Webserver => {
+            render_process_table(frame, state, panel, title_area, body_area)
+        }
+        DashboardPanel::Models => render_models_panel(frame, state, title_area, body_area),
+        DashboardPanel::Requests => render_requests_panel(frame, state, title_area, body_area),
+    }
 }
 
 fn render_tui_too_narrow_message(frame: &mut Frame, area: Rect) {
@@ -6445,6 +6562,7 @@ fn render_scrollbar_events_list(frame: &mut Frame, state: &DashboardState, inner
             events: &events,
             empty_message: empty_panel_message(state, DashboardPanel::Events),
             scroll_offset,
+            wrap_lines: state.full_screen_panel == Some(DashboardPanel::Events),
         },
         inner_area,
     );
@@ -6454,6 +6572,7 @@ struct TuiScrollbarEventList<'a> {
     events: &'a [&'a MeshEventState],
     empty_message: &'static str,
     scroll_offset: usize,
+    wrap_lines: bool,
 }
 
 impl Widget for TuiScrollbarEventList<'_> {
@@ -6480,18 +6599,34 @@ impl Widget for TuiScrollbarEventList<'_> {
         let scroll_offset = self
             .scroll_offset
             .min(row_count.saturating_sub(viewport_rows));
-        for (row_index, event) in self
-            .events
-            .iter()
-            .skip(scroll_offset)
-            .take(viewport_rows)
-            .enumerate()
-        {
-            let row_area = single_line_rect(layout.list_area, row_index);
-            if row_area.height == 0 {
-                break;
+        if self.wrap_lines {
+            let mut row_index = 0usize;
+            for event in self.events.iter().skip(scroll_offset) {
+                for line in wrapped_event_lines(event, content_width) {
+                    if row_index >= viewport_rows {
+                        break;
+                    }
+                    Widget::render(line, single_line_rect(layout.list_area, row_index), buf);
+                    row_index = row_index.saturating_add(1);
+                }
+                if row_index >= viewport_rows {
+                    break;
+                }
             }
-            Widget::render(event_line(event, content_width), row_area, buf);
+        } else {
+            for (row_index, event) in self
+                .events
+                .iter()
+                .skip(scroll_offset)
+                .take(viewport_rows)
+                .enumerate()
+            {
+                let row_area = single_line_rect(layout.list_area, row_index);
+                if row_area.height == 0 {
+                    break;
+                }
+                Widget::render(event_line(event, content_width), row_area, buf);
+            }
         }
 
         if let Some(scrollbar_area) = layout.scrollbar_area {
@@ -7227,6 +7362,7 @@ fn dashboard_status_line(state: &DashboardState, width: u16) -> Line<'static> {
     left_spans.push(Span::raw(" "));
     push_status_key_hint(&mut left_spans, "Q", "Quit");
     push_status_key_hint(&mut left_spans, "Tab", "Next");
+    push_status_key_hint(&mut left_spans, "Enter/Z", "Full");
     push_status_key_hint(&mut left_spans, "↑/↓", "Window");
     push_status_key_hint(&mut left_spans, "Shift-Tab", "Prev");
     push_status_key_hint(&mut left_spans, "/", "Filter");
@@ -7352,7 +7488,7 @@ fn format_tui_panel_title(state: &DashboardState, panel: DashboardPanel) -> Stri
     } else {
         ' '
     };
-    match panel {
+    let mut title = match panel {
         DashboardPanel::JoinToken => join_token_panel_left_title(state, focus_marker),
         DashboardPanel::Events => format!(
             "{focus_marker} Mesh Events  follow={}  filter={}",
@@ -7367,7 +7503,11 @@ fn format_tui_panel_title(state: &DashboardState, panel: DashboardPanel) -> Stri
             state.request_window.label(),
             state.request_window.bucket_label()
         ),
+    };
+    if state.full_screen_panel == Some(panel) {
+        title.push_str("  fullscreen  Esc=Back");
     }
+    title
 }
 
 fn panel_title_style(state: &DashboardState, panel: DashboardPanel) -> Style {
@@ -7537,6 +7677,86 @@ fn event_line(event: &MeshEventState, width: usize) -> Line<'static> {
             Style::default().fg(theme.text),
         ),
     ])
+}
+
+fn wrapped_event_lines(event: &MeshEventState, width: usize) -> Vec<Line<'static>> {
+    let theme = tui_theme();
+    let message = sanitize_mesh_event_message(&event.summary);
+    let prefix_width = event
+        .timestamp
+        .chars()
+        .count()
+        .saturating_add(1)
+        .saturating_add(PRETTY_TUI_EVENT_LEVEL_WIDTH)
+        .saturating_add(1);
+    let message_width = width.saturating_sub(prefix_width);
+    if message_width == 0 {
+        return vec![event_line(event, width)];
+    }
+
+    let wrapped_message = wrap_plain_text(&message, message_width);
+    let mut lines = Vec::with_capacity(wrapped_message.len().max(1));
+    for (index, chunk) in wrapped_message.into_iter().enumerate() {
+        if index == 0 {
+            lines.push(Line::from(vec![
+                Span::styled(event.timestamp.clone(), Style::default().fg(theme.dim)),
+                Span::raw(" "),
+                event_severity_badge_span(event),
+                Span::raw(" "),
+                Span::styled(chunk, Style::default().fg(theme.text)),
+            ]));
+        } else {
+            lines.push(Line::from(vec![
+                Span::raw(" ".repeat(prefix_width)),
+                Span::styled(chunk, Style::default().fg(theme.text)),
+            ]));
+        }
+    }
+
+    lines
+}
+
+fn wrap_plain_text(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![String::new()];
+    }
+
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        let word_width = word.chars().count();
+        if word_width > width {
+            if !current.is_empty() {
+                lines.push(std::mem::take(&mut current));
+            }
+            let mut chunk = String::new();
+            for ch in word.chars() {
+                if chunk.chars().count() == width {
+                    lines.push(std::mem::take(&mut chunk));
+                }
+                chunk.push(ch);
+            }
+            if !chunk.is_empty() {
+                current = chunk;
+            }
+        } else if current.is_empty() {
+            current.push_str(word);
+        } else if current.chars().count().saturating_add(1 + word_width) <= width {
+            current.push(' ');
+            current.push_str(word);
+        } else {
+            lines.push(std::mem::take(&mut current));
+            current.push_str(word);
+        }
+    }
+
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
 }
 
 fn sanitize_mesh_event_message(message: &str) -> String {
@@ -8909,6 +9129,36 @@ mod tests {
     }
 
     #[test]
+    fn tui_full_screen_panel_toggles_from_focused_panel_and_restores_layout() {
+        let mut formatter = InteractiveDashboardFormatter::default();
+        formatter.handle_tui_event(TuiEvent::Resize {
+            columns: 120,
+            rows: 30,
+        });
+
+        formatter.handle_tui_event(TuiEvent::Key(TuiKeyEvent::Tab));
+        assert_eq!(formatter.state.panel_focus, DashboardPanel::LlamaCpp);
+
+        formatter.handle_tui_event(TuiEvent::Key(TuiKeyEvent::Enter));
+        assert_eq!(
+            formatter.state.full_screen_panel,
+            Some(DashboardPanel::LlamaCpp)
+        );
+
+        formatter.handle_tui_event(TuiEvent::Key(TuiKeyEvent::Escape));
+        assert_eq!(formatter.state.full_screen_panel, None);
+        assert_eq!(formatter.state.panel_focus, DashboardPanel::LlamaCpp);
+
+        formatter.handle_tui_event(TuiEvent::Key(TuiKeyEvent::Char('z')));
+        assert_eq!(
+            formatter.state.full_screen_panel,
+            Some(DashboardPanel::LlamaCpp)
+        );
+        formatter.handle_tui_event(TuiEvent::Key(TuiKeyEvent::Char('z')));
+        assert_eq!(formatter.state.full_screen_panel, None);
+    }
+
+    #[test]
     fn tui_reducer_filter_is_case_insensitive_substring() {
         let mut fixture = DashboardReducerFixture::default().with_events(vec![
             OutputEvent::DiscoveryJoined {
@@ -9307,6 +9557,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn tui_full_screen_events_wraps_long_log_lines() {
+        let mut formatter = InteractiveDashboardFormatter::default();
+        formatter.handle_tui_event(TuiEvent::Resize {
+            columns: 72,
+            rows: 10,
+        });
+        formatter
+            .handle_output_event(&info_event(
+                "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu unique-wrap-tail",
+            ))
+            .expect("event render should succeed");
+        formatter.handle_tui_event(TuiEvent::Key(TuiKeyEvent::Enter));
+
+        let rendered = render_tui_frame_snapshot(&formatter.state, 72, 10);
+
+        assert!(rendered.contains("fullscreen  Esc=Back"));
+        assert!(rendered.contains("alpha beta gamma"));
+        assert!(
+            rendered.contains("unique-wrap-tail"),
+            "expected full-screen log panel to wrap the long event instead of truncating it: {rendered}"
+        );
+        assert!(!rendered.contains("Loaded Models"));
+        assert!(!rendered.contains("[Tab] Next"));
+    }
+
     fn sample_mesh_event_states(count: usize) -> Vec<MeshEventState> {
         (0..count)
             .map(|index| MeshEventState {
@@ -9333,6 +9609,7 @@ mod tests {
                         events: &event_refs,
                         empty_message: "(waiting for mesh events)",
                         scroll_offset,
+                        wrap_lines: false,
                     },
                     frame.area(),
                 );
@@ -11275,6 +11552,7 @@ mod tests {
             "expected process count in {rendered}"
         );
         assert!(rendered.contains("[Tab]"));
+        assert!(rendered.contains("[Enter/Z]"));
         assert!(rendered.contains("[Shift-Tab]"));
         assert!(rendered.contains("[/]"));
         assert!(rendered.contains("[F]"));
@@ -13276,6 +13554,7 @@ tail line"
         assert!(rendered.contains("RPS "));
         assert!(rendered.contains("READY"));
         assert!(rendered.contains("[Tab] Next"));
+        assert!(rendered.contains("[Enter/Z] Full"));
         assert!(rendered.contains("[Shift-Tab] Prev"));
         assert!(rendered.contains('─'));
         assert!(rendered.contains('│'));

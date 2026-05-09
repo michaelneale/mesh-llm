@@ -84,7 +84,7 @@ Run these manual checks after changes to `runtime/interactive.rs` or `cli/output
 
 | Shell | Setup | Expected result |
 |---|---|---|
-| Plain terminal | `mesh-llm serve --model Qwen2.5-3B` | Dashboard renders, resizes cleanly, `h`/`i`/`q` work, and exit restores the prompt. |
+| Plain terminal | `mesh-llm serve --model Qwen2.5-3B` | Dashboard renders, resizes cleanly, `Tab`/`Shift-Tab` focus panels, `Enter` or `z` opens the focused panel full screen, `Esc` or `z` returns to the multi-panel view, `h`/`i`/`q` work, and exit restores the prompt. |
 | Piped stdin | `true | mesh-llm serve --model Qwen2.5-3B` | No line reader is spawned; pretty output stays line-oriented. |
 | Unsupported terminal | `TERM=dumb mesh-llm serve --model Qwen2.5-3B` | Dashboard is disabled and pretty output uses fallback lines. |
 | tmux, mouse off | `tmux new 'mesh-llm serve --model Qwen2.5-3B'` | Dashboard renders and exits cleanly; keyboard navigation works. |
@@ -95,6 +95,7 @@ Run these manual checks after changes to `runtime/interactive.rs` or `cli/output
 For terminal restoration QA:
 
 - Resize during startup, after llama-server readiness, and while the dashboard has focus on different panels.
+- Open the mesh events/log panel full screen and verify long log lines wrap within the panel.
 - Detach and reattach tmux/screen while the dashboard is active.
 - Click dashboard panels and use the mouse wheel in terminal, tmux, and screen.
 - Press `q` and `Ctrl+C`; the cursor should be visible and the shell prompt should not remain in raw mode.
