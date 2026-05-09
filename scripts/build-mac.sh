@@ -7,6 +7,7 @@ SCRIPT_DIR="${0:A:h}"
 REPO_ROOT="${SCRIPT_DIR:h}"
 
 LLAMA_DIR="${MESH_LLM_LLAMA_DIR:-$REPO_ROOT/.deps/llama.cpp}"
+LLAMA_BUILD_ROOT="${MESH_LLM_LLAMA_BUILD_ROOT:-$REPO_ROOT/.deps/llama-build}"
 MESH_DIR="$REPO_ROOT/crates/mesh-llm"
 UI_DIR="$REPO_ROOT/crates/mesh-llm-ui"
 
@@ -19,7 +20,7 @@ configure_rust_cache() {
     fi
 }
 
-export LLAMA_STAGE_BUILD_DIR="${LLAMA_STAGE_BUILD_DIR:-${SKIPPY_LLAMA_BUILD_DIR:-$LLAMA_DIR/build-stage-abi-metal}}"
+export LLAMA_STAGE_BUILD_DIR="${LLAMA_STAGE_BUILD_DIR:-${SKIPPY_LLAMA_BUILD_DIR:-$LLAMA_BUILD_ROOT/build-stage-abi-metal}}"
 
 echo "Preparing patched llama.cpp ABI checkout..."
 LLAMA_WORKDIR="$LLAMA_DIR" "$SCRIPT_DIR/prepare-llama.sh" "${MESH_LLM_LLAMA_PIN_SHA:-pinned}"

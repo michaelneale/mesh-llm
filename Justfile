@@ -114,8 +114,8 @@ family-certify *ARGS:
 
 # Run target/draft speculative compatibility checks.
 spec-bench target draft *ARGS:
-    LLAMA_STAGE_BUILD_DIR=".deps/llama.cpp/build-stage-abi-static" cargo build -p llama-spec-bench
-    LLAMA_STAGE_BUILD_DIR=".deps/llama.cpp/build-stage-abi-static" target/debug/llama-spec-bench --target-model-path "{{ target }}" --draft-model-path "{{ draft }}" {{ ARGS }}
+    LLAMA_STAGE_BUILD_DIR=".deps/llama-build/build-stage-abi-static" cargo build -p llama-spec-bench
+    LLAMA_STAGE_BUILD_DIR=".deps/llama-build/build-stage-abi-static" target/debug/llama-spec-bench --target-model-path "{{ target }}" --draft-model-path "{{ draft }}" {{ ARGS }}
 
 # Smoke a standalone skippy OpenAI frontend stage.
 skippy-openai-smoke *ARGS:

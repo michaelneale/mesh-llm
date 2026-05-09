@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 LLAMA_DIR="${MESH_LLM_LLAMA_DIR:-$REPO_ROOT/.deps/llama.cpp}"
+LLAMA_BUILD_ROOT="${MESH_LLM_LLAMA_BUILD_ROOT:-$REPO_ROOT/.deps/llama-build}"
 UI_DIR="$REPO_ROOT/crates/mesh-llm-ui"
 
 os_name="$(uname -s)"
@@ -27,9 +28,9 @@ if [[ -z "${LLAMA_STAGE_BUILD_DIR:-}" && -n "${SKIPPY_LLAMA_BUILD_DIR:-}" ]]; th
 fi
 if [[ -z "${LLAMA_STAGE_BUILD_DIR:-}" ]]; then
     if [[ "$BACKEND" == "cpu" ]]; then
-        export LLAMA_STAGE_BUILD_DIR="$LLAMA_DIR/build-stage-abi-static"
+        export LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_ROOT/build-stage-abi-static"
     else
-        export LLAMA_STAGE_BUILD_DIR="$LLAMA_DIR/build-stage-abi-$BACKEND"
+        export LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_ROOT/build-stage-abi-$BACKEND"
     fi
 fi
 
