@@ -46,4 +46,4 @@ echo "Building UI..."
 "$SCRIPT_DIR/build-ui.sh" "$UI_DIR"
 
 echo "Building mesh-llm..."
-(cd "$REPO_ROOT" && cargo build --release --locked -p mesh-llm)
+(cd "$REPO_ROOT" && "$SCRIPT_DIR/with-fast-rust-linker.sh" cargo build --release --locked -p mesh-llm)

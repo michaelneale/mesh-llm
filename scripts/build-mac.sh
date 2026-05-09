@@ -37,9 +37,9 @@ if [[ -d "$MESH_DIR" ]]; then
 
     configure_rust_cache
     if [[ -n "$rustc_wrapper" ]]; then
-        (cd "$REPO_ROOT" && RUSTC_WRAPPER="$rustc_wrapper" cargo build --release -p mesh-llm)
+        (cd "$REPO_ROOT" && RUSTC_WRAPPER="$rustc_wrapper" "$SCRIPT_DIR/with-fast-rust-linker.sh" cargo build --release -p mesh-llm)
     else
-        (cd "$REPO_ROOT" && cargo build --release -p mesh-llm)
+        (cd "$REPO_ROOT" && "$SCRIPT_DIR/with-fast-rust-linker.sh" cargo build --release -p mesh-llm)
     fi
 
     echo "Mesh binary: target/release/mesh-llm"

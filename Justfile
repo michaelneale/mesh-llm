@@ -13,9 +13,24 @@ hf_home := env("HF_HOME", xdg_cache_dir / "huggingface")
 models_dir := env("HF_HUB_CACHE", hf_home / "hub")
 model := models_dir / "GLM-4.7-Flash-Q4_K_M.gguf"
 
+[private]
+[linux]
+_fast-rust-linker:
+    @scripts/with-fast-rust-linker.sh
+
+[private]
+[macos]
+_fast-rust-linker:
+    @scripts/with-fast-rust-linker.sh
+
+[private]
+[windows]
+_fast-rust-linker:
+    @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/with-fast-rust-linker.ps1
+
 # Build for the current platform (macOS Metal ABI, Linux/Windows auto ABI backend)
 [macos]
-build: build-mac
+build: _fast-rust-linker build-mac
 
 # Linux overrides:
 #   just build backend=cpu
@@ -23,7 +38,7 @@ build: build-mac
 #   just build backend=rocm rocm_arch='gfx942;gfx90a'
 #   just build backend=vulkan
 [linux]
-build backend="" cuda_arch="" rocm_arch="":
+build backend="" cuda_arch="" rocm_arch="": _fast-rust-linker
     @scripts/build-linux.sh --backend "{{ backend }}" --cuda-arch "{{ cuda_arch }}" --rocm-arch "{{ rocm_arch }}"
 
 # Windows overrides:
@@ -32,30 +47,30 @@ build backend="" cuda_arch="" rocm_arch="":
 #   just build backend=rocm rocm_arch='gfx942;gfx90a'
 #   just build backend=vulkan
 [windows]
-build backend="" cuda_arch="" rocm_arch="":
+build backend="" cuda_arch="" rocm_arch="": _fast-rust-linker
     @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend "{{backend}}" -CudaArch "{{cuda_arch}}" -RocmArch "{{rocm_arch}}"
 
 # Build on macOS Apple Silicon (Metal ABI)
-build-mac:
+build-mac: _fast-rust-linker
     @scripts/build-mac.sh
 
 # Build patched llama.cpp ABI and mesh-llm on Linux
-build-linux backend="" cuda_arch="" rocm_arch="":
+build-linux backend="" cuda_arch="" rocm_arch="": _fast-rust-linker
     @scripts/build-linux.sh --backend "{{ backend }}" --cuda-arch "{{ cuda_arch }}" --rocm-arch "{{ rocm_arch }}"
 
 # Build patched llama.cpp ABI and mesh-llm on Linux without rebuilding the UI.
 [linux]
-build-runtime backend="" cuda_arch="" rocm_arch="":
+build-runtime backend="" cuda_arch="" rocm_arch="": _fast-rust-linker
     @scripts/build-linux.sh --skip-ui --backend "{{ backend }}" --cuda-arch "{{ cuda_arch }}" --rocm-arch "{{ rocm_arch }}"
 
 # Build release artifacts for the current platform.
 
 # GitHub release builds use embedded ABI libraries.
-release-build:
+release-build: _fast-rust-linker
     @scripts/build-release.sh
 
 # Build a Linux ARM64 CPU release artifact on a native ARM64 runner.
-release-build-arm64:
+release-build-arm64: _fast-rust-linker
     @scripts/build-release.sh
 
 # Prepare the pinned llama.cpp checkout and apply the Mesh-LLM ABI patch queue.
@@ -70,56 +85,61 @@ llama-prepare-latest:
 llama-build: llama-prepare
     @scripts/build-llama.sh
 
-release-build-windows:
+release-build-windows: _fast-rust-linker
     @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend cpu
 
 # Build a Linux CUDA release artifact (primary / R535-compatible lane).
-release-build-cuda cuda_arch="75;80;86;87;89;90":
+release-build-cuda cuda_arch="75;80;86;87;89;90": _fast-rust-linker
     @scripts/build-linux.sh --backend cuda --cuda-arch "{{ cuda_arch }}"
 
-release-build-cuda-blackwell cuda_arch="75;80;86;87;89;90;100;120":
+release-build-cuda-blackwell cuda_arch="75;80;86;87;89;90;100;120": _fast-rust-linker
     @scripts/build-linux.sh --backend cuda --cuda-arch "{{ cuda_arch }}"
 
-release-build-cuda-windows cuda_arch="75;80;86;87;89;90":
+release-build-cuda-windows cuda_arch="75;80;86;87;89;90": _fast-rust-linker
     @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend cuda -CudaArch "{{cuda_arch}}"
 
-release-build-cuda-blackwell-windows cuda_arch="75;80;86;87;89;90;100;120":
+release-build-cuda-blackwell-windows cuda_arch="75;80;86;87;89;90;100;120": _fast-rust-linker
     @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend cuda -CudaArch "{{cuda_arch}}"
 
 # Build a Linux ROCm ABI release artifact with an explicit architecture list.
-release-build-rocm rocm_arch="gfx90a;gfx942;gfx1100;gfx1101;gfx1102;gfx1200;gfx1201":
+release-build-rocm rocm_arch="gfx90a;gfx942;gfx1100;gfx1101;gfx1102;gfx1200;gfx1201": _fast-rust-linker
     @scripts/build-linux-rocm.sh "{{ rocm_arch }}"
 
-release-build-rocm-windows rocm_arch="gfx90a;gfx942;gfx1100;gfx1101;gfx1102;gfx1200;gfx1201":
+release-build-rocm-windows rocm_arch="gfx90a;gfx942;gfx1100;gfx1101;gfx1102;gfx1200;gfx1201": _fast-rust-linker
     @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend rocm -RocmArch "{{rocm_arch}}"
 
 # Build a Linux Vulkan ABI release artifact.
-release-build-vulkan:
+release-build-vulkan: _fast-rust-linker
     @scripts/build-linux.sh --backend vulkan
 
-release-build-vulkan-windows:
+release-build-vulkan-windows: _fast-rust-linker
     @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend vulkan
 
 # Build the skippy benchmark/debug telemetry collector.
-metrics-server-build:
-    cargo build -p metrics-server
+[unix]
+metrics-server-build: _fast-rust-linker
+    scripts/with-fast-rust-linker.sh cargo build -p metrics-server
+
+[windows]
+metrics-server-build: _fast-rust-linker
+    @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/with-fast-rust-linker.ps1 cargo build -p metrics-server
 
 # Generate a reproducible benchmark corpus for skippy bench tooling.
 bench-corpus tier="smoke" *ARGS:
     scripts/generate-bench-corpus.py "{{ tier }}" {{ ARGS }}
 
 # Run skippy family certification checks.
-family-certify *ARGS:
-    scripts/family-certify.sh {{ ARGS }}
+family-certify *ARGS: _fast-rust-linker
+    scripts/with-fast-rust-linker.sh scripts/family-certify.sh {{ ARGS }}
 
 # Run target/draft speculative compatibility checks.
-spec-bench target draft *ARGS:
-    LLAMA_STAGE_BUILD_DIR=".deps/llama.cpp/build-stage-abi-static" cargo build -p llama-spec-bench
+spec-bench target draft *ARGS: _fast-rust-linker
+    LLAMA_STAGE_BUILD_DIR=".deps/llama.cpp/build-stage-abi-static" scripts/with-fast-rust-linker.sh cargo build -p llama-spec-bench
     LLAMA_STAGE_BUILD_DIR=".deps/llama.cpp/build-stage-abi-static" target/debug/llama-spec-bench --target-model-path "{{ target }}" --draft-model-path "{{ draft }}" {{ ARGS }}
 
 # Smoke a standalone skippy OpenAI frontend stage.
-skippy-openai-smoke *ARGS:
-    scripts/skippy-openai-smoke.sh {{ ARGS }}
+skippy-openai-smoke *ARGS: _fast-rust-linker
+    scripts/with-fast-rust-linker.sh scripts/skippy-openai-smoke.sh {{ ARGS }}
 
 # Run the skippy benchmark/debug telemetry collector.
 metrics-server db="/tmp/mesh-metrics.duckdb" http_addr="127.0.0.1:18080" otlp_addr="127.0.0.1:14317" *ARGS: metrics-server-build
@@ -196,12 +216,12 @@ release-bundle-arm64 version output="dist":
 
 # Run repo-level release-target consistency checks.
 [unix]
-check-release:
-    cargo run -p xtask -- repo-consistency release-targets
+check-release: _fast-rust-linker
+    scripts/with-fast-rust-linker.sh cargo run -p xtask -- repo-consistency release-targets
 
 [windows]
-check-release:
-    cargo run -p xtask -- repo-consistency release-targets
+check-release: _fast-rust-linker
+    @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/with-fast-rust-linker.ps1 cargo run -p xtask -- repo-consistency release-targets
 
 release-bundle-windows version output="dist":
     @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Version "{{version}}" -OutputDir "{{output}}"
@@ -297,7 +317,7 @@ ui-test:
 # ── Full Validation Gate ───────────────────────────────────────
 
 # Run all checks: Rust tests, fmt, clippy, ESLint, Prettier, E2E smoke.
-test-all:
+test-all: _fast-rust-linker
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -315,10 +335,10 @@ test-all:
     cargo fmt --all -- --check
     echo ""
     echo "=== 2/7 Clippy ==="
-    cargo clippy -p mesh-llm -- -D warnings
+    scripts/with-fast-rust-linker.sh cargo clippy -p mesh-llm -- -D warnings
     echo ""
     echo "=== 3/7 Rust tests ==="
-    cargo test -p mesh-llm
+    scripts/with-fast-rust-linker.sh cargo test -p mesh-llm
     echo ""
     echo "=== 4/7 ESLint + Prettier ==="
     (cd "{{ ui_dir }}" && pnpm run lint)
