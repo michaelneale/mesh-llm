@@ -493,6 +493,15 @@ fn download_hf_assets_blocking(
     assets: Vec<HfAsset>,
     progress: bool,
 ) -> Result<Vec<PathBuf>> {
+    let label = label.to_string();
+    super::run_hf_sync(move || download_hf_assets_sync(&label, assets, progress))
+}
+
+fn download_hf_assets_sync(
+    label: &str,
+    assets: Vec<HfAsset>,
+    progress: bool,
+) -> Result<Vec<PathBuf>> {
     let api = super::build_hf_api(false)?;
     let mut download_plan = initial_download_plan_for_assets(assets)?;
     let current_plan: Vec<(bool, HfAsset)> = download_plan.iter().cloned().collect();

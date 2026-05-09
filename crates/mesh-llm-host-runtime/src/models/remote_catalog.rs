@@ -144,6 +144,10 @@ pub fn is_catalog_stale() -> bool {
 /// every `entries/**/*.json` file. No hardcoded file list — new models added to the
 /// catalog are discovered automatically.
 pub fn refresh_catalog() -> Result<()> {
+    super::run_hf_sync(refresh_catalog_sync)
+}
+
+fn refresh_catalog_sync() -> Result<()> {
     let api = super::build_hf_api(false)?;
     let dataset = api.dataset("meshllm", "catalog");
 
@@ -360,24 +364,25 @@ fn hf_model_repo_has_file(repo: &str, revision: &str, file: &str) -> Result<bool
         }
     }
 
-    let api = super::build_hf_api(false)?;
-    let (owner, name) = repo.split_once('/').unwrap_or(("", repo));
-    let info = api
-        .model(owner, name)
-        .info(
-            &RepoInfoParams::builder()
-                .revision(revision.to_string())
-                .build(),
-        )
-        .with_context(|| format!("fetch Hugging Face model repo {repo}@{revision}"))?;
-    let RepoInfo::Model(detail) = info else {
-        bail!("expected Hugging Face model repo info for {repo}@{revision}");
-    };
-    Ok(detail
-        .siblings
-        .unwrap_or_default()
-        .iter()
-        .any(|sibling| sibling.rfilename == file))
+    let repo = repo.to_string();
+    let revision = revision.to_string();
+    let file = file.to_string();
+    super::run_hf_sync(move || {
+        let api = super::build_hf_api(false)?;
+        let (owner, name) = repo.split_once('/').unwrap_or(("", repo.as_str()));
+        let info = api
+            .model(owner, name)
+            .info(&RepoInfoParams::builder().revision(revision.clone()).build())
+            .with_context(|| format!("fetch Hugging Face model repo {repo}@{revision}"))?;
+        let RepoInfo::Model(detail) = info else {
+            bail!("expected Hugging Face model repo info for {repo}@{revision}");
+        };
+        Ok(detail
+            .siblings
+            .unwrap_or_default()
+            .iter()
+            .any(|sibling| sibling.rfilename == file))
+    })
 }
 
 /// A resolved model download reference from the remote catalog.

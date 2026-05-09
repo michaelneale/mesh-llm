@@ -1,4 +1,4 @@
-use super::{build_hf_api, huggingface_hub_cache_dir, short_revision};
+use super::{build_hf_api, huggingface_hub_cache_dir, run_hf_sync, short_revision};
 use crate::cli::terminal_progress::{clear_stderr_line, DeterminateProgressLine};
 use anyhow::{Context, Result};
 use hf_hub::{RepoDownloadFileParams, RepoInfo, RepoInfoParams, RepoType};
@@ -18,6 +18,11 @@ struct UpdateCounts {
 }
 
 pub fn run_update(repo: Option<&str>, all: bool, check: bool) -> Result<()> {
+    let repo = repo.map(ToOwned::to_owned);
+    run_hf_sync(move || run_update_sync(repo.as_deref(), all, check))
+}
+
+fn run_update_sync(repo: Option<&str>, all: bool, check: bool) -> Result<()> {
     let api = build_hf_api(!check)?;
     let repos = cached_repos()?;
     if repos.is_empty() {
@@ -124,30 +129,30 @@ pub fn warn_about_updates_for_paths(paths: &[PathBuf]) {
         return;
     }
 
-    let api = match build_hf_api(false) {
-        Ok(api) => api,
-        Err(err) => {
-            eprintln!("Warning: could not initialize Hugging Face update checks: {err}");
-            return;
-        }
-    };
-    for repo in cache_models {
-        match check_repo_update(&api, &repo) {
-            Ok(Some(remote_revision)) => {
-                eprintln!("🆕 Update available for {}", repo.repo_id);
-                eprintln!("   local: {}", short_revision(&repo.local_revision));
-                eprintln!("   latest: {}", short_revision(&remote_revision));
-                eprintln!("   continuing with pinned local snapshot");
-                eprintln!("   update: mesh-llm models updates {}", repo.repo_id);
-            }
-            Ok(None) => {}
-            Err(err) => {
-                eprintln!(
-                    "Warning: could not check for updates for {}: {err}",
-                    repo.repo_id
-                );
+    let result = run_hf_sync(move || {
+        let api = build_hf_api(false)?;
+        for repo in cache_models {
+            match check_repo_update(&api, &repo) {
+                Ok(Some(remote_revision)) => {
+                    eprintln!("🆕 Update available for {}", repo.repo_id);
+                    eprintln!("   local: {}", short_revision(&repo.local_revision));
+                    eprintln!("   latest: {}", short_revision(&remote_revision));
+                    eprintln!("   continuing with pinned local snapshot");
+                    eprintln!("   update: mesh-llm models updates {}", repo.repo_id);
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    eprintln!(
+                        "Warning: could not check for updates for {}: {err}",
+                        repo.repo_id
+                    );
+                }
             }
         }
+        Ok(())
+    });
+    if let Err(err) = result {
+        eprintln!("Warning: could not initialize Hugging Face update checks: {err}");
     }
 }
 
