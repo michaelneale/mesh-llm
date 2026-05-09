@@ -65,11 +65,14 @@ if [[ -n "${SKIPPY_CORRECTNESS_MODEL:-}" ]]; then
 else
   correctness_checked=" "
 fi
-if [[ -n "${SKIPPY_CI_SMOKE:-}" ]]; then
+case "${SKIPPY_CI_SMOKE:-}" in
+  1 | true | TRUE | yes | YES | on | ON)
   smoke_checked="x"
-else
+    ;;
+  *)
   smoke_checked=" "
-fi
+    ;;
+esac
 
 cat <<EOF
 ## llama.cpp Upstream Pin Update

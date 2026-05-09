@@ -16,6 +16,7 @@ jobs:
   latest-upstream:
     runs-on: ubuntu-latest
     env:
+      LLAMA_UPSTREAM_CANARY_SMOKE: ${{ vars.LLAMA_UPSTREAM_CANARY_SMOKE || '1' }}
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: "sccache"
     steps:
@@ -60,7 +61,7 @@ jobs:
         run: cargo check -p skippy-ffi -p skippy-runtime -p skippy-server -p skippy-model-package -p skippy-correctness -p llama-spec-bench
 
       - name: Skippy smoke tests
-        if: steps.sha.outputs.changed == 'true'
+        if: steps.sha.outputs.changed == 'true' && env.LLAMA_UPSTREAM_CANARY_SMOKE != '0' && env.LLAMA_UPSTREAM_CANARY_SMOKE != 'false'
         timeout-minutes: 45
         env:
           WORK_DIR: ${{ runner.temp }}/skippy-ci-smoke
@@ -73,7 +74,7 @@ jobs:
       - name: Generate summary
         if: steps.sha.outputs.changed == 'true'
         env:
-          SKIPPY_CI_SMOKE: "1"
+          SKIPPY_CI_SMOKE: ${{ env.LLAMA_UPSTREAM_CANARY_SMOKE }}
         run: |
           scripts/summarize-llama-upstream.sh \
             "${{ steps.sha.outputs.old_sha }}" \
