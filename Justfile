@@ -17,6 +17,11 @@ model := models_dir / "GLM-4.7-Flash-Q4_K_M.gguf"
 [macos]
 build: build-mac
 
+# Fast local iteration build: patched llama.cpp + UI + debug mesh-llm.
+[macos]
+build-dev:
+    @MESH_LLM_BUILD_PROFILE=dev scripts/build-mac.sh
+
 # Linux overrides:
 #   just build backend=cpu
 #   just build backend=cuda cuda_arch='120;86'
@@ -26,6 +31,11 @@ build: build-mac
 build backend="" cuda_arch="" rocm_arch="":
     @scripts/build-linux.sh --backend "{{ backend }}" --cuda-arch "{{ cuda_arch }}" --rocm-arch "{{ rocm_arch }}"
 
+# Fast local iteration build: patched llama.cpp + UI + debug mesh-llm.
+[linux]
+build-dev backend="" cuda_arch="" rocm_arch="":
+    @MESH_LLM_BUILD_PROFILE=dev scripts/build-linux.sh --backend "{{ backend }}" --cuda-arch "{{ cuda_arch }}" --rocm-arch "{{ rocm_arch }}"
+
 # Windows overrides:
 #   just build backend=cpu
 #   just build backend=cuda cuda_arch='120;86'
@@ -34,6 +44,11 @@ build backend="" cuda_arch="" rocm_arch="":
 [windows]
 build backend="" cuda_arch="" rocm_arch="":
     @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend "{{backend}}" -CudaArch "{{cuda_arch}}" -RocmArch "{{rocm_arch}}"
+
+# Fast local iteration build: patched llama.cpp + UI + debug mesh-llm.
+[windows]
+build-dev backend="" cuda_arch="" rocm_arch="":
+    @powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:MESH_LLM_BUILD_PROFILE='dev'; & './scripts/build-windows.ps1' -Backend '{{backend}}' -CudaArch '{{cuda_arch}}' -RocmArch '{{rocm_arch}}'"
 
 # Build on macOS Apple Silicon (Metal ABI)
 build-mac:

@@ -12,6 +12,7 @@ $llamaDir = if ($env:MESH_LLM_LLAMA_DIR) { $env:MESH_LLM_LLAMA_DIR } else { Join
 $llamaBuildRoot = if ($env:MESH_LLM_LLAMA_BUILD_ROOT) { $env:MESH_LLM_LLAMA_BUILD_ROOT } else { Join-Path $repoRoot ".deps\llama-build" }
 $buildDir = if ($env:LLAMA_STAGE_BUILD_DIR) { $env:LLAMA_STAGE_BUILD_DIR } else { Join-Path $llamaBuildRoot "build-stage-abi" }
 $meshUiDir = Join-Path $repoRoot "crates\mesh-llm-ui"
+$buildProfile = if ($env:MESH_LLM_BUILD_PROFILE) { $env:MESH_LLM_BUILD_PROFILE.ToLowerInvariant() } else { "release" }
 $compilerLauncherArgs = @()
 $compilerCacheBin = $null
 
@@ -727,6 +728,21 @@ Invoke-InRepo {
 
     Write-Host "Building mesh-llm..."
     $env:LLAMA_STAGE_BUILD_DIR = $buildDir
-    Invoke-NativeCommand "cargo" @("build", "--release", "--locked", "-p", "mesh-llm")
-    Write-Host "Mesh binary: target\release\mesh-llm.exe"
+    switch ($buildProfile) {
+        "dev" {
+            Invoke-NativeCommand "cargo" @("build", "-p", "mesh-llm", "--bin", "mesh-llm")
+            Write-Host "Mesh binary: target\debug\mesh-llm.exe"
+        }
+        "debug" {
+            Invoke-NativeCommand "cargo" @("build", "-p", "mesh-llm", "--bin", "mesh-llm")
+            Write-Host "Mesh binary: target\debug\mesh-llm.exe"
+        }
+        "release" {
+            Invoke-NativeCommand "cargo" @("build", "--release", "--locked", "-p", "mesh-llm")
+            Write-Host "Mesh binary: target\release\mesh-llm.exe"
+        }
+        default {
+            throw "Unsupported MESH_LLM_BUILD_PROFILE: $buildProfile (expected dev, debug, or release)"
+        }
+    }
 }
