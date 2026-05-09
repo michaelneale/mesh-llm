@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 pub const UBUNTU_JOB_IMAGE: &str = "ubuntu:22.04";
-pub const DEFAULT_HF_JOBS_IMAGE: &str = "ghcr.io/mesh-llm/mesh-llm-hf-jobs:main";
+pub const DEFAULT_HF_JOBS_IMAGE: &str = "ghcr.io/mesh-llm/mesh-llm-hf-jobs:latest";
 
 /// Client for the HuggingFace Jobs REST API.
 ///
