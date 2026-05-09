@@ -98,10 +98,12 @@ jobs:
       - uses: actions/checkout@v5
 
       - uses: pnpm/action-setup@v4
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
         with:
           version: latest
 
       - uses: actions/setup-node@v5
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
         with:
           node-version: 24
           cache: pnpm
@@ -476,9 +478,11 @@ jobs:
             echo "ready=false" >> "$GITHUB_OUTPUT"
           fi
       - uses: pnpm/action-setup@v4
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
         with:
           version: latest
       - uses: actions/setup-node@v5
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
         with:
           node-version: 24
           cache: pnpm
