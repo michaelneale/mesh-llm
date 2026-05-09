@@ -114,7 +114,7 @@ jobs:
 
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
-        run: brew install cmake ninja llvm
+        run: brew install cmake ninja llvm lld
 
       - name: Build release bundle
         env:

@@ -31,13 +31,16 @@ macos_install_message() {
 Error: LLVM ld64.lld was not found.
 
 Install LLVM, then rerun the just command:
-  brew install llvm
+  brew install llvm lld
 
 If Homebrew installed LLVM but the tools are not on PATH, that is okay for
 Mesh-LLM builds. The build scripts look under:
   $(brew --prefix llvm)/bin
+  $(brew --prefix lld)/bin
   /opt/homebrew/opt/llvm/bin
+  /opt/homebrew/opt/lld/bin
   /usr/local/opt/llvm/bin
+  /usr/local/opt/lld/bin
 EOF
 }
 
@@ -52,26 +55,42 @@ configure_linux_linker() {
 
 configure_macos_linker() {
     local llvm_prefix=""
+    local lld_prefix=""
     local candidate
 
     if command -v brew >/dev/null 2>&1; then
         llvm_prefix="$(brew --prefix llvm 2>/dev/null || true)"
+        lld_prefix="$(brew --prefix lld 2>/dev/null || true)"
     fi
 
-    for candidate in \
+    local clang_prefix
+    local ld_prefix
+    for clang_prefix in \
         "$llvm_prefix" \
         /opt/homebrew/opt/llvm \
         /usr/local/opt/llvm; do
-        if [[ -n "$candidate" && -x "$candidate/bin/clang" && -x "$candidate/bin/ld64.lld" ]]; then
+        [[ -n "$clang_prefix" && -x "$clang_prefix/bin/clang" ]] || continue
+
+        for ld_prefix in \
+            "$clang_prefix" \
+            "$lld_prefix" \
+            /opt/homebrew/opt/lld \
+            /usr/local/opt/lld; do
+            [[ -n "$ld_prefix" && -x "$ld_prefix/bin/ld64.lld" ]] || continue
             local shim_dir="$PWD/.deps/fast-rust-linker/ld64-lld-bin"
             mkdir -p "$shim_dir"
-            ln -sf "$candidate/bin/ld64.lld" "$shim_dir/ld"
-            export CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER="$candidate/bin/clang"
-            export CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER="$candidate/bin/clang"
+            rm -f "$shim_dir/ld"
+            {
+                printf '#!/usr/bin/env bash\n'
+                printf 'exec %q "$@"\n' "$ld_prefix/bin/ld64.lld"
+            } >"$shim_dir/ld"
+            chmod +x "$shim_dir/ld"
+            export CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER="$clang_prefix/bin/clang"
+            export CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER="$clang_prefix/bin/clang"
             append_rustflag "-C link-arg=-B$shim_dir"
-            echo "Using Rust linker: $candidate/bin/ld64.lld"
+            echo "Using Rust linker: $ld_prefix/bin/ld64.lld"
             return
-        fi
+        done
     done
 
     macos_install_message

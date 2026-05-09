@@ -423,13 +423,18 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - name: Install tools
-        run: brew install cmake ninja jq llvm
+        run: brew install cmake ninja jq llvm lld
       - name: Configure macOS Rust linker
         run: |
           mkdir -p .cargo
           llvm_prefix="$(brew --prefix llvm)"
+          lld_prefix="$(brew --prefix lld)"
           mkdir -p "$PWD/.cargo/ld64-lld-bin"
-          ln -sf "$llvm_prefix/bin/ld64.lld" "$PWD/.cargo/ld64-lld-bin/ld"
+          cat > "$PWD/.cargo/ld64-lld-bin/ld" <<EOF
+          #!/usr/bin/env bash
+          exec "$lld_prefix/bin/ld64.lld" "\$@"
+          EOF
+          chmod +x "$PWD/.cargo/ld64-lld-bin/ld"
           cat > .cargo/config.toml <<EOF
           [target.aarch64-apple-darwin]
           linker = "$llvm_prefix/bin/clang"
@@ -498,13 +503,18 @@ jobs:
         run: pnpm test
       - uses: dtolnay/rust-toolchain@stable
       - name: Install build dependencies
-        run: brew install cmake ninja jq llvm
+        run: brew install cmake ninja jq llvm lld
       - name: Configure macOS Rust linker
         run: |
           mkdir -p .cargo
           llvm_prefix="$(brew --prefix llvm)"
+          lld_prefix="$(brew --prefix lld)"
           mkdir -p "$PWD/.cargo/ld64-lld-bin"
-          ln -sf "$llvm_prefix/bin/ld64.lld" "$PWD/.cargo/ld64-lld-bin/ld"
+          cat > "$PWD/.cargo/ld64-lld-bin/ld" <<EOF
+          #!/usr/bin/env bash
+          exec "$lld_prefix/bin/ld64.lld" "\$@"
+          EOF
+          chmod +x "$PWD/.cargo/ld64-lld-bin/ld"
           cat > .cargo/config.toml <<EOF
           [target.aarch64-apple-darwin]
           linker = "$llvm_prefix/bin/clang"
