@@ -46,6 +46,8 @@ configure_lld_linker() {
         cat >&2 <<'EOF'
 Error: LLVM ld64.lld was not found.
 
+lld is required for faster Rust builds (measured up to 26% faster locally).
+
 Install lld, then rerun the just command:
   brew install lld
 

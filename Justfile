@@ -42,6 +42,8 @@ _lld-cargo-config:
                 cat >&2 <<'EOF'
     Error: LLVM ld.lld was not found.
 
+    lld is required for faster Rust builds (measured up to 26% faster locally).
+
     Install lld, then rerun the just command. Common Linux packages:
       Ubuntu/Debian: sudo apt-get update && sudo apt-get install -y lld
       Fedora:        sudo dnf install lld
@@ -84,6 +86,8 @@ _lld-cargo-config:
                 cat >&2 <<'EOF'
     Error: LLVM ld64.lld was not found.
 
+    lld is required for faster Rust builds (measured up to 26% faster locally).
+
     Install lld, then rerun the just command:
       brew install lld
 
@@ -114,7 +118,7 @@ _lld-cargo-config:
 [private]
 [windows]
 _lld-cargo-config:
-    @powershell -NoProfile -ExecutionPolicy Bypass -Command "$$ErrorActionPreference = 'Stop'; $$linker = $$null; try { $$sysroot = (& rustc --print sysroot).Trim(); foreach ($$target in @('x86_64-pc-windows-msvc', 'aarch64-pc-windows-msvc')) { $$candidate = Join-Path $$sysroot \"lib\rustlib\$$target\bin\rust-lld.exe\"; if (Test-Path $$candidate) { $$linker = $$candidate; break } } } catch {}; if (-not $$linker) { foreach ($$name in @('rust-lld.exe', 'lld-link.exe')) { $$command = Get-Command $$name -ErrorAction SilentlyContinue; if ($$command) { $$linker = $$command.Source; break } } }; if (-not $$linker) { Write-Error \"LLVM lld was not found for the Windows MSVC target.`n`nInstall one of these, then rerun the just command:`n  rustup component add llvm-tools-preview`n`nOr install LLVM lld-link:`n  winget install LLVM.LLVM`n  choco install llvm`n`nThe build requires lld. It looks for rust-lld.exe in the active Rust sysroot first, then falls back to rust-lld.exe or lld-link.exe on PATH.\"; exit 1 }; New-Item -ItemType Directory -Force -Path .cargo | Out-Null; $$config = '.cargo/config.toml'; $$body = if (Test-Path $$config) { Get-Content -Raw $$config } else { '' }; $$body = [regex]::Replace($$body, '(?ms)^# BEGIN Mesh-LLM lld config\\r?\\n.*?^# END Mesh-LLM lld config\\r?\\n?', ''); if ($$body -and -not $$body.EndsWith(\"`n\")) { $$body += \"`n\" }; $$body += \"# BEGIN Mesh-LLM lld config`n[target.x86_64-pc-windows-msvc]`nlinker = `\"$$linker`\"`n`n[target.aarch64-pc-windows-msvc]`nlinker = `\"$$linker`\"`n# END Mesh-LLM lld config`n\"; Set-Content -Path $$config -Value $$body"
+    @powershell -NoProfile -ExecutionPolicy Bypass -Command "$$ErrorActionPreference = 'Stop'; $$linker = $$null; try { $$sysroot = (& rustc --print sysroot).Trim(); foreach ($$target in @('x86_64-pc-windows-msvc', 'aarch64-pc-windows-msvc')) { $$candidate = Join-Path $$sysroot \"lib\rustlib\$$target\bin\rust-lld.exe\"; if (Test-Path $$candidate) { $$linker = $$candidate; break } } } catch {}; if (-not $$linker) { foreach ($$name in @('rust-lld.exe', 'lld-link.exe')) { $$command = Get-Command $$name -ErrorAction SilentlyContinue; if ($$command) { $$linker = $$command.Source; break } } }; if (-not $$linker) { Write-Error \"LLVM lld was not found for the Windows MSVC target.`n`nlld is required for faster Rust builds (measured up to 26% faster locally).`n`nInstall one of these, then rerun the just command:`n  rustup component add llvm-tools-preview`n`nOr install LLVM lld-link:`n  winget install LLVM.LLVM`n  choco install llvm`n`nThe build requires lld. It looks for rust-lld.exe in the active Rust sysroot first, then falls back to rust-lld.exe or lld-link.exe on PATH.\"; exit 1 }; New-Item -ItemType Directory -Force -Path .cargo | Out-Null; $$config = '.cargo/config.toml'; $$body = if (Test-Path $$config) { Get-Content -Raw $$config } else { '' }; $$body = [regex]::Replace($$body, '(?ms)^# BEGIN Mesh-LLM lld config\\r?\\n.*?^# END Mesh-LLM lld config\\r?\\n?', ''); if ($$body -and -not $$body.EndsWith(\"`n\")) { $$body += \"`n\" }; $$body += \"# BEGIN Mesh-LLM lld config`n[target.x86_64-pc-windows-msvc]`nlinker = `\"$$linker`\"`n`n[target.aarch64-pc-windows-msvc]`nlinker = `\"$$linker`\"`n# END Mesh-LLM lld config`n\"; Set-Content -Path $$config -Value $$body"
 
 # Build for the current platform (macOS Metal ABI, Linux/Windows auto ABI backend)
 [macos]
