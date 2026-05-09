@@ -19,7 +19,6 @@ pub(crate) struct ModelPrepareArgs<'a> {
     pub job_image: &'a str,
     pub dry_run: bool,
     pub confirm: bool,
-    pub confirm_max_cost_usd: Option<f64>,
     pub follow: bool,
     pub json: bool,
     pub status: Option<&'a str>,
@@ -42,7 +41,6 @@ pub(crate) async fn dispatch_model_package(args: ModelPrepareArgs<'_>) -> Result
         job_image,
         dry_run,
         confirm,
-        confirm_max_cost_usd,
         follow,
         json,
         status,
@@ -215,16 +213,6 @@ pub(crate) async fn dispatch_model_package(args: ModelPrepareArgs<'_>) -> Result
         return Ok(());
     }
 
-    if let Some(confirmed_max) = confirm_max_cost_usd {
-        if confirmed_max + f64::EPSILON < job.job_plan.max_cost_usd {
-            bail!(
-                "--confirm-max-cost-usd {:.2} is lower than planned max cost {}; rerun dry-run and confirm the current cost",
-                confirmed_max,
-                format_cost(job.job_plan.max_cost_usd)
-            );
-        }
-    }
-
     ensure_bucket_script_current(&hf_client).await?;
 
     // Submit.
@@ -259,7 +247,6 @@ pub(crate) async fn dispatch_model_package(args: ModelPrepareArgs<'_>) -> Result
                 "targetRepo": job.target_repo,
                 "modelId": job.model_id,
                 "jobPlan": job.job_plan,
-                "confirmedMaxCostUsd": confirm_max_cost_usd,
             }))?
         );
     }

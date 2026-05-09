@@ -647,10 +647,6 @@ pub(crate) enum Command {
         #[arg(long)]
         confirm: bool,
 
-        /// Optional max HF Jobs cost cap accepted for this submission.
-        #[arg(long)]
-        confirm_max_cost_usd: Option<f64>,
-
         /// Stream job logs after submission until completion.
         #[arg(long)]
         follow: bool,
@@ -1383,15 +1379,13 @@ mod tests {
     }
 
     #[test]
-    fn models_package_parses_hf_job_cost_confirmation() {
+    fn models_package_parses_submit_confirmation() {
         let cli = Cli::parse_from([
             "mesh-llm",
             "models",
             "package",
             "unsloth/Kimi-K2.5-GGUF:Q4_1",
             "--confirm",
-            "--confirm-max-cost-usd",
-            "0.06",
             "--json",
         ]);
 
@@ -1400,12 +1394,10 @@ mod tests {
                 ModelsCommand::Package {
                     source_repo: Some(source_repo),
                     confirm: true,
-                    confirm_max_cost_usd: Some(max_cost),
                     json: true,
                     ..
                 } => {
                     assert_eq!(source_repo, "unsloth/Kimi-K2.5-GGUF:Q4_1");
-                    assert_eq!(*max_cost, 0.06);
                 }
                 other => panic!("unexpected models command: {other:?}"),
             },
