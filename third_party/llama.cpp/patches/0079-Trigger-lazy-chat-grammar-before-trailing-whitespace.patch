@@ -1,0 +1,101 @@
+From 0f3e85111332c4d664835eb6e2d92c9bc536e09d Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Sat, 9 May 2026 13:58:47 +1000
+Subject: [PATCH] Trigger lazy chat grammar before trailing whitespace
+
+---
+ common/chat-auto-parser-generator.cpp | 14 +++++++++++++-
+ tests/test-chat-auto-parser.cpp       | 27 ++++++++++++++++++++++++++-
+ 2 files changed, 39 insertions(+), 2 deletions(-)
+
+diff --git a/common/chat-auto-parser-generator.cpp b/common/chat-auto-parser-generator.cpp
+index 2fac0ea5..1e07043b 100644
+--- a/common/chat-auto-parser-generator.cpp
++++ b/common/chat-auto-parser-generator.cpp
+@@ -23,6 +23,18 @@ static void foreach_function(const json & tools, const std::function<void(const
+     }
+ }
+ 
++static bool is_ascii_space(char c) {
++    return c == ' ' || c == '\n' || c == '\r' || c == '\t' || c == '\f' || c == '\v';
++}
++
++static std::string lazy_trigger_marker(const std::string & marker) {
++    std::string trimmed = marker;
++    while (!trimmed.empty() && is_ascii_space(trimmed.back())) {
++        trimmed.pop_back();
++    }
++    return trimmed.empty() ? marker : trimmed;
++}
++
+ namespace autoparser {
+ 
+ parser_build_context::parser_build_context(common_chat_peg_builder & p, const generation_params & inputs) :
+@@ -79,7 +91,7 @@ common_chat_params peg_generator::generate_parser(const common_chat_template &
+         // Set grammar triggers based on tool section markers (fall back to per-call markers)
+         if (data.grammar_lazy) {
+             data.grammar_triggers = {
+-                { COMMON_GRAMMAR_TRIGGER_TYPE_WORD, trigger_marker }
++                { COMMON_GRAMMAR_TRIGGER_TYPE_WORD, lazy_trigger_marker(trigger_marker) }
+             };
+         }
+     }
+diff --git a/tests/test-chat-auto-parser.cpp b/tests/test-chat-auto-parser.cpp
+index 1d96de71..e6f20521 100644
+--- a/tests/test-chat-auto-parser.cpp
++++ b/tests/test-chat-auto-parser.cpp
+@@ -57,6 +57,7 @@ static void test_seed_oss_tool_with_reasoning(testing & t);
+ static void test_nemotron_analysis(testing & t);
+ static void test_nemotron_reasoning_detection(testing & t);
+ static void test_nemotron_tool_format(testing & t);
++static void test_nemotron_lazy_tool_trigger(testing & t);
+ 
+ // CohereForAI template analysis tests
+ static void test_cohere_reasoning_detection(testing & t);
+@@ -1303,6 +1304,7 @@ static common_chat_template load_nemotron_template(testing & t) {
+ static void test_nemotron_analysis(testing & t) {
+     t.test("Nemotron reasoning detection", test_nemotron_reasoning_detection);
+     t.test("Nemotron tool format", test_nemotron_tool_format);
++    t.test("Nemotron lazy tool trigger", test_nemotron_lazy_tool_trigger);
+ }
+ 
+ static void test_nemotron_reasoning_detection(testing & t) {
+@@ -1375,6 +1377,30 @@ static void test_nemotron_tool_format(testing & t) {
+     t.assert_true("should support tools", analysis.jinja_caps.supports_tools);
+ }
+ 
++static void test_nemotron_lazy_tool_trigger(testing & t) {
++    common_chat_template tmpl = load_nemotron_template(t);
++
++    generation_params params;
++    params.messages              = json::array({ json{{"role", "user"}, {"content", "Call the test function."}} });
++    params.tools                 = build_tools_definition();
++    params.tool_choice           = COMMON_CHAT_TOOL_CHOICE_AUTO;
++    params.add_generation_prompt = true;
++    params.enable_thinking       = true;
++    params.extra_context         = json::object();
++
++    auto generated = peg_generator::generate_parser(tmpl, params);
++
++    t.assert_true("auto tools should use lazy grammar", generated.grammar_lazy);
++    t.assert_equal("should emit one lazy grammar trigger", size_t(1), generated.grammar_triggers.size());
++    if (!generated.grammar_triggers.empty()) {
++        t.assert_equal("lazy trigger should be a word trigger", static_cast<int>(COMMON_GRAMMAR_TRIGGER_TYPE_WORD),
++                       static_cast<int>(generated.grammar_triggers[0].type));
++        t.assert_equal("lazy trigger should trim trailing whitespace", "<tool_call>", generated.grammar_triggers[0].value);
++    }
++    t.assert_true("grammar should still preserve the full tool marker",
++                  generated.grammar.find("tool-call ::= \"<tool_call>\\n\"") != std::string::npos);
++}
++
+ static common_chat_template load_cohere_template(testing & t) {
+     return load_template(t, "models/templates/CohereForAI-c4ai-command-r7b-12-2024-tool_use.jinja");
+ }
+@@ -1966,4 +1992,3 @@ static void test_tagged_args_with_embedded_quotes(testing & t) {
+         }
+     }
+ }
+-
+-- 
+2.50.1 (Apple Git-155)
+
