@@ -4,7 +4,6 @@ use anyhow::Error as AnyhowError;
 use chrono::{Local, SecondsFormat, Utc};
 use crossterm::{
     cursor::{Hide, MoveTo, Show},
-    event::{DisableMouseCapture, EnableMouseCapture},
     execute,
     terminal::{Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -4793,26 +4792,63 @@ fn render_join_token_panel(
         return;
     }
 
-    let token_area = join_token_text_area(panel_area, copy_button_area);
+    if state.full_screen_panel == Some(DashboardPanel::JoinToken) {
+        let token_area = join_token_full_screen_text_area(panel_area);
+        if token_area.width > 0 && token_area.height > 0 {
+            frame.render_widget(
+                Paragraph::new(join_token_wrapped_text(
+                    state,
+                    usize::from(token_area.width),
+                ))
+                .style(Style::default().fg(theme.text)),
+                token_area,
+            );
+        }
+    } else {
+        let token_area = join_token_text_area(panel_area, copy_button_area);
 
-    let token_line = join_token_line(state, usize::from(token_area.width));
-    frame.render_widget(
-        Paragraph::new(token_line).style(Style::default().fg(theme.text)),
-        token_area,
-    );
+        let token_line = join_token_line(state, usize::from(token_area.width));
+        frame.render_widget(
+            Paragraph::new(token_line).style(Style::default().fg(theme.text)),
+            token_area,
+        );
+    }
 
     if copy_button_area.width > 0 && copy_button_area.height > 0 {
         let copy_enabled = state.join_token.is_some();
-        let button_style = if copy_enabled {
-            Style::default()
-                .fg(theme.surface)
-                .bg(theme.accent)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.dim).bg(theme.surface_raised)
+        let (button_label, button_style) = match state
+            .join_token
+            .as_ref()
+            .map(|join_token| &join_token.copy_status)
+        {
+            Some(DashboardJoinTokenCopyStatus::Copied) => (
+                " Copied ",
+                Style::default()
+                    .fg(theme.surface)
+                    .bg(theme.success)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Some(DashboardJoinTokenCopyStatus::Failed(_)) => (
+                " Failed ",
+                Style::default()
+                    .fg(theme.surface)
+                    .bg(theme.error)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            _ if copy_enabled => (
+                PRETTY_TUI_JOIN_TOKEN_COPY_BUTTON_LABEL,
+                Style::default()
+                    .fg(theme.surface)
+                    .bg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            _ => (
+                PRETTY_TUI_JOIN_TOKEN_COPY_BUTTON_LABEL,
+                Style::default().fg(theme.dim).bg(theme.surface_raised),
+            ),
         };
         frame.render_widget(
-            Paragraph::new(PRETTY_TUI_JOIN_TOKEN_COPY_BUTTON_LABEL)
+            Paragraph::new(button_label)
                 .style(button_style)
                 .alignment(Alignment::Center),
             copy_button_area,
@@ -4885,8 +4921,8 @@ fn join_token_panel_right_title(state: &DashboardState) -> String {
         return "waiting for cluster invite".to_string();
     };
     match &join_token.copy_status {
-        DashboardJoinTokenCopyStatus::Idle => "click Copy or c".to_string(),
-        DashboardJoinTokenCopyStatus::Copied => "copied".to_string(),
+        DashboardJoinTokenCopyStatus::Idle => "press c to copy".to_string(),
+        DashboardJoinTokenCopyStatus::Copied => "copied to clipboard".to_string(),
         DashboardJoinTokenCopyStatus::Failed(message) => {
             format!("copy failed: {}", truncate_with_ellipsis(message, 40))
         }
@@ -4912,6 +4948,34 @@ fn join_token_line(state: &DashboardState, width: usize) -> Line<'static> {
             "join token will appear here when the mesh invite is ready",
             Style::default().fg(theme.muted),
         )
+    }
+}
+
+fn join_token_wrapped_text(state: &DashboardState, width: usize) -> Text<'static> {
+    let theme = tui_theme();
+    if let Some(join_token) = &state.join_token {
+        let token_width = width.saturating_sub(6).max(1);
+        let wrapped = wrap_plain_text(&join_token.token, token_width);
+        let lines = wrapped
+            .into_iter()
+            .enumerate()
+            .map(|(index, chunk)| {
+                let prefix = if index == 0 { "token " } else { "      " };
+                Line::from(vec![
+                    Span::styled(prefix, Style::default().fg(theme.muted)),
+                    Span::styled(
+                        chunk,
+                        Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+                    ),
+                ])
+            })
+            .collect::<Vec<_>>();
+        Text::from(lines)
+    } else {
+        Text::from(Line::styled(
+            "join token will appear here when the mesh invite is ready",
+            Style::default().fg(theme.muted),
+        ))
     }
 }
 
@@ -4944,6 +5008,32 @@ fn join_token_text_area(panel_area: Rect, copy_button_area: Rect) -> Rect {
         y: inner_y,
         width: token_right.saturating_sub(inner_x),
         height: 1,
+    }
+}
+
+fn join_token_full_screen_text_area(panel_area: Rect) -> Rect {
+    if panel_area.width == 0 || panel_area.height < 4 {
+        return Rect {
+            x: panel_area.x,
+            y: panel_area.y,
+            width: 0,
+            height: 0,
+        };
+    }
+
+    let inner_x = panel_area
+        .x
+        .saturating_add(1)
+        .saturating_add(PRETTY_TUI_JOIN_TOKEN_HORIZONTAL_PADDING);
+    let inner_right = panel_area
+        .right()
+        .saturating_sub(1)
+        .saturating_sub(PRETTY_TUI_JOIN_TOKEN_HORIZONTAL_PADDING);
+    Rect {
+        x: inner_x,
+        y: panel_area.y.saturating_add(2),
+        width: inner_right.saturating_sub(inner_x),
+        height: panel_area.height.saturating_sub(3),
     }
 }
 
@@ -8557,7 +8647,6 @@ fn write_tui_enter_to_writer<W: Write>(writer: &mut W) -> io::Result<()> {
     execute!(
         writer,
         EnterAlternateScreen,
-        EnableMouseCapture,
         MoveTo(0, 0),
         Clear(ClearType::All),
         Hide
@@ -8569,7 +8658,6 @@ fn write_tui_exit_to_writer<W: Write>(writer: &mut W) -> io::Result<()> {
     execute!(
         writer,
         Show,
-        DisableMouseCapture,
         LeaveAlternateScreen,
         MoveTo(0, 0),
         Clear(ClearType::All)
@@ -10662,7 +10750,7 @@ mod tests {
             .find("mesh=mesh-alpha")
             .expect("left title should include mesh id");
         let copied_index = join_title_line
-            .rfind("copied")
+            .rfind("copied to clipboard")
             .expect("right title should include copy status");
         assert!(
             mesh_index < 40,
@@ -10671,6 +10759,34 @@ mod tests {
         assert!(
             copied_index > 90,
             "copy status should be aligned toward the far right title bar: {join_title_line:?}"
+        );
+        assert!(
+            rendered.contains("Copied"),
+            "copy status should be visible on the copy control too\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn tui_full_screen_join_token_wraps_long_token() {
+        let mut state = DashboardState::default();
+        state.apply_tui_event(TuiEvent::Resize {
+            columns: 64,
+            rows: 16,
+        });
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::InviteToken {
+            token: "mesh-invite-token-abcdefghijklmnopqrstuvwxyz-0123456789-tail".to_string(),
+            mesh_id: "mesh-alpha".to_string(),
+            mesh_name: None,
+        }));
+        state.panel_focus = DashboardPanel::JoinToken;
+        state.apply_tui_event(TuiEvent::Key(TuiKeyEvent::Enter));
+        assert_eq!(state.full_screen_panel, Some(DashboardPanel::JoinToken));
+
+        let rendered = render_tui_frame_snapshot(&state, 64, 16);
+
+        assert!(
+            rendered.contains("789-tail"),
+            "expected full-screen join-token panel to wrap instead of slicing the token tail\n{rendered}"
         );
     }
 
@@ -14612,6 +14728,22 @@ tail line"
             "expected final clear after leaving alternate screen in {rendered:?}"
         );
         assert!(rendered.matches('\u{1b}').count() >= 6);
+    }
+
+    #[test]
+    fn tui_enter_does_not_enable_mouse_capture() {
+        let mut output = Vec::new();
+
+        write_tui_enter_to_writer(&mut output).expect("enter should succeed");
+        write_tui_exit_to_writer(&mut output).expect("exit should succeed");
+
+        let rendered = String::from_utf8(output).expect("terminal output should be utf8");
+        for sequence in ["[?1000h", "[?1002h", "[?1003h", "[?1006h"] {
+            assert!(
+                !rendered.contains(sequence),
+                "TUI should leave native terminal text selection available: {rendered:?}"
+            );
+        }
     }
 
     #[test]

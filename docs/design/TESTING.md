@@ -78,17 +78,17 @@ mesh-llm serve
 
 ### 0c. Terminal dashboard smoke
 
-The pretty dashboard uses raw mode, the alternate screen, and mouse capture when both stdin and stderr are interactive TTYs and `TERM` supports a real terminal. It should fall back to line-oriented pretty output when stdin is not a TTY, stderr is not a TTY, or `TERM` is empty / `dumb`.
+The pretty dashboard uses raw mode and the alternate screen when both stdin and stderr are interactive TTYs and `TERM` supports a real terminal. It should leave native terminal text selection available and fall back to line-oriented pretty output when stdin is not a TTY, stderr is not a TTY, or `TERM` is empty / `dumb`.
 
 Run these manual checks after changes to `runtime/interactive.rs` or `cli/output/mod.rs`:
 
 | Shell | Setup | Expected result |
 |---|---|---|
-| Plain terminal | `mesh-llm serve --model Qwen2.5-3B` | Dashboard renders, resizes cleanly, `Tab`/`Shift-Tab` focus panels, `Enter` or `z` opens the focused panel full screen, `Esc` or `z` returns to the multi-panel view, `h`/`i`/`q` work, and exit restores the prompt. |
+| Plain terminal | `mesh-llm serve --model Qwen2.5-3B` | Dashboard renders, resizes cleanly, `Tab`/`Shift-Tab` focus panels, `Enter` or `z` opens the focused panel full screen, `Esc` or `z` returns to the multi-panel view, terminal text selection works, `h`/`i`/`q` work, and exit restores the prompt. |
 | Piped stdin | `true | mesh-llm serve --model Qwen2.5-3B` | No line reader is spawned; pretty output stays line-oriented. |
 | Unsupported terminal | `TERM=dumb mesh-llm serve --model Qwen2.5-3B` | Dashboard is disabled and pretty output uses fallback lines. |
 | tmux, mouse off | `tmux new 'mesh-llm serve --model Qwen2.5-3B'` | Dashboard renders and exits cleanly; keyboard navigation works. |
-| tmux, mouse on | Inside tmux: `set -g mouse on`, then run mesh-llm | Wheel events page the dashboard instead of disappearing into tmux history. |
+| tmux, mouse on | Inside tmux: `set -g mouse on`, then run mesh-llm | Dashboard renders and exits cleanly; terminal/tmux text selection remains usable. |
 | GNU screen default | `screen mesh-llm serve --model Qwen2.5-3B` | If the alternate screen is unavailable, fallback behavior or clean restoration is acceptable. |
 | GNU screen altscreen | In `~/.screenrc`: `altscreen on`, then run mesh-llm | Dashboard enters/leaves the alternate screen cleanly. |
 
@@ -97,7 +97,7 @@ For terminal restoration QA:
 - Resize during startup, after llama-server readiness, and while the dashboard has focus on different panels.
 - Open the mesh events/log panel full screen and verify long log lines wrap within the panel.
 - Detach and reattach tmux/screen while the dashboard is active.
-- Click dashboard panels and use the mouse wheel in terminal, tmux, and screen.
+- Select visible dashboard text with the terminal mouse selection gesture and verify it can be copied.
 - Press `q` and `Ctrl+C`; the cursor should be visible and the shell prompt should not remain in raw mode.
 - A `SIGKILL` (`kill -9`) cannot run in-process cleanup. If a terminal is left corrupted after a hard kill, recover with `reset` or by closing the terminal pane.
 
