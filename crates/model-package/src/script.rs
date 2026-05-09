@@ -111,9 +111,32 @@ mod tests {
 
     #[test]
     fn embedded_script_prints_mesh_llm_repo_shorthand() {
-        assert!(EMBEDDED_SCRIPT.contains(r#"mesh-llm serve --model "${TARGET_REPO}" --split"#));
+        assert!(EMBEDDED_SCRIPT.contains(r#"mesh-llm serve --model "{target_repo}" --split"#));
         assert!(EMBEDDED_SCRIPT.contains("mesh-llm serve --model ${TARGET_REPO} --split"));
         assert!(!EMBEDDED_SCRIPT.contains(r#"mesh-llm serve --model "hf://${TARGET_REPO}""#));
         assert!(!EMBEDDED_SCRIPT.contains("mesh-llm serve --model hf://${TARGET_REPO}"));
+    }
+
+    #[test]
+    fn embedded_script_writes_rich_model_card() {
+        assert!(EMBEDDED_SCRIPT.contains("pipeline_tag: text-generation"));
+        assert!(EMBEDDED_SCRIPT.contains("- openai-compatible"));
+        assert!(EMBEDDED_SCRIPT.contains("## Model Overview"));
+        assert!(EMBEDDED_SCRIPT.contains("## Highlights"));
+        assert!(EMBEDDED_SCRIPT.contains("## Recommended Use"));
+        assert!(EMBEDDED_SCRIPT.contains("## Quickstart"));
+        assert!(EMBEDDED_SCRIPT.contains("## Package Variant"));
+        assert!(EMBEDDED_SCRIPT.contains("## What Is Included"));
+        assert!(EMBEDDED_SCRIPT.contains("## Validation"));
+        assert!(EMBEDDED_SCRIPT.contains("docs/mesh-llm-logo.svg"));
+        assert!(EMBEDDED_SCRIPT.contains("style=for-the-badge"));
+        assert!(EMBEDDED_SCRIPT.contains("https://www.meshllm.cloud"));
+        assert!(EMBEDDED_SCRIPT.contains("https://discord.gg/rs6fmc63eN"));
+        assert!(EMBEDDED_SCRIPT.contains("Distributed GGUF inference package for Mesh LLM"));
+        assert!(EMBEDDED_SCRIPT.contains(
+            "For upstream architecture details, chat template guidance, sampling recommendations"
+        ));
+        assert!(EMBEDDED_SCRIPT.contains("Package manifest SHA-256"));
+        assert!(EMBEDDED_SCRIPT.contains("skippy-model-package validate-package"));
     }
 }

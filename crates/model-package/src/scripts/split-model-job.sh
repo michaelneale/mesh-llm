@@ -284,78 +284,289 @@ PYTHON
 # ─── Model Card ────────────────────────────────────────────────────────────
 echo ""
 echo "=== [8/9] Uploading model card ==="
-ACTIVATION_WIDTH=$(python3 -c "import json, os; m=json.load(open(os.path.join(os.environ['PACKAGE_DIR'], 'model-package.json'))); print(m.get('activation_width', 'unknown'))")
+/tmp/venv/bin/python3 << 'PYTHON'
+from huggingface_hub import HfApi
+from pathlib import Path
+import hashlib
+import json
+import os
 
-cat > /tmp/README.md << EOF
----
+package_dir = Path(os.environ["PACKAGE_DIR"])
+manifest_path = package_dir / "model-package.json"
+manifest = json.loads(manifest_path.read_text())
+
+source_repo = os.environ["SOURCE_REPO"]
+source_file = os.environ["SOURCE_FILE"]
+source_revision = os.environ.get("SOURCE_REVISION", "main")
+target_repo = os.environ["TARGET_REPO"]
+model_id = os.environ.get("MODEL_ID", manifest.get("model_id", target_repo))
+mesh_llm_ref = os.environ.get("MESH_LLM_REF", "main")
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+def fmt_bytes(size: int) -> str:
+    value = float(size)
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
+        if value < 1024 or unit == "TB":
+            if unit == "B":
+                return f"{int(value)} {unit}"
+            return f"{value:.1f} {unit}"
+        value /= 1024
+
+def artifact_bytes(artifact: dict) -> int:
+    return int(artifact.get("artifact_bytes") or 0)
+
+def md_cell(value) -> str:
+    text = "" if value is None else str(value)
+    return text.replace("|", "\\|").replace("\n", "<br>")
+
+def link(label: str, url: str) -> str:
+    return f"[{md_cell(label)}]({url})"
+
+def code(value) -> str:
+    return f"`{md_cell(value)}`"
+
+def yaml_quote(value: str) -> str:
+    return json.dumps(value)
+
+def infer_model_family(name: str) -> str:
+    lowered = name.lower()
+    for family in ["Qwen3", "Qwen2.5", "DeepSeek", "Kimi", "Gemma", "GLM", "Llama"]:
+        if family.lower() in lowered:
+            return family
+    return name.split("-")[0] if name else "Unknown"
+
+def infer_parameter_scale(name: str) -> str:
+    import re
+    match = re.search(r"(?i)(\d+(?:\.\d+)?[BM](?:-A\d+(?:\.\d+)?B)?)", name)
+    return match.group(1) if match else "not recorded"
+
+def infer_quantization(name: str, source_path: str) -> str:
+    import re
+    combined = f"{name}/{source_path}"
+    patterns = [
+        r"UD-Q\d+_[A-Z]+(?:_[A-Z]+)?",
+        r"Q\d+_[A-Z]+(?:_[A-Z]+)?",
+        r"IQ\d+_[A-Z]+(?:_[A-Z]+)?",
+        r"BF16",
+        r"F16",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, combined, re.IGNORECASE)
+        if match:
+            return match.group(0)
+    return "not recorded"
+
+shared = manifest.get("shared", {})
+layers = manifest.get("layers", [])
+projectors = manifest.get("projectors", [])
+manifest_hash = sha256(manifest_path)
+total_bytes = sum(artifact_bytes(artifact) for artifact in shared.values())
+total_bytes += sum(artifact_bytes(layer) for layer in layers)
+total_bytes += sum(artifact_bytes(projector) for projector in projectors)
+
+source_model = manifest.get("source_model", {})
+display_name = source_model.get("distribution_id") or model_id
+model_family = infer_model_family(display_name)
+parameter_scale = infer_parameter_scale(display_name)
+quantization = infer_quantization(display_name, source_file)
+activation_width = manifest.get("activation_width") or "not recorded"
+skippy_abi = manifest.get("skippy_abi_version") or "not recorded"
+source_sha = source_model.get("sha256") or "not recorded"
+canonical_ref = source_model.get("canonical_ref") or f"{source_repo}@{source_revision}/{source_file}"
+
+file_rows = [
+    ("Manifest", "model-package.json", "Package schema, source identity, checksums", manifest_hash),
+]
+for label, key in [
+    ("Metadata", "metadata"),
+    ("Embeddings", "embeddings"),
+    ("Output head", "output"),
+]:
+    artifact = shared.get(key)
+    if artifact:
+        file_rows.append((
+            label,
+            artifact.get("path", f"shared/{key}.gguf"),
+            f"{artifact.get('tensor_count', 'unknown')} tensors, {fmt_bytes(artifact_bytes(artifact))}",
+            artifact.get("sha256", "not recorded"),
+        ))
+if layers:
+    layer_bytes = sum(artifact_bytes(layer) for layer in layers)
+    layer_tensors = sum(int(layer.get("tensor_count") or 0) for layer in layers)
+    file_rows.append((
+        "Transformer layers",
+        "layers/layer-*.gguf",
+        f"{len(layers)} layer artifacts, {layer_tensors} tensors, {fmt_bytes(layer_bytes)}",
+        "see model-package.json",
+    ))
+for projector in projectors:
+    file_rows.append((
+        "Projector",
+        projector.get("path", "projectors/projector.gguf"),
+        f"{projector.get('kind', 'multimodal')} projector, {fmt_bytes(artifact_bytes(projector))}",
+        projector.get("sha256", "not recorded"),
+    ))
+
+rows = [
+    ("Source model", link(source_repo, f"https://huggingface.co/{source_repo}")),
+    ("Model id", code(model_id)),
+    ("Family", model_family),
+    ("Parameter scale", parameter_scale),
+    ("Quantization", code(quantization)),
+    ("Layer count", manifest.get("layer_count", len(layers))),
+    ("Activation width", activation_width),
+    ("Package size", fmt_bytes(total_bytes)),
+    ("Source file", code(source_file)),
+    ("Package repo", link(target_repo, f"https://huggingface.co/{target_repo}")),
+]
+
+readme = f"""---
 library_name: mesh-llm
-base_model: ${SOURCE_REPO}
+base_model:
+- {yaml_quote(source_repo)}
+pipeline_tag: text-generation
 tags:
+- gguf
 - mesh-llm
 - layer-package
 - skippy
 - distributed-inference
+- local-inference
+- openai-compatible
 ---
 
-# ${MODEL_ID} — Layer Package for Mesh LLM
+<div align="center">
+  <a href="https://www.meshllm.cloud">
+    <img src="https://github.com/Mesh-LLM/mesh-llm/raw/main/docs/mesh-llm-logo.svg" alt="Mesh LLM" width="220">
+  </a>
 
-Pre-split layer package for distributed inference with [Mesh LLM](https://github.com/Mesh-LLM/mesh-llm).
+  <h1>{display_name}</h1>
 
-**Source model:** [${SOURCE_REPO}](https://huggingface.co/${SOURCE_REPO})
+  <p>
+    <strong>Distributed GGUF inference package for Mesh LLM</strong>
+  </p>
 
-## Details
+  <p>
+    <a href="https://www.meshllm.cloud"><img alt="Website" src="https://img.shields.io/badge/Website-meshllm.cloud-111111?style=for-the-badge"></a>
+    <a href="https://github.com/Mesh-LLM/mesh-llm"><img alt="GitHub" src="https://img.shields.io/badge/GitHub-Mesh--LLM-24292f?style=for-the-badge&logo=github"></a>
+    <a href="https://discord.gg/rs6fmc63eN"><img alt="Discord" src="https://img.shields.io/badge/Discord-Join-5865F2?style=for-the-badge&logo=discord&logoColor=white"></a>
+  </p>
+</div>
+
+GGUF layer package for running **{display_name}** across a local Mesh LLM cluster.
+
+This package is derived from [{source_repo}](https://huggingface.co/{source_repo}) and keeps the original GGUF distribution split into per-layer artifacts for distributed inference.
+
+## Highlights
+
+| Run locally | Pool multiple machines | OpenAI-compatible | Package variant |
+|---|---|---|---|
+| Private inference on your hardware | Split layers across peers | Serve `/v1/chat/completions` locally | `{quantization}` layer package |
+
+## Model Overview
 
 | Property | Value |
 |---|---|
-| **Source** | [${SOURCE_REPO}](https://huggingface.co/${SOURCE_REPO}) |
-| **Source file** | \`${SOURCE_FILE}\` |
-| **Layers** | ${LAYER_COUNT} |
-| **Total size** | ${TOTAL_SIZE} |
-| **Activation width** | ${ACTIVATION_WIDTH} |
-| **Format** | Per-layer GGUF (layer-package) |
+"""
 
-## Usage
+for key, value in rows:
+    readme += f"| **{md_cell(key)}** | {md_cell(value)} |\n"
 
-\`\`\`bash
-# Each node downloads only its assigned layers:
-mesh-llm serve --model "${TARGET_REPO}" --split
-\`\`\`
+readme += f"""
+## Recommended Use
 
-Nodes discover each other on the local network, plan the topology based on available RAM, and each downloads only its portion.
+- Local and private inference with Mesh LLM.
+- Multi-machine serving when the full GGUF is too large for one host.
+- OpenAI-compatible chat/completions workflows through Mesh LLM's local API.
 
-## Structure
+For upstream architecture details, chat template guidance, sampling recommendations, license terms, and benchmark notes, see the source model card: [{source_repo}](https://huggingface.co/{source_repo}).
 
-\`\`\`
-model-package.json          # Manifest (layer count, checksums, metadata)
-shared/metadata.gguf        # Model metadata & vocabulary
-shared/embeddings.gguf      # Token embedding weights
-shared/output.gguf          # Output head weights
-layers/layer-000.gguf       # Per-layer transformer weights
-layers/layer-001.gguf
-...
-layers/layer-$(printf "%03d" $((LAYER_COUNT - 1))).gguf
-\`\`\`
+## Quickstart
+
+```bash
+# Run this on each machine that should contribute memory/compute.
+mesh-llm serve --model "{target_repo}" --split
+```
+
+```bash
+# Check the mesh and discover the OpenAI-compatible model name.
+curl -s http://localhost:3131/api/status
+curl -s http://localhost:3131/v1/models
+```
+
+```bash
+# Send an OpenAI-compatible chat request.
+curl -s http://localhost:3131/v1/chat/completions \\
+  -H "Content-Type: application/json" \\
+  -d '{{
+    "model": "{model_id}",
+    "messages": [{{"role": "user", "content": "Write a tiny hello-world function in Rust."}}],
+    "max_tokens": 128
+  }}'
+```
+
+## Package Variant
+
+| Property | Value |
+|---|---|
+"""
+
+for key, value in [
+    ("Format", code(manifest.get("format", "layer-package"))),
+    ("Canonical source ref", code(canonical_ref)),
+    ("Source revision", code(source_revision)),
+    ("Source SHA-256", code(source_sha)),
+    ("Skippy ABI", code(skippy_abi)),
+    ("Package manifest SHA-256", code(manifest_hash)),
+]:
+    readme += f"| **{md_cell(key)}** | {md_cell(value)} |\n"
+
+readme += f"""
+## What Is Included
+
+| Artifact | Path | Contents | SHA-256 |
+|---|---|---|---|
+"""
+
+for label, path, contents, checksum in file_rows:
+    readme += f"| {md_cell(label)} | {code(path)} | {md_cell(contents)} | {code(checksum)} |\n"
+
+readme += f"""
+## Validation
+
+Generated by the Mesh LLM HF Jobs splitter from `mesh-llm` ref `{mesh_llm_ref}` and validated before upload:
+
+```bash
+skippy-model-package validate-package "/source/{source_file}" "{package_dir}"
+```
 
 ## Links
 
-- **Source model:** [${SOURCE_REPO}](https://huggingface.co/${SOURCE_REPO})
-- [Mesh LLM](https://github.com/Mesh-LLM/mesh-llm) — distributed inference runtime
-- [Splitter tool](https://github.com/Mesh-LLM/hf-mesh-skippy-splitter) — HF Jobs layer splitter
-- [Model catalog](https://huggingface.co/datasets/meshllm/catalog) — registry of available packages
-EOF
+- Source model: [{source_repo}](https://huggingface.co/{source_repo})
+- Mesh LLM website: [meshllm.cloud](https://www.meshllm.cloud)
+- Mesh LLM: [github.com/Mesh-LLM/mesh-llm](https://github.com/Mesh-LLM/mesh-llm)
+- Discord: [discord.gg/rs6fmc63eN](https://discord.gg/rs6fmc63eN)
+- Package catalog: [meshllm/catalog](https://huggingface.co/datasets/meshllm/catalog)
+- Package format: [layer-package-repos.md](https://github.com/Mesh-LLM/mesh-llm/blob/main/docs/specs/layer-package-repos.md)
+"""
 
-/tmp/venv/bin/python3 -c "
-from huggingface_hub import HfApi
-import os
-api = HfApi(token=os.environ['HF_TOKEN'])
+Path("/tmp/README.md").write_text(readme)
+
+api = HfApi(token=os.environ["HF_TOKEN"])
 api.upload_file(
-    path_or_fileobj='/tmp/README.md',
-    path_in_repo='README.md',
-    repo_id=os.environ['TARGET_REPO'],
-    repo_type='model',
+    path_or_fileobj="/tmp/README.md",
+    path_in_repo="README.md",
+    repo_id=target_repo,
+    repo_type="model",
 )
-print('  ✓ Model card uploaded')
-"
+print("  ✓ Model card uploaded")
+PYTHON
 
 # ─── Summary ──────────────────────────────────────────────────────────────
 echo ""
