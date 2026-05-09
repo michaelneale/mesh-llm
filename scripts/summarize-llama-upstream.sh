@@ -65,6 +65,11 @@ if [[ -n "${SKIPPY_CORRECTNESS_MODEL:-}" ]]; then
 else
   correctness_checked=" "
 fi
+if [[ -n "${SKIPPY_CI_SMOKE:-}" ]]; then
+  smoke_checked="x"
+else
+  smoke_checked=" "
+fi
 
 cat <<EOF
 ## llama.cpp Upstream Pin Update
@@ -107,9 +112,9 @@ $upstream_commit_list
 - [x] Built patched llama.cpp stage ABI
 - [x] Built imported skippy Rust crates
 - [x] Ran targeted Rust checks/tests
-- [$correctness_checked] Ran \`skippy-correctness single-step\`
-- [$correctness_checked] Ran \`skippy-correctness chain\`
+- [$smoke_checked] Ran \`scripts/skippy-ci-smoke.sh\`
+- [$correctness_checked] Ran additional \`SKIPPY_CORRECTNESS_MODEL\` checks
 
-Correctness smokes are checked when \`SKIPPY_CORRECTNESS_MODEL\` is
-available to the workflow runner.
+The skippy CI smoke downloads small dense and recurrent GGUF fixtures and
+checks staged correctness, OpenAI serving, and prompt cache reuse.
 EOF
