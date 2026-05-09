@@ -186,6 +186,7 @@ pub async fn resolve(
     let mut environment = HashMap::new();
     environment.insert("SOURCE_REPO".into(), params.source_repo.clone());
     environment.insert("SOURCE_FILE".into(), source_file.clone());
+    environment.insert("SOURCE_QUANT".into(), matched.name.clone());
     environment.insert("TARGET_REPO".into(), target_repo.clone());
     environment.insert("MODEL_ID".into(), model_id.clone());
     environment.insert("SOURCE_REVISION".into(), "main".into());
@@ -207,20 +208,12 @@ pub async fn resolve(
         secrets.insert("HF_TOKEN".into(), hf_token);
     }
 
-    let volumes = vec![
-        JobVolume {
-            volume_type: "model".into(),
-            source: params.source_repo.clone(),
-            mount_path: "/source".into(),
-            read_only: Some(true),
-        },
-        JobVolume {
-            volume_type: "bucket".into(),
-            source: "meshllm/layer-split-output".into(),
-            mount_path: "/bucket".into(),
-            read_only: None,
-        },
-    ];
+    let volumes = vec![JobVolume {
+        volume_type: "bucket".into(),
+        source: "meshllm/layer-split-output".into(),
+        mount_path: "/bucket".into(),
+        read_only: None,
+    }];
 
     let spec = JobSpec {
         docker_image: "ubuntu:22.04".into(),
