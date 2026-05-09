@@ -859,6 +859,18 @@ impl EnvVarGuard {
         std::env::set_var(key, value);
         Self { key, previous }
     }
+
+    fn set_str(key: &'static str, value: &str) -> Self {
+        let previous = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+
+    fn unset(key: &'static str) -> Self {
+        let previous = std::env::var_os(key);
+        std::env::remove_var(key);
+        Self { key, previous }
+    }
 }
 
 impl Drop for EnvVarGuard {
@@ -914,6 +926,68 @@ fn write_hf_artifact_stream_package(
         "hf://meshllm/stream-package@abc123".to_string(),
         manifest_sha,
     )
+}
+
+fn verified_owner_summary(owner_id: &str) -> OwnershipSummary {
+    OwnershipSummary {
+        owner_id: Some(owner_id.to_string()),
+        status: OwnershipStatus::Verified,
+        verified: true,
+        ..OwnershipSummary::default()
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn artifact_transfer_peer_eligibility_ignores_public_advertisement_by_default() -> Result<()>
+{
+    let _transfer_guard = EnvVarGuard::unset("MESH_LLM_ARTIFACT_TRANSFER");
+    let node = make_test_node(super::NodeRole::Worker).await?;
+    let mut peer = make_test_peer_info(make_test_endpoint_id(0x71));
+    peer.artifact_transfer_supported = true;
+
+    assert!(
+        !node.artifact_transfer_allowed_for_peer(&peer).await,
+        "raw public artifact-transfer advertisement must not make a peer eligible"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial]
+async fn artifact_transfer_peer_eligibility_allows_same_or_trusted_owner() -> Result<()> {
+    let _transfer_guard = EnvVarGuard::set_str("MESH_LLM_ARTIFACT_TRANSFER", "trusted");
+    let node = make_test_node(super::NodeRole::Worker).await?;
+    *node.owner_summary.lock().await = verified_owner_summary("owner-a");
+
+    let mut same_owner = make_test_peer_info(make_test_endpoint_id(0x72));
+    same_owner.artifact_transfer_supported = true;
+    same_owner.owner_summary = verified_owner_summary("owner-a");
+    assert!(node.artifact_transfer_allowed_for_peer(&same_owner).await);
+
+    let mut trusted_owner = make_test_peer_info(make_test_endpoint_id(0x73));
+    trusted_owner.artifact_transfer_supported = true;
+    trusted_owner.owner_summary = verified_owner_summary("owner-b");
+    {
+        let mut store = node.trust_store.lock().await;
+        store.add_trusted_owner("owner-b".to_string(), None);
+    }
+    assert!(
+        node.artifact_transfer_allowed_for_peer(&trusted_owner)
+            .await
+    );
+
+    let mut untrusted_owner = make_test_peer_info(make_test_endpoint_id(0x74));
+    untrusted_owner.artifact_transfer_supported = true;
+    untrusted_owner.owner_summary = verified_owner_summary("owner-c");
+    assert!(
+        !node
+            .artifact_transfer_allowed_for_peer(&untrusted_owner)
+            .await
+    );
+
+    Ok(())
 }
 
 #[test]
@@ -1032,6 +1106,7 @@ async fn artifact_transfer_stream_serves_authorized_stage_artifact() -> Result<(
 
     let cache = tempfile::tempdir().unwrap();
     let _cache_guard = EnvVarGuard::set("HF_HUB_CACHE", cache.path());
+    let _transfer_guard = EnvVarGuard::set_str("MESH_LLM_ARTIFACT_TRANSFER", "1");
     let (package_dir, package_ref, manifest_sha256) =
         write_hf_artifact_stream_package(cache.path());
     let server = make_test_node(super::NodeRole::Host { http_port: 9337 }).await?;
@@ -1126,6 +1201,87 @@ async fn artifact_transfer_stream_serves_authorized_stage_artifact() -> Result<(
     legacy_recv.read_exact(&mut legacy_bytes).await?;
     assert_eq!(legacy_bytes, b"layer000");
     assert!(package_dir.join("model-package.json").is_file());
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
+async fn artifact_transfer_stream_rejects_public_mesh_without_opt_in() -> Result<()> {
+    use crate::protocol::{read_len_prefixed, write_len_prefixed};
+    use base64::Engine as _;
+    use prost::Message as _;
+
+    let cache = tempfile::tempdir().unwrap();
+    let _cache_guard = EnvVarGuard::set("HF_HUB_CACHE", cache.path());
+    let _transfer_guard = EnvVarGuard::unset("MESH_LLM_ARTIFACT_TRANSFER");
+    let (_package_dir, package_ref, manifest_sha256) =
+        write_hf_artifact_stream_package(cache.path());
+    let server = make_test_node(super::NodeRole::Host { http_port: 9337 }).await?;
+    let client = make_test_node(super::NodeRole::Worker).await?;
+    server
+        .set_mesh_id("artifact-transfer-disabled-mesh".to_string())
+        .await;
+    client
+        .set_mesh_id("artifact-transfer-disabled-mesh".to_string())
+        .await;
+    server.start_accepting();
+    client.start_accepting();
+
+    let server_id = server.id();
+    let client_id = client.id();
+    let invite = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(&server.endpoint.addr())?);
+    client.join(&invite).await?;
+    wait_for_peer(&client, server_id).await;
+    wait_for_peer(&server, client_id).await;
+    server
+        .record_stage_topology(StageTopologyInstance {
+            topology_id: "topology-artifact-disabled".to_string(),
+            run_id: "run-artifact-disabled".to_string(),
+            model_id: "model-artifact".to_string(),
+            package_ref: package_ref.clone(),
+            manifest_sha256: manifest_sha256.clone(),
+            stages: vec![StageAssignment {
+                stage_id: "stage-0".to_string(),
+                stage_index: 0,
+                node_id: client_id,
+                layer_start: 0,
+                layer_end: 1,
+                endpoint: StageEndpoint {
+                    bind_addr: String::new(),
+                },
+            }],
+        })
+        .await;
+
+    let request = skippy_stage_proto::StageArtifactTransferRequest {
+        gen: skippy_protocol::STAGE_PROTOCOL_GENERATION,
+        requester_id: client_id.as_bytes().to_vec(),
+        topology_id: "topology-artifact-disabled".to_string(),
+        run_id: "run-artifact-disabled".to_string(),
+        stage_id: "stage-0".to_string(),
+        package_ref,
+        manifest_sha256,
+        relative_path: "layers/layer-000.gguf".to_string(),
+        offset: 0,
+        expected_size: Some(8),
+        expected_sha256: Some(sha256_hex(b"layer000")),
+    };
+
+    let (mut send, mut recv) = client
+        .open_skippy_stage_mesh_stream(server_id, skippy_protocol::STAGE_STREAM_ARTIFACT_TRANSFER)
+        .await?;
+    write_len_prefixed(&mut send, &request.encode_to_vec()).await?;
+    send.finish()?;
+    let response_buf = read_len_prefixed(&mut recv).await?;
+    let response =
+        skippy_stage_proto::StageArtifactTransferResponse::decode(response_buf.as_slice())?;
+    assert!(!response.accepted);
+    assert_eq!(
+        response.error.as_deref(),
+        Some("artifact transfer disabled")
+    );
 
     Ok(())
 }

@@ -633,9 +633,21 @@ struct SplitParticipantPackageSignal {
 }
 
 impl SplitParticipantPackageSignal {
-    fn can_stage_with(self, artifact_transfer_supported: bool) -> bool {
-        self.missing_artifact_bytes == 0 || artifact_transfer_supported
+    fn can_stage_with(
+        self,
+        package: &skippy::SkippyPackageIdentity,
+        artifact_transfer_supported: bool,
+    ) -> bool {
+        self.missing_artifact_bytes == 0
+            || artifact_transfer_supported
+            || package_ref_has_independent_prepare_source(&package.package_ref)
     }
+}
+
+fn package_ref_has_independent_prepare_source(package_ref: &str) -> bool {
+    // HF layer packages can be resolved by the selected worker during prepare;
+    // peer artifact transfer is only an optional cache warm path.
+    skippy_runtime::package::is_hf_package_ref(package_ref)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1727,13 +1739,14 @@ async fn collect_split_participants(
         if let Some(package_signal) =
             split_peer_package_signal(node, peer.id, model_ref, package).await
         {
-            if package_signal.can_stage_with(peer.artifact_transfer_supported) {
+            let artifact_transfer_allowed = node.artifact_transfer_allowed_for_peer(&peer).await;
+            if package_signal.can_stage_with(package, artifact_transfer_allowed) {
                 participants.push(
                     SplitParticipant::new(peer.id, peer.vram_bytes, peer.first_joined_mesh_ts)
                         .with_package_signals(
                             package_signal,
                             peer.rtt_ms,
-                            peer.artifact_transfer_supported,
+                            artifact_transfer_allowed,
                         ),
                 );
             } else {
@@ -2893,8 +2906,42 @@ mod tests {
                 availability_score: 6,
             }
         );
-        assert!(signal.can_stage_with(true));
-        assert!(!signal.can_stage_with(false));
+        assert!(signal.can_stage_with(&package, true));
+        assert!(!signal.can_stage_with(&package, false));
+    }
+
+    #[test]
+    fn split_package_signal_allows_hf_fallback_when_peer_transfer_is_disabled() {
+        let mut package = skippy::SkippyPackageIdentity {
+            source_model_bytes: 1_000,
+            layer_count: 10,
+            ..package(10)
+        };
+        package.package_ref = "hf://meshllm/demo-layer-package@abc123".to_string();
+        let signal = SplitParticipantPackageSignal {
+            cached_slice_bytes: 200,
+            missing_artifact_bytes: 800,
+            availability_score: 2,
+        };
+
+        assert!(signal.can_stage_with(&package, false));
+    }
+
+    #[test]
+    fn split_package_signal_still_requires_transfer_for_missing_local_package() {
+        let package = skippy::SkippyPackageIdentity {
+            source_model_bytes: 1_000,
+            layer_count: 10,
+            ..package(10)
+        };
+        let signal = SplitParticipantPackageSignal {
+            cached_slice_bytes: 200,
+            missing_artifact_bytes: 800,
+            availability_score: 2,
+        };
+
+        assert!(!signal.can_stage_with(&package, false));
+        assert!(signal.can_stage_with(&package, true));
     }
 
     #[test]

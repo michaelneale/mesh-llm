@@ -127,8 +127,10 @@ Privacy and compatibility boundaries:
   size, and SHA-256 digest.
 - Received artifacts are written to a fresh hidden partial file and installed
   atomically only after size and SHA-256 verification.
-- Set `MESH_LLM_ARTIFACT_TRANSFER=off` to opt out of advertising and serving
-  peer artifact transfer.
+- Peer artifact transfer is not advertised or served by default on public mesh
+  nodes. Set `MESH_LLM_ARTIFACT_TRANSFER=trusted` to enable same-owner or
+  explicitly trusted-owner transfer, or `MESH_LLM_ARTIFACT_TRANSFER=open` for
+  lab deployments that intentionally allow any peer.
 
 ## Manifest Schema
 

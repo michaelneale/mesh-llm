@@ -11,6 +11,13 @@ use sha2::{Digest, Sha256};
 pub(crate) const PACKAGE_MANIFEST_FILE: &str = "model-package.json";
 pub(crate) const MAX_PACKAGE_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ArtifactTransferMode {
+    Disabled,
+    TrustedOnly,
+    Open,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PackageArtifactRequest {
     pub(crate) package_ref: String,
@@ -49,16 +56,61 @@ pub(crate) struct StageArtifactSelection {
     pub(crate) include_projectors: bool,
 }
 
-pub(crate) fn artifact_transfer_enabled() -> bool {
+pub(crate) fn artifact_transfer_mode() -> ArtifactTransferMode {
     std::env::var("MESH_LLM_ARTIFACT_TRANSFER")
         .ok()
-        .map(|value| {
-            !matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "0" | "false" | "off" | "no"
-            )
+        .map(|value| match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "on" | "yes" | "open" | "any" | "public" => ArtifactTransferMode::Open,
+            "trusted" | "trust" | "owner" | "owners" | "same-owner" | "allowlist" => {
+                ArtifactTransferMode::TrustedOnly
+            }
+            _ => ArtifactTransferMode::Disabled,
         })
-        .unwrap_or(true)
+        .unwrap_or(ArtifactTransferMode::Disabled)
+}
+
+pub(crate) fn artifact_transfer_enabled() -> bool {
+    artifact_transfer_mode() != ArtifactTransferMode::Disabled
+}
+
+pub(crate) fn artifact_transfer_advertised(local_owner: &crate::crypto::OwnershipSummary) -> bool {
+    match artifact_transfer_mode() {
+        ArtifactTransferMode::Disabled => false,
+        ArtifactTransferMode::Open => true,
+        ArtifactTransferMode::TrustedOnly => verified_owner_id(local_owner).is_some(),
+    }
+}
+
+pub(crate) fn artifact_transfer_allowed_between(
+    local_owner: &crate::crypto::OwnershipSummary,
+    peer_owner: &crate::crypto::OwnershipSummary,
+    trust_store: &crate::crypto::TrustStore,
+) -> bool {
+    match artifact_transfer_mode() {
+        ArtifactTransferMode::Disabled => false,
+        ArtifactTransferMode::Open => true,
+        ArtifactTransferMode::TrustedOnly => {
+            let Some(local_owner_id) = verified_owner_id(local_owner) else {
+                return false;
+            };
+            let Some(peer_owner_id) = verified_owner_id(peer_owner) else {
+                return false;
+            };
+            local_owner_id == peer_owner_id
+                || trust_store
+                    .trusted_owners
+                    .iter()
+                    .any(|entry| entry.owner_id == peer_owner_id)
+        }
+    }
+}
+
+fn verified_owner_id(summary: &crate::crypto::OwnershipSummary) -> Option<&str> {
+    if summary.status == crate::crypto::OwnershipStatus::Verified && summary.verified {
+        summary.owner_id.as_deref()
+    } else {
+        None
+    }
 }
 
 pub(crate) fn safe_relative_artifact_path(path: &str) -> Result<PathBuf> {
@@ -477,6 +529,15 @@ mod tests {
         hex::encode(hasher.finalize())
     }
 
+    fn verified_owner(owner_id: &str) -> crate::crypto::OwnershipSummary {
+        crate::crypto::OwnershipSummary {
+            owner_id: Some(owner_id.to_string()),
+            status: crate::crypto::OwnershipStatus::Verified,
+            verified: true,
+            ..crate::crypto::OwnershipSummary::default()
+        }
+    }
+
     fn write_package_fixture(root: &Path) -> (PathBuf, String, String) {
         let package_dir = root
             .join("models--meshllm--demo-layers")
@@ -544,17 +605,95 @@ mod tests {
 
     #[test]
     #[serial]
-    fn artifact_transfer_enabled_defaults_on_and_supports_opt_out() {
+    fn artifact_transfer_policy_defaults_to_disabled_and_supports_opt_in_modes() {
         let prev = std::env::var_os("MESH_LLM_ARTIFACT_TRANSFER");
 
         std::env::remove_var("MESH_LLM_ARTIFACT_TRANSFER");
-        assert!(artifact_transfer_enabled());
-
-        std::env::set_var("MESH_LLM_ARTIFACT_TRANSFER", "off");
+        assert_eq!(artifact_transfer_mode(), ArtifactTransferMode::Disabled);
         assert!(!artifact_transfer_enabled());
 
-        std::env::set_var("MESH_LLM_ARTIFACT_TRANSFER", "1");
+        std::env::set_var("MESH_LLM_ARTIFACT_TRANSFER", "off");
+        assert_eq!(artifact_transfer_mode(), ArtifactTransferMode::Disabled);
+        assert!(!artifact_transfer_enabled());
+
+        std::env::set_var("MESH_LLM_ARTIFACT_TRANSFER", "trusted");
+        assert_eq!(artifact_transfer_mode(), ArtifactTransferMode::TrustedOnly);
         assert!(artifact_transfer_enabled());
+
+        std::env::set_var("MESH_LLM_ARTIFACT_TRANSFER", "1");
+        assert_eq!(artifact_transfer_mode(), ArtifactTransferMode::Open);
+        assert!(artifact_transfer_enabled());
+
+        restore_env("MESH_LLM_ARTIFACT_TRANSFER", prev);
+    }
+
+    #[test]
+    #[serial]
+    fn artifact_transfer_default_policy_does_not_advertise_or_serve_public_mesh() {
+        let prev = std::env::var_os("MESH_LLM_ARTIFACT_TRANSFER");
+        std::env::remove_var("MESH_LLM_ARTIFACT_TRANSFER");
+
+        let unsigned = crate::crypto::OwnershipSummary::default();
+        let trust_store = crate::crypto::TrustStore::default();
+
+        assert!(!artifact_transfer_advertised(&unsigned));
+        assert!(!artifact_transfer_allowed_between(
+            &unsigned,
+            &unsigned,
+            &trust_store
+        ));
+
+        restore_env("MESH_LLM_ARTIFACT_TRANSFER", prev);
+    }
+
+    #[test]
+    #[serial]
+    fn artifact_transfer_trusted_policy_requires_owned_or_allowlisted_peer() {
+        let prev = std::env::var_os("MESH_LLM_ARTIFACT_TRANSFER");
+        std::env::set_var("MESH_LLM_ARTIFACT_TRANSFER", "trusted");
+
+        let local = verified_owner("owner-a");
+        let same_owner_peer = verified_owner("owner-a");
+        let trusted_peer = verified_owner("owner-b");
+        let untrusted_peer = verified_owner("owner-c");
+        let mut trust_store = crate::crypto::TrustStore::default();
+        trust_store.add_trusted_owner("owner-b".to_string(), None);
+
+        assert!(artifact_transfer_advertised(&local));
+        assert!(artifact_transfer_allowed_between(
+            &local,
+            &same_owner_peer,
+            &trust_store
+        ));
+        assert!(artifact_transfer_allowed_between(
+            &local,
+            &trusted_peer,
+            &trust_store
+        ));
+        assert!(!artifact_transfer_allowed_between(
+            &local,
+            &untrusted_peer,
+            &trust_store
+        ));
+
+        restore_env("MESH_LLM_ARTIFACT_TRANSFER", prev);
+    }
+
+    #[test]
+    #[serial]
+    fn artifact_transfer_open_policy_is_explicit_public_mesh_opt_in() {
+        let prev = std::env::var_os("MESH_LLM_ARTIFACT_TRANSFER");
+        std::env::set_var("MESH_LLM_ARTIFACT_TRANSFER", "open");
+
+        let unsigned = crate::crypto::OwnershipSummary::default();
+        let trust_store = crate::crypto::TrustStore::default();
+
+        assert!(artifact_transfer_advertised(&unsigned));
+        assert!(artifact_transfer_allowed_between(
+            &unsigned,
+            &unsigned,
+            &trust_store
+        ));
 
         restore_env("MESH_LLM_ARTIFACT_TRANSFER", prev);
     }

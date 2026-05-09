@@ -459,8 +459,14 @@ cached and a worker does not:
   advertised `skippy-stage/1` `artifact-transfer` support must not be dialed
   for artifact transfer; the worker must fall back to local/HF package
   resolution.
-- Opt-out: with `MESH_LLM_ARTIFACT_TRANSFER=off`, the node must advertise
-  no `artifact-transfer` feature and reject inbound artifact transfer requests.
+- Default public-mesh safety: with `MESH_LLM_ARTIFACT_TRANSFER` unset, the node
+  must advertise no `artifact-transfer` feature, reject inbound artifact
+  transfer requests, and continue through local/HF fallback resolution.
+- Trusted-owner opt-in: with `MESH_LLM_ARTIFACT_TRANSFER=trusted`, artifact
+  transfer is eligible only for same-owner or explicitly trusted-owner peers.
+- Explicit lab opt-in: with `MESH_LLM_ARTIFACT_TRANSFER=open`, the node may
+  advertise and serve artifact transfer to any peer that is authorized by the
+  active split topology.
 - Privacy check: gossip/status output must not include local package inventory,
   cache roots, or artifact file lists; only subprotocol feature support is
   advertised.

@@ -640,6 +640,7 @@ impl Node {
         let my_explicit_model_interests = self.explicit_model_interests.lock().await.clone();
         let my_mesh_id = self.mesh_id.lock().await.clone();
         let my_owner_attestation = self.owner_attestation.lock().await.clone();
+        let my_owner_summary = self.owner_summary.lock().await.clone();
         let my_demand = self.get_demand();
         let stale_cutoff =
             std::time::Instant::now() - std::time::Duration::from_secs(PEER_STALE_SECS);
@@ -750,7 +751,7 @@ impl Node {
             served_model_runtime: my_model_runtime_descriptors,
             owner_attestation: my_owner_attestation,
             artifact_transfer_supported:
-                crate::models::artifact_transfer::artifact_transfer_enabled(),
+                crate::models::artifact_transfer::artifact_transfer_advertised(&my_owner_summary),
             stage_status_list_supported: true,
         });
         announcements

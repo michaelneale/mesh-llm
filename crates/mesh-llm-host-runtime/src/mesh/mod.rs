@@ -4592,17 +4592,22 @@ impl Node {
         peer_id: EndpointId,
         feature: &str,
     ) -> bool {
-        let state = self.state.lock().await;
-        let Some(peer) = state.peers.get(&peer_id) else {
+        let peer = {
+            let state = self.state.lock().await;
+            state.peers.get(&peer_id).cloned()
+        };
+        let Some(peer) = peer else {
             return false;
         };
         match feature {
             // Current PR peers advertise `stage-control` together with the
             // artifact-transfer feature. Older peers fall back to the legacy
             // skippy-stage ALPN control path.
-            skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STAGE_CONTROL
-            | skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_ARTIFACT_TRANSFER => {
+            skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STAGE_CONTROL => {
                 peer.artifact_transfer_supported
+            }
+            skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_ARTIFACT_TRANSFER => {
+                self.artifact_transfer_allowed_for_peer(&peer).await
             }
             skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STATUS_LIST => {
                 peer.stage_status_list_supported
@@ -4850,7 +4855,10 @@ impl Node {
         if request.requester_id.as_slice() != remote.as_bytes() {
             anyhow::bail!("artifact transfer requester_id does not match QUIC peer identity");
         }
-        if !crate::models::artifact_transfer::artifact_transfer_enabled() {
+        if !self
+            .artifact_transfer_serving_allowed_for_remote(remote)
+            .await
+        {
             return write_artifact_transfer_response(
                 &mut send,
                 false,
@@ -5173,6 +5181,41 @@ impl Node {
         } else {
             None
         }
+    }
+
+    pub(crate) async fn artifact_transfer_allowed_for_peer(&self, peer: &PeerInfo) -> bool {
+        peer.artifact_transfer_supported
+            && self
+                .artifact_transfer_policy_allows_peer_owner(&peer.owner_summary)
+                .await
+    }
+
+    async fn artifact_transfer_serving_allowed_for_remote(&self, remote: EndpointId) -> bool {
+        let peer_owner = {
+            let state = self.state.lock().await;
+            state
+                .peers
+                .get(&remote)
+                .map(|peer| peer.owner_summary.clone())
+        };
+        let Some(peer_owner) = peer_owner else {
+            return false;
+        };
+        self.artifact_transfer_policy_allows_peer_owner(&peer_owner)
+            .await
+    }
+
+    async fn artifact_transfer_policy_allows_peer_owner(
+        &self,
+        peer_owner: &OwnershipSummary,
+    ) -> bool {
+        let local_owner = self.owner_summary.lock().await.clone();
+        let trust_store = self.trust_store.lock().await.clone();
+        crate::models::artifact_transfer::artifact_transfer_allowed_between(
+            &local_owner,
+            peer_owner,
+            &trust_store,
+        )
     }
 
     async fn local_owner_status_error(&self) -> String {
