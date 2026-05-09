@@ -195,7 +195,6 @@ pub(crate) async fn dispatch_model_package(args: ModelPrepareArgs<'_>) -> Result
                 serde_json::to_string_pretty(&json!({
                     "dryRun": true,
                     "confirmRequired": true,
-                    "confirmMaxCostUsdRequired": job.job_plan.max_cost_usd,
                     "sourceRepo": job.source_repo,
                     "sourceFile": job.source_file,
                     "targetRepo": job.target_repo,
@@ -208,24 +207,22 @@ pub(crate) async fn dispatch_model_package(args: ModelPrepareArgs<'_>) -> Result
             eprintln!();
             eprintln!("🔍 Dry run — no HF Job was submitted.");
             eprintln!(
-                "To spend up to {}, rerun with --confirm --confirm-max-cost-usd {:.2}.",
-                format_cost(job.job_plan.max_cost_usd),
-                job.job_plan.max_cost_usd
+                "Add --confirm to submit. Max cost: {}.",
+                format_cost(job.job_plan.max_cost_usd)
             );
             println!("{}", serde_json::to_string_pretty(&redacted)?);
         }
         return Ok(());
     }
 
-    let confirmed_max = confirm_max_cost_usd.context(
-        "--confirm-max-cost-usd is required with --confirm so the max HF Jobs spend is explicit",
-    )?;
-    if confirmed_max + f64::EPSILON < job.job_plan.max_cost_usd {
-        bail!(
-            "--confirm-max-cost-usd {:.2} is lower than planned max cost {}; rerun dry-run and confirm the current cost",
-            confirmed_max,
-            format_cost(job.job_plan.max_cost_usd)
-        );
+    if let Some(confirmed_max) = confirm_max_cost_usd {
+        if confirmed_max + f64::EPSILON < job.job_plan.max_cost_usd {
+            bail!(
+                "--confirm-max-cost-usd {:.2} is lower than planned max cost {}; rerun dry-run and confirm the current cost",
+                confirmed_max,
+                format_cost(job.job_plan.max_cost_usd)
+            );
+        }
     }
 
     ensure_bucket_script_current(&hf_client).await?;
@@ -262,7 +259,7 @@ pub(crate) async fn dispatch_model_package(args: ModelPrepareArgs<'_>) -> Result
                 "targetRepo": job.target_repo,
                 "modelId": job.model_id,
                 "jobPlan": job.job_plan,
-                "confirmedMaxCostUsd": confirmed_max,
+                "confirmedMaxCostUsd": confirm_max_cost_usd,
             }))?
         );
     }

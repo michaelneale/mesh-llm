@@ -48,7 +48,7 @@ pub enum ModelsCommand {
         /// Actually submit the HF Job. Without this, the command only prints plan, spec, and max cost.
         #[arg(long)]
         confirm: bool,
-        /// Explicit max HF Jobs cost accepted for this submission; required with --confirm.
+        /// Optional max HF Jobs cost cap accepted for this submission.
         #[arg(long)]
         confirm_max_cost_usd: Option<f64>,
         /// Stream job logs after submission until completion.
