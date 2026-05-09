@@ -6,7 +6,7 @@ use serde_json::json;
 
 use crate::cli::commands::model_package as package_command;
 
-/// All CLI arguments for `models certify-family`, bundled to avoid too-many-arguments.
+/// All remote HF Job arguments for `models certify --hf-job`, bundled to avoid too-many-arguments.
 pub(crate) struct ModelCertifyArgs<'a> {
     pub source_repo: Option<&'a str>,
     pub family: Option<&'a str>,
@@ -76,7 +76,7 @@ pub(crate) async fn dispatch_model_certify(args: ModelCertifyArgs<'_>) -> Result
 
     let source_ref = source_repo.context(
         "Source repo is required for certification job submission.\n\
-         Usage: mesh-llm models certify-family <source_repo>:<quant> --family <family>",
+         Usage: mesh-llm models certify <source_repo>:<quant> --hf-job --family <family>",
     )?;
     let source_model_ref = model_ref::ModelRef::parse(source_ref)
         .with_context(|| format!("invalid source model ref: {source_ref}"))?;
@@ -84,14 +84,19 @@ pub(crate) async fn dispatch_model_certify(args: ModelCertifyArgs<'_>) -> Result
     let source_quant = match (source_model_ref.selector.as_deref(), quant) {
         (Some(selector), Some(quant)) if selector != quant => {
             bail!(
-                "source ref selector '{selector}' conflicts with --quant '{quant}'. \
-                 Use `mesh-llm models certify-family {source_repo}:{selector} --family ...`."
+                "source ref selector '{selector}' conflicts with requested quant '{quant}'. \
+                 Use `mesh-llm models certify {source_repo}:{selector} --hf-job --family ...`."
             );
         }
         (Some(selector), _) => Some(selector),
         (None, Some(quant)) => Some(quant),
         (None, None) => None,
     };
+    let source_quant = source_quant.with_context(|| {
+        format!(
+            "source ref must include a quant selector, for example `mesh-llm models certify {source_repo}:Q4_K_M --hf-job --family ...`"
+        )
+    })?;
     let family = family.context("--family is required for certification jobs")?;
 
     let submitting = confirm && !dry_run;
@@ -110,7 +115,7 @@ pub(crate) async fn dispatch_model_certify(args: ModelCertifyArgs<'_>) -> Result
     eprintln!("🔍 Resolving certification source...");
     let params = CertifyParams {
         source_repo: source_repo.to_string(),
-        quant: source_quant.map(|s| s.to_string()),
+        quant: Some(source_quant.to_string()),
         family: family.to_string(),
         artifact_repo: artifact_repo.map(|s| s.to_string()),
         model_id: model_id.map(|s| s.to_string()),
@@ -207,14 +212,8 @@ pub(crate) async fn dispatch_model_certify(args: ModelCertifyArgs<'_>) -> Result
     );
     eprintln!("🚀 Submitted: {}", info.id);
     eprintln!("   Console: {job_url}");
-    eprintln!(
-        "   Status:  mesh-llm models certify-family --status {}",
-        info.id
-    );
-    eprintln!(
-        "   Logs:    mesh-llm models certify-family --logs {}",
-        info.id
-    );
+    eprintln!("   Status:  mesh-llm models certify --status {}", info.id);
+    eprintln!("   Logs:    mesh-llm models certify --logs {}", info.id);
 
     if json {
         println!(

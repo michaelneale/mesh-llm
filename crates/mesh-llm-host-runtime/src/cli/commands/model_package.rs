@@ -7,7 +7,7 @@ use model_package::prepare::{self, DiscoveredQuant, PrepareParams};
 use model_package::script;
 use serde_json::json;
 
-/// All CLI arguments for `model-package`, bundled to avoid too-many-arguments.
+/// All remote HF Job arguments for `models package --hf-job`, bundled to avoid too-many-arguments.
 pub(crate) struct ModelPrepareArgs<'a> {
     pub source_repo: Option<&'a str>,
     pub quant: Option<&'a str>,
@@ -82,8 +82,8 @@ pub(crate) async fn dispatch_model_package(args: ModelPrepareArgs<'_>) -> Result
     let source_quant = match (source_model_ref.selector.as_deref(), quant) {
         (Some(selector), Some(quant)) if selector != quant => {
             bail!(
-                "source ref selector '{selector}' conflicts with --quant '{quant}'. \
-                 Use `mesh-llm models package {source_repo}:{selector}`."
+                "source ref selector '{selector}' conflicts with requested quant '{quant}'. \
+                 Use `mesh-llm models package {source_repo}:{selector} --hf-job`."
             );
         }
         (Some(selector), _) => Some(selector),

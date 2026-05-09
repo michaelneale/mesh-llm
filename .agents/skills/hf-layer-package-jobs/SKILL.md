@@ -7,12 +7,12 @@ metadata:
 
 # HF Layer Package Jobs
 
-Use this skill for the `models package` CLI, the `model-package` crate, and the daily Unsloth queue workflow.
+Use this skill for the `models package --hf-job` CLI, the `model-package` crate, and the daily Unsloth queue workflow.
 
 ## Workflow
 
 1. Keep model refs in colon-selector form such as `unsloth/Qwen3-8B-GGUF:Q4_K_M`; do not split the quant into a separate `--quant` argument for generated job inputs.
-2. Treat package submission as spend-bearing. The default behavior must be a dry run that prints the resolved package plan, effective timeout, selected HF Jobs hardware, and maximum cost. Require `--confirm` before submitting jobs.
+2. Treat package submission as spend-bearing. Remote packaging must be explicit with `--hf-job`; the default remote behavior must be a dry run that prints the resolved package plan, effective timeout, selected HF Jobs hardware, and maximum cost. Require `--confirm` before submitting jobs.
 3. Splitting is CPU and I/O bound. The HF Jobs hardware does not need enough RAM or VRAM to hold the full model; use CPU hardware suitable for running the splitter/build and scale timeout/cost estimates with model file size.
 4. If the bucket script is stale during a confirmed submission, update it automatically before queuing jobs. Dry runs should avoid side effects.
 5. The GitHub workflow should default to dry run. When confirmed, it should pass `--confirm`, submit at most the requested number of jobs, wait for every submitted HF Job, and fail if any job finishes unsuccessfully.

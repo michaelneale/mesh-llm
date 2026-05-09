@@ -15,7 +15,7 @@ for skippy staged serving.
 1. Certification jobs are spend-bearing. Always run a JSON dry run first.
 2. Do not submit unless the user or supervising workflow has accepted the dry-run
    `jobPlan.max_cost_usd`.
-3. Confirmed submissions use `--confirm`. `certify-family --timeout` is the
+3. Confirmed submissions use `--confirm`. `models certify --hf-job --timeout` is the
    certification job's hard max-cost timeout;
    do not rely on package-splitting size floors for certification jobs.
 4. Submit jobs against a pushed branch or exact commit SHA via
@@ -33,7 +33,8 @@ for skippy staged serving.
 Dry run:
 
 ```bash
-mesh-llm models certify-family ORG/REPO:QUANT \
+mesh-llm models certify ORG/REPO:QUANT \
+  --hf-job \
   --family FAMILY \
   --mesh-llm-ref REF \
   --artifact-repo meshllm/family-certification-runs \
@@ -43,7 +44,8 @@ mesh-llm models certify-family ORG/REPO:QUANT \
 Submit after reviewing `jobPlan.max_cost_usd`:
 
 ```bash
-mesh-llm models certify-family ORG/REPO:QUANT \
+mesh-llm models certify ORG/REPO:QUANT \
+  --hf-job \
   --family FAMILY \
   --mesh-llm-ref REF \
   --artifact-repo meshllm/family-certification-runs \
@@ -55,10 +57,10 @@ mesh-llm models certify-family ORG/REPO:QUANT \
 Inspect:
 
 ```bash
-mesh-llm models certify-family --status JOB_ID --json
-mesh-llm models certify-family --logs JOB_ID
-mesh-llm models certify-family --cancel JOB_ID
-mesh-llm models certify-family --list --json
+mesh-llm models certify --status JOB_ID --json
+mesh-llm models certify --logs JOB_ID
+mesh-llm models certify --cancel JOB_ID
+mesh-llm models certify --list --json
 ```
 
 ## Branch Loop
@@ -78,7 +80,8 @@ mesh-llm models certify-family --list --json
 For MiMo V2.5, use true Unsloth MiMo text GGUFs as evidence:
 
 ```bash
-mesh-llm models certify-family unsloth/MiMo-V2-Flash-GGUF:IQ4_XS \
+mesh-llm models certify unsloth/MiMo-V2-Flash-GGUF:IQ4_XS \
+  --hf-job \
   --family mimo2 \
   --mesh-llm-ref REF \
   --artifact-repo meshllm/family-certification-runs \

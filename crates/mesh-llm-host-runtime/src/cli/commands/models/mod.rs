@@ -17,9 +17,11 @@ use crate::models::{
     ModelCleanupPlan, ModelCleanupResult, SearchArtifactFilter, SearchProgress, SearchSort,
     ShowVariantsProgress,
 };
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde_json::json;
 use std::io::IsTerminal;
+use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -254,6 +256,77 @@ pub async fn run_model_certify(
     Ok(())
 }
 
+fn run_model_package_local(
+    model: Option<&str>,
+    out_dir: Option<&Path>,
+    projectors: &[PathBuf],
+    model_id: Option<&str>,
+    source_repo: Option<&str>,
+    source_revision: Option<&str>,
+    source_file: Option<&str>,
+    json_output: bool,
+) -> Result<()> {
+    let model = model.context(
+        "models package requires a model path or model coordinate, for example `mesh-llm models package ./model.gguf --out-dir ./model-package --model-id org/repo:Q4_K_M`",
+    )?;
+    let out_dir = out_dir.context("--out-dir is required for local `models package`")?;
+    let binary = find_skippy_model_package_binary();
+
+    let mut command = ProcessCommand::new(&binary);
+    command
+        .arg("write-package")
+        .arg(model)
+        .arg("--out-dir")
+        .arg(out_dir);
+    for projector in projectors {
+        command.arg("--projector").arg(projector);
+    }
+    if let Some(value) = model_id {
+        command.arg("--model-id").arg(value);
+    }
+    if let Some(value) = source_repo {
+        command.arg("--source-repo").arg(value);
+    }
+    if let Some(value) = source_revision {
+        command.arg("--source-revision").arg(value);
+    }
+    if let Some(value) = source_file {
+        command.arg("--source-file").arg(value);
+    }
+
+    let status = command
+        .status()
+        .with_context(|| format!("run {}", binary.display()))?;
+    if !status.success() {
+        bail!("skippy-model-package write-package failed with status {status}");
+    }
+
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "packaged": true,
+                "mode": "local",
+                "model": model,
+                "outDir": out_dir,
+            }))?
+        );
+    }
+    Ok(())
+}
+
+fn find_skippy_model_package_binary() -> PathBuf {
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(dir) = current_exe.parent() {
+            let sibling = dir.join("skippy-model-package");
+            if sibling.is_file() {
+                return sibling;
+            }
+        }
+    }
+    PathBuf::from("skippy-model-package")
+}
+
 fn validate_model_certify_options(
     package_only: bool,
     api_base: Option<&str>,
@@ -420,7 +493,12 @@ pub async fn dispatch_models_command(command: &ModelsCommand) -> Result<()> {
     match command {
         ModelsCommand::Package {
             source_repo,
-            quant,
+            hf_job,
+            out_dir,
+            projectors,
+            source_identity_repo,
+            source_revision,
+            source_file,
             target,
             model_id,
             flavor,
@@ -437,31 +515,77 @@ pub async fn dispatch_models_command(command: &ModelsCommand) -> Result<()> {
             update_script,
             json,
         } => {
-            model_package::dispatch_model_package(model_package::ModelPrepareArgs {
-                source_repo: source_repo.as_deref(),
-                quant: quant.as_deref(),
-                target: target.as_deref(),
-                model_id: model_id.as_deref(),
-                flavor,
-                timeout,
-                mesh_llm_ref,
-                job_image,
-                dry_run: *dry_run,
-                confirm: *confirm,
-                follow: *follow,
-                json: *json,
-                status: status.as_deref(),
-                logs: logs.as_deref(),
-                cancel: cancel.as_deref(),
-                list: *list,
-                update_script: *update_script,
-            })
-            .await?;
+            let management =
+                status.is_some() || logs.is_some() || cancel.is_some() || *list || *update_script;
+            if *hf_job || management {
+                if out_dir.is_some()
+                    || !projectors.is_empty()
+                    || source_identity_repo.is_some()
+                    || source_revision.is_some()
+                    || source_file.is_some()
+                {
+                    bail!(
+                        "HF Job `models package` does not use local packaging flags like --out-dir, --projector, --source-repo, --source-revision, or --source-file"
+                    );
+                }
+                model_package::dispatch_model_package(model_package::ModelPrepareArgs {
+                    source_repo: source_repo.as_deref(),
+                    quant: None,
+                    target: target.as_deref(),
+                    model_id: model_id.as_deref(),
+                    flavor,
+                    timeout,
+                    mesh_llm_ref,
+                    job_image,
+                    dry_run: *dry_run,
+                    confirm: *confirm,
+                    follow: *follow,
+                    json: *json,
+                    status: status.as_deref(),
+                    logs: logs.as_deref(),
+                    cancel: cancel.as_deref(),
+                    list: *list,
+                    update_script: *update_script,
+                })
+                .await?;
+            } else {
+                if *confirm || *dry_run || *follow || target.is_some() {
+                    bail!(
+                        "local `models package` does not use --confirm, --dry-run, --follow, or --target; add --hf-job for remote packaging"
+                    );
+                }
+                run_model_package_local(
+                    source_repo.as_deref(),
+                    out_dir.as_deref(),
+                    projectors,
+                    model_id.as_deref(),
+                    source_identity_repo.as_deref(),
+                    source_revision.as_deref(),
+                    source_file.as_deref(),
+                    *json,
+                )?;
+            }
         }
-        ModelsCommand::CertifyFamily {
-            source_repo,
+        ModelsCommand::Recommended { json } | ModelsCommand::List { json } => {
+            run_model_recommended(*json)?
+        }
+        ModelsCommand::Installed { json } => run_model_installed(*json)?,
+        ModelsCommand::Cleanup {
+            unused_since,
+            yes,
+            json,
+        } => run_model_cleanup(unused_since.as_deref(), *yes, *json)?,
+        ModelsCommand::Prune { yes, json } => run_model_prune(*yes, *json)?,
+        ModelsCommand::Certify {
+            model,
+            hf_job,
+            report_out,
+            json,
+            package_only,
+            api_base,
+            prompt,
+            max_tokens,
             family,
-            quant,
             artifact_repo,
             model_id,
             flavor,
@@ -481,7 +605,6 @@ pub async fn dispatch_models_command(command: &ModelsCommand) -> Result<()> {
             split_layer,
             splits,
             activation_width,
-            prompt,
             ctx_size,
             n_gpu_layers,
             startup_timeout_secs,
@@ -495,81 +618,102 @@ pub async fn dispatch_models_command(command: &ModelsCommand) -> Result<()> {
             skip_dtype,
             skip_state,
             borrow_resident_hits,
-            json,
         } => {
-            let options = ::model_package::certify::CertifyOptions {
-                run_id: run_id.clone(),
-                layer_end: layer_end.clone(),
-                split_layer: split_layer.clone(),
-                splits: splits.clone(),
-                activation_width: activation_width.clone(),
-                prompt: prompt.clone(),
-                ctx_size: ctx_size.clone(),
-                n_gpu_layers: n_gpu_layers.clone(),
-                startup_timeout_secs: startup_timeout_secs.clone(),
-                wire_dtype: wire_dtype.clone(),
-                wire_dtypes: wire_dtypes.clone(),
-                prefix_token_count: prefix_token_count.clone(),
-                cache_hit_repeats: cache_hit_repeats.clone(),
-                allow_mismatch: *allow_mismatch,
-                strict_dtype: *strict_dtype,
-                skip_correctness: *skip_correctness,
-                skip_dtype: *skip_dtype,
-                skip_state: *skip_state,
-                borrow_resident_hits: *borrow_resident_hits,
-            };
-            model_certify::dispatch_model_certify(model_certify::ModelCertifyArgs {
-                source_repo: source_repo.as_deref(),
-                family: family.as_deref(),
-                quant: quant.as_deref(),
-                artifact_repo: artifact_repo.as_deref(),
-                model_id: model_id.as_deref(),
-                flavor,
-                timeout,
-                mesh_llm_ref,
-                job_image,
-                dry_run: *dry_run,
-                confirm: *confirm,
-                follow: *follow,
-                json: *json,
-                status: status.as_deref(),
-                logs: logs.as_deref(),
-                cancel: cancel.as_deref(),
-                list: *list,
-                update_script: *update_script,
-                options,
-            })
-            .await?;
-        }
-        ModelsCommand::Recommended { json } | ModelsCommand::List { json } => {
-            run_model_recommended(*json)?
-        }
-        ModelsCommand::Installed { json } => run_model_installed(*json)?,
-        ModelsCommand::Cleanup {
-            unused_since,
-            yes,
-            json,
-        } => run_model_cleanup(unused_since.as_deref(), *yes, *json)?,
-        ModelsCommand::Prune { yes, json } => run_model_prune(*yes, *json)?,
-        ModelsCommand::Certify {
-            model,
-            report_out,
-            json,
-            package_only,
-            api_base,
-            prompt,
-            max_tokens,
-        } => {
-            run_model_certify(
-                model,
-                report_out.as_deref(),
-                *json,
-                *package_only,
-                api_base.as_deref(),
-                prompt,
-                *max_tokens,
-            )
-            .await?
+            let management =
+                status.is_some() || logs.is_some() || cancel.is_some() || *list || *update_script;
+            if *hf_job || management {
+                if report_out.is_some() || *package_only || api_base.is_some() {
+                    bail!(
+                        "HF Job `models certify` does not use local certification flags like --report-out, --package-only, or --api-base"
+                    );
+                }
+                let options = ::model_package::certify::CertifyOptions {
+                    run_id: run_id.clone(),
+                    layer_end: layer_end.clone(),
+                    split_layer: split_layer.clone(),
+                    splits: splits.clone(),
+                    activation_width: activation_width.clone(),
+                    prompt: prompt.clone(),
+                    ctx_size: ctx_size.clone(),
+                    n_gpu_layers: n_gpu_layers.clone(),
+                    startup_timeout_secs: startup_timeout_secs.clone(),
+                    wire_dtype: wire_dtype.clone(),
+                    wire_dtypes: wire_dtypes.clone(),
+                    prefix_token_count: prefix_token_count.clone(),
+                    cache_hit_repeats: cache_hit_repeats.clone(),
+                    allow_mismatch: *allow_mismatch,
+                    strict_dtype: *strict_dtype,
+                    skip_correctness: *skip_correctness,
+                    skip_dtype: *skip_dtype,
+                    skip_state: *skip_state,
+                    borrow_resident_hits: *borrow_resident_hits,
+                };
+                model_certify::dispatch_model_certify(model_certify::ModelCertifyArgs {
+                    source_repo: model.as_deref(),
+                    family: family.as_deref(),
+                    quant: None,
+                    artifact_repo: artifact_repo.as_deref(),
+                    model_id: model_id.as_deref(),
+                    flavor,
+                    timeout,
+                    mesh_llm_ref,
+                    job_image,
+                    dry_run: *dry_run,
+                    confirm: *confirm,
+                    follow: *follow,
+                    json: *json,
+                    status: status.as_deref(),
+                    logs: logs.as_deref(),
+                    cancel: cancel.as_deref(),
+                    list: *list,
+                    update_script: *update_script,
+                    options,
+                })
+                .await?;
+            } else {
+                if family.is_some()
+                    || artifact_repo.is_some()
+                    || model_id.is_some()
+                    || run_id.is_some()
+                    || layer_end.is_some()
+                    || split_layer.is_some()
+                    || splits.is_some()
+                    || activation_width.is_some()
+                    || ctx_size.is_some()
+                    || n_gpu_layers.is_some()
+                    || startup_timeout_secs.is_some()
+                    || wire_dtype.is_some()
+                    || wire_dtypes.is_some()
+                    || prefix_token_count.is_some()
+                    || cache_hit_repeats.is_some()
+                    || *allow_mismatch
+                    || *strict_dtype
+                    || *skip_correctness
+                    || *skip_dtype
+                    || *skip_state
+                    || *borrow_resident_hits
+                    || *dry_run
+                    || *confirm
+                    || *follow
+                {
+                    bail!(
+                        "local `models certify` does not use remote family/HF Job flags; add --hf-job for remote family certification"
+                    );
+                }
+                let model = model.as_deref().context(
+                    "models certify requires a model ref unless --hf-job management flags are used",
+                )?;
+                run_model_certify(
+                    model,
+                    report_out.as_deref(),
+                    *json,
+                    *package_only,
+                    api_base.as_deref(),
+                    prompt.as_deref().unwrap_or("Say ok."),
+                    *max_tokens,
+                )
+                .await?
+            }
         }
         ModelsCommand::Search {
             query,

@@ -99,6 +99,7 @@ Subcommands:
 - `search`
 - `show`
 - `download`
+- `package`
 - `certify`
 - `updates`
 
@@ -169,25 +170,75 @@ Switches:
 - `--draft`: also download the recommended draft model (if available).
 - `--json`: machine-readable output.
 
+### `models package`
+
+Use this when you want to write a Skippy layer package for a GGUF model, either
+locally or through Hugging Face Jobs.
+
+Without `--hf-job`, `models package` writes a local package by invoking the
+bundled `skippy-model-package write-package` tool. With `--hf-job`, it plans or
+submits a remote Hugging Face Job for CPU layer packaging. Remote submissions
+are spend-bearing and require `--confirm`; otherwise the command prints a dry
+run plan, job spec, hardware choice, image, timeout, and max cost.
+
+Usage:
+
+```bash
+mesh-llm models package ./model.gguf --out-dir ./model-package --model-id org/repo:Q4_K_M
+mesh-llm models package unsloth/Kimi-K2.5-GGUF:Q4_1 --hf-job --json
+mesh-llm models package unsloth/Kimi-K2.5-GGUF:Q4_1 --hf-job --confirm --follow --json
+```
+
+Local switches:
+
+- `--out-dir <PATH>`: required local output directory.
+- `--projector <PATH>`: include a local projector GGUF. Repeat for multiple projectors.
+- `--model-id <ID>`: override the package manifest model ID.
+- `--source-repo <REPO>`: source repo identity for local path packaging.
+- `--source-revision <REV>`: source revision identity for local path packaging.
+- `--source-file <FILE>`: source file identity for local path packaging.
+- `--json`: machine-readable output.
+
+HF Job switches:
+
+- `--hf-job`: use Hugging Face Jobs instead of local packaging.
+- `--confirm`: submit the job. Without this, the command is a dry run.
+- `--follow`: stream logs after submission.
+- `--status <JOB_ID>`, `--logs <JOB_ID>`, `--cancel <JOB_ID>`, `--list`: manage submitted jobs.
+- `--target <REPO>`: target repo for the published layer package.
+- `--mesh-llm-ref <REF>`: branch, tag, or commit SHA to build in the job.
+- `--job-image <IMAGE|auto>`: Docker image for the job. `auto` uses the latest published mesh-llm HF jobs image when possible.
+- `--timeout <DURATION>`: requested job timeout; model-size floors may raise it.
+- `--json`: machine-readable output.
+
 ### `models certify`
 
 Use this when you want a repeatable Skippy layer-package confidence report
-before treating a split package as ready for a release or rollout.
+before treating a split package or model family as ready for a release or
+rollout.
 
-Choose exactly one mode: use `--package-only` for package integrity and local
-stage materialization, or pass `--api-base` to also prove an already running
-OpenAI-compatible mesh endpoint. Runtime certification checks the model list and
-requires real text-bearing responses from both chat completions and Responses
-API smoke requests, not only successful HTTP status codes.
+Without `--hf-job`, choose exactly one local mode: use `--package-only` for
+package integrity and local stage materialization, or pass `--api-base` to also
+prove an already running OpenAI-compatible mesh endpoint. Runtime certification
+checks the model list and requires real text-bearing responses from both chat
+completions and Responses API smoke requests, not only successful HTTP status
+codes.
+
+With `--hf-job`, `models certify` plans or submits a Hugging Face Job for family
+certification. Remote submissions are spend-bearing and require `--confirm`;
+otherwise the command prints a dry run plan, job spec, hardware choice, image,
+timeout, and max cost.
 
 Usage:
 
 ```bash
 mesh-llm models certify hf://meshllm/Qwen3-8B-Q4_K_M-layers --package-only --report-out cert.json
 mesh-llm models certify unsloth/Qwen3-8B-GGUF:Q4_K_M --api-base http://127.0.0.1:9337 --json
+mesh-llm models certify unsloth/MiMo-V2-Flash-GGUF:IQ4_XS --hf-job --family mimo2 --json
+mesh-llm models certify unsloth/MiMo-V2-Flash-GGUF:IQ4_XS --hf-job --family mimo2 --confirm --follow --json
 ```
 
-Switches:
+Local switches:
 
 - `--package-only`: verify package resolution, artifact integrity, and local stage materialization without claiming runtime OpenAI readiness.
 - `--api-base <URL>`: run `/v1/models`, `/v1/chat/completions`, and `/v1/responses` smoke gates against an already running mesh-llm API. The URL must be an `http` or `https` base URL.
@@ -195,6 +246,20 @@ Switches:
 - `--prompt <PROMPT>`: prompt for runtime smoke gates.
 - `--max-tokens <N>`: max tokens for runtime smoke gates. Must be greater than zero when runtime gates are enabled.
 - `--json`: print the certification report.
+
+HF Job switches:
+
+- `--hf-job`: use Hugging Face Jobs for family certification.
+- `--family <FAMILY>`: family label to certify.
+- `--confirm`: submit the job. Without this, the command is a dry run.
+- `--follow`: stream logs after submission.
+- `--status <JOB_ID>`, `--logs <JOB_ID>`, `--cancel <JOB_ID>`, `--list`: manage submitted jobs.
+- `--artifact-repo <REPO>`: dataset repo for certification artifacts.
+- `--mesh-llm-ref <REF>`: branch, tag, or commit SHA to build in the job.
+- `--job-image <IMAGE|auto>`: Docker image for the job. `auto` uses the latest published mesh-llm HF jobs image when possible.
+- `--timeout <DURATION>`: requested job timeout and max-cost cap.
+- `--prompt <PROMPT>`: prompt for remote correctness lanes.
+- `--json`: machine-readable output.
 
 ### `models updates`
 

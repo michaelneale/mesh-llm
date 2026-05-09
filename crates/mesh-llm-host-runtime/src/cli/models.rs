@@ -1,4 +1,5 @@
-use clap::{Subcommand, ValueEnum};
+use clap::{ArgAction, Subcommand, ValueEnum};
+use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum ModelSearchSort {
@@ -17,13 +18,28 @@ pub enum ModelSearchSort {
 // CLI enums mirror clap's argument shape; boxing these fields would make the parser harder to maintain.
 #[allow(clippy::large_enum_variant)]
 pub enum ModelsCommand {
-    /// Package a GGUF model for distributed inference by splitting it into layer files on Hugging Face Jobs.
+    /// Package a GGUF model for distributed inference.
     Package {
         /// Source Hugging Face model ref (e.g. unsloth/Qwen3-235B-A22B-GGUF:UD-Q4_K_XL).
         source_repo: Option<String>,
-        /// Quantization variant (deprecated; prefer source refs like repo:Q4_K_M).
+        /// Run packaging on Hugging Face Jobs. Without this, writes a local package.
+        #[arg(long, action = ArgAction::SetTrue)]
+        hf_job: bool,
+        /// Local output directory for local packaging.
         #[arg(long)]
-        quant: Option<String>,
+        out_dir: Option<PathBuf>,
+        /// Local projector GGUF(s) to include in the package.
+        #[arg(long = "projector")]
+        projectors: Vec<PathBuf>,
+        /// Source repo identity for local path packaging.
+        #[arg(long = "source-repo")]
+        source_identity_repo: Option<String>,
+        /// Source revision identity for local path packaging.
+        #[arg(long)]
+        source_revision: Option<String>,
+        /// Source file identity for local path packaging.
+        #[arg(long)]
+        source_file: Option<String>,
         /// Target repo for the layer package (auto-derived if omitted).
         #[arg(long)]
         target: Option<String>,
@@ -70,16 +86,67 @@ pub enum ModelsCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Certify a GGUF model family on Hugging Face Jobs and optionally publish artifacts.
-    CertifyFamily {
-        /// Source Hugging Face model ref (e.g. unsloth/MiMo-V2-Flash-GGUF:IQ4_XS).
-        source_repo: Option<String>,
+    /// List recommended models from the remote meshllm/catalog.
+    Recommended {
+        /// Emit JSON output.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List installed local models from the HF cache.
+    Installed {
+        /// Emit JSON output.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Preview or remove mesh-managed models from the Hugging Face cache.
+    Cleanup {
+        /// Only include models that mesh-llm has not used for the given age (for example 30d or 12h).
+        #[arg(long)]
+        unused_since: Option<String>,
+        /// Remove the selected files instead of printing a dry run preview.
+        #[arg(long)]
+        yes: bool,
+        /// Emit JSON output.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove stale derived skippy stage artifacts from the mesh cache.
+    Prune {
+        /// Remove files instead of printing a dry run note.
+        #[arg(long)]
+        yes: bool,
+        /// Emit JSON output.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Certify a Skippy layer package locally, or certify a GGUF family on Hugging Face Jobs.
+    Certify {
+        /// Local package/catalog ref, or remote source GGUF ref with --hf-job.
+        model: Option<String>,
+        /// Run family certification on Hugging Face Jobs.
+        #[arg(long, action = ArgAction::SetTrue)]
+        hf_job: bool,
+        /// Write the JSON certification report to this path for local certification.
+        #[arg(long)]
+        report_out: Option<PathBuf>,
+        /// Emit JSON output.
+        #[arg(long)]
+        json: bool,
+        /// Stop after package resolution, integrity checks, and local stage materialization.
+        #[arg(long)]
+        package_only: bool,
+        /// Existing mesh-llm OpenAI-compatible API base for local runtime smoke gates.
+        #[arg(long)]
+        api_base: Option<String>,
+        /// Prompt for local runtime smoke gates or remote correctness lanes.
+        #[arg(long)]
+        prompt: Option<String>,
+        /// Maximum tokens for local runtime smoke gates.
+        #[arg(long, default_value_t = 2)]
+        max_tokens: u32,
         /// Family label to certify (for example mimo2, qwen3-dense, or gemma2).
         #[arg(long)]
         family: Option<String>,
-        /// Quantization variant (deprecated; prefer source refs like repo:Q4_K_M).
-        #[arg(long)]
-        quant: Option<String>,
         /// Dataset repo for certification artifacts. If omitted, artifacts remain in the job workspace.
         #[arg(long)]
         artifact_repo: Option<String>,
@@ -137,9 +204,6 @@ pub enum ModelsCommand {
         /// Hidden width for exact state-handoff lane.
         #[arg(long)]
         activation_width: Option<String>,
-        /// Correctness prompt.
-        #[arg(long)]
-        prompt: Option<String>,
         /// Context size.
         #[arg(long)]
         ctx_size: Option<String>,
@@ -179,67 +243,7 @@ pub enum ModelsCommand {
         /// Borrow resident KV sessions for ResidentKv hits.
         #[arg(long)]
         borrow_resident_hits: bool,
-        /// Emit JSON output.
-        #[arg(long)]
-        json: bool,
     },
-    /// List recommended models from the remote meshllm/catalog.
-    Recommended {
-        /// Emit JSON output.
-        #[arg(long)]
-        json: bool,
-    },
-    /// List installed local models from the HF cache.
-    Installed {
-        /// Emit JSON output.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Preview or remove mesh-managed models from the Hugging Face cache.
-    Cleanup {
-        /// Only include models that mesh-llm has not used for the given age (for example 30d or 12h).
-        #[arg(long)]
-        unused_since: Option<String>,
-        /// Remove the selected files instead of printing a dry run preview.
-        #[arg(long)]
-        yes: bool,
-        /// Emit JSON output.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Remove stale derived skippy stage artifacts from the mesh cache.
-    Prune {
-        /// Remove files instead of printing a dry run note.
-        #[arg(long)]
-        yes: bool,
-        /// Emit JSON output.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Certify a Skippy layer package can be resolved, verified, and smoke-tested.
-    Certify {
-        /// Exact layer package ref, local package dir, or catalog model ref with a package mapping.
-        model: String,
-        /// Write the JSON certification report to this path.
-        #[arg(long)]
-        report_out: Option<std::path::PathBuf>,
-        /// Emit JSON output.
-        #[arg(long)]
-        json: bool,
-        /// Stop after package resolution, integrity checks, and local stage materialization.
-        #[arg(long)]
-        package_only: bool,
-        /// Existing mesh-llm OpenAI-compatible API base for runtime smoke gates.
-        #[arg(long)]
-        api_base: Option<String>,
-        /// Prompt for runtime smoke gates.
-        #[arg(long, default_value = "Say ok.")]
-        prompt: String,
-        /// Maximum tokens for runtime smoke gates.
-        #[arg(long, default_value_t = 2)]
-        max_tokens: u32,
-    },
-    // Delete variant defined with explicit clap args later in file (existing block).
     /// List remote catalog models.
     #[command(hide = true)]
     List {
