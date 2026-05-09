@@ -2288,56 +2288,17 @@ pub(crate) async fn run() -> Result<()> {
             }
             nostr::AutoDecision::StartNew { models } => {
                 if cli.client {
-                    // Retry discovery — meshes may appear later
-                    let _ = emit_event(OutputEvent::DiscoveryFailed {
-                        message: "No meshes found yet — retrying in 15s...".to_string(),
-                        detail: None,
+                    // Client mode should still expose its local proxy and
+                    // management API while it waits for a mesh to appear.
+                    // The passive runtime path starts background Nostr
+                    // rediscovery, so leave the join list empty and continue
+                    // startup instead of blocking before the API can bind.
+                    let _ = emit_event(OutputEvent::Info {
+                        message:
+                            "No meshes found yet — starting client API while discovery continues"
+                                .to_string(),
+                        context: None,
                     });
-                    let mut found = false;
-                    for attempt in 1..=20 {
-                        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
-                        let _ = emit_event(OutputEvent::DiscoveryStarting {
-                            source: format!("Nostr retry {attempt}/20"),
-                        });
-                        if let Ok(retry_meshes) = nostr::discover(&relays, &filter, None).await {
-                            if let nostr::AutoDecision::Join { candidates } =
-                                smart_auto_blocking(retry_meshes, my_vram_gb, target_name.clone())
-                                    .await?
-                            {
-                                let (_, mesh) = &candidates[0];
-                                if cli.mesh_name.is_none() {
-                                    if let Some(ref name) = mesh.listing.name {
-                                        cli.mesh_name = Some(name.clone());
-                                    }
-                                }
-                                let _ = emit_event(OutputEvent::DiscoveryJoined {
-                                    mesh: mesh
-                                        .listing
-                                        .name
-                                        .as_deref()
-                                        .unwrap_or("unnamed")
-                                        .to_string(),
-                                });
-                                for (token, _) in &candidates {
-                                    cli.join.push(token.clone());
-                                }
-                                found = true;
-                                break;
-                            }
-                        } else {
-                            let _ = emit_event(OutputEvent::DiscoveryFailed {
-                                message: format!("Retry {attempt}/20 discovery failed"),
-                                detail: None,
-                            });
-                        }
-                    }
-                    if !found {
-                        let _ = emit_event(OutputEvent::DiscoveryFailed {
-                            message: "No meshes found after 5 minutes of retrying.".to_string(),
-                            detail: None,
-                        });
-                        anyhow::bail!("No meshes found after 5 minutes of retrying.");
-                    }
                 } else {
                     start_new_mesh(&mut cli, &models, my_vram_gb, has_startup_models);
                 }
