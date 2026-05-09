@@ -19,6 +19,7 @@ pub(crate) struct ModelPrepareArgs<'a> {
     pub job_image: &'a str,
     pub dry_run: bool,
     pub confirm: bool,
+    pub confirm_max_cost_usd: Option<f64>,
     pub follow: bool,
     pub json: bool,
     pub status: Option<&'a str>,
@@ -41,6 +42,7 @@ pub(crate) async fn dispatch_model_package(args: ModelPrepareArgs<'_>) -> Result
         job_image,
         dry_run,
         confirm,
+        confirm_max_cost_usd,
         follow,
         json,
         status,
@@ -193,6 +195,7 @@ pub(crate) async fn dispatch_model_package(args: ModelPrepareArgs<'_>) -> Result
                 serde_json::to_string_pretty(&json!({
                     "dryRun": true,
                     "confirmRequired": true,
+                    "confirmMaxCostUsdRequired": job.job_plan.max_cost_usd,
                     "sourceRepo": job.source_repo,
                     "sourceFile": job.source_file,
                     "targetRepo": job.target_repo,
@@ -203,16 +206,36 @@ pub(crate) async fn dispatch_model_package(args: ModelPrepareArgs<'_>) -> Result
             );
         } else {
             eprintln!();
-            eprintln!("🔍 Dry run — no HF Job was submitted. Add --confirm to submit.");
+            eprintln!("🔍 Dry run — no HF Job was submitted.");
+            eprintln!(
+                "To spend up to {}, rerun with --confirm --confirm-max-cost-usd {:.2}.",
+                format_cost(job.job_plan.max_cost_usd),
+                job.job_plan.max_cost_usd
+            );
             println!("{}", serde_json::to_string_pretty(&redacted)?);
         }
         return Ok(());
+    }
+
+    let confirmed_max = confirm_max_cost_usd.context(
+        "--confirm-max-cost-usd is required with --confirm so the max HF Jobs spend is explicit",
+    )?;
+    if confirmed_max + f64::EPSILON < job.job_plan.max_cost_usd {
+        bail!(
+            "--confirm-max-cost-usd {:.2} is lower than planned max cost {}; rerun dry-run and confirm the current cost",
+            confirmed_max,
+            format_cost(job.job_plan.max_cost_usd)
+        );
     }
 
     ensure_bucket_script_current(&hf_client).await?;
 
     // Submit.
     eprintln!();
+    eprintln!(
+        "💸 Confirmed HF Jobs max cost: {}",
+        format_cost(job.job_plan.max_cost_usd)
+    );
     let jobs_client = jobs_client.as_ref().expect("jobs client initialized");
     let info = jobs_client.submit(&job.namespace, &job.spec).await?;
     let job_url = format!(
@@ -239,6 +262,7 @@ pub(crate) async fn dispatch_model_package(args: ModelPrepareArgs<'_>) -> Result
                 "targetRepo": job.target_repo,
                 "modelId": job.model_id,
                 "jobPlan": job.job_plan,
+                "confirmedMaxCostUsd": confirmed_max,
             }))?
         );
     }
