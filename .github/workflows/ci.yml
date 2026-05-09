@@ -15,6 +15,7 @@ env:
   CACHE_NAMESPACE: mesh-llm
   MODEL_URL: https://huggingface.co/unsloth/SmolLM2-135M-Instruct-GGUF/resolve/9e6855bc4be717fca1ef21360a1db4b29d5c559a/SmolLM2-135M-Instruct-Q8_0.gguf
   MODEL_FILE: SmolLM2-135M-Instruct-Q8_0.gguf
+  CARGO_INCREMENTAL: "0"
   SCCACHE_GHA_ENABLED: "true"
   LLAMA_STAGE_BUILD_DIR: .deps/llama.cpp/build-stage-abi-static
 
