@@ -22,6 +22,7 @@ pub struct PrepareParams {
     pub flavor: String,
     pub timeout_seconds: u64,
     pub mesh_llm_ref: String,
+    pub job_image: Option<String>,
     pub hf_token: Option<String>,
 }
 
@@ -251,7 +252,10 @@ pub async fn resolve(
     ];
 
     let spec = JobSpec {
-        docker_image: "ubuntu:22.04".into(),
+        docker_image: crate::jobs::resolve_hf_jobs_image(
+            &params.mesh_llm_ref,
+            params.job_image.as_deref(),
+        ),
         command: vec!["bash".into(), "/bucket/split-model-job.sh".into()],
         arguments: vec![],
         environment,

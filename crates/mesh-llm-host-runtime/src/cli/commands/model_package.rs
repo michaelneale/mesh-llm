@@ -16,6 +16,7 @@ pub(crate) struct ModelPrepareArgs<'a> {
     pub flavor: &'a str,
     pub timeout: &'a str,
     pub mesh_llm_ref: &'a str,
+    pub job_image: &'a str,
     pub dry_run: bool,
     pub confirm: bool,
     pub follow: bool,
@@ -37,6 +38,7 @@ pub(crate) async fn dispatch_model_package(args: ModelPrepareArgs<'_>) -> Result
         flavor,
         timeout,
         mesh_llm_ref,
+        job_image,
         dry_run,
         confirm,
         follow,
@@ -122,6 +124,7 @@ pub(crate) async fn dispatch_model_package(args: ModelPrepareArgs<'_>) -> Result
         flavor: flavor.to_string(),
         timeout_seconds,
         mesh_llm_ref: mesh_llm_ref.to_string(),
+        job_image: Some(job_image.to_string()),
         hf_token: jobs_client
             .as_ref()
             .map(|client| client.token().to_string()),

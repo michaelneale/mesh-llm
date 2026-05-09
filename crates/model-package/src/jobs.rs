@@ -3,6 +3,9 @@ use std::collections::HashMap;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
+pub const UBUNTU_JOB_IMAGE: &str = "ubuntu:22.04";
+pub const DEFAULT_HF_JOBS_IMAGE: &str = "ghcr.io/mesh-llm/mesh-llm-hf-jobs:main";
+
 /// Client for the HuggingFace Jobs REST API.
 ///
 /// The Rust `hf_hub` crate has no Jobs API support, so we call the 5 simple
@@ -344,6 +347,32 @@ pub fn hf_endpoint() -> String {
         .unwrap_or_else(|| "https://huggingface.co".to_string())
 }
 
+pub fn resolve_hf_jobs_image(mesh_llm_ref: &str, requested_image: Option<&str>) -> String {
+    let requested = requested_image
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let env_image = std::env::var("MESH_LLM_HF_JOBS_IMAGE")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let requested = match requested {
+        Some("auto") | None => env_image.as_deref().unwrap_or("auto"),
+        Some(image) => image,
+    };
+
+    match requested {
+        "auto" => {
+            if mesh_llm_ref == "main" {
+                DEFAULT_HF_JOBS_IMAGE.to_string()
+            } else {
+                UBUNTU_JOB_IMAGE.to_string()
+            }
+        }
+        "ubuntu" | "ubuntu:22.04" => UBUNTU_JOB_IMAGE.to_string(),
+        image => image.to_string(),
+    }
+}
+
 pub async fn fetch_hardware(endpoint: &str) -> Result<Vec<HardwareFlavor>> {
     let url = format!("{}/api/jobs/hardware", endpoint.trim_end_matches('/'));
     let resp = reqwest::Client::new()
@@ -585,6 +614,30 @@ mod tests {
     fn estimates_minute_pricing() {
         let cost = estimate_cost_usd(2.0, "minute", 1800).unwrap();
         assert!((cost - 60.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn hf_jobs_image_auto_uses_main_image_only_for_main_ref() {
+        assert_eq!(
+            resolve_hf_jobs_image("main", Some("auto")),
+            DEFAULT_HF_JOBS_IMAGE
+        );
+        assert_eq!(
+            resolve_hf_jobs_image("feature-branch", Some("auto")),
+            UBUNTU_JOB_IMAGE
+        );
+    }
+
+    #[test]
+    fn hf_jobs_image_accepts_explicit_image_or_ubuntu_alias() {
+        assert_eq!(
+            resolve_hf_jobs_image("feature-branch", Some("ghcr.io/mesh/custom:sha")),
+            "ghcr.io/mesh/custom:sha"
+        );
+        assert_eq!(
+            resolve_hf_jobs_image("main", Some("ubuntu")),
+            UBUNTU_JOB_IMAGE
+        );
     }
 
     #[test]

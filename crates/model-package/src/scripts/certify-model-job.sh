@@ -24,8 +24,13 @@ set -euo pipefail
 
 MESH_LLM_REF="${MESH_LLM_REF:-main}"
 SOURCE_REVISION="${SOURCE_REVISION:-main}"
+PREBUILT_MESH_LLM_ROOT="${PREBUILT_MESH_LLM_ROOT:-/opt/mesh-llm}"
 RUN_ID="${RUN_ID:-hf-cert-$(date +%Y%m%d-%H%M%S)}"
 JOB_WORK_ROOT="${JOB_WORK_ROOT:-/bucket/job-work}"
+MESH_ROOT=""
+LLAMA_BUILD_DIR=""
+PREBUILT_TOOLS=0
+PYTHON_BIN=""
 if [ -z "${JOB_WORK_DIR:-}" ]; then
     SAFE_FAMILY="$(printf '%s' "$FAMILY" | tr -c '[:alnum:]._-' '_')"
     JOB_WORK_DIR="${JOB_WORK_ROOT}/cert-${SAFE_FAMILY}-$(date +%Y%m%d%H%M%S)-$$"
@@ -36,6 +41,59 @@ fi
 CERT_ROOT="${CERT_ROOT:-${JOB_WORK_DIR}/family-certify}"
 export JOB_WORK_DIR
 export RUN_ID CERT_ROOT
+
+use_prebuilt_mesh_llm() {
+    if [ ! -d "$PREBUILT_MESH_LLM_ROOT" ] || [ ! -f "$PREBUILT_MESH_LLM_ROOT/.mesh-llm-ref" ]; then
+        return 1
+    fi
+
+    local image_ref
+    image_ref="$(cat "$PREBUILT_MESH_LLM_ROOT/.mesh-llm-ref")"
+    if [ "$MESH_LLM_REF" != "main" ] && [ "$MESH_LLM_REF" != "$image_ref" ]; then
+        if [ "${ALLOW_IMAGE_REF_MISMATCH:-false}" != "true" ] && [ "${ALLOW_IMAGE_REF_MISMATCH:-0}" != "1" ]; then
+            echo "Prebuilt image ref $image_ref does not match requested mesh-llm ref $MESH_LLM_REF; falling back to in-job build."
+            return 1
+        fi
+        echo "WARNING: using prebuilt image ref $image_ref for requested mesh-llm ref $MESH_LLM_REF because ALLOW_IMAGE_REF_MISMATCH is set."
+    fi
+
+    MESH_ROOT="$PREBUILT_MESH_LLM_ROOT"
+    LLAMA_BUILD_DIR="$MESH_ROOT/.deps/llama-build/build-stage-abi-cpu"
+    if [ ! -x "$MESH_ROOT/target/debug/skippy-correctness" ] || \
+       [ ! -x "$MESH_ROOT/target/debug/skippy-server" ] || \
+       [ ! -x "$MESH_ROOT/target/debug/llama-spec-bench" ]; then
+        echo "Prebuilt image is missing correctness binaries; falling back to in-job build."
+        return 1
+    fi
+    if [ ! -d "$LLAMA_BUILD_DIR" ]; then
+        echo "Prebuilt image is missing llama build dir $LLAMA_BUILD_DIR; falling back to in-job build."
+        return 1
+    fi
+
+    if [ -f /root/.cargo/env ]; then
+        source /root/.cargo/env
+    fi
+    cd "$MESH_ROOT"
+    PREBUILT_TOOLS=1
+    echo "  ✓ Using prebuilt HF jobs image tools from $MESH_ROOT (image ref $image_ref)"
+    return 0
+}
+
+ensure_hf_python() {
+    if [ -n "$PYTHON_BIN" ]; then
+        return
+    fi
+    if python3 - <<'PYTHON' >/dev/null 2>&1
+import huggingface_hub
+PYTHON
+    then
+        PYTHON_BIN=python3
+    else
+        python3 -m venv /tmp/venv > /dev/null
+        /tmp/venv/bin/pip install -q huggingface_hub
+        PYTHON_BIN=/tmp/venv/bin/python3
+    fi
+}
 
 cleanup_job_work_dir() {
     local exit_code=$?
@@ -62,34 +120,40 @@ echo "║  Work:   ${JOB_WORK_DIR}"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo ""
 
-echo "=== [1/8] Installing build dependencies ==="
-apt-get update -qq && apt-get install -y -qq \
-    cmake git curl build-essential pkg-config libssl-dev \
-    python3-pip python3-venv jq > /dev/null 2>&1
-
-echo "=== [2/8] Installing Rust ==="
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y > /dev/null 2>&1
-source /root/.cargo/env
-
-echo "=== [3/8] Cloning mesh-llm ==="
-git clone --filter=blob:none https://github.com/Mesh-LLM/mesh-llm.git /tmp/build
-cd /tmp/build
-if git ls-remote --exit-code --heads origin "$MESH_LLM_REF" >/dev/null 2>&1 || \
-   git ls-remote --exit-code --tags origin "$MESH_LLM_REF" >/dev/null 2>&1; then
-    git fetch --depth 1 origin "$MESH_LLM_REF"
-    git checkout --detach FETCH_HEAD
+if use_prebuilt_mesh_llm; then
+    echo "=== [1/8] Using prebuilt HF Jobs image ==="
+    echo "  Build dependencies, Rust, llama.cpp ABI, and correctness binaries are already present."
 else
-    git fetch --depth 1 origin "$MESH_LLM_REF"
-    git checkout --detach FETCH_HEAD
+    echo "=== [1/8] Installing build dependencies ==="
+    apt-get update -qq && apt-get install -y -qq \
+        cmake git curl build-essential pkg-config libssl-dev \
+        python3-pip python3-venv jq > /dev/null 2>&1
+
+    echo "=== [2/8] Installing Rust ==="
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y > /dev/null 2>&1
+    source /root/.cargo/env
+
+    echo "=== [3/8] Cloning mesh-llm ==="
+    git clone --filter=blob:none https://github.com/Mesh-LLM/mesh-llm.git /tmp/build
+    cd /tmp/build
+    if git ls-remote --exit-code --heads origin "$MESH_LLM_REF" >/dev/null 2>&1 || \
+       git ls-remote --exit-code --tags origin "$MESH_LLM_REF" >/dev/null 2>&1; then
+        git fetch --depth 1 origin "$MESH_LLM_REF"
+        git checkout --detach FETCH_HEAD
+    else
+        git fetch --depth 1 origin "$MESH_LLM_REF"
+        git checkout --detach FETCH_HEAD
+    fi
+
+    # Full clone needed for git-am patches in prepare-llama.
+    sed -i 's/--filter=blob:none //' scripts/prepare-llama.sh
+
+    echo "=== [4/8] Building pinned llama.cpp CPU ABI ==="
+    scripts/prepare-llama.sh pinned 2>&1 | tail -20
+    MESH_ROOT=/tmp/build
+    LLAMA_BUILD_DIR="/tmp/build/.deps/llama-build/build-stage-abi-cpu"
+    LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" scripts/build-llama.sh 2>&1 | tail -20
 fi
-
-# Full clone needed for git-am patches in prepare-llama.
-sed -i 's/--filter=blob:none //' scripts/prepare-llama.sh
-
-echo "=== [4/8] Building pinned llama.cpp CPU ABI ==="
-scripts/prepare-llama.sh pinned 2>&1 | tail -20
-LLAMA_BUILD_DIR="/tmp/build/.deps/llama-build/build-stage-abi-cpu"
-LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" scripts/build-llama.sh 2>&1 | tail -20
 
 echo "=== [5/8] Verifying source model ==="
 SOURCE_PATH="/source/${SOURCE_FILE}"
@@ -147,6 +211,9 @@ append_bool SKIP_CORRECTNESS --skip-correctness
 append_bool SKIP_DTYPE --skip-dtype
 append_bool SKIP_STATE --skip-state
 append_bool BORROW_RESIDENT_HITS --borrow-resident-hits
+if [ "$PREBUILT_TOOLS" = "1" ]; then
+    CERT_ARGS+=(--skip-build)
+fi
 
 CERT_EXIT_CODE=0
 LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" scripts/family-certify.sh "${CERT_ARGS[@]}" || CERT_EXIT_CODE=$?
@@ -166,9 +233,8 @@ echo "=== [7/8] Uploading artifacts ==="
 if [ -z "${ARTIFACT_REPO:-}" ]; then
     echo "  ARTIFACT_REPO not set; leaving artifacts in the job workspace."
 else
-    python3 -m venv /tmp/venv > /dev/null
-    /tmp/venv/bin/pip install -q huggingface_hub
-    /tmp/venv/bin/python3 << PYTHON
+    ensure_hf_python
+    "$PYTHON_BIN" << PYTHON
 from huggingface_hub import HfApi
 import os
 

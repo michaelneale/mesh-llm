@@ -1,0 +1,78 @@
+name: hf-jobs-image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.dockerignore'
+      - 'docker/Dockerfile.hf-jobs'
+      - 'crates/**'
+      - 'scripts/**'
+      - 'third_party/llama.cpp/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/hf-jobs-image.yml'
+  workflow_dispatch:
+    inputs:
+      mesh_llm_ref:
+        description: 'Ref label to bake into /opt/mesh-llm/.mesh-llm-ref'
+        required: false
+        default: ''
+
+concurrency:
+  group: hf-jobs-image-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: mesh-llm/mesh-llm-hf-jobs
+  REQUESTED_MESH_LLM_REF: ${{ github.event.inputs.mesh_llm_ref || '' }}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: ref
+        shell: bash
+        run: |
+          if [[ -n "${REQUESTED_MESH_LLM_REF}" ]]; then
+            echo "value=${REQUESTED_MESH_LLM_REF}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,prefix=sha-,format=short
+            type=sha,prefix=sha-,format=long
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.hf-jobs
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            MESH_LLM_REF=${{ steps.ref.outputs.value }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=hf-jobs-image
+          cache-to: type=gha,scope=hf-jobs-image,mode=max

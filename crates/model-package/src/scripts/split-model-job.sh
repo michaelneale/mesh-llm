@@ -15,6 +15,62 @@ set -euo pipefail
 #   /bucket  — writable storage bucket for script + large package workspace
 
 MESH_LLM_REF="${MESH_LLM_REF:-main}"
+PREBUILT_MESH_LLM_ROOT="${PREBUILT_MESH_LLM_ROOT:-/opt/mesh-llm}"
+MESH_ROOT=""
+LLAMA_BUILD_DIR=""
+SLICER=""
+PYTHON_BIN=""
+
+use_prebuilt_mesh_llm() {
+    if [ ! -d "$PREBUILT_MESH_LLM_ROOT" ] || [ ! -f "$PREBUILT_MESH_LLM_ROOT/.mesh-llm-ref" ]; then
+        return 1
+    fi
+
+    local image_ref
+    image_ref="$(cat "$PREBUILT_MESH_LLM_ROOT/.mesh-llm-ref")"
+    if [ "$MESH_LLM_REF" != "main" ] && [ "$MESH_LLM_REF" != "$image_ref" ]; then
+        if [ "${ALLOW_IMAGE_REF_MISMATCH:-false}" != "true" ] && [ "${ALLOW_IMAGE_REF_MISMATCH:-0}" != "1" ]; then
+            echo "Prebuilt image ref $image_ref does not match requested mesh-llm ref $MESH_LLM_REF; falling back to in-job build."
+            return 1
+        fi
+        echo "WARNING: using prebuilt image ref $image_ref for requested mesh-llm ref $MESH_LLM_REF because ALLOW_IMAGE_REF_MISMATCH is set."
+    fi
+
+    MESH_ROOT="$PREBUILT_MESH_LLM_ROOT"
+    LLAMA_BUILD_DIR="$MESH_ROOT/.deps/llama-build/build-stage-abi-cpu"
+    SLICER="$MESH_ROOT/target/release/skippy-model-package"
+    if [ ! -x "$SLICER" ]; then
+        echo "Prebuilt image is missing $SLICER; falling back to in-job build."
+        return 1
+    fi
+    if [ ! -d "$LLAMA_BUILD_DIR" ]; then
+        echo "Prebuilt image is missing llama build dir $LLAMA_BUILD_DIR; falling back to in-job build."
+        return 1
+    fi
+
+    if [ -f /root/.cargo/env ]; then
+        source /root/.cargo/env
+    fi
+    cd "$MESH_ROOT"
+    echo "  ✓ Using prebuilt HF jobs image tools from $MESH_ROOT (image ref $image_ref)"
+    return 0
+}
+
+ensure_hf_python() {
+    if [ -n "$PYTHON_BIN" ]; then
+        return
+    fi
+    if python3 - <<'PYTHON' >/dev/null 2>&1
+import huggingface_hub
+PYTHON
+    then
+        PYTHON_BIN=python3
+    else
+        python3 -m venv /tmp/venv > /dev/null
+        /tmp/venv/bin/pip install -q huggingface_hub
+        PYTHON_BIN=/tmp/venv/bin/python3
+    fi
+}
 
 echo "╔══════════════════════════════════════════════════════════╗"
 echo "║  Layer Package Split Job                                 ║"
@@ -27,54 +83,60 @@ echo "╚═══════════════════════�
 echo ""
 
 # ─── Build tools ──────────────────────────────────────────────────────────
-echo "=== [1/9] Installing build dependencies ==="
-apt-get update -qq && apt-get install -y -qq \
-    cmake git curl build-essential pkg-config libssl-dev \
-    python3-pip python3-venv > /dev/null 2>&1
-
-echo "=== [2/9] Installing Rust ==="
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y > /dev/null 2>&1
-source /root/.cargo/env
-
-echo "=== [3/9] Cloning mesh-llm and building skippy-model-package ==="
-git clone --filter=blob:none https://github.com/Mesh-LLM/mesh-llm.git /tmp/build
-cd /tmp/build
-if git ls-remote --exit-code --heads origin "$MESH_LLM_REF" >/dev/null 2>&1 || \
-   git ls-remote --exit-code --tags origin "$MESH_LLM_REF" >/dev/null 2>&1; then
-    git fetch --depth 1 origin "$MESH_LLM_REF"
-    git checkout --detach FETCH_HEAD
-elif git cat-file -e "$MESH_LLM_REF^{commit}" 2>/dev/null; then
-    git checkout --detach "$MESH_LLM_REF"
+if use_prebuilt_mesh_llm; then
+    echo "=== [1/9] Using prebuilt HF Jobs image ==="
+    echo "  Build dependencies, Rust, llama.cpp ABI, and skippy-model-package are already present."
 else
-    git fetch --depth 1 origin "$MESH_LLM_REF"
-    git checkout --detach FETCH_HEAD
+    echo "=== [1/9] Installing build dependencies ==="
+    apt-get update -qq && apt-get install -y -qq \
+        cmake git curl build-essential pkg-config libssl-dev \
+        python3-pip python3-venv > /dev/null 2>&1
+
+    echo "=== [2/9] Installing Rust ==="
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y > /dev/null 2>&1
+    source /root/.cargo/env
+
+    echo "=== [3/9] Cloning mesh-llm and building skippy-model-package ==="
+    git clone --filter=blob:none https://github.com/Mesh-LLM/mesh-llm.git /tmp/build
+    cd /tmp/build
+    if git ls-remote --exit-code --heads origin "$MESH_LLM_REF" >/dev/null 2>&1 || \
+       git ls-remote --exit-code --tags origin "$MESH_LLM_REF" >/dev/null 2>&1; then
+        git fetch --depth 1 origin "$MESH_LLM_REF"
+        git checkout --detach FETCH_HEAD
+    elif git cat-file -e "$MESH_LLM_REF^{commit}" 2>/dev/null; then
+        git checkout --detach "$MESH_LLM_REF"
+    else
+        git fetch --depth 1 origin "$MESH_LLM_REF"
+        git checkout --detach FETCH_HEAD
+    fi
+
+    # Full clone needed for git-am patches in prepare-llama
+    sed -i 's/--filter=blob:none //' scripts/prepare-llama.sh
+    echo "  Running prepare-llama.sh..."
+    scripts/prepare-llama.sh pinned 2>&1 | tail -5
+    echo "  Running build-llama.sh..."
+    scripts/build-llama.sh 2>&1 | tail -5
+
+    # Locate the llama.cpp build directory (build-llama.sh puts it here)
+    MESH_ROOT=/tmp/build
+    LLAMA_BUILD_DIR="$MESH_ROOT/.deps/llama-build/build-stage-abi-cpu"
+    echo "  Verifying llama.cpp build at $LLAMA_BUILD_DIR..."
+    find "$LLAMA_BUILD_DIR" -name "*.a" 2>/dev/null | head -10 || echo "  WARNING: no .a files found"
+
+    # Build the splitter binary
+    echo "  Building skippy-model-package..."
+    SKIPPY_LLAMA_BUILD_DIR="$LLAMA_BUILD_DIR" \
+        cargo build --release -p skippy-model-package 2>&1 | tail -20
+    SLICER=/tmp/build/target/release/skippy-model-package
+    if [ ! -f "$SLICER" ]; then
+        echo "ERROR: Build failed — binary not found at $SLICER"
+        echo "Retrying with full output..."
+        SKIPPY_LLAMA_BUILD_DIR="$LLAMA_BUILD_DIR" \
+            cargo build --release -p skippy-model-package 2>&1
+        exit 1
+    fi
+    echo "  ✓ Built: $SLICER"
 fi
-
-# Full clone needed for git-am patches in prepare-llama
-sed -i 's/--filter=blob:none //' scripts/prepare-llama.sh
-echo "  Running prepare-llama.sh..."
-scripts/prepare-llama.sh pinned 2>&1 | tail -5
-echo "  Running build-llama.sh..."
-scripts/build-llama.sh 2>&1 | tail -5
-
-# Locate the llama.cpp build directory (build-llama.sh puts it here)
-LLAMA_BUILD_DIR=".deps/llama-build/build-stage-abi-cpu"
-echo "  Verifying llama.cpp build at $LLAMA_BUILD_DIR..."
-find "$LLAMA_BUILD_DIR" -name "*.a" 2>/dev/null | head -10 || echo "  WARNING: no .a files found"
-
-# Build the splitter binary
-echo "  Building skippy-model-package..."
-SKIPPY_LLAMA_BUILD_DIR="$LLAMA_BUILD_DIR" \
-    cargo build --release -p skippy-model-package 2>&1 | tail -20
-SLICER=/tmp/build/target/release/skippy-model-package
-if [ ! -f "$SLICER" ]; then
-    echo "ERROR: Build failed — binary not found at $SLICER"
-    echo "Retrying with full output..."
-    SKIPPY_LLAMA_BUILD_DIR=.deps/llama.cpp/build-stage-abi-static \
-        cargo build --release -p skippy-model-package 2>&1
-    exit 1
-fi
-echo "  ✓ Built: $SLICER"
 
 # ─── Split ────────────────────────────────────────────────────────────────
 echo ""
@@ -131,10 +193,9 @@ echo "  ✓ Validation passed — all tensors accounted for"
 # ─── Publish ──────────────────────────────────────────────────────────────
 echo ""
 echo "=== [6/9] Publishing to HuggingFace ==="
-python3 -m venv /tmp/venv > /dev/null
-/tmp/venv/bin/pip install -q huggingface_hub
+ensure_hf_python
 
-/tmp/venv/bin/python3 << PYTHON
+"$PYTHON_BIN" << PYTHON
 from huggingface_hub import HfApi
 import os, json
 
@@ -164,7 +225,7 @@ PYTHON
 # ─── Update catalog ───────────────────────────────────────────────────────
 echo ""
 echo "=== [7/9] Updating meshllm/catalog ==="
-/tmp/venv/bin/python3 << 'PYTHON'
+"$PYTHON_BIN" << 'PYTHON'
 from huggingface_hub import HfApi
 import os, json, tempfile
 
@@ -344,7 +405,7 @@ layers/layer-$(printf "%03d" $((LAYER_COUNT - 1))).gguf
 - [Model catalog](https://huggingface.co/datasets/meshllm/catalog) — registry of available packages
 EOF
 
-/tmp/venv/bin/python3 -c "
+"$PYTHON_BIN" -c "
 from huggingface_hub import HfApi
 import os
 api = HfApi(token=os.environ['HF_TOKEN'])

@@ -39,6 +39,9 @@ pub enum ModelsCommand {
         /// Branch or tag of mesh-llm to build in the job.
         #[arg(long, default_value = "main")]
         mesh_llm_ref: String,
+        /// Docker image for the HF Job. Use auto for the prebuilt main image when mesh-llm-ref is main.
+        #[arg(long, default_value = "auto")]
+        job_image: String,
         /// Explicitly keep this as a dry run. This is the default unless --confirm is set.
         #[arg(long)]
         dry_run: bool,
@@ -92,6 +95,9 @@ pub enum ModelsCommand {
         /// Branch, tag, or commit SHA of mesh-llm to build in the job.
         #[arg(long, default_value = "main")]
         mesh_llm_ref: String,
+        /// Docker image for the HF Job. Use auto for the prebuilt main image when mesh-llm-ref is main.
+        #[arg(long, default_value = "auto")]
+        job_image: String,
         /// Explicitly keep this as a dry run. This is the default unless --confirm is set.
         #[arg(long)]
         dry_run: bool,

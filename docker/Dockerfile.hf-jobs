@@ -1,0 +1,45 @@
+# syntax=docker/dockerfile:1.7
+
+FROM ubuntu:22.04
+
+ARG MESH_LLM_REF=unknown
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PATH="/root/.cargo/bin:${PATH}"
+ENV LLAMA_STAGE_BUILD_DIR="/opt/mesh-llm/.deps/llama-build/build-stage-abi-cpu"
+ENV SKIPPY_LLAMA_BUILD_DIR="/opt/mesh-llm/.deps/llama-build/build-stage-abi-cpu"
+ENV PREBUILT_MESH_LLM_ROOT="/opt/mesh-llm"
+
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+    ca-certificates \
+    cmake \
+    curl \
+    git \
+    jq \
+    build-essential \
+    ninja-build \
+    pkg-config \
+    libssl-dev \
+    libdbus-1-dev \
+    python3 \
+    python3-pip \
+    python3-venv \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --default-toolchain stable --profile minimal
+
+RUN python3 -m pip install --no-cache-dir --upgrade pip huggingface_hub
+
+WORKDIR /opt/mesh-llm
+COPY . .
+RUN printf '%s\n' "${MESH_LLM_REF}" > .mesh-llm-ref
+
+RUN LLAMA_STAGE_USE_SCCACHE=0 scripts/prepare-llama.sh pinned && \
+    LLAMA_STAGE_USE_SCCACHE=0 scripts/build-llama.sh
+
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    cargo build --release --locked -p skippy-model-package && \
+    cargo build --locked -p skippy-correctness -p skippy-server -p llama-spec-bench
+
+CMD ["bash"]

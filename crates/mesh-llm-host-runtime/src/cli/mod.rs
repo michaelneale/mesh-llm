@@ -635,6 +635,10 @@ pub(crate) enum Command {
         #[arg(long, default_value = "main")]
         mesh_llm_ref: String,
 
+        /// Docker image for HF Jobs: auto, ubuntu, or an explicit image ref.
+        #[arg(long, default_value = "auto")]
+        job_image: String,
+
         /// Explicitly keep this as a dry run. This is the default unless --confirm is set.
         #[arg(long)]
         dry_run: bool,
