@@ -31,10 +31,10 @@ pub fn parse_size_gb(s: &str) -> f64 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
-struct HfAsset {
-    repo: String,
-    revision: String,
-    file: String,
+pub(crate) struct HfAsset {
+    pub(crate) repo: String,
+    pub(crate) revision: String,
+    pub(crate) file: String,
 }
 
 impl HfAsset {
@@ -191,6 +191,16 @@ type DownloadPlanObserverFn = Arc<dyn Fn(&str, Vec<(bool, String)>) + Send + Syn
 #[cfg(test)]
 type DownloadHfAssetsLabelOverrideFn = Arc<dyn Fn(&str) -> Result<Vec<PathBuf>> + Send + Sync>;
 
+#[async_trait::async_trait]
+pub(crate) trait HfAssetHydrator: Send + Sync {
+    async fn hydrate_hf_asset_plan(
+        &self,
+        label: &str,
+        plan: Vec<(bool, HfAsset)>,
+        progress: bool,
+    ) -> Result<Option<Vec<PathBuf>>>;
+}
+
 #[cfg(test)]
 static DOWNLOAD_HF_ASSETS_OVERRIDE: LazyLock<Mutex<HashMap<String, DownloadHfAssetsOverrideFn>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -265,6 +275,7 @@ async fn download_hf_assets(
     label: &str,
     assets: Vec<HfAsset>,
     progress: bool,
+    hydrator: Option<&dyn HfAssetHydrator>,
 ) -> Result<Vec<PathBuf>> {
     let label = label.to_string();
     #[cfg(test)]
@@ -276,6 +287,16 @@ async fn download_hf_assets(
             .cloned();
         if let Some(func) = func {
             return func(&label, assets);
+        }
+    }
+    if let Some(hydrator) = hydrator {
+        if let Some(plan) = peer_hydration_plan_for_assets(assets.clone())? {
+            if let Some(paths) = hydrator
+                .hydrate_hf_asset_plan(&label, plan, progress)
+                .await?
+            {
+                return Ok(paths);
+            }
         }
     }
     tokio::task::spawn_blocking(move || download_hf_assets_blocking(&label, assets, progress))
@@ -660,6 +681,26 @@ fn initial_download_plan_for_assets(
     Ok(download_plan)
 }
 
+fn peer_hydration_plan_for_assets(assets: Vec<HfAsset>) -> Result<Option<Vec<(bool, HfAsset)>>> {
+    let mut download_plan = initial_download_plan_for_assets(assets)?;
+    let current_plan: Vec<(bool, HfAsset)> = download_plan.iter().cloned().collect();
+    for (_, asset) in current_plan {
+        if !is_mlx_primary_asset(&asset.file) {
+            continue;
+        }
+        if asset.file == "model.safetensors.index.json" {
+            return Ok(None);
+        }
+        for sidecar in mlx_sidecar_assets(&asset) {
+            download_plan.insert(sidecar);
+        }
+        for shard in expand_split_mlx_first_shard(&asset) {
+            download_plan.insert((true, shard));
+        }
+    }
+    Ok(Some(download_plan.into_iter().collect()))
+}
+
 #[cfg(test)]
 pub async fn download_hf_repo_file(
     repo: &str,
@@ -693,13 +734,27 @@ pub async fn download_hf_repo_file_with_progress_label(
     label: &str,
     progress: bool,
 ) -> Result<PathBuf> {
+    download_hf_repo_file_with_progress_label_and_hydrator(
+        repo, revision, file, label, progress, None,
+    )
+    .await
+}
+
+pub(crate) async fn download_hf_repo_file_with_progress_label_and_hydrator(
+    repo: &str,
+    revision: Option<&str>,
+    file: &str,
+    label: &str,
+    progress: bool,
+    hydrator: Option<&dyn HfAssetHydrator>,
+) -> Result<PathBuf> {
     let revision = revision.unwrap_or("main").to_string();
     let asset = HfAsset {
         repo: repo.to_string(),
         revision: revision.clone(),
         file: file.to_string(),
     };
-    let mut paths = download_hf_assets(label, vec![asset.clone()], progress).await?;
+    let mut paths = download_hf_assets(label, vec![asset.clone()], progress, hydrator).await?;
     paths.sort();
     let path = paths
         .into_iter()
@@ -943,6 +998,59 @@ mod tests {
         assert_eq!(resolved, cached_file);
     }
 
+    struct StaticHydrator {
+        path: PathBuf,
+        seen_plan: Arc<Mutex<Vec<(bool, String)>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl HfAssetHydrator for StaticHydrator {
+        async fn hydrate_hf_asset_plan(
+            &self,
+            _label: &str,
+            plan: Vec<(bool, HfAsset)>,
+            _progress: bool,
+        ) -> Result<Option<Vec<PathBuf>>> {
+            *self.seen_plan.lock().unwrap() = plan
+                .into_iter()
+                .map(|(required, asset)| (required, asset.file))
+                .collect();
+            Ok(Some(vec![self.path.clone()]))
+        }
+    }
+
+    #[tokio::test]
+    async fn download_hf_repo_file_uses_hydrator_before_hf_download() {
+        let temp = tempfile::tempdir().unwrap();
+        let cached_file = temp.path().join("model.gguf");
+        std::fs::write(&cached_file, b"gguf").unwrap();
+        let seen_plan = Arc::new(Mutex::new(Vec::new()));
+        let hydrator = StaticHydrator {
+            path: cached_file.clone(),
+            seen_plan: seen_plan.clone(),
+        };
+
+        let resolved = download_hf_repo_file_with_progress_label_and_hydrator(
+            "org/model",
+            Some("main"),
+            "model.gguf",
+            "org/model/model.gguf@main",
+            false,
+            Some(&hydrator),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(resolved, cached_file);
+        assert_eq!(
+            *seen_plan.lock().unwrap(),
+            vec![
+                (false, "config.json".to_string()),
+                (true, "model.gguf".to_string()),
+            ]
+        );
+    }
+
     #[test]
     fn download_progress_state_merges_http_events_consistently() {
         let mut state = MeshDownloadProgressState {
@@ -1117,6 +1225,48 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn peer_hydration_plan_includes_known_mlx_sidecars_and_shards() {
+        let plan = peer_hydration_plan_for_assets(vec![HfAsset {
+            repo: "org/repo".to_string(),
+            revision: "main".to_string(),
+            file: "model-00001-of-00003.safetensors".to_string(),
+        }])
+        .unwrap()
+        .expect("first MLX shard has a deterministic peer hydration plan");
+
+        let files: Vec<_> = plan
+            .into_iter()
+            .map(|(required, asset)| (required, asset.file))
+            .collect();
+
+        assert_eq!(
+            files,
+            vec![
+                (false, "chat_template.jinja".to_string()),
+                (false, "chat_template.json".to_string()),
+                (false, "config.json".to_string()),
+                (false, "tokenizer_config.json".to_string()),
+                (true, "model-00001-of-00003.safetensors".to_string()),
+                (true, "model-00002-of-00003.safetensors".to_string()),
+                (true, "model-00003-of-00003.safetensors".to_string()),
+                (true, "tokenizer.json".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn peer_hydration_plan_defers_mlx_index_to_hf_downloader() {
+        let plan = peer_hydration_plan_for_assets(vec![HfAsset {
+            repo: "org/repo".to_string(),
+            revision: "main".to_string(),
+            file: "model.safetensors.index.json".to_string(),
+        }])
+        .unwrap();
+
+        assert!(plan.is_none());
     }
 
     #[test]

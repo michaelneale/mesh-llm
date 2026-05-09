@@ -626,6 +626,7 @@ fn make_test_state_peer(seed: u8, role: mesh::NodeRole) -> mesh::PeerInfo {
         owner_attestation: None,
         artifact_transfer_supported: false,
         stage_status_list_supported: false,
+        model_transfer_supported: false,
         owner_summary: crate::crypto::OwnershipSummary::default(),
         first_joined_mesh_ts: None,
     }
@@ -900,6 +901,7 @@ fn make_test_peer(
         owner_attestation: None,
         artifact_transfer_supported: false,
         stage_status_list_supported: false,
+        model_transfer_supported: false,
         owner_summary: crate::crypto::OwnershipSummary::default(),
     }
 }

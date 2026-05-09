@@ -150,6 +150,14 @@ pub async fn download_model_ref_with_progress_details(
     input: &str,
     progress: bool,
 ) -> Result<(PathBuf, Option<ModelDetails>)> {
+    download_model_ref_with_progress_details_and_hydrator(input, progress, None).await
+}
+
+pub(crate) async fn download_model_ref_with_progress_details_and_hydrator(
+    input: &str,
+    progress: bool,
+    hydrator: Option<&dyn catalog::HfAssetHydrator>,
+) -> Result<(PathBuf, Option<ModelDetails>)> {
     let details = if progress {
         let mut spinner = start_spinner(&format!("Resolving {input}"));
         let details = show_exact_model(input).await.ok();
@@ -162,14 +170,30 @@ pub async fn download_model_ref_with_progress_details(
         .as_ref()
         .map(|detail| detail.download_url.as_str())
         .unwrap_or(input);
-    let path = download_exact_ref_with_progress(download_ref, progress).await?;
+    let path = match hydrator {
+        Some(hydrator) => {
+            download_exact_ref_with_progress_and_hydrator(download_ref, progress, Some(hydrator))
+                .await?
+        }
+        None => download_exact_ref_with_progress(download_ref, progress).await?,
+    };
     Ok((path, details))
 }
 
 pub async fn download_exact_ref_with_progress(input: &str, progress: bool) -> Result<PathBuf> {
+    download_exact_ref_with_progress_and_hydrator(input, progress, None).await
+}
+
+pub(crate) async fn download_exact_ref_with_progress_and_hydrator(
+    input: &str,
+    progress: bool,
+    hydrator: Option<&dyn catalog::HfAssetHydrator>,
+) -> Result<PathBuf> {
     let input = canonicalize_model_ref_input(input).await?;
     match parse_exact_model_ref(&input)? {
-        ExactModelRef::Catalog(model) => download_remote_catalog_model(&model, progress).await,
+        ExactModelRef::Catalog(model) => {
+            download_remote_catalog_model(&model, progress, hydrator).await
+        }
         ExactModelRef::HuggingFace {
             repo,
             revision,
@@ -179,14 +203,15 @@ pub async fn download_exact_ref_with_progress(input: &str, progress: bool) -> Re
             if let Some(model) =
                 matching_remote_catalog_primary_for_huggingface(&repo, revision.as_deref(), &file)
             {
-                return download_remote_catalog_model(&model, progress).await;
+                return download_remote_catalog_model(&model, progress, hydrator).await;
             }
-            catalog::download_hf_repo_file_with_progress_label(
+            download_hf_repo_file_with_optional_hydrator(
                 &repo,
                 revision.as_deref(),
                 &file,
                 &input,
                 progress,
+                hydrator,
             )
             .await
         }
@@ -198,6 +223,14 @@ pub async fn resolve_model_spec(input: &Path) -> Result<PathBuf> {
 }
 
 pub async fn resolve_model_spec_with_progress(input: &Path, progress: bool) -> Result<PathBuf> {
+    resolve_model_spec_with_progress_and_hydrator(input, progress, None).await
+}
+
+pub(crate) async fn resolve_model_spec_with_progress_and_hydrator(
+    input: &Path,
+    progress: bool,
+    hydrator: Option<&dyn catalog::HfAssetHydrator>,
+) -> Result<PathBuf> {
     let raw = input.to_string_lossy();
 
     if raw.starts_with("hf://") {
@@ -225,12 +258,13 @@ pub async fn resolve_model_spec_with_progress(input: &Path, progress: bool) -> R
             if progress {
                 eprintln!("📥 Found in remote catalog: {}", hf_ref.name);
             }
-            return catalog::download_hf_repo_file_with_progress_label(
+            return download_hf_repo_file_with_optional_hydrator(
                 &hf_ref.repo,
                 hf_ref.revision.as_deref(),
                 &hf_ref.file,
                 &hf_ref.name,
                 progress,
+                hydrator,
             )
             .await;
         }
@@ -244,9 +278,11 @@ pub async fn resolve_model_spec_with_progress(input: &Path, progress: bool) -> R
         }
         if let Ok(canonical) = canonicalize_model_ref_input(&raw).await {
             if canonical != raw {
-                return download_exact_ref_with_progress(&canonical, progress)
-                    .await
-                    .with_context(|| format!("Resolve model spec {raw}"));
+                return download_exact_ref_with_progress_and_hydrator(
+                    &canonical, progress, hydrator,
+                )
+                .await
+                .with_context(|| format!("Resolve model spec {raw}"));
             }
         }
         bail!(
@@ -255,10 +291,39 @@ pub async fn resolve_model_spec_with_progress(input: &Path, progress: bool) -> R
         );
     }
 
-    let (path, _) = download_model_ref_with_progress_details(&raw, progress)
+    let (path, _) = download_model_ref_with_progress_details_and_hydrator(&raw, progress, hydrator)
         .await
         .with_context(|| format!("Resolve model spec {raw}"))?;
     Ok(path)
+}
+
+async fn download_hf_repo_file_with_optional_hydrator(
+    repo: &str,
+    revision: Option<&str>,
+    file: &str,
+    label: &str,
+    progress: bool,
+    hydrator: Option<&dyn catalog::HfAssetHydrator>,
+) -> Result<PathBuf> {
+    match hydrator {
+        Some(hydrator) => {
+            catalog::download_hf_repo_file_with_progress_label_and_hydrator(
+                repo,
+                revision,
+                file,
+                label,
+                progress,
+                Some(hydrator),
+            )
+            .await
+        }
+        None => {
+            catalog::download_hf_repo_file_with_progress_label(
+                repo, revision, file, label, progress,
+            )
+            .await
+        }
+    }
 }
 
 fn record_resolved_model_usage(path: &Path, model_ref: Option<&str>) {
@@ -1111,13 +1176,15 @@ async fn remote_size_label(url: &str) -> Option<String> {
 async fn download_remote_catalog_model(
     model: &remote_catalog::RemoteCatalogModel,
     progress: bool,
+    hydrator: Option<&dyn catalog::HfAssetHydrator>,
 ) -> Result<PathBuf> {
-    catalog::download_hf_repo_file_with_progress_label(
+    download_hf_repo_file_with_optional_hydrator(
         &model.repo,
         model.revision.as_deref(),
         &model.source_file,
         &model.name,
         progress,
+        hydrator,
     )
     .await
 }

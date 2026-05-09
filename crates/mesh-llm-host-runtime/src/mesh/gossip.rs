@@ -37,6 +37,7 @@ pub(super) fn peer_meaningfully_changed(old: &PeerInfo, new: &PeerInfo) -> bool 
         || old.served_model_runtime != new.served_model_runtime
         || old.artifact_transfer_supported != new.artifact_transfer_supported
         || old.stage_status_list_supported != new.stage_status_list_supported
+        || old.model_transfer_supported != new.model_transfer_supported
         || old.version != new.version
         || old.owner_summary != new.owner_summary
         || old.gpu_reserved_bytes != new.gpu_reserved_bytes
@@ -110,6 +111,7 @@ pub(super) fn apply_transitive_ann(
     existing.served_model_runtime = ann.served_model_runtime.clone();
     existing.artifact_transfer_supported = ann.artifact_transfer_supported;
     existing.stage_status_list_supported = ann.stage_status_list_supported;
+    existing.model_transfer_supported = ann.model_transfer_supported;
     if ann.experts_summary.is_some() {
         existing.experts_summary = ann.experts_summary.clone();
     }
@@ -461,7 +463,9 @@ impl Node {
             existing.owner_summary = owner_summary.clone();
             existing.served_model_descriptors = ann.served_model_descriptors.clone();
             existing.served_model_runtime = ann.served_model_runtime.clone();
+            existing.artifact_transfer_supported = ann.artifact_transfer_supported;
             existing.stage_status_list_supported = ann.stage_status_list_supported;
+            existing.model_transfer_supported = ann.model_transfer_supported;
             if ann.version.is_some() {
                 existing.version = ann.version.clone();
             }
@@ -685,6 +689,7 @@ impl Node {
                     owner_attestation: p.owner_attestation.clone(),
                     artifact_transfer_supported: p.artifact_transfer_supported,
                     stage_status_list_supported: p.stage_status_list_supported,
+                    model_transfer_supported: p.model_transfer_supported,
                 })
                 .collect()
         };
@@ -752,6 +757,7 @@ impl Node {
             artifact_transfer_supported:
                 crate::models::artifact_transfer::artifact_transfer_enabled(),
             stage_status_list_supported: true,
+            model_transfer_supported: crate::models::model_transfer::model_transfer_enabled(),
         });
         announcements
     }
@@ -807,6 +813,7 @@ mod tests {
             owner_attestation: None,
             artifact_transfer_supported: true,
             stage_status_list_supported: true,
+            model_transfer_supported: true,
         }
     }
 
@@ -896,6 +903,15 @@ mod tests {
     }
 
     #[test]
+    fn test_meaningfully_changed_model_transfer_support() {
+        let old_peer = test_peer(Some(100));
+        let mut new_peer = test_peer(Some(100));
+        new_peer.model_transfer_supported = !old_peer.model_transfer_supported;
+
+        assert!(peer_meaningfully_changed(&old_peer, &new_peer));
+    }
+
+    #[test]
     fn test_apply_transitive_ann_refreshes_explicit_model_interests() {
         let mut existing = test_peer(Some(100));
         let mut ann = test_announcement(Some(100));
@@ -921,6 +937,18 @@ mod tests {
         assert!(existing.stage_status_list_supported);
     }
 
+    #[test]
+    fn test_apply_transitive_ann_refreshes_model_transfer_support() {
+        let mut existing = test_peer(Some(100));
+        existing.model_transfer_supported = false;
+        let mut ann = test_announcement(Some(100));
+        ann.model_transfer_supported = true;
+
+        apply_transitive_ann(&mut existing, &test_addr(0x33), &ann);
+
+        assert!(existing.model_transfer_supported);
+    }
+
     #[tokio::test]
     async fn test_add_peer_refreshes_stage_status_list_support() {
         let node = Node::new_for_tests(NodeRole::Worker).await.unwrap();
@@ -936,6 +964,23 @@ mod tests {
         let state = node.state.lock().await;
         let peer = state.peers.get(&peer_id).expect("peer should be tracked");
         assert!(peer.stage_status_list_supported);
+    }
+
+    #[tokio::test]
+    async fn test_add_peer_refreshes_model_transfer_support() {
+        let node = Node::new_for_tests(NodeRole::Worker).await.unwrap();
+        let peer_id = test_endpoint_id(0x44);
+        let addr = test_addr(0x44);
+        let mut ann = test_announcement(Some(100));
+        ann.model_transfer_supported = false;
+
+        node.add_peer(peer_id, addr.clone(), &ann).await;
+        ann.model_transfer_supported = true;
+        node.add_peer(peer_id, addr, &ann).await;
+
+        let state = node.state.lock().await;
+        let peer = state.peers.get(&peer_id).expect("peer should be tracked");
+        assert!(peer.model_transfer_supported);
     }
 
     #[tokio::test]

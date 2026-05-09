@@ -33,6 +33,31 @@ fn quic_bind_addr_keeps_endpoint_default_on_non_windows() {
     assert_eq!(quic_bind_addr(None), None);
 }
 
+#[test]
+fn partial_model_transfer_resume_offset_reads_regular_partial_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let partial = temp.path().join(".model.gguf.mesh-peer.part");
+    std::fs::write(&partial, b"partial").unwrap();
+
+    assert_eq!(partial_model_transfer_resume_offset(&partial).unwrap(), 7);
+}
+
+#[test]
+#[cfg(unix)]
+fn partial_model_transfer_resume_offset_removes_symlink_partial_file() {
+    use std::os::unix::fs as unix_fs;
+
+    let temp = tempfile::tempdir().unwrap();
+    let outside = temp.path().join("outside");
+    let partial = temp.path().join(".model.gguf.mesh-peer.part");
+    std::fs::write(&outside, b"outside").unwrap();
+    unix_fs::symlink(&outside, &partial).unwrap();
+
+    assert_eq!(partial_model_transfer_resume_offset(&partial).unwrap(), 0);
+    assert!(!partial.exists());
+    assert!(outside.exists());
+}
+
 fn stage_load_request() -> crate::inference::skippy::StageLoadRequest {
     crate::inference::skippy::StageLoadRequest {
         topology_id: "topology-a".to_string(),
@@ -832,6 +857,7 @@ fn make_test_peer_info(peer_id: EndpointId) -> PeerInfo {
         owner_attestation: None,
         artifact_transfer_supported: false,
         stage_status_list_supported: false,
+        model_transfer_supported: false,
         owner_summary: OwnershipSummary::default(),
     }
 }
@@ -1126,6 +1152,74 @@ async fn artifact_transfer_stream_serves_authorized_stage_artifact() -> Result<(
     legacy_recv.read_exact(&mut legacy_bytes).await?;
     assert_eq!(legacy_bytes, b"layer000");
     assert!(package_dir.join("model-package.json").is_file());
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
+async fn model_transfer_stream_serves_exact_hf_cache_file() -> Result<()> {
+    use crate::protocol::{read_len_prefixed, write_len_prefixed};
+    use base64::Engine as _;
+
+    let cache = tempfile::tempdir().unwrap();
+    let _cache_guard = EnvVarGuard::set("HF_HUB_CACHE", cache.path());
+    let revision = "0123456789abcdef0123456789abcdef01234567";
+    let model_path =
+        crate::models::model_transfer::hf_model_cache_path("org/model", revision, "model.gguf")?;
+    tokio::fs::create_dir_all(model_path.parent().unwrap()).await?;
+    tokio::fs::write(&model_path, b"model-bytes").await?;
+    let expected_sha = sha256_hex(b"model-bytes");
+
+    let server = make_test_node(super::NodeRole::Host { http_port: 9337 }).await?;
+    let client = make_test_node(super::NodeRole::Worker).await?;
+    server
+        .set_mesh_id("model-transfer-stream-mesh".to_string())
+        .await;
+    client
+        .set_mesh_id("model-transfer-stream-mesh".to_string())
+        .await;
+    server.start_accepting();
+    client.start_accepting();
+
+    let server_id = server.id();
+    let client_id = client.id();
+    let invite = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(&server.endpoint.addr())?);
+    client.join(&invite).await?;
+    wait_for_peer(&client, server_id).await;
+    wait_for_peer(&server, client_id).await;
+
+    let request = crate::models::model_transfer::ModelFileTransferRequest {
+        gen: crate::models::model_transfer::MODEL_TRANSFER_GENERATION,
+        requester_id: client_id.as_bytes().to_vec(),
+        request_id: "request-model-transfer".to_string(),
+        repo: "org/model".to_string(),
+        revision: revision.to_string(),
+        file: "model.gguf".to_string(),
+        offset: 0,
+        expected_size: Some(11),
+        expected_sha256: Some(expected_sha.clone()),
+    };
+
+    let (mut send, mut recv) = client
+        .open_model_transfer_mesh_stream(
+            server_id,
+            crate::models::model_transfer::MODEL_TRANSFER_STREAM_FILE_GET,
+        )
+        .await?;
+    write_len_prefixed(&mut send, &serde_json::to_vec(&request)?).await?;
+    send.finish()?;
+    let response_buf = read_len_prefixed(&mut recv).await?;
+    let response: crate::models::model_transfer::ModelFileTransferResponse =
+        serde_json::from_slice(&response_buf)?;
+    assert!(response.accepted, "model response: {:?}", response.error);
+    assert_eq!(response.resolved_revision.as_deref(), Some(revision));
+    assert_eq!(response.total_size, 11);
+    assert_eq!(response.sha256.as_deref(), Some(expected_sha.as_str()));
+    let mut bytes = vec![0u8; response.total_size as usize];
+    recv.read_exact(&mut bytes).await?;
+    assert_eq!(bytes, b"model-bytes");
 
     Ok(())
 }
@@ -1688,6 +1782,7 @@ fn gossip_frame_roundtrip_preserves_scanned_model_metadata() {
         owner_attestation: None,
         artifact_transfer_supported: true,
         stage_status_list_supported: true,
+        model_transfer_supported: true,
     };
 
     let proto_pa = local_ann_to_proto_ann(&local_ann);
@@ -1912,6 +2007,7 @@ fn transitive_peer_update_refreshes_metadata_fields() {
         owner_attestation: None,
         artifact_transfer_supported: true,
         stage_status_list_supported: true,
+        model_transfer_supported: true,
     };
 
     apply_transitive_ann(&mut existing, &addr, &ann);
@@ -1992,6 +2088,7 @@ fn transitive_peer_merge_preserves_richer_direct_address() {
         owner_attestation: None,
         artifact_transfer_supported: true,
         stage_status_list_supported: true,
+        model_transfer_supported: true,
     };
 
     apply_transitive_ann(&mut existing, &weak_addr, &ann);
@@ -2046,6 +2143,7 @@ fn transitive_peer_merge_preserves_richer_direct_address() {
         owner_attestation: None,
         artifact_transfer_supported: true,
         stage_status_list_supported: true,
+        model_transfer_supported: true,
     };
     apply_transitive_ann(&mut existing, &richer_addr, &ann2);
 
@@ -2618,6 +2716,7 @@ fn transitive_peer_update_refreshes_last_mentioned() {
         owner_attestation: None,
         artifact_transfer_supported: true,
         stage_status_list_supported: true,
+        model_transfer_supported: true,
     };
 
     apply_transitive_ann(&mut peer, &addr, &ann);
@@ -3364,6 +3463,7 @@ fn make_test_peer(id: EndpointId, rtt_ms: Option<u32>, vram_gb: u64) -> PeerInfo
         owner_attestation: None,
         artifact_transfer_supported: false,
         stage_status_list_supported: false,
+        model_transfer_supported: false,
         owner_summary: OwnershipSummary::default(),
     }
 }

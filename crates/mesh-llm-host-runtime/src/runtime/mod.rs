@@ -2432,6 +2432,13 @@ async fn resolve_model(input: &std::path::Path) -> Result<PathBuf> {
     models::resolve_model_spec(input).await
 }
 
+async fn resolve_model_with_peer_hydrator(
+    node: &mesh::Node,
+    input: &std::path::Path,
+) -> Result<PathBuf> {
+    models::resolve_model_spec_with_progress_and_hydrator(input, true, Some(node)).await
+}
+
 fn cli_has_explicit_models(cli: &Cli) -> bool {
     !cli.model.is_empty() || !cli.gguf.is_empty()
 }
@@ -4439,7 +4446,7 @@ async fn run_auto(
                     context: None,
                 });
                 let model_ref = models::remote_catalog_model_ref(&cat);
-                resolve_model(&PathBuf::from(model_ref)).await?
+                resolve_model_with_peer_hydrator(&node, &PathBuf::from(model_ref)).await?
             } else {
                 model_path
             }
@@ -5062,7 +5069,9 @@ async fn run_auto(
                 match cmd {
                     api::RuntimeControlRequest::Load { spec, resp } => {
                         let result = async {
-                            let model_path = resolve_model(&PathBuf::from(&spec)).await?;
+                            let model_path =
+                                resolve_model_with_peer_hydrator(&node, &PathBuf::from(&spec))
+                                    .await?;
                             let runtime_model_name = find_remote_catalog_model_exact_blocking(spec.clone())
                                 .await
                                 .map(|model| models::remote_catalog_model_ref(&model))

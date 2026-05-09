@@ -67,6 +67,9 @@ pub(super) const PEER_CONNECT_AND_GOSSIP_TIMEOUT: std::time::Duration =
 const ARTIFACT_TRANSFER_OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const ARTIFACT_TRANSFER_READ_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const ARTIFACT_TRANSFER_BUFFER_BYTES: usize = 1024 * 1024;
+const MODEL_TRANSFER_OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const MODEL_TRANSFER_READ_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const MODEL_TRANSFER_BUFFER_BYTES: usize = 1024 * 1024;
 
 fn quic_bind_addr(bind_port: Option<u16>) -> Option<std::net::SocketAddr> {
     if let Some(port) = bind_port {
@@ -128,6 +131,38 @@ fn partial_artifact_path(destination: &std::path::Path) -> std::path::PathBuf {
     ))
 }
 
+fn partial_model_transfer_path(destination: &std::path::Path) -> std::path::PathBuf {
+    let file_name = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("model");
+    destination.with_file_name(format!(".{file_name}.mesh-peer.part"))
+}
+
+fn partial_model_transfer_resume_offset(partial_path: &std::path::Path) -> Result<u64> {
+    match std::fs::symlink_metadata(partial_path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                let _ = std::fs::remove_file(partial_path);
+                return Ok(0);
+            }
+            anyhow::ensure!(
+                metadata.is_file(),
+                "partial model transfer path is not a regular file"
+            );
+            Ok(metadata.len())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(error) => Err(error).context("stat partial model transfer"),
+    }
+}
+
+fn cached_hf_asset_path(
+    asset: &crate::models::catalog::HfAsset,
+) -> Result<Option<std::path::PathBuf>> {
+    crate::models::model_transfer::cached_hf_model_file(&asset.repo, &asset.revision, &asset.file)
+}
+
 struct PartialArtifactGuard {
     path: std::path::PathBuf,
     armed: bool,
@@ -172,6 +207,24 @@ where
     Ok(read)
 }
 
+async fn read_model_transfer_chunk<R>(
+    reader: &mut R,
+    buffer: &mut [u8],
+    idle_timeout: std::time::Duration,
+) -> Result<usize>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let read = tokio::time::timeout(idle_timeout, tokio::io::AsyncReadExt::read(reader, buffer))
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!("model transfer body read idle timeout after {idle_timeout:?}")
+        })?
+        .context("read model transfer bytes")?;
+    anyhow::ensure!(read > 0, "model transfer ended before expected byte count");
+    Ok(read)
+}
+
 async fn write_artifact_transfer_response(
     send: &mut iroh::endpoint::SendStream,
     accepted: bool,
@@ -189,6 +242,31 @@ async fn write_artifact_transfer_response(
     skippy_protocol::validate_stage_artifact_transfer_response(&response)
         .map_err(|error| anyhow::anyhow!("invalid artifact transfer response: {error}"))?;
     write_len_prefixed(send, &response.encode_to_vec()).await?;
+    if !accepted {
+        let _ = send.finish();
+    }
+    Ok(())
+}
+
+async fn write_model_transfer_response(
+    send: &mut iroh::endpoint::SendStream,
+    accepted: bool,
+    resolved_revision: Option<&str>,
+    total_size: u64,
+    sha256: Option<&str>,
+    offset: u64,
+    error: Option<&str>,
+) -> Result<()> {
+    let response = crate::models::model_transfer::ModelFileTransferResponse {
+        gen: crate::models::model_transfer::MODEL_TRANSFER_GENERATION,
+        accepted,
+        resolved_revision: resolved_revision.map(str::to_string),
+        total_size,
+        sha256: sha256.map(str::to_string),
+        offset,
+        error: error.map(str::to_string),
+    };
+    write_len_prefixed(send, &serde_json::to_vec(&response)?).await?;
     if !accepted {
         let _ = send.finish();
     }
@@ -756,6 +834,7 @@ pub(crate) struct PeerAnnouncement {
     pub(crate) owner_attestation: Option<SignedNodeOwnership>,
     pub(crate) artifact_transfer_supported: bool,
     pub(crate) stage_status_list_supported: bool,
+    pub(crate) model_transfer_supported: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -810,6 +889,7 @@ pub struct PeerInfo {
     pub owner_attestation: Option<SignedNodeOwnership>,
     pub artifact_transfer_supported: bool,
     pub stage_status_list_supported: bool,
+    pub model_transfer_supported: bool,
     pub owner_summary: OwnershipSummary,
 }
 
@@ -867,6 +947,7 @@ impl PeerInfo {
             owner_attestation: ann.owner_attestation.clone(),
             artifact_transfer_supported: ann.artifact_transfer_supported,
             stage_status_list_supported: ann.stage_status_list_supported,
+            model_transfer_supported: ann.model_transfer_supported,
             owner_summary,
         }
     }
@@ -1590,6 +1671,19 @@ impl crate::inference::skippy::StagePackagePrefetcher for Node {
         request: &crate::inference::skippy::StagePrepareRequest,
     ) -> Result<()> {
         self.prefetch_stage_package_from_coordinator(request).await
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::models::catalog::HfAssetHydrator for Node {
+    async fn hydrate_hf_asset_plan(
+        &self,
+        label: &str,
+        plan: Vec<(bool, crate::models::catalog::HfAsset)>,
+        progress: bool,
+    ) -> Result<Option<Vec<std::path::PathBuf>>> {
+        self.hydrate_hf_asset_plan_from_peers(label, plan, progress)
+            .await
     }
 }
 
@@ -3711,6 +3805,22 @@ impl Node {
         Ok((send, recv))
     }
 
+    async fn open_model_transfer_mesh_stream(
+        &self,
+        peer_id: EndpointId,
+        stream_kind: u8,
+    ) -> Result<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)> {
+        let (mut send, recv) = self
+            .open_mesh_subprotocol_stream(
+                peer_id,
+                crate::models::model_transfer::MODEL_TRANSFER_SUBPROTOCOL_NAME,
+                crate::models::model_transfer::MODEL_TRANSFER_SUBPROTOCOL_MAJOR,
+            )
+            .await?;
+        send.write_all(&[stream_kind]).await?;
+        Ok((send, recv))
+    }
+
     async fn stage_connection_to_peer(&self, peer_id: EndpointId) -> Result<Connection> {
         let addr = {
             let state = self.state.lock().await;
@@ -4401,6 +4511,13 @@ impl Node {
                 self.handle_skippy_stage_subprotocol_stream(remote, send, recv)
                     .await
             }
+            (
+                crate::models::model_transfer::MODEL_TRANSFER_SUBPROTOCOL_NAME,
+                crate::models::model_transfer::MODEL_TRANSFER_SUBPROTOCOL_MAJOR,
+            ) => {
+                self.handle_model_transfer_subprotocol_stream(remote, send, recv)
+                    .await
+            }
             _ => anyhow::bail!(
                 "unsupported mesh subprotocol {}/{} from {}",
                 open.name,
@@ -4430,6 +4547,23 @@ impl Node {
                 anyhow::bail!("skippy activation transport stays on skippy-stage/1")
             }
             other => anyhow::bail!("unknown skippy stage subprotocol stream kind {other:#04x}"),
+        }
+    }
+
+    async fn handle_model_transfer_subprotocol_stream(
+        &self,
+        remote: EndpointId,
+        send: iroh::endpoint::SendStream,
+        mut recv: iroh::endpoint::RecvStream,
+    ) -> Result<()> {
+        let mut type_buf = [0u8; 1];
+        recv.read_exact(&mut type_buf).await?;
+        match type_buf[0] {
+            crate::models::model_transfer::MODEL_TRANSFER_STREAM_FILE_GET => {
+                self.handle_model_file_transfer_stream(remote, send, recv)
+                    .await
+            }
+            other => anyhow::bail!("unknown model transfer subprotocol stream kind {other:#04x}"),
         }
     }
 
@@ -4516,7 +4650,12 @@ impl Node {
                     .filter(|candidate| !candidate.is_empty())
                     {
                         if let Ok(path) =
-                            crate::models::resolve_model_spec(std::path::Path::new(candidate)).await
+                            crate::models::resolve_model_spec_with_progress_and_hydrator(
+                                std::path::Path::new(candidate),
+                                true,
+                                Some(self),
+                            )
+                            .await
                         {
                             if path.exists() {
                                 load.model_path = Some(path.to_string_lossy().to_string());
@@ -4609,6 +4748,321 @@ impl Node {
             }
             _ => false,
         }
+    }
+
+    async fn hydrate_hf_asset_plan_from_peers(
+        &self,
+        _label: &str,
+        plan: Vec<(bool, crate::models::catalog::HfAsset)>,
+        _progress: bool,
+    ) -> Result<Option<Vec<std::path::PathBuf>>> {
+        if !crate::models::model_transfer::model_transfer_enabled() || plan.is_empty() {
+            return Ok(None);
+        }
+        let candidates = self.model_transfer_peer_candidates().await;
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+
+        let mut primary_paths = Vec::new();
+        for (required, asset) in plan {
+            match cached_hf_asset_path(&asset) {
+                Ok(Some(path)) => {
+                    if required && asset.file != "config.json" {
+                        primary_paths.push(path);
+                    }
+                    continue;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::debug!(
+                        repo = %asset.repo,
+                        revision = %asset.revision,
+                        file = %asset.file,
+                        "cached model asset is not safe to reuse: {error}"
+                    );
+                    return Ok(None);
+                }
+            }
+
+            let mut hydrated = None;
+            for peer_id in &candidates {
+                match self.fetch_model_file_from_peer(*peer_id, &asset).await {
+                    Ok(path) => {
+                        hydrated = Some(path);
+                        break;
+                    }
+                    Err(error) => {
+                        tracing::debug!(
+                            peer = %peer_id.fmt_short(),
+                            repo = %asset.repo,
+                            revision = %asset.revision,
+                            file = %asset.file,
+                            "peer model transfer attempt failed: {error}"
+                        );
+                    }
+                }
+            }
+
+            match hydrated {
+                Some(path) if required && asset.file != "config.json" => {
+                    primary_paths.push(path);
+                }
+                Some(_) => {}
+                None if required => return Ok(None),
+                None => {}
+            }
+        }
+
+        if primary_paths.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(primary_paths))
+    }
+
+    async fn model_transfer_peer_candidates(&self) -> Vec<EndpointId> {
+        let mut peers = {
+            let state = self.state.lock().await;
+            state
+                .peers
+                .values()
+                .filter(|peer| peer.model_transfer_supported)
+                .map(|peer| (peer.id, peer.rtt_ms.unwrap_or(u32::MAX)))
+                .collect::<Vec<_>>()
+        };
+        peers.sort_by(|(left_id, left_rtt), (right_id, right_rtt)| {
+            left_rtt
+                .cmp(right_rtt)
+                .then_with(|| left_id.as_bytes().cmp(right_id.as_bytes()))
+        });
+        peers.into_iter().map(|(peer_id, _)| peer_id).collect()
+    }
+
+    async fn fetch_model_file_from_peer(
+        &self,
+        peer_id: EndpointId,
+        asset: &crate::models::catalog::HfAsset,
+    ) -> Result<std::path::PathBuf> {
+        use tokio::io::AsyncWriteExt;
+
+        let requested_destination =
+            if crate::models::model_transfer::is_immutable_hf_revision(&asset.revision) {
+                crate::models::model_transfer::hf_model_cache_path(
+                    &asset.repo,
+                    &asset.revision,
+                    &asset.file,
+                )
+                .ok()
+            } else {
+                None
+            };
+        let requested_offset = requested_destination
+            .as_ref()
+            .map(|destination| partial_model_transfer_path(destination))
+            .map(|partial| partial_model_transfer_resume_offset(&partial))
+            .transpose()?
+            .unwrap_or(0);
+
+        let request = crate::models::model_transfer::ModelFileTransferRequest {
+            gen: crate::models::model_transfer::MODEL_TRANSFER_GENERATION,
+            requester_id: self.endpoint.id().as_bytes().to_vec(),
+            request_id: format!(
+                "{}-{}-{}",
+                current_time_unix_ms(),
+                std::process::id(),
+                peer_id.fmt_short()
+            ),
+            repo: asset.repo.clone(),
+            revision: asset.revision.clone(),
+            file: asset.file.clone(),
+            offset: requested_offset,
+            expected_size: None,
+            expected_sha256: None,
+        };
+        crate::models::model_transfer::validate_model_file_transfer_request(&request)
+            .map_err(|error| anyhow::anyhow!("invalid model transfer request: {error}"))?;
+
+        let response = tokio::time::timeout(MODEL_TRANSFER_OPEN_TIMEOUT, async {
+            let (mut send, mut recv) = self
+                .open_model_transfer_mesh_stream(
+                    peer_id,
+                    crate::models::model_transfer::MODEL_TRANSFER_STREAM_FILE_GET,
+                )
+                .await?;
+            write_len_prefixed(&mut send, &serde_json::to_vec(&request)?).await?;
+            let _ = send.finish();
+            let response_buf = read_len_prefixed(&mut recv).await?;
+            let response: crate::models::model_transfer::ModelFileTransferResponse =
+                serde_json::from_slice(&response_buf).map_err(|error| {
+                    anyhow::anyhow!("ModelFileTransferResponse decode error: {error}")
+                })?;
+            crate::models::model_transfer::validate_model_file_transfer_response(
+                &response,
+                requested_offset,
+            )
+            .map_err(|error| {
+                anyhow::anyhow!("ModelFileTransferResponse validation error: {error}")
+            })?;
+            Ok::<_, anyhow::Error>((recv, response))
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("timeout opening model transfer stream"))??;
+        let (mut recv, response) = response;
+        if !response.accepted {
+            anyhow::bail!(
+                "peer model transfer rejected: {}",
+                response
+                    .error
+                    .unwrap_or_else(|| "model unavailable".to_string())
+            );
+        }
+
+        let resolved_revision = response
+            .resolved_revision
+            .as_deref()
+            .context("accepted model transfer response missing resolved revision")?;
+        let destination = crate::models::model_transfer::hf_model_cache_path(
+            &asset.repo,
+            resolved_revision,
+            &asset.file,
+        )?;
+        let expected_sha = response
+            .sha256
+            .as_deref()
+            .context("peer model transfer response missing sha256")?
+            .to_string();
+        if let Some(existing_destination) = crate::models::model_transfer::cached_hf_model_file(
+            &asset.repo,
+            resolved_revision,
+            &asset.file,
+        )? {
+            let existing_for_hash = existing_destination.clone();
+            let existing_sha = tokio::task::spawn_blocking(move || {
+                crate::models::model_transfer::file_sha256_hex(&existing_for_hash)
+            })
+            .await
+            .context("join existing model sha256 task")??;
+            anyhow::ensure!(
+                existing_sha.eq_ignore_ascii_case(&expected_sha),
+                "cached model sha256 mismatch"
+            );
+            crate::models::model_transfer::install_hf_revision_ref(
+                &asset.repo,
+                &asset.revision,
+                resolved_revision,
+            )?;
+            return Ok(existing_destination);
+        }
+
+        if let Some(parent) = destination.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .context("create model transfer destination directory")?;
+        }
+        crate::models::model_transfer::ensure_model_file_install_parent(&asset.repo, &destination)?;
+
+        let temp_path = partial_model_transfer_path(&destination);
+        let offset = if requested_destination.as_ref() == Some(&destination) {
+            requested_offset
+        } else {
+            0
+        };
+        if offset == 0 && temp_path.exists() {
+            tokio::fs::remove_file(&temp_path)
+                .await
+                .context("remove stale partial model transfer")?;
+        }
+        if offset > response.total_size {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            anyhow::bail!("partial model transfer is larger than peer response");
+        }
+
+        let transfer_result = async {
+            let mut file = if offset == 0 {
+                tokio::fs::OpenOptions::new()
+                    .create(true)
+                    .truncate(true)
+                    .write(true)
+                    .open(&temp_path)
+                    .await
+            } else {
+                tokio::fs::OpenOptions::new()
+                    .create(false)
+                    .append(true)
+                    .open(&temp_path)
+                    .await
+            }
+            .context("open partial model transfer")?;
+
+            let mut remaining = response.total_size.saturating_sub(offset);
+            let mut buffer = vec![0u8; MODEL_TRANSFER_BUFFER_BYTES];
+            while remaining > 0 {
+                let limit = buffer.len().min(remaining as usize);
+                let read = read_model_transfer_chunk(
+                    &mut recv,
+                    &mut buffer[..limit],
+                    MODEL_TRANSFER_READ_IDLE_TIMEOUT,
+                )
+                .await?;
+                file.write_all(&buffer[..read])
+                    .await
+                    .context("write partial model transfer")?;
+                remaining -= read as u64;
+            }
+            file.flush().await.context("flush partial model transfer")?;
+            drop(file);
+
+            let actual_size = tokio::fs::metadata(&temp_path)
+                .await
+                .context("stat partial model transfer")?
+                .len();
+            anyhow::ensure!(
+                actual_size == response.total_size,
+                "partial model transfer size mismatch after transfer"
+            );
+            let temp_for_hash = temp_path.clone();
+            let actual_sha = tokio::task::spawn_blocking(move || {
+                crate::models::model_transfer::file_sha256_hex(&temp_for_hash)
+            })
+            .await
+            .context("join model transfer sha256 task")??;
+            anyhow::ensure!(
+                actual_sha.eq_ignore_ascii_case(&expected_sha),
+                "transferred model sha256 mismatch"
+            );
+            if destination.exists() {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::fs::rename(&temp_path, &destination)
+                .await
+                .context("install transferred model file")?;
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        if let Err(error) = transfer_result {
+            if !error.to_string().contains("read idle timeout") {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+            }
+            return Err(error);
+        }
+
+        let destination_for_hash = destination.clone();
+        let installed_sha = tokio::task::spawn_blocking(move || {
+            crate::models::model_transfer::file_sha256_hex(&destination_for_hash)
+        })
+        .await
+        .context("join installed model sha256 task")??;
+        anyhow::ensure!(
+            installed_sha.eq_ignore_ascii_case(&expected_sha),
+            "installed model sha256 mismatch"
+        );
+        crate::models::model_transfer::install_hf_revision_ref(
+            &asset.repo,
+            &asset.revision,
+            resolved_revision,
+        )?;
+        Ok(destination)
     }
 
     async fn fetch_stage_package_artifacts_from_peer(
@@ -4828,6 +5282,96 @@ impl Node {
             return Err(error);
         }
         partial_guard.disarm();
+        Ok(())
+    }
+
+    async fn handle_model_file_transfer_stream(
+        &self,
+        remote: EndpointId,
+        mut send: iroh::endpoint::SendStream,
+        mut recv: iroh::endpoint::RecvStream,
+    ) -> anyhow::Result<()> {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+        let buf = read_len_prefixed(&mut recv).await?;
+        let request: crate::models::model_transfer::ModelFileTransferRequest =
+            serde_json::from_slice(&buf).map_err(|error| {
+                anyhow::anyhow!("ModelFileTransferRequest decode error: {error}")
+            })?;
+        crate::models::model_transfer::validate_model_file_transfer_request(&request).map_err(
+            |error| anyhow::anyhow!("ModelFileTransferRequest validation error: {error}"),
+        )?;
+        if request.requester_id.as_slice() != remote.as_bytes() {
+            anyhow::bail!("model transfer requester_id does not match QUIC peer identity");
+        }
+        if !crate::models::model_transfer::model_transfer_enabled() {
+            return write_model_transfer_response(
+                &mut send,
+                false,
+                None,
+                0,
+                None,
+                request.offset,
+                Some("model transfer disabled"),
+            )
+            .await;
+        }
+
+        let model_file =
+            match crate::models::model_transfer::servable_model_file_from_request(&request) {
+                Ok(model_file) => model_file,
+                Err(error) => {
+                    tracing::debug!(
+                        peer = %remote.fmt_short(),
+                        repo = %request.repo,
+                        revision = %request.revision,
+                        file = %request.file,
+                        "model transfer request cannot be served: {error}"
+                    );
+                    return write_model_transfer_response(
+                        &mut send,
+                        false,
+                        None,
+                        0,
+                        None,
+                        request.offset,
+                        Some("model unavailable"),
+                    )
+                    .await;
+                }
+            };
+
+        write_model_transfer_response(
+            &mut send,
+            true,
+            Some(&model_file.resolved_revision),
+            model_file.size,
+            Some(&model_file.sha256),
+            request.offset,
+            None,
+        )
+        .await?;
+        let mut file = tokio::fs::File::open(&model_file.path)
+            .await
+            .context("open model file for transfer")?;
+        file.seek(std::io::SeekFrom::Start(request.offset))
+            .await
+            .context("seek model file for transfer")?;
+        let mut buffer = vec![0u8; MODEL_TRANSFER_BUFFER_BYTES];
+        let mut remaining = model_file.size.saturating_sub(request.offset);
+        while remaining > 0 {
+            let limit = buffer.len().min(remaining as usize);
+            let read = file
+                .read(&mut buffer[..limit])
+                .await
+                .context("read model file for transfer")?;
+            anyhow::ensure!(read > 0, "model file ended before expected byte count");
+            send.write_all(&buffer[..read])
+                .await
+                .context("write model transfer bytes")?;
+            remaining -= read as u64;
+        }
+        let _ = send.finish();
         Ok(())
     }
 

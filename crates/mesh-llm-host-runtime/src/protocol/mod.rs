@@ -577,6 +577,7 @@ mod tests {
             owner_attestation: None,
             artifact_transfer_supported: false,
             stage_status_list_supported: false,
+            model_transfer_supported: false,
             owner_summary: OwnershipSummary::default(),
         }
     }
@@ -1282,6 +1283,7 @@ mod tests {
             }),
             artifact_transfer_supported: true,
             stage_status_list_supported: true,
+            model_transfer_supported: true,
         };
         let proto_pa = local_ann_to_proto_ann(&ann);
         let skippy = proto_pa
@@ -1301,6 +1303,21 @@ mod tests {
             .features
             .iter()
             .any(|feature| feature == skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STATUS_LIST));
+        let model_transfer = proto_pa
+            .subprotocols
+            .iter()
+            .find(|subprotocol| {
+                subprotocol.name == crate::models::model_transfer::MODEL_TRANSFER_SUBPROTOCOL_NAME
+            })
+            .expect("model transfer subprotocol should be advertised");
+        assert_eq!(
+            model_transfer.major,
+            crate::models::model_transfer::MODEL_TRANSFER_SUBPROTOCOL_MAJOR
+        );
+        assert_eq!(
+            model_transfer.features,
+            crate::models::model_transfer::model_file_transfer_features()
+        );
         assert_eq!(
             proto_pa
                 .owner_attestation
@@ -1313,6 +1330,7 @@ mod tests {
             proto_ann_to_local(&proto_pa).expect("proto_ann_to_local must succeed");
         assert!(roundtripped.artifact_transfer_supported);
         assert!(roundtripped.stage_status_list_supported);
+        assert!(roundtripped.model_transfer_supported);
         let roundtripped = roundtripped
             .owner_attestation
             .expect("owner attestation must round-trip");
@@ -1358,6 +1376,7 @@ mod tests {
             owner_attestation: None,
             artifact_transfer_supported: true,
             stage_status_list_supported: true,
+            model_transfer_supported: true,
         };
 
         let proto_pa = local_ann_to_proto_ann(&ann);
@@ -2082,6 +2101,7 @@ mod tests {
             owner_attestation: None,
             artifact_transfer_supported: true,
             stage_status_list_supported: true,
+            model_transfer_supported: true,
         };
 
         let proto_pa = local_ann_to_proto_ann(&ann_with_timestamp);
@@ -2128,6 +2148,7 @@ mod tests {
             owner_attestation: None,
             artifact_transfer_supported: false,
             stage_status_list_supported: false,
+            model_transfer_supported: false,
         };
 
         let proto_pa = local_ann_to_proto_ann(&ann_without_timestamp);
