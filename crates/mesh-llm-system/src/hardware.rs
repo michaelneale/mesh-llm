@@ -1380,6 +1380,39 @@ fn vendor_uuid_matches_vulkan_device(gpu: &GpuFacts, device: &VulkanGpuFacts) ->
         .eq_ignore_ascii_case(vulkan_uuid)
 }
 
+fn is_anonymous_gpu_placeholder(gpu: &GpuFacts) -> bool {
+    gpu.backend_device.is_none()
+        && gpu.pci_bdf.is_none()
+        && gpu.vendor_uuid.is_none()
+        && gpu
+            .stable_id
+            .as_deref()
+            .is_some_and(|stable_id| stable_id.starts_with("index:"))
+        && gpu.display_name.starts_with("GPU ")
+}
+
+fn merge_vulkan_device_into_gpu(
+    gpu: &mut GpuFacts,
+    device: &VulkanGpuFacts,
+    stable_id: String,
+    pci_bdf: String,
+    unified_memory_bytes: u64,
+) {
+    let unified_memory = device.device_type.contains("INTEGRATED");
+    gpu.index = device.index;
+    gpu.display_name = device.display_name.clone();
+    gpu.backend_device = Some(format!("Vulkan{}", device.index));
+    gpu.vram_bytes = if unified_memory {
+        (unified_memory_bytes as f64 * 0.75) as u64
+    } else {
+        gpu.vram_bytes
+    };
+    gpu.unified_memory = unified_memory;
+    gpu.stable_id = Some(stable_id);
+    gpu.pci_bdf = Some(pci_bdf);
+    gpu.vendor_uuid = device.device_uuid.clone();
+}
+
 pub fn merge_vulkan_devices_into_gpu_facts(
     gpus: &mut Vec<GpuFacts>,
     devices: &[VulkanGpuFacts],
@@ -1411,6 +1444,31 @@ pub fn merge_vulkan_devices_into_gpu_facts(
             .iter()
             .any(|gpu| gpu.stable_id.as_deref() == Some(stable_id.as_str()))
         {
+            continue;
+        }
+
+        let anonymous_placeholder_index = if device.device_type.contains("INTEGRATED") {
+            let matches = gpus
+                .iter()
+                .enumerate()
+                .filter_map(|(index, gpu)| is_anonymous_gpu_placeholder(gpu).then_some(index))
+                .collect::<Vec<_>>();
+            if matches.len() == 1 {
+                Some(matches[0])
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some(index) = anonymous_placeholder_index {
+            merge_vulkan_device_into_gpu(
+                &mut gpus[index],
+                device,
+                stable_id,
+                pci_bdf,
+                unified_memory_bytes,
+            );
             continue;
         }
 
@@ -1584,6 +1642,41 @@ GPU2:
         assert_eq!(gpus[1].pci_bdf.as_deref(), Some("00000000:0c:00.0"));
         assert!(gpus[1].unified_memory);
         assert!(gpus[1].vram_bytes > 0);
+    }
+
+    #[test]
+    fn test_merge_vulkan_devices_replaces_anonymous_integrated_gpu_placeholder() {
+        let mut gpus = vec![GpuFacts {
+            index: 0,
+            display_name: "GPU 0".to_string(),
+            stable_id: Some("index:0".to_string()),
+            vram_bytes: 536_870_912,
+            ..Default::default()
+        }];
+        let devices = vec![VulkanGpuFacts {
+            index: 0,
+            display_name: "AMD Radeon 8060S Graphics (RADV STRIX_HALO)".to_string(),
+            device_type: "PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU".to_string(),
+            device_uuid: Some("00000000-c200-0000-0000-000000000000".to_string()),
+            ..Default::default()
+        }];
+
+        merge_vulkan_devices_into_gpu_facts(&mut gpus, &devices, 137_438_953_472);
+
+        assert_eq!(gpus.len(), 1);
+        assert_eq!(
+            gpus[0].display_name,
+            "AMD Radeon 8060S Graphics (RADV STRIX_HALO)"
+        );
+        assert_eq!(gpus[0].backend_device.as_deref(), Some("Vulkan0"));
+        assert_eq!(gpus[0].stable_id.as_deref(), Some("pci:00000000:c2:00.0"));
+        assert_eq!(gpus[0].pci_bdf.as_deref(), Some("00000000:c2:00.0"));
+        assert_eq!(
+            gpus[0].vendor_uuid.as_deref(),
+            Some("00000000-c200-0000-0000-000000000000")
+        );
+        assert_eq!(gpus[0].vram_bytes, 103_079_215_104);
+        assert!(gpus[0].unified_memory);
     }
 
     #[test]
