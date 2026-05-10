@@ -143,12 +143,30 @@ mod tests {
     #[test]
     fn embedded_script_keeps_large_source_cache_on_bucket_volume() {
         assert!(EMBEDDED_SCRIPT.contains("SOURCE_QUANT"));
+        assert!(EMBEDDED_SCRIPT.contains("SOURCE_TOTAL_BYTES"));
+        assert!(EMBEDDED_SCRIPT.contains("Estimated /bucket workspace needed"));
+        assert!(EMBEDDED_SCRIPT.contains("estimate_bucket_workspace_bytes"));
         assert!(EMBEDDED_SCRIPT.contains(r#"HF_HUB_CACHE="${HF_HUB_CACHE:-${HF_HOME}/hub}""#));
         assert!(EMBEDDED_SCRIPT.contains(r#"HF_XET_CACHE="${HF_XET_CACHE:-${HF_HOME}/xet}""#));
+        assert!(EMBEDDED_SCRIPT.contains(r#"JOB_TMP_DIR="${JOB_TMP_DIR:-${JOB_WORK_DIR}/tmp}""#));
+        assert!(EMBEDDED_SCRIPT.contains(r#"LOCAL_WORK_DIR="${LOCAL_WORK_DIR:-/tmp/"#));
+        assert!(
+            EMBEDDED_SCRIPT.contains(r#"BUILD_TMP_DIR="${BUILD_TMP_DIR:-${LOCAL_WORK_DIR}/tmp}""#)
+        );
+        assert!(EMBEDDED_SCRIPT.contains(r#"TMPDIR="$BUILD_TMP_DIR""#));
+        assert!(EMBEDDED_SCRIPT.contains(r#"TMPDIR="$JOB_TMP_DIR""#));
+        assert!(EMBEDDED_SCRIPT.contains("export TMPDIR TEMP TMP"));
+        assert!(EMBEDDED_SCRIPT
+            .contains(r#"CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${LOCAL_WORK_DIR}/cargo-target}""#));
+        assert!(EMBEDDED_SCRIPT
+            .contains(r#"rm -rf "$BUILD_DIR" "$CARGO_TARGET_DIR" "$CARGO_HOME" "$RUSTUP_HOME""#));
         assert!(EMBEDDED_SCRIPT.contains(r#"SOURCE_REF="${SOURCE_REPO}:${SOURCE_QUANT}""#));
         assert!(EMBEDDED_SCRIPT
             .contains(r#"SOURCE_REF="${SOURCE_REPO}@${SOURCE_REVISION}:${SOURCE_QUANT}""#));
-        assert!(EMBEDDED_SCRIPT.contains(r#"time $SLICER write-package "$SOURCE_REF""#));
+        assert!(EMBEDDED_SCRIPT.contains("log_storage_snapshot"));
+        assert!(EMBEDDED_SCRIPT.contains("start_heartbeat"));
+        assert!(EMBEDDED_SCRIPT.contains("Starting write-package"));
+        assert!(EMBEDDED_SCRIPT.contains(r#"time "$SLICER" write-package "$SOURCE_REF""#));
         assert!(!EMBEDDED_SCRIPT.contains(r#"SOURCE_PATH="/source/${SOURCE_FILE}""#));
         assert!(!EMBEDDED_SCRIPT.contains(r#"time $SLICER write-package "$SOURCE_PATH""#));
     }

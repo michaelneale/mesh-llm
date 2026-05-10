@@ -187,6 +187,7 @@ pub async fn resolve(
     environment.insert("SOURCE_REPO".into(), params.source_repo.clone());
     environment.insert("SOURCE_FILE".into(), source_file.clone());
     environment.insert("SOURCE_QUANT".into(), matched.name.clone());
+    environment.insert("SOURCE_TOTAL_BYTES".into(), matched.total_bytes.to_string());
     environment.insert("TARGET_REPO".into(), target_repo.clone());
     environment.insert("MODEL_ID".into(), model_id.clone());
     environment.insert("SOURCE_REVISION".into(), "main".into());

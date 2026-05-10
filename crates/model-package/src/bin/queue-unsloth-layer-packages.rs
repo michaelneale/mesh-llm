@@ -195,7 +195,6 @@ async fn main() -> Result<()> {
             );
             continue;
         }
-
         let status = candidate_status(&hf_client, &candidate, args.retry_queued_after).await?;
         match status {
             QueueStatus::Published => {
@@ -227,12 +226,15 @@ async fn main() -> Result<()> {
             "would queue"
         };
         println!(
-            "{} {} -> {} ({}, {}, {}, {}, family={}, target={}, hardware={} {}, timeout={}, max_cost={})",
+            "{} {} -> {} ({}, source={}, bucket_estimate={}, {}, {}, family={}, target={}, hardware={} {}, timeout={}, max_cost={})",
             action,
             candidate.model_id,
             candidate.target_repo,
             candidate.quant.name,
             prepare::format_size(candidate.quant.total_bytes),
+            prepare::format_size(estimated_bucket_workspace_bytes(
+                candidate.quant.total_bytes
+            )),
             shard_label(candidate.quant.shard_count),
             rank_label(&candidate.model),
             candidate.family,
@@ -860,6 +862,10 @@ fn job_spec_with_token(
     environment.insert("SOURCE_REPO".into(), candidate.model.repo_id.clone());
     environment.insert("SOURCE_FILE".into(), candidate.quant.first_file.clone());
     environment.insert("SOURCE_QUANT".into(), candidate.quant.name.clone());
+    environment.insert(
+        "SOURCE_TOTAL_BYTES".into(),
+        candidate.quant.total_bytes.to_string(),
+    );
     environment.insert("TARGET_REPO".into(), candidate.target_repo.clone());
     environment.insert("MODEL_ID".into(), candidate.model_id.clone());
     environment.insert("SOURCE_REVISION".into(), "main".into());
@@ -1028,6 +1034,13 @@ fn runtime_model_required_bytes(model_bytes: u64) -> u64 {
         .div_ceil(RUNTIME_MODEL_FIT_HEADROOM_DENOMINATOR)
 }
 
+fn estimated_bucket_workspace_bytes(source_bytes: u64) -> u64 {
+    source_bytes
+        .saturating_mul(9)
+        .div_ceil(4)
+        .saturating_add(32 * 1024 * 1024 * 1024)
+}
+
 fn status_label(status: QueueStatus) -> &'static str {
     match status {
         QueueStatus::Missing => "missing",
@@ -1088,7 +1101,8 @@ mod tests {
     use model_package::jobs::CpuJobPlan;
 
     use super::{
-        job_spec_with_token, model_family_key, Args, Candidate, DiscoveredQuant, RankedModel,
+        estimated_bucket_workspace_bytes, job_spec_with_token, model_family_key, Args, Candidate,
+        DiscoveredQuant, RankedModel,
     };
 
     #[test]
@@ -1181,6 +1195,12 @@ mod tests {
             spec.environment.get("SOURCE_QUANT").map(String::as_str),
             Some("UD-Q4_K_XL")
         );
+        assert_eq!(
+            spec.environment
+                .get("SOURCE_TOTAL_BYTES")
+                .map(String::as_str),
+            Some("401")
+        );
         assert_eq!(spec.volumes.len(), 1);
         assert_eq!(spec.volumes[0].volume_type, "bucket");
         assert_eq!(spec.volumes[0].mount_path, "/bucket");
@@ -1188,5 +1208,13 @@ mod tests {
             .volumes
             .iter()
             .any(|volume| volume.volume_type == "model"));
+    }
+
+    #[test]
+    fn bucket_workspace_estimate_scales_with_source_size() {
+        assert_eq!(
+            estimated_bucket_workspace_bytes(600 * 1024 * 1024 * 1024),
+            1382 * 1024 * 1024 * 1024
+        );
     }
 }

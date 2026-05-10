@@ -41,11 +41,14 @@ function Prepare-Llama {
 
     Push-Location $llamaDir
     try {
-        & git am --abort *> $null
-        Invoke-NativeCommand "git" @("remote", "set-url", "origin", $upstreamUrl)
-        Invoke-NativeCommand "git" @("fetch", "origin", "master", "--tags")
         Invoke-NativeCommand "git" @("config", "user.name", "Mesh-LLM CI")
         Invoke-NativeCommand "git" @("config", "user.email", "ci@mesh-llm.local")
+        try {
+            & git am --abort *> $null
+        } catch {
+        }
+        Invoke-NativeCommand "git" @("remote", "set-url", "origin", $upstreamUrl)
+        Invoke-NativeCommand "git" @("fetch", "origin", "master", "--tags")
         Invoke-NativeCommand "git" @("-c", "advice.detachedHead=false", "checkout", "--detach", "--quiet", $targetSha)
         Invoke-NativeCommand "git" @("reset", "--hard", "--quiet", $targetSha)
         Invoke-NativeCommand "git" @("clean", "-fdx", "-e", "build/")
@@ -172,6 +175,119 @@ function Configure-CompilerCache {
         "-DCMAKE_C_COMPILER_LAUNCHER=$script:compilerCacheBin",
         "-DCMAKE_CXX_COMPILER_LAUNCHER=$script:compilerCacheBin"
     )
+}
+
+function Test-Sccache {
+    return $compilerCacheBin -and ((Split-Path -Leaf $compilerCacheBin).ToLowerInvariant() -like "sccache*")
+}
+
+function Reset-SccacheStats {
+    if (-not (Test-Sccache)) {
+        return
+    }
+
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $compilerCacheBin --zero-stats 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Unable to reset sccache stats before build."
+        }
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+}
+
+function Get-SccacheStats {
+    if (-not (Test-Sccache)) {
+        return $null
+    }
+
+    $json = & $compilerCacheBin --show-stats --stats-format=json
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Unable to read sccache stats."
+        return $null
+    }
+
+    try {
+        return ($json | ConvertFrom-Json).stats
+    } catch {
+        Write-Warning "Unable to parse sccache stats JSON."
+        return $null
+    }
+}
+
+function Show-SccacheStats {
+    if (-not (Test-Sccache)) {
+        return
+    }
+
+    & $compilerCacheBin --show-stats
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Unable to show sccache stats."
+    }
+}
+
+function Test-SccacheStatsContainCuda {
+    param($Stats)
+
+    if (-not $Stats) {
+        return $false
+    }
+
+    foreach ($bucketName in @("cache_hits", "cache_misses")) {
+        $bucket = $Stats.$bucketName
+        if (-not $bucket -or -not $bucket.counts) {
+            continue
+        }
+        foreach ($property in $bucket.counts.PSObject.Properties) {
+            if ($property.Name -like "CUDA*" -and [int64]$property.Value -gt 0) {
+                return $true
+            }
+        }
+    }
+
+    return $false
+}
+
+function Test-SccacheStatsContainHits {
+    param($Stats)
+
+    if (-not $Stats -or -not $Stats.cache_hits -or -not $Stats.cache_hits.counts) {
+        return $false
+    }
+
+    foreach ($property in $Stats.cache_hits.counts.PSObject.Properties) {
+        if ([int64]$property.Value -gt 0) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Assert-RequiredSccacheUsage {
+    param(
+        [string]$BackendName,
+        $Stats
+    )
+
+    if ($env:MESH_LLM_REQUIRE_SCCACHE -ne "1") {
+        return
+    }
+
+    if (-not (Test-Sccache)) {
+        throw "MESH_LLM_REQUIRE_SCCACHE=1 but sccache is not available."
+    }
+    if (-not $Stats -or [int64]$Stats.compile_requests -le 0) {
+        throw "MESH_LLM_REQUIRE_SCCACHE=1 but sccache saw zero compile requests."
+    }
+    if ($env:MESH_LLM_REQUIRE_SCCACHE_HITS -eq "1" -and -not (Test-SccacheStatsContainHits $Stats)) {
+        throw "MESH_LLM_REQUIRE_SCCACHE_HITS=1 but sccache did not record any cache hits."
+    }
+    if ($BackendName -eq "cuda" -and -not (Test-SccacheStatsContainCuda $Stats)) {
+        throw "MESH_LLM_REQUIRE_SCCACHE=1 but sccache did not record CUDA compile hits or misses."
+    }
 }
 
 function Import-CmdEnvironment {
@@ -669,6 +785,10 @@ Write-Host "Using Windows backend: $backendName"
 Ensure-MsvcToolchain
 Configure-LldLinker
 Configure-CompilerCache
+if ((Test-Sccache) -and -not $env:RUSTC_WRAPPER) {
+    $env:RUSTC_WRAPPER = $script:compilerCacheBin
+    Write-Host "Using sccache for Rust compilation: $env:RUSTC_WRAPPER"
+}
 
 switch ($backendName) {
     "cuda" {
@@ -699,15 +819,19 @@ switch ($backendName) {
 Invoke-InRepo {
     Prepare-Llama
 
+    $pathMaxDefine = if ($backendName -eq "rocm") { "-DPATH_MAX=4096" } else { "/DPATH_MAX=4096" }
+    Reset-SccacheStats
+
     $cmakeArgs = @(
         "-B", $buildDir,
         "-S", $llamaDir,
         "-DCMAKE_BUILD_TYPE=Release",
-        "-DCMAKE_CXX_FLAGS=/DPATH_MAX=4096",
+        "-DCMAKE_CXX_FLAGS=$pathMaxDefine",
         "-DGGML_METAL=OFF",
         "-DGGML_CUDA=OFF",
         "-DGGML_HIP=OFF",
         "-DGGML_VULKAN=OFF",
+        "-DGGML_OPENMP=ON",
         "-DBUILD_SHARED_LIBS=OFF",
         "-DLLAMA_CURL=OFF",
         "-DLLAMA_BUILD_EXAMPLES=OFF",
@@ -722,7 +846,7 @@ Invoke-InRepo {
     switch ($backendName) {
         "cuda" {
             $cmakeArgs += "-DGGML_CUDA=ON"
-            if ($compilerCacheBin) {
+            if (Test-Sccache) {
                 $cmakeArgs += "-DCMAKE_CUDA_COMPILER_LAUNCHER=$compilerCacheBin"
             }
             if ($CudaArch) {
@@ -759,12 +883,23 @@ Invoke-InRepo {
 
     $cmakeArgs += $compilerLauncherArgs
 
-    $parallelJobs = [Environment]::ProcessorCount
+    $parallelJobs = if ($env:MESH_LLM_WINDOWS_BUILD_JOBS) {
+        [int]$env:MESH_LLM_WINDOWS_BUILD_JOBS
+    } elseif ($backendName -eq "cuda" -and (Test-Sccache)) {
+        [Math]::Min([Environment]::ProcessorCount, 2)
+    } else {
+        [Environment]::ProcessorCount
+    }
     Invoke-NativeCommand "cmake" $cmakeArgs
     Invoke-NativeCommand "cmake" @("--build", $buildDir, "--config", "Release", "--parallel", "$parallelJobs", "--target", "llama", "llama-common", "mtmd")
     Write-Host "Patched llama.cpp ABI build complete: $buildDir"
+    $sccacheStats = Get-SccacheStats
+    Show-SccacheStats
+    Assert-RequiredSccacheUsage $backendName $sccacheStats
 
-    if (Test-Path $meshUiDir) {
+    if ($env:MESH_LLM_SKIP_UI -eq "1") {
+        Write-Host "Skipping mesh-llm UI build because MESH_LLM_SKIP_UI=1."
+    } elseif (Test-Path $meshUiDir) {
         if (Test-UiBuildRequired -UiDirectory $meshUiDir) {
             Write-Host "Building mesh-llm UI..."
             Push-Location $meshUiDir
