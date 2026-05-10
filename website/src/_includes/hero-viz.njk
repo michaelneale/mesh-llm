@@ -1,0 +1,77 @@
+<div class="hero-viz" aria-hidden="true">
+  <svg viewBox="0 0 1200 620" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <radialGradient id="hero-node-blue" cx="50%" cy="50%" r="55%">
+        <stop offset="0%" stop-color="#60a5fa" stop-opacity="0.95"/>
+        <stop offset="42%" stop-color="#3b82f6" stop-opacity="0.42"/>
+        <stop offset="100%" stop-color="#3b82f6" stop-opacity="0"/>
+      </radialGradient>
+      <radialGradient id="hero-node-green" cx="50%" cy="50%" r="55%">
+        <stop offset="0%" stop-color="#86efac" stop-opacity="0.9"/>
+        <stop offset="42%" stop-color="#22c55e" stop-opacity="0.34"/>
+        <stop offset="100%" stop-color="#22c55e" stop-opacity="0"/>
+      </radialGradient>
+      <radialGradient id="hero-vignette" cx="45%" cy="48%" r="70%">
+        <stop offset="0%" stop-color="#0f172a" stop-opacity="0.36"/>
+        <stop offset="62%" stop-color="#09090b" stop-opacity="0.18"/>
+        <stop offset="100%" stop-color="#09090b" stop-opacity="0"/>
+      </radialGradient>
+      <pattern id="hero-grid" width="34" height="34" patternUnits="userSpaceOnUse">
+        <path d="M 34 0 L 0 0 0 34" fill="none" stroke="#27272a" stroke-opacity="0.35" stroke-width="1"/>
+      </pattern>
+    </defs>
+    <rect width="1200" height="620" fill="url(#hero-grid)" opacity="0.2"/>
+    <rect width="1200" height="620" fill="url(#hero-vignette)"/>
+    <g fill="none" stroke-linecap="round" stroke-width="1.35">
+      <path class="mesh-line" d="M-120 292 C80 260 230 120 430 150 S830 395 1040 220 S1280 112 1400 168" stroke="#60a5fa" stroke-opacity="0.48"/>
+      <path class="mesh-line reverse" d="M-110 506 C190 430 360 310 470 385 S840 185 1030 360 S1288 470 1410 408" stroke="#86efac" stroke-opacity="0.42" style="animation-delay:-2.2s"/>
+      <path class="mesh-line reverse" d="M-120 246 C120 250 280 350 405 260 S830 255 1030 360 S1266 280 1400 318" stroke="#cbd5e1" stroke-opacity="0.32" style="animation-delay:-4s"/>
+      <path class="mesh-line" d="M-120 40 C190 95 380 250 470 300 S805 350 1040 220 S1300 82 1410 120" stroke="#38bdf8" stroke-opacity="0.4" style="animation-delay:-1.2s"/>
+      <path class="mesh-line reverse" d="M-120 388 C185 235 290 480 470 390 S770 130 1180 155 S1320 190 1420 156" stroke="#60a5fa" stroke-opacity="0.28" style="animation-delay:-5.1s"/>
+      <path class="mesh-line" d="M-120 88 C240 45 365 75 560 250 S840 500 1160 435 S1320 410 1420 500" stroke="#86efac" stroke-opacity="0.26" style="animation-delay:-3.5s"/>
+      <path class="mesh-line reverse" d="M-140 244 C155 210 315 185 560 250 S890 310 1240 270 S1340 250 1420 270" stroke="#818cf8" stroke-opacity="0.24" style="animation-delay:-6.4s"/>
+    </g>
+    <g class="mesh-node">
+      <circle cx="120" cy="250" r="44" fill="url(#hero-node-blue)"/>
+      <circle class="mesh-ring slow" cx="120" cy="250" r="16" fill="none" stroke="#60a5fa" stroke-width="1.4"/>
+      <circle class="node-core" cx="120" cy="250" r="6" fill="#93c5fd"/>
+      <circle cx="300" cy="160" r="34" fill="url(#hero-node-blue)" opacity="0.75"/>
+      <circle class="node-core alt" cx="300" cy="160" r="5" fill="#60a5fa"/>
+      <circle cx="560" cy="250" r="50" fill="url(#hero-node-green)"/>
+      <circle class="mesh-ring" cx="560" cy="250" r="18" fill="none" stroke="#86efac" stroke-width="1.5"/>
+      <circle class="mesh-ring slow" cx="560" cy="250" r="26" fill="none" stroke="#22c55e" stroke-width="1"/>
+      <circle class="node-core" cx="560" cy="250" r="7" fill="#86efac"/>
+      <circle cx="610" cy="310" r="36" fill="url(#hero-node-blue)" opacity="0.7"/>
+      <circle class="node-core alt" cx="610" cy="310" r="5" fill="#7dd3fc"/>
+      <circle cx="1030" cy="360" r="42" fill="url(#hero-node-green)" opacity="0.68"/>
+      <circle class="mesh-ring" cx="1030" cy="360" r="15" fill="none" stroke="#86efac" stroke-width="1.4"/>
+      <circle class="node-core" cx="1030" cy="360" r="6" fill="#86efac"/>
+      <circle cx="1040" cy="220" r="30" fill="url(#hero-node-blue)" opacity="0.62"/>
+      <circle class="node-core alt" cx="1040" cy="220" r="5" fill="#93c5fd"/>
+    </g>
+    <g class="mesh-label" transform="translate(120 264)" style="animation-delay:-0.6s">
+      <text x="0" y="0" font-size="6" fill="#d4d4d8" text-anchor="middle">Gemma 4</text>
+    </g>
+    <g class="mesh-label" transform="translate(300 173)" style="animation-delay:-3.1s">
+      <text x="0" y="0" font-size="6" fill="#d4d4d8" text-anchor="middle">Qwen Coder</text>
+    </g>
+    <g class="mesh-label" transform="translate(560 269)" style="animation-delay:-5.2s">
+      <text x="0" y="0" font-size="6" fill="#d4d4d8" text-anchor="middle">GLM-4.5</text>
+    </g>
+    <g class="mesh-label" transform="translate(610 325)" style="animation-delay:-6.8s">
+      <text x="0" y="0" font-size="6" fill="#d4d4d8" text-anchor="middle">DeepSeek-R1</text>
+    </g>
+    <g class="mesh-label" transform="translate(1030 375)" style="animation-delay:-2.2s">
+      <text x="0" y="0" font-size="6" fill="#d4d4d8" text-anchor="middle">Kimi K2</text>
+    </g>
+    <g class="mesh-label" transform="translate(1040 233)" style="animation-delay:-7.7s">
+      <text x="0" y="0" font-size="6" fill="#d4d4d8" text-anchor="middle">Llama 3.1</text>
+    </g>
+  </svg>
+  <span class="hero-packet packet-a"></span>
+  <span class="hero-packet packet-b"></span>
+  <span class="hero-packet packet-c"></span>
+  <span class="hero-packet packet-d"></span>
+  <span class="hero-packet packet-e"></span>
+  <span class="hero-packet packet-f"></span>
+</div>

@@ -1,0 +1,669 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CLI - Mesh LLM</title>
+  <meta name="description" content="Mesh serves large local models across multiple machines through one OpenAI-compatible endpoint.">
+  <link rel="icon" href="/mesh-llm-logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body class="docs-body">
+  <nav class="nav">
+  <div class="shell nav-inner">
+    <a class="brand" href="/" aria-label="Mesh LLM home"><span class="brand-lockup">
+  <svg class="brand-mark" width="32" height="32" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+    <path d="M32 8c-12.8 0-23 8.2-23 18.4 0 3.1.9 5.9 2.6 8.4l.2.3c2.6-2.5 6.9-4 11.8-4h16.8c4.9 0 9.2 1.5 11.8 4l.2-.3c1.7-2.5 2.6-5.3 2.6-8.4C55 16.2 44.8 8 32 8Z"/>
+    <path d="M11.9 35.8c1.6 2.2 3.6 4.1 6 5.6 2.6 1.6 5.4 2.4 8.3 2.4h11.6c2.9 0 5.8-.8 8.3-2.4 2.4-1.5 4.4-3.4 6-5.6-2.3-2.1-6.4-3.4-10.8-3.4H22.7c-4.4 0-8.5 1.3-10.8 3.4Z"/>
+    <path d="M17.5 38.8c1.3 0 2.3 1 2.3 2.3v8.4c0 1.8-.7 3.2-1.3 4.5-.6 1.2-1.1 2.1-1.1 3.3 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-2 .7-3.4 1.4-4.8.6-1.1 1-2 1-3v-8.4c0-1.3 1-2.3 2.3-2.3Z"/>
+    <path d="M24.5 39.2c1.3 0 2.4 1.1 2.4 2.4v10.8c0 2.2-.8 3.9-1.6 5.4-.8 1.5-1.5 2.8-1.5 4.7 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-2.7 1-4.5 1.9-6.2.7-1.4 1.3-2.5 1.3-3.9V41.6c0-1.3 1.1-2.4 2.4-2.4Z"/>
+    <path d="M32 38.2c1.7 0 3 1.3 3 3v17.6c0 2.1-.7 3.8-1.5 5.2-.5.8-1.5 1.1-2.3.6-.8-.5-1.1-1.5-.6-2.3.6-1 1.1-2 1.1-3.5V41.2c0-1.7 1.3-3 3-3Z"/>
+    <path d="M39.5 39.2c1.3 0 2.4 1.1 2.4 2.4v10.8c0 1.4.6 2.5 1.3 3.9.9 1.7 1.9 3.5 1.9 6.2 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-1.9-.7-3.2-1.5-4.7-.8-1.5-1.6-3.2-1.6-5.4V41.6c0-1.3 1.1-2.4 2.4-2.4Z"/>
+    <path d="M46.5 38.8c1.3 0 2.3 1 2.3 2.3v8.4c0 1 .4 1.9 1 3 .7 1.4 1.4 2.8 1.4 4.8 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-1.2-.5-2.2-1.1-3.3-.6-1.3-1.3-2.7-1.3-4.5v-8.4c0-1.3 1-2.3 2.3-2.3Z"/>
+  </svg>
+  <span class="brand-text"><span>mesh</span>-llm</span>
+</span>
+</a>
+    <div class="nav-links">
+      <a href="/catalog/">Catalog</a>
+      <a href="/docs/">Docs</a>
+      <a href="https://public.meshllm.cloud">Public Mesh</a>
+      <a href="https://github.com/Mesh-LLM/mesh-llm">GitHub</a>
+      <a class="button primary" href="/#install">Install</a>
+    </div>
+  </div>
+</nav>
+
+  <main class="docs-shell">
+  <aside class="docs-sidebar" aria-label="Documentation navigation">
+  <div class="docs-sidebar-inner">
+    <div class="docs-search docs-sidebar-search" aria-label="Search">Search... <span>⌘K</span></div>
+
+      <section class="docs-nav-group">
+        <h2>Get started</h2>
+
+          <a href="/docs/pages/quickstart/">Quickstart</a>
+
+          <a href="/docs/pages/installing-mesh/">Installing Mesh</a>
+
+          <a href="/docs/pages/updating-mesh/">Updating Mesh</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Install</h2>
+
+          <a href="/docs/pages/installing-mesh/#macos">macOS</a>
+
+          <a href="/docs/pages/installing-mesh/#linux">Linux</a>
+
+          <a href="/docs/pages/installing-mesh/#windows">Windows</a>
+
+          <a href="/docs/pages/hardware-support/">Hardware support</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Running models</h2>
+
+          <a href="/docs/pages/quickstart/#serve-a-model">Run your first model</a>
+
+          <a href="/docs/pages/running-large-models/">Running large models</a>
+
+          <a href="/docs/pages/contributing-layer-packages/">Layer packages</a>
+
+          <a href="/catalog/">Catalog</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Capabilities</h2>
+
+          <a href="/docs/pages/openai-compatible-api/">OpenAI-compatible API</a>
+
+          <a href="/docs/pages/openai-compatible-api/#streaming">Streaming</a>
+
+          <a href="/docs/pages/openai-compatible-api/#tool-calling">Tool calling</a>
+
+          <a href="/docs/pages/openai-compatible-api/#structured-outputs">Structured outputs</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Catalog</h2>
+
+          <a href="/catalog/">Browse Catalog</a>
+
+          <a href="/docs/pages/contributing-layer-packages/">Contributing layer packages</a>
+
+          <a href="/docs/pages/certifying-model-families/">Certifying model families</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Meshes</h2>
+
+          <a href="/docs/pages/public-mesh/">Join the public mesh</a>
+
+          <a href="/docs/pages/private-meshes/">Private meshes</a>
+
+          <a href="/docs/pages/publish-mesh/">Publish mesh</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Integrations</h2>
+
+          <a href="/docs/pages/agents/">Integrations overview</a>
+
+          <a href="/docs/pages/agents/">Agent setup</a>
+
+          <a href="/docs/pages/exo-comparison/">exo comparison</a>
+
+          <a href="/docs/pages/plugins/">Plugins</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>API reference</h2>
+
+          <a href="/docs/pages/api-reference/">API reference</a>
+
+          <a href="/docs/pages/openai-compatible-api/">OpenAI-compatible API</a>
+
+          <a href="/docs/pages/CLI/" aria-current="page">CLI reference</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Help</h2>
+
+          <a href="/docs/pages/faq/">FAQ</a>
+
+          <a href="/docs/pages/troubleshooting/">Troubleshooting</a>
+
+          <a href="/docs/pages/testing/">Testing playbook</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Contributing</h2>
+
+          <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/CONTRIBUTING.md">Contributing guide</a>
+
+          <a href="/docs/pages/testing/">Testing playbook</a>
+
+          <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/ROADMAP.md">Roadmap</a>
+
+      </section>
+
+  </div>
+</aside>
+
+<details class="docs-mobile-nav">
+  <summary>Navigation</summary>
+  <div class="docs-mobile-nav-panel">
+
+      <section class="docs-nav-group">
+        <h2>Get started</h2>
+
+          <a href="/docs/pages/quickstart/">Quickstart</a>
+
+          <a href="/docs/pages/installing-mesh/">Installing Mesh</a>
+
+          <a href="/docs/pages/updating-mesh/">Updating Mesh</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Install</h2>
+
+          <a href="/docs/pages/installing-mesh/#macos">macOS</a>
+
+          <a href="/docs/pages/installing-mesh/#linux">Linux</a>
+
+          <a href="/docs/pages/installing-mesh/#windows">Windows</a>
+
+          <a href="/docs/pages/hardware-support/">Hardware support</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Running models</h2>
+
+          <a href="/docs/pages/quickstart/#serve-a-model">Run your first model</a>
+
+          <a href="/docs/pages/running-large-models/">Running large models</a>
+
+          <a href="/docs/pages/contributing-layer-packages/">Layer packages</a>
+
+          <a href="/catalog/">Catalog</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Capabilities</h2>
+
+          <a href="/docs/pages/openai-compatible-api/">OpenAI-compatible API</a>
+
+          <a href="/docs/pages/openai-compatible-api/#streaming">Streaming</a>
+
+          <a href="/docs/pages/openai-compatible-api/#tool-calling">Tool calling</a>
+
+          <a href="/docs/pages/openai-compatible-api/#structured-outputs">Structured outputs</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Catalog</h2>
+
+          <a href="/catalog/">Browse Catalog</a>
+
+          <a href="/docs/pages/contributing-layer-packages/">Contributing layer packages</a>
+
+          <a href="/docs/pages/certifying-model-families/">Certifying model families</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Meshes</h2>
+
+          <a href="/docs/pages/public-mesh/">Join the public mesh</a>
+
+          <a href="/docs/pages/private-meshes/">Private meshes</a>
+
+          <a href="/docs/pages/publish-mesh/">Publish mesh</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Integrations</h2>
+
+          <a href="/docs/pages/agents/">Integrations overview</a>
+
+          <a href="/docs/pages/agents/">Agent setup</a>
+
+          <a href="/docs/pages/exo-comparison/">exo comparison</a>
+
+          <a href="/docs/pages/plugins/">Plugins</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>API reference</h2>
+
+          <a href="/docs/pages/api-reference/">API reference</a>
+
+          <a href="/docs/pages/openai-compatible-api/">OpenAI-compatible API</a>
+
+          <a href="/docs/pages/CLI/" aria-current="page">CLI reference</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Help</h2>
+
+          <a href="/docs/pages/faq/">FAQ</a>
+
+          <a href="/docs/pages/troubleshooting/">Troubleshooting</a>
+
+          <a href="/docs/pages/testing/">Testing playbook</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Contributing</h2>
+
+          <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/CONTRIBUTING.md">Contributing guide</a>
+
+          <a href="/docs/pages/testing/">Testing playbook</a>
+
+          <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/ROADMAP.md">Roadmap</a>
+
+      </section>
+
+  </div>
+</details>
+
+  <article class="doc">
+    <div class="crumb"><a href="/docs/">Docs</a> / CLI</div>
+    <h1 id="cli-user-guide" tabindex="-1">CLI User Guide</h1>
+<p>This is a practical user guide to the <code>mesh-llm</code> CLI.
+It explains what to run for common tasks, then documents each command and switch.</p>
+<p>Catalog id definition: a catalog id is the model id shown in <code>mesh-llm models recommended</code> (for example <code>Qwen3-0.6B-Q4_K_M</code>).</p>
+<h2 id="get-help" tabindex="-1">Get help</h2>
+<pre><code class="language-bash">mesh-llm --help
+mesh-llm &lt;command&gt; --help
+mesh-llm models --help
+mesh-llm models &lt;subcommand&gt; --help
+</code></pre>
+<h2 id="start-here-common-tasks" tabindex="-1">Start here (common tasks)</h2>
+<p>If you want to:</p>
+<ol>
+<li>Start serving right away:</li>
+</ol>
+<pre><code class="language-bash">mesh-llm serve --auto
+</code></pre>
+<ol start="2">
+<li>Find a model you can run:</li>
+</ol>
+<pre><code class="language-bash">mesh-llm models search gemma --gguf
+mesh-llm models search smoll --mlx
+</code></pre>
+<ol start="3">
+<li>Inspect a model before downloading:</li>
+</ol>
+<pre><code class="language-bash">mesh-llm models show unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL
+</code></pre>
+<ol start="4">
+<li>Download a model:</li>
+</ol>
+<pre><code class="language-bash">mesh-llm models download unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL
+</code></pre>
+<ol start="5">
+<li>Check what is already installed:</li>
+</ol>
+<pre><code class="language-bash">mesh-llm models installed
+</code></pre>
+<h2 id="runtime-entrypoints-serve-client" tabindex="-1">Runtime entrypoints (<code>serve</code> / <code>client</code>)</h2>
+<p>If you want to start serving, join a mesh, or run as an API-only client, start here.</p>
+<p>Examples:</p>
+<pre><code class="language-bash">mesh-llm serve
+mesh-llm serve --model Qwen3-0.6B-Q4_K_M
+mesh-llm client --auto
+</code></pre>
+<p>Runtime switches:</p>
+<ul>
+<li><code>--join &lt;TOKEN&gt;</code>: join a specific mesh using an invite token (repeatable).</li>
+<li><code>--discover [NAME]</code>: discover a mesh via Nostr and join it. With a name, joins the mesh matching that name. Without a name, behaves like <code>--auto</code>.</li>
+<li><code>--auto</code>: auto-join the best discovered mesh.</li>
+<li><code>--model &lt;MODEL&gt;</code>: model to serve (catalog id from <code>models recommended</code>, HF ref/URL, or path).</li>
+<li><code>--gguf &lt;GGUF&gt;</code>: serve a specific local GGUF file directly (repeatable).</li>
+<li><code>--port &lt;PORT&gt;</code>: API port (default <code>9337</code>).</li>
+<li><code>--client</code>: API-only mode (no GPU/model serving).</li>
+<li><code>--console &lt;CONSOLE&gt;</code>: console/API management port (default <code>3131</code>).</li>
+<li><code>--headless</code>: disable the embedded web UI; keep the management API on the <code>--console</code> port.</li>
+<li><code>--publish</code>: publish your mesh for discovery.</li>
+<li><code>--mesh-name &lt;MESH_NAME&gt;</code>: friendly mesh name in discovery.</li>
+<li><code>--region &lt;REGION&gt;</code>: region hint for discovery.</li>
+<li><code>--blackboard</code>: enable blackboard on public meshes.</li>
+<li><code>--name &lt;NAME&gt;</code>: your blackboard display name.</li>
+<li><code>--max-vram &lt;MAX_VRAM&gt;</code>: cap VRAM used for planning and fit decisions.</li>
+<li><code>--llama-flavor &lt;LLAMA_FLAVOR&gt;</code>: force backend binary flavor (<code>cpu|cuda|rocm|vulkan|metal</code>).</li>
+<li><code>--config &lt;CONFIG&gt;</code>: explicit config file path.</li>
+<li><code>--owner-key &lt;OWNER_KEY&gt;</code>: keystore used to attest this runtime node.</li>
+<li><code>--owner-required</code>: fail startup if owner attestation cannot be loaded.</li>
+<li><code>--node-label &lt;NODE_LABEL&gt;</code>: attach a human label to this runtime node certificate.</li>
+<li><code>--trust-policy &lt;TRUST_POLICY&gt;</code>: override peer ownership trust policy.</li>
+<li><code>--trust-owner &lt;TRUST_OWNER&gt;</code>: add trusted owner IDs on top of the local trust store.</li>
+</ul>
+<h2 id="commands" tabindex="-1">Commands</h2>
+<h3 id="models" tabindex="-1"><code>models</code></h3>
+<p>Start with <code>models</code> when you’re working with models: finding them, checking details, downloading them, or checking update state.</p>
+<p>Subcommands:</p>
+<ul>
+<li><code>recommended</code></li>
+<li><code>installed</code></li>
+<li><code>search</code></li>
+<li><code>show</code></li>
+<li><code>download</code></li>
+<li><code>certify</code></li>
+<li><code>updates</code></li>
+</ul>
+<h3 id="models-recommended" tabindex="-1"><code>models recommended</code></h3>
+<p>Run this when you want the official built-in model IDs (catalog IDs) and sizes.</p>
+<p>Switches:</p>
+<ul>
+<li><code>--json</code>: machine-readable output.</li>
+</ul>
+<h3 id="models-installed" tabindex="-1"><code>models installed</code></h3>
+<p>Run this when you want to see what’s already on your machine.</p>
+<p>Switches:</p>
+<ul>
+<li><code>--json</code>: machine-readable output.</li>
+</ul>
+<h3 id="models-search" tabindex="-1"><code>models search</code></h3>
+<p>Use this to find something you can actually download and run (GGUF or MLX).</p>
+<p>Usage:</p>
+<pre><code class="language-bash">mesh-llm models search gemma --gguf
+mesh-llm models search smoll --mlx --limit 5
+mesh-llm models search qwen --catalog
+</code></pre>
+<p>Switches:</p>
+<ul>
+<li><code>--gguf</code>: GGUF-only search (default).</li>
+<li><code>--mlx</code>: MLX-only search.</li>
+<li><code>--catalog</code>: search only built-in catalog.</li>
+<li><code>--limit &lt;LIMIT&gt;</code>: max results (default <code>20</code>).</li>
+<li><code>--json</code>: machine-readable output.</li>
+</ul>
+<h3 id="models-show" tabindex="-1"><code>models show</code></h3>
+<p>Use this when you want to sanity-check one exact model ref before you download or serve it.</p>
+<p>Usage:</p>
+<pre><code class="language-bash">mesh-llm models show unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL
+mesh-llm models show mlx-community/SmolLM-135M-8bit
+</code></pre>
+<p>Switches:</p>
+<ul>
+<li><code>--json</code>: machine-readable output.</li>
+</ul>
+<h3 id="models-download" tabindex="-1"><code>models download</code></h3>
+<p>Use this when you’re ready to download one specific resolved model.</p>
+<p>Usage:</p>
+<pre><code class="language-bash">mesh-llm models download unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL
+mesh-llm models download mlx-community/SmolLM-135M-8bit
+</code></pre>
+<p>Switches:</p>
+<ul>
+<li><code>--draft</code>: also download the recommended draft model (if available).</li>
+<li><code>--json</code>: machine-readable output.</li>
+</ul>
+<h3 id="models-certify" tabindex="-1"><code>models certify</code></h3>
+<p>Use this when you want a repeatable Skippy layer-package confidence report
+before treating a split package as ready for a release or rollout.</p>
+<p>Choose exactly one mode: use <code>--package-only</code> for package integrity and local
+stage materialization, or pass <code>--api-base</code> to also prove an already running
+OpenAI-compatible mesh endpoint. Runtime certification checks the model list and
+requires real text-bearing responses from both chat completions and Responses
+API smoke requests, not only successful HTTP status codes.</p>
+<p>Usage:</p>
+<pre><code class="language-bash">mesh-llm models certify hf://meshllm/Qwen3-8B-Q4_K_M-layers --package-only --report-out cert.json
+mesh-llm models certify unsloth/Qwen3-8B-GGUF:Q4_K_M --api-base http://127.0.0.1:9337 --json
+</code></pre>
+<p>Switches:</p>
+<ul>
+<li><code>--package-only</code>: verify package resolution, artifact integrity, and local stage materialization without claiming runtime OpenAI readiness.</li>
+<li><code>--api-base &lt;URL&gt;</code>: run <code>/v1/models</code>, <code>/v1/chat/completions</code>, and <code>/v1/responses</code> smoke gates against an already running mesh-llm API. The URL must be an <code>http</code> or <code>https</code> base URL.</li>
+<li><code>--report-out &lt;PATH&gt;</code>: write the JSON certification report to disk.</li>
+<li><code>--prompt &lt;PROMPT&gt;</code>: prompt for runtime smoke gates.</li>
+<li><code>--max-tokens &lt;N&gt;</code>: max tokens for runtime smoke gates. Must be greater than zero when runtime gates are enabled.</li>
+<li><code>--json</code>: print the certification report.</li>
+</ul>
+<h3 id="models-updates" tabindex="-1"><code>models updates</code></h3>
+<p>Use this when you want to check for new upstream revisions or refresh cached repo metadata.</p>
+<p>Usage:</p>
+<pre><code class="language-bash">mesh-llm models updates --check
+mesh-llm models updates --all
+mesh-llm models updates unsloth/gemma-4-31B-it-GGUF
+</code></pre>
+<p>Switches:</p>
+<ul>
+<li><code>--all</code>: operate on all cached HF repos.</li>
+<li><code>--check</code>: check only; do not refresh cache.</li>
+<li><code>--json</code>: machine-readable output.</li>
+</ul>
+<h3 id="download" tabindex="-1"><code>download</code></h3>
+<p>Use this to quickly download by built-in catalog ID or shorthand.</p>
+<p>Usage:</p>
+<pre><code class="language-bash">mesh-llm download
+mesh-llm download 32b
+mesh-llm download Qwen3-0.6B-Q4_K_M --draft
+</code></pre>
+<p>Switches:</p>
+<ul>
+<li><code>--draft</code>: download recommended draft model too.</li>
+</ul>
+<h3 id="update" tabindex="-1"><code>update</code></h3>
+<p>Use this to update mesh-llm and exit.</p>
+<p>Switches:</p>
+<ul>
+<li><code>--auto-update</code>: available on most commands; when set, mesh-llm checks for a newer bundled release before proceeding.</li>
+</ul>
+<h3 id="gpus" tabindex="-1"><code>gpus</code></h3>
+<p>Use this to inspect local GPU identity and capacity, including per-device VRAM, unified-memory state, and cached benchmark-derived bandwidth when present.</p>
+<h3 id="load" tabindex="-1"><code>load</code></h3>
+<p>Use this to load a model into an already-running local mesh-llm runtime.</p>
+<p>Usage:</p>
+<pre><code class="language-bash">mesh-llm load Qwen3-0.6B-Q4_K_M
+</code></pre>
+<p>Switches:</p>
+<ul>
+<li><code>--port &lt;PORT&gt;</code>: target management/API port (default <code>3131</code>).</li>
+</ul>
+<h3 id="unload" tabindex="-1"><code>unload</code></h3>
+<p>Use this to unload a model from a running local runtime.</p>
+<p>Switches:</p>
+<ul>
+<li><code>--port &lt;PORT&gt;</code>: target management/API port (default <code>3131</code>).</li>
+</ul>
+<h3 id="status" tabindex="-1"><code>status</code></h3>
+<p>Use this to inspect model status from a running local runtime.</p>
+<p>Switches:</p>
+<ul>
+<li><code>--port &lt;PORT&gt;</code>: target management/API port (default <code>3131</code>).</li>
+</ul>
+<h3 id="discover" tabindex="-1"><code>discover</code></h3>
+<p>Use this to discover meshes via Nostr and optionally select one automatically.</p>
+<p>Switches:</p>
+<ul>
+<li><code>--name &lt;NAME&gt;</code>: filter by mesh name (case-insensitive exact match).</li>
+<li><code>--model &lt;MODEL&gt;</code>: filter discovered meshes by model name substring.</li>
+<li><code>--min-vram &lt;MIN_VRAM&gt;</code>: filter by minimum VRAM (GB).</li>
+<li><code>--region &lt;REGION&gt;</code>: filter by region.</li>
+<li><code>--auto</code>: print best invite token (useful for piping).</li>
+<li><code>--relay &lt;RELAY&gt;</code>: custom relay URL(s).</li>
+</ul>
+<h3 id="goose" tabindex="-1"><code>goose</code></h3>
+<p>Use this to launch Goose already wired to mesh-llm’s OpenAI-compatible endpoint.</p>
+<p>Switches:</p>
+<ul>
+<li><code>--model &lt;MODEL&gt;</code>: model id from <code>/v1/models</code>.</li>
+<li><code>--port &lt;PORT&gt;</code>: mesh-llm API port (default <code>9337</code>).</li>
+</ul>
+<h3 id="claude" tabindex="-1"><code>claude</code></h3>
+<p>Use this to launch Claude Code already wired to mesh-llm’s OpenAI-compatible endpoint.</p>
+<p>Switches:</p>
+<ul>
+<li><code>--model &lt;MODEL&gt;</code>: model id from <code>/v1/models</code>.</li>
+<li><code>--port &lt;PORT&gt;</code>: mesh-llm API port (default <code>9337</code>).</li>
+</ul>
+<h3 id="opencode" tabindex="-1"><code>opencode</code></h3>
+<p>Use this to launch OpenCode already wired to mesh-llm’s OpenAI-compatible endpoint.</p>
+<p>It injects a temporary OpenCode config through <code>OPENCODE_CONFIG_CONTENT</code> at launch time, so it does not edit persistent OpenCode config files unless you explicitly pass <code>--write</code>.</p>
+<p>Switches:</p>
+<ul>
+<li><code>--model &lt;MODEL&gt;</code>: model id from <code>/v1/models</code>.</li>
+<li><code>--host &lt;HOST|HOST:PORT|URL&gt;</code>: OpenCode target host or URL (default <code>127.0.0.1:9337</code>). Bare host forms assume <code>http</code>, default inference port <code>9337</code>, and default management port <code>3131</code>.</li>
+<li><code>--write</code>: write a merged <code>~/.config/opencode/opencode.json</code> that preserves unrelated root keys and sibling providers. If only <code>opencode.jsonc</code> exists, mesh-llm errors and tells you to rename or migrate it to <code>opencode.json</code> first.</li>
+</ul>
+<h3 id="stop" tabindex="-1"><code>stop</code></h3>
+<p>Use this to stop local <code>mesh-llm</code> instances tracked in the runtime root.</p>
+<h3 id="blackboard" tabindex="-1"><code>blackboard</code></h3>
+<p>Use this to post/search/read shared mesh notes, or to run blackboard as MCP over stdio.</p>
+<p>Usage:</p>
+<pre><code class="language-bash">mesh-llm blackboard
+mesh-llm blackboard &quot;STATUS: testing gguf resolution&quot;
+mesh-llm blackboard --search &quot;gemma&quot;
+mesh-llm blackboard --mcp
+</code></pre>
+<p>Switches:</p>
+<ul>
+<li><code>--search &lt;SEARCH&gt;</code>: search blackboard entries.</li>
+<li><code>--from &lt;FROM&gt;</code>: filter by author.</li>
+<li><code>--since &lt;SINCE&gt;</code>: last N hours.</li>
+<li><code>--limit &lt;LIMIT&gt;</code>: max rows (default <code>20</code>).</li>
+<li><code>--port &lt;PORT&gt;</code>: target management/API port (default <code>3131</code>).</li>
+<li><code>--mcp</code>: run as MCP server over stdio.</li>
+</ul>
+<h3 id="plugin" tabindex="-1"><code>plugin</code></h3>
+<p>Use this to inspect plugin status or run plugin compatibility shims.</p>
+<p>Subcommands:</p>
+<ul>
+<li><code>plugin list</code>: list auto-registered/configured plugins.</li>
+<li><code>plugin install &lt;NAME&gt;</code>: old install workflow shim.</li>
+</ul>
+<h3 id="auth" tabindex="-1"><code>auth</code></h3>
+<p>Use this to manage owner identity and keystore files.</p>
+<p>Subcommands:</p>
+<ul>
+<li><code>auth init</code>: generate/save owner keypair.</li>
+<li><code>auth status</code>: show identity/keystore status.</li>
+</ul>
+<p><code>auth init</code> switches:</p>
+<ul>
+<li><code>--owner-key &lt;OWNER_KEY&gt;</code>: keystore path.</li>
+<li><code>--force</code>: overwrite existing keystore.</li>
+<li><code>--no-passphrase</code>: leave keys unencrypted.</li>
+<li><code>--keychain</code>: store random unlock passphrase in OS keychain.</li>
+</ul>
+<p><code>auth status</code> switches:</p>
+<ul>
+<li><code>--owner-key &lt;OWNER_KEY&gt;</code>: keystore path.</li>
+</ul>
+<p><code>auth sign-node</code> / <code>auth renew-node</code> / <code>auth rotate-node</code> switches:</p>
+<ul>
+<li><code>--owner-key &lt;OWNER_KEY&gt;</code>: keystore path.</li>
+<li><code>--node-label &lt;NODE_LABEL&gt;</code>: attach a human label to the signed node certificate.</li>
+</ul>
+<p><code>auth rotate-owner</code> switches:</p>
+<ul>
+<li><code>--owner-key &lt;OWNER_KEY&gt;</code>: keystore path.</li>
+</ul>
+<h2 id="model-reference-formats" tabindex="-1">Model reference formats</h2>
+<p>Supported for <code>models show</code>, <code>models download</code>, and <code>serve --model</code>:</p>
+<ol>
+<li>Catalog id (an id from <code>mesh-llm models recommended</code>):</li>
+</ol>
+<pre><code class="language-bash">mesh-llm models show Qwen3-0.6B-Q4_K_M
+</code></pre>
+<ol start="2">
+<li>HF repo or GGUF selector:</li>
+</ol>
+<pre><code class="language-bash">mesh-llm models show unsloth/gemma-4-31B-it-GGUF
+mesh-llm models show unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL
+</code></pre>
+<ol start="3">
+<li>HF URL:</li>
+</ol>
+<pre><code class="language-bash">mesh-llm models show https://huggingface.co/unsloth/gemma-4-31B-it-GGUF
+</code></pre>
+<ol start="4">
+<li>Revision pin:</li>
+</ol>
+<pre><code class="language-bash">mesh-llm models show unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL@main
+mesh-llm models show unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL@&lt;commit-sha&gt;
+mesh-llm models show mlx-community/SmolLM-135M-8bit@&lt;commit-sha&gt;
+mesh-llm models show https://huggingface.co/unsloth/gemma-4-31B-it-GGUF/tree/main
+</code></pre>
+<p>For MLX, use repo shorthand (not <code>/model</code>):</p>
+<pre><code class="language-bash">mesh-llm models show mlx-community/SmolLM-135M-8bit
+mesh-llm models download mlx-community/SmolLM-135M-8bit
+</code></pre>
+<h2 id="model-resolution-behavior" tabindex="-1">Model resolution behavior</h2>
+<p>Resolution order:</p>
+<ol>
+<li>exact catalog id</li>
+<li>exact HF ref</li>
+<li>HF URL</li>
+<li>bare-name discovery</li>
+</ol>
+<p>GGUF behavior:</p>
+<ol>
+<li>GGUF search uses Hub <code>gguf</code> pre-filter.</li>
+<li>Excludes sidecars like <code>mmproj*.gguf</code>.</li>
+<li>Split GGUF uses first shard (<code>-00001-of-...</code>) for selection/display.</li>
+<li><code>repo</code> with no selector uses fit-aware ranking against local VRAM.</li>
+<li><code>repo:SELECTOR</code> resolves exact quant/variant.</li>
+</ol>
+<p>MLX behavior:</p>
+<ol>
+<li>MLX search uses Hub <code>mlx</code> pre-filter.</li>
+<li>Model must include weight files (<code>model.safetensors</code> or split first shard).</li>
+<li><code>model.safetensors.index.json</code> by itself is not treated as a model artifact.</li>
+<li>Display reference stays repo shorthand.</li>
+</ol>
+<h2 id="machine-readable-output-json" tabindex="-1">Machine-readable output (<code>--json</code>)</h2>
+<p>All <code>models</code> subcommands support <code>--json</code>.</p>
+<p>Examples:</p>
+<pre><code class="language-bash">mesh-llm models search smoll --mlx --limit 1 --json | jq .
+mesh-llm models show mlx-community/SmolLM-135M-8bit --json | jq .
+mesh-llm models download Qwen3-0.6B-Q4_K_M --json | jq .
+mesh-llm models installed --json | jq .
+mesh-llm models recommended --json | jq .
+mesh-llm models updates --check --json | jq .
+</code></pre>
+<p>Shape summary:</p>
+<ul>
+<li><code>search --json</code>: <code>{ filter, query, machine, results[] }</code></li>
+<li><code>show --json</code>: resolved model + <code>variants[]</code></li>
+<li><code>download --json</code>: requested/resolved refs + local <code>path</code></li>
+<li><code>installed --json</code>: <code>{ cache_dir, results[] }</code></li>
+<li><code>recommended --json</code>: <code>{ source, results[] }</code></li>
+<li><code>updates --json</code>: check/update results</li>
+</ul>
+<p>Automation tips:</p>
+<ol>
+<li>Prefer explicit refs in scripts.</li>
+<li>Pin <code>@&lt;commit-sha&gt;</code> when reproducibility matters.</li>
+<li>Parse stable keys such as <code>type</code>, <code>ref</code>, <code>fit</code>, <code>path</code>, and <code>results</code>.</li>
+</ol>
+
+  </article>
+  <aside class="docs-toc" aria-label="On this page">
+    <h2>☰ On this page</h2>
+    <a href="#cli">CLI</a>
+  </aside>
+</main>
+
+</body>
+</html>

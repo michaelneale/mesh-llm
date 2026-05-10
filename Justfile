@@ -6,6 +6,7 @@ build_dir := env("LLAMA_STAGE_BUILD_DIR", llama_build_root / "build-stage-abi-cp
 mesh_dir := "crates/mesh-llm"
 ui_dir := "crates/mesh-llm-ui"
 ui_legacy_dir := "crates/mesh-llm/ui-legacy"
+website_dir := "website"
 benchmark_src_dir := mesh_dir / "benchmarks"
 home_dir := if os_family() == "windows" { env("USERPROFILE") } else { env("HOME") }
 xdg_cache_dir := env("XDG_CACHE_HOME", home_dir / ".cache")
@@ -289,6 +290,14 @@ ui-legacy api="http://127.0.0.1:3131" port="5174":
 
 # Run the legacy UI dev server proxying to the public meshllm.cloud API
 ui-legacy-public: (ui-legacy "https://meshllm.cloud")
+
+# Build the public website into docs/
+website-build:
+    cd "{{ website_dir }}" && npm run build
+
+# Run the public website with Eleventy watch + browser reload.
+website-dev:
+    cd "{{ website_dir }}" && npm run dev
 
 # Run UI unit tests (vitest)
 ui-test:

@@ -1,0 +1,33 @@
+---
+layout: docs-base.njk
+title: Docs
+description: Mesh LLM documentation for installing Mesh, running models, joining meshes, using the Catalog, and connecting agents.
+permalink: /docs/index.html
+---
+<header class="docs-page-hero">
+  <h1>Documentation</h1>
+  <p class="lead">Install Mesh, join or publish meshes, run models across machines, contribute layer packages, certify model families, and connect agents.</p>
+</header>
+
+<main class="docs-shell">
+  {% include "docs-sidebar.njk" %}
+  <section class="docs-index">
+    <div class="docs-grid">
+      {% for group in docs %}
+        <article class="card">
+          <h2>{{ group.title }}</h2>
+          <p>{{ group.description }}</p>
+          <div class="links">
+            {% for link in group.links %}
+              <a href="{{ link[1] }}">{{ link[0] }}</a>
+            {% endfor %}
+          </div>
+        </article>
+      {% endfor %}
+    </div>
+  </section>
+  <aside class="docs-toc" aria-label="On this page">
+    <h2>☰ On this page</h2>
+    <a href="#documentation">Documentation</a>
+  </aside>
+</main>

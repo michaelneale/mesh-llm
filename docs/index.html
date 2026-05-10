@@ -3,622 +3,135 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Mesh LLM - Multi-machine model serving</title>
-  <meta name="description" content="Mesh serves large local models across multiple machines through one OpenAI-compatible endpoint. Install Mesh, join the public mesh, or browse mesh-ready models and layer packages.">
-  <link rel="icon" href="mesh-llm-logo.svg" type="image/svg+xml">
-  <style>
-    :root {
-      color-scheme: dark;
-      --background: #09090b;
-      --surface: #0c0c0f;
-      --surface-2: #111114;
-      --border: #27272a;
-      --border-soft: #1f1f23;
-      --text: #f4f4f5;
-      --muted: #a1a1aa;
-      --subtle: #71717a;
-      --blue: #3b82f6;
-      --blue-soft: rgba(59, 130, 246, 0.12);
-      --green: #22c55e;
-      --green-soft: rgba(34, 197, 94, 0.12);
-      --amber: #f59e0b;
-      --amber-soft: rgba(245, 158, 11, 0.12);
-      --radius: 8px;
-    }
-
-    * { box-sizing: border-box; }
-    html { scroll-behavior: smooth; }
-    body {
-      margin: 0;
-      background: var(--background);
-      color: var(--text);
-      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      line-height: 1.5;
-      -webkit-font-smoothing: antialiased;
-      overflow-x: hidden;
-    }
-
-    a { color: inherit; text-decoration: none; }
-    a:hover { color: white; }
-    code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
-
-    .shell {
-      width: min(1120px, calc(100% - 32px));
-      margin: 0 auto;
-    }
-
-    .nav {
-      position: sticky;
-      top: 0;
-      z-index: 20;
-      border-bottom: 1px solid var(--border-soft);
-      background: rgba(9, 9, 11, 0.88);
-      backdrop-filter: blur(16px);
-    }
-
-    .nav-inner {
-      height: 64px;
-      display: flex;
-      align-items: center;
-      gap: 24px;
-    }
-
-    .brand {
-      display: inline-flex;
-      align-items: center;
-      gap: 10px;
-      font-weight: 700;
-      letter-spacing: 0;
-    }
-
-    .brand img {
-      width: 118px;
-      height: auto;
-      object-fit: contain;
-    }
-
-    .nav-links {
-      display: flex;
-      align-items: center;
-      gap: 18px;
-      margin-left: auto;
-      color: var(--muted);
-      font-size: 14px;
-    }
-
-    .button {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      min-height: 38px;
-      padding: 0 14px;
-      border-radius: var(--radius);
-      border: 1px solid var(--border);
-      background: var(--surface-2);
-      color: var(--text);
-      font-size: 14px;
-      font-weight: 500;
-      white-space: nowrap;
-    }
-
-    .button.primary {
-      border-color: white;
-      background: white;
-      color: #09090b;
-    }
-
-    .button.primary:hover { color: #09090b; background: #e4e4e7; }
-    .button.ghost { background: transparent; }
-
-    .hero {
-      position: relative;
-      padding: 88px 0 40px;
-      display: grid;
-      grid-template-columns: minmax(0, 1.05fr) minmax(360px, 0.95fr);
-      gap: 48px;
-      align-items: center;
-      overflow: visible;
-      isolation: isolate;
-    }
-
-    .hero > * {
-      position: relative;
-      z-index: 2;
-    }
-
-    .hero-viz {
-      position: absolute;
-      top: -90px;
-      bottom: -20px;
-      left: 50%;
-      width: 100vw;
-      transform: translateX(-50%);
-      z-index: 0;
-      pointer-events: none;
-      opacity: 0.5;
-    }
-
-    .hero-viz svg {
-      width: 100%;
-      height: 100%;
-      display: block;
-    }
-
-    .hero-viz .mesh-line {
-      stroke-dasharray: 9 13;
-      animation: mesh-dash 9s linear infinite, mesh-line-pulse 4.8s ease-in-out infinite;
-    }
-
-    .hero-viz .mesh-packet {
-      filter: drop-shadow(0 0 8px currentColor);
-    }
-
-    .hero-viz .mesh-ring {
-      transform-box: fill-box;
-      transform-origin: center;
-      animation: mesh-ring 4.8s ease-out infinite;
-    }
-
-    .hero-viz .mesh-ring.slow {
-      animation-duration: 6.8s;
-      animation-delay: -2.2s;
-    }
-
-    .hero-viz .mesh-node {
-      filter: drop-shadow(0 0 12px rgba(59, 130, 246, 0.3));
-    }
-
-    .hero-viz .node-core {
-      transform-box: fill-box;
-      transform-origin: center;
-      animation: mesh-node-pulse 4.4s ease-in-out infinite;
-    }
-
-    .hero-viz .node-core.alt {
-      animation-delay: -1.7s;
-      animation-duration: 5.6s;
-    }
-
-    @keyframes mesh-dash {
-      to { stroke-dashoffset: -88; }
-    }
-
-    @keyframes mesh-line-pulse {
-      0%, 100% { opacity: 0.28; }
-      50% { opacity: 0.62; }
-    }
-
-    @keyframes mesh-ring {
-      0% { opacity: 0.34; transform: scale(0.72); }
-      72% { opacity: 0; transform: scale(1.7); }
-      100% { opacity: 0; transform: scale(1.7); }
-    }
-
-    @keyframes mesh-node-pulse {
-      0%, 100% { opacity: 0.82; transform: scale(1); }
-      50% { opacity: 1; transform: scale(1.22); }
-    }
-
-    .eyebrow {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      width: fit-content;
-      margin-bottom: 18px;
-      padding: 5px 10px;
-      border: 1px solid rgba(59, 130, 246, 0.25);
-      border-radius: 999px;
-      background: var(--blue-soft);
-      color: #bfdbfe;
-      font-size: 12px;
-      font-weight: 500;
-    }
-
-    .dot {
-      width: 7px;
-      height: 7px;
-      border-radius: 999px;
-      background: var(--green);
-    }
-
-    h1 {
-      max-width: 760px;
-      margin: 0 0 20px;
-      font-size: clamp(42px, 6vw, 76px);
-      line-height: 0.98;
-      letter-spacing: 0;
-    }
-
-    .lead {
-      max-width: 650px;
-      margin: 0;
-      color: var(--muted);
-      font-size: 19px;
-    }
-
-    .hero-actions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      margin-top: 30px;
-    }
-
-    .terminal {
-      overflow: hidden;
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      background: #050506;
-      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
-    }
-
-    .terminal-head {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      height: 38px;
-      padding: 0 14px;
-      border-bottom: 1px solid var(--border-soft);
-      color: var(--subtle);
-      font-size: 12px;
-    }
-
-    .terminal-dot {
-      width: 10px;
-      height: 10px;
-      border-radius: 999px;
-      background: #3f3f46;
-    }
-
-    pre {
-      margin: 0;
-      padding: 18px;
-      overflow-x: auto;
-      color: #e4e4e7;
-      font-size: 13px;
-      line-height: 1.8;
-    }
-
-    .comment { color: var(--subtle); }
-    .cmd { color: #86efac; }
-    .flag { color: #93c5fd; }
-    .value { color: #fbbf24; }
-
-    .section {
-      padding: 64px 0;
-      border-top: 1px solid var(--border-soft);
-    }
-
-    .section-head {
-      display: flex;
-      align-items: end;
-      justify-content: space-between;
-      gap: 24px;
-      margin-bottom: 24px;
-    }
-
-    h2 {
-      margin: 0;
-      font-size: clamp(28px, 4vw, 44px);
-      line-height: 1.05;
-      letter-spacing: 0;
-    }
-
-    .section-copy {
-      max-width: 620px;
-      margin: 10px 0 0;
-      color: var(--muted);
-      font-size: 16px;
-    }
-
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 14px;
-    }
-
-    .card {
-      min-height: 100%;
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      background: var(--surface);
-      padding: 18px;
-    }
-
-    .card h3 {
-      margin: 0 0 8px;
-      font-size: 16px;
-    }
-
-    .card p {
-      margin: 0;
-      color: var(--muted);
-      font-size: 14px;
-    }
-
-    .badge-row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-top: 16px;
-    }
-
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      min-height: 24px;
-      padding: 0 8px;
-      border-radius: 999px;
-      border: 1px solid var(--border);
-      background: var(--surface-2);
-      color: var(--muted);
-      font-size: 12px;
-      font-weight: 500;
-      white-space: nowrap;
-    }
-
-    .badge.green { color: #bbf7d0; border-color: rgba(34, 197, 94, 0.25); background: var(--green-soft); }
-    .badge.blue { color: #bfdbfe; border-color: rgba(59, 130, 246, 0.25); background: var(--blue-soft); }
-    .badge.amber { color: #fde68a; border-color: rgba(245, 158, 11, 0.25); background: var(--amber-soft); }
-
-    .status-strip {
-      display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
-      gap: 10px;
-      padding-bottom: 56px;
-    }
-
-    .status-item {
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      background: var(--surface);
-      padding: 13px 14px;
-      color: var(--muted);
-      font-size: 13px;
-    }
-
-    .status-item strong {
-      display: block;
-      margin-bottom: 2px;
-      color: var(--text);
-      font-size: 14px;
-    }
-
-    .table-card {
-      overflow: hidden;
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      background: var(--surface);
-    }
-
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 14px;
-    }
-
-    th, td {
-      padding: 14px 16px;
-      border-bottom: 1px solid var(--border-soft);
-      text-align: left;
-      vertical-align: top;
-    }
-
-    th {
-      color: var(--subtle);
-      font-size: 12px;
-      font-weight: 600;
-      text-transform: uppercase;
-    }
-
-    tr:last-child td { border-bottom: 0; }
-    td { color: var(--muted); }
-    td strong { color: var(--text); }
-
-    .docs-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 14px;
-    }
-
-    .doc-list {
-      display: grid;
-      gap: 8px;
-      margin-top: 14px;
-      color: var(--muted);
-      font-size: 14px;
-    }
-
-    .footer {
-      border-top: 1px solid var(--border-soft);
-      padding: 34px 0;
-      color: var(--subtle);
-      font-size: 13px;
-    }
-
-    .footer-grid {
-      display: grid;
-      grid-template-columns: minmax(220px, 1.5fr) repeat(4, minmax(120px, 1fr));
-      gap: 28px;
-      align-items: start;
-    }
-
-    .footer-brand {
-      display: grid;
-      gap: 12px;
-      max-width: 360px;
-    }
-
-    .footer-brand img {
-      width: 118px;
-      height: auto;
-    }
-
-    .footer-brand p,
-    .footer-col a {
-      margin: 0;
-      color: var(--subtle);
-    }
-
-    .footer-col {
-      display: grid;
-      gap: 8px;
-    }
-
-    .footer-col h2 {
-      margin: 0 0 4px;
-      color: var(--text);
-      font-size: 13px;
-      line-height: 1.2;
-    }
-
-    .footer-col a {
-      font-size: 13px;
-    }
-
-    .footer-bottom {
-      margin-top: 28px;
-      padding-top: 20px;
-      border-top: 1px solid var(--border-soft);
-      color: var(--subtle);
-    }
-
-    @media (max-width: 900px) {
-      .hero { grid-template-columns: 1fr; padding-top: 56px; }
-      .hero-viz { top: -80px; bottom: 240px; opacity: 0.32; }
-      .grid, .status-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .footer-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .nav-links a:not(.button) { display: none; }
-      .section-head { align-items: start; flex-direction: column; }
-    }
-
-    @media (max-width: 640px) {
-      .shell { width: min(100% - 24px, 1120px); }
-      .nav-inner { height: 58px; }
-      .brand img { width: 104px; }
-      .grid, .status-strip, .docs-grid, .footer-grid { grid-template-columns: 1fr; }
-      th:nth-child(3), td:nth-child(3) { display: none; }
-      .button { width: 100%; }
-      .nav .button { width: auto; }
-    }
-  </style>
+  <title>Mesh LLM</title>
+  <meta name="description" content="Mesh serves large local models across multiple machines through one OpenAI-compatible endpoint.">
+  <link rel="icon" href="/mesh-llm-logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/site.css">
 </head>
 <body>
   <nav class="nav">
-    <div class="shell nav-inner">
-      <a class="brand" href="/">
-        <img src="mesh-llm-logo.svg" alt="">
-      </a>
-      <div class="nav-links">
-        <a href="catalog/">Catalog</a>
-        <a href="docs/">Docs</a>
-        <a href="https://public.meshllm.cloud">Public Mesh</a>
-        <a href="https://github.com/Mesh-LLM/mesh-llm">GitHub</a>
-        <a class="button primary" href="#install">Install</a>
-      </div>
+  <div class="shell nav-inner">
+    <a class="brand" href="/" aria-label="Mesh LLM home"><span class="brand-lockup">
+  <svg class="brand-mark" width="32" height="32" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+    <path d="M32 8c-12.8 0-23 8.2-23 18.4 0 3.1.9 5.9 2.6 8.4l.2.3c2.6-2.5 6.9-4 11.8-4h16.8c4.9 0 9.2 1.5 11.8 4l.2-.3c1.7-2.5 2.6-5.3 2.6-8.4C55 16.2 44.8 8 32 8Z"/>
+    <path d="M11.9 35.8c1.6 2.2 3.6 4.1 6 5.6 2.6 1.6 5.4 2.4 8.3 2.4h11.6c2.9 0 5.8-.8 8.3-2.4 2.4-1.5 4.4-3.4 6-5.6-2.3-2.1-6.4-3.4-10.8-3.4H22.7c-4.4 0-8.5 1.3-10.8 3.4Z"/>
+    <path d="M17.5 38.8c1.3 0 2.3 1 2.3 2.3v8.4c0 1.8-.7 3.2-1.3 4.5-.6 1.2-1.1 2.1-1.1 3.3 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-2 .7-3.4 1.4-4.8.6-1.1 1-2 1-3v-8.4c0-1.3 1-2.3 2.3-2.3Z"/>
+    <path d="M24.5 39.2c1.3 0 2.4 1.1 2.4 2.4v10.8c0 2.2-.8 3.9-1.6 5.4-.8 1.5-1.5 2.8-1.5 4.7 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-2.7 1-4.5 1.9-6.2.7-1.4 1.3-2.5 1.3-3.9V41.6c0-1.3 1.1-2.4 2.4-2.4Z"/>
+    <path d="M32 38.2c1.7 0 3 1.3 3 3v17.6c0 2.1-.7 3.8-1.5 5.2-.5.8-1.5 1.1-2.3.6-.8-.5-1.1-1.5-.6-2.3.6-1 1.1-2 1.1-3.5V41.2c0-1.7 1.3-3 3-3Z"/>
+    <path d="M39.5 39.2c1.3 0 2.4 1.1 2.4 2.4v10.8c0 1.4.6 2.5 1.3 3.9.9 1.7 1.9 3.5 1.9 6.2 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-1.9-.7-3.2-1.5-4.7-.8-1.5-1.6-3.2-1.6-5.4V41.6c0-1.3 1.1-2.4 2.4-2.4Z"/>
+    <path d="M46.5 38.8c1.3 0 2.3 1 2.3 2.3v8.4c0 1 .4 1.9 1 3 .7 1.4 1.4 2.8 1.4 4.8 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-1.2-.5-2.2-1.1-3.3-.6-1.3-1.3-2.7-1.3-4.5v-8.4c0-1.3 1-2.3 2.3-2.3Z"/>
+  </svg>
+  <span class="brand-text"><span>mesh</span>-llm</span>
+</span>
+</a>
+    <div class="nav-links">
+      <a href="/catalog/">Catalog</a>
+      <a href="/docs/">Docs</a>
+      <a href="https://public.meshllm.cloud">Public Mesh</a>
+      <a href="https://github.com/Mesh-LLM/mesh-llm">GitHub</a>
+      <a class="button primary" href="/#install">Install</a>
     </div>
-  </nav>
+  </div>
+</nav>
 
   <main>
-    <section class="shell hero">
-      <div class="hero-viz" aria-hidden="true">
-        <svg viewBox="0 0 1200 620" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
-          <defs>
-            <radialGradient id="hero-node-blue" cx="50%" cy="50%" r="55%">
-              <stop offset="0%" stop-color="#60a5fa" stop-opacity="0.95"/>
-              <stop offset="42%" stop-color="#3b82f6" stop-opacity="0.42"/>
-              <stop offset="100%" stop-color="#3b82f6" stop-opacity="0"/>
-            </radialGradient>
-            <radialGradient id="hero-node-green" cx="50%" cy="50%" r="55%">
-              <stop offset="0%" stop-color="#86efac" stop-opacity="0.9"/>
-              <stop offset="42%" stop-color="#22c55e" stop-opacity="0.34"/>
-              <stop offset="100%" stop-color="#22c55e" stop-opacity="0"/>
-            </radialGradient>
-            <radialGradient id="hero-vignette" cx="45%" cy="48%" r="70%">
-              <stop offset="0%" stop-color="#0f172a" stop-opacity="0.36"/>
-              <stop offset="62%" stop-color="#09090b" stop-opacity="0.18"/>
-              <stop offset="100%" stop-color="#09090b" stop-opacity="0"/>
-            </radialGradient>
-            <pattern id="hero-grid" width="34" height="34" patternUnits="userSpaceOnUse">
-              <path d="M 34 0 L 0 0 0 34" fill="none" stroke="#27272a" stroke-opacity="0.35" stroke-width="1"/>
-            </pattern>
-          </defs>
+  <section class="shell hero">
+    <div class="hero-viz" aria-hidden="true">
+  <svg viewBox="0 0 1200 620" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <radialGradient id="hero-node-blue" cx="50%" cy="50%" r="55%">
+        <stop offset="0%" stop-color="#60a5fa" stop-opacity="0.95"/>
+        <stop offset="42%" stop-color="#3b82f6" stop-opacity="0.42"/>
+        <stop offset="100%" stop-color="#3b82f6" stop-opacity="0"/>
+      </radialGradient>
+      <radialGradient id="hero-node-green" cx="50%" cy="50%" r="55%">
+        <stop offset="0%" stop-color="#86efac" stop-opacity="0.9"/>
+        <stop offset="42%" stop-color="#22c55e" stop-opacity="0.34"/>
+        <stop offset="100%" stop-color="#22c55e" stop-opacity="0"/>
+      </radialGradient>
+      <radialGradient id="hero-vignette" cx="45%" cy="48%" r="70%">
+        <stop offset="0%" stop-color="#0f172a" stop-opacity="0.36"/>
+        <stop offset="62%" stop-color="#09090b" stop-opacity="0.18"/>
+        <stop offset="100%" stop-color="#09090b" stop-opacity="0"/>
+      </radialGradient>
+      <pattern id="hero-grid" width="34" height="34" patternUnits="userSpaceOnUse">
+        <path d="M 34 0 L 0 0 0 34" fill="none" stroke="#27272a" stroke-opacity="0.35" stroke-width="1"/>
+      </pattern>
+    </defs>
+    <rect width="1200" height="620" fill="url(#hero-grid)" opacity="0.2"/>
+    <rect width="1200" height="620" fill="url(#hero-vignette)"/>
+    <g fill="none" stroke-linecap="round" stroke-width="1.35">
+      <path class="mesh-line" d="M-120 292 C80 260 230 120 430 150 S830 395 1040 220 S1280 112 1400 168" stroke="#60a5fa" stroke-opacity="0.48"/>
+      <path class="mesh-line reverse" d="M-110 506 C190 430 360 310 470 385 S840 185 1030 360 S1288 470 1410 408" stroke="#86efac" stroke-opacity="0.42" style="animation-delay:-2.2s"/>
+      <path class="mesh-line reverse" d="M-120 246 C120 250 280 350 405 260 S830 255 1030 360 S1266 280 1400 318" stroke="#cbd5e1" stroke-opacity="0.32" style="animation-delay:-4s"/>
+      <path class="mesh-line" d="M-120 40 C190 95 380 250 470 300 S805 350 1040 220 S1300 82 1410 120" stroke="#38bdf8" stroke-opacity="0.4" style="animation-delay:-1.2s"/>
+      <path class="mesh-line reverse" d="M-120 388 C185 235 290 480 470 390 S770 130 1180 155 S1320 190 1420 156" stroke="#60a5fa" stroke-opacity="0.28" style="animation-delay:-5.1s"/>
+      <path class="mesh-line" d="M-120 88 C240 45 365 75 560 250 S840 500 1160 435 S1320 410 1420 500" stroke="#86efac" stroke-opacity="0.26" style="animation-delay:-3.5s"/>
+      <path class="mesh-line reverse" d="M-140 244 C155 210 315 185 560 250 S890 310 1240 270 S1340 250 1420 270" stroke="#818cf8" stroke-opacity="0.24" style="animation-delay:-6.4s"/>
+    </g>
+    <g class="mesh-node">
+      <circle cx="120" cy="250" r="44" fill="url(#hero-node-blue)"/>
+      <circle class="mesh-ring slow" cx="120" cy="250" r="16" fill="none" stroke="#60a5fa" stroke-width="1.4"/>
+      <circle class="node-core" cx="120" cy="250" r="6" fill="#93c5fd"/>
+      <circle cx="300" cy="160" r="34" fill="url(#hero-node-blue)" opacity="0.75"/>
+      <circle class="node-core alt" cx="300" cy="160" r="5" fill="#60a5fa"/>
+      <circle cx="560" cy="250" r="50" fill="url(#hero-node-green)"/>
+      <circle class="mesh-ring" cx="560" cy="250" r="18" fill="none" stroke="#86efac" stroke-width="1.5"/>
+      <circle class="mesh-ring slow" cx="560" cy="250" r="26" fill="none" stroke="#22c55e" stroke-width="1"/>
+      <circle class="node-core" cx="560" cy="250" r="7" fill="#86efac"/>
+      <circle cx="610" cy="310" r="36" fill="url(#hero-node-blue)" opacity="0.7"/>
+      <circle class="node-core alt" cx="610" cy="310" r="5" fill="#7dd3fc"/>
+      <circle cx="1030" cy="360" r="42" fill="url(#hero-node-green)" opacity="0.68"/>
+      <circle class="mesh-ring" cx="1030" cy="360" r="15" fill="none" stroke="#86efac" stroke-width="1.4"/>
+      <circle class="node-core" cx="1030" cy="360" r="6" fill="#86efac"/>
+      <circle cx="1040" cy="220" r="30" fill="url(#hero-node-blue)" opacity="0.62"/>
+      <circle class="node-core alt" cx="1040" cy="220" r="5" fill="#93c5fd"/>
+    </g>
+    <g class="mesh-label" transform="translate(120 264)" style="animation-delay:-0.6s">
+      <text x="0" y="0" font-size="6" fill="#d4d4d8" text-anchor="middle">Gemma 4</text>
+    </g>
+    <g class="mesh-label" transform="translate(300 173)" style="animation-delay:-3.1s">
+      <text x="0" y="0" font-size="6" fill="#d4d4d8" text-anchor="middle">Qwen Coder</text>
+    </g>
+    <g class="mesh-label" transform="translate(560 269)" style="animation-delay:-5.2s">
+      <text x="0" y="0" font-size="6" fill="#d4d4d8" text-anchor="middle">GLM-4.5</text>
+    </g>
+    <g class="mesh-label" transform="translate(610 325)" style="animation-delay:-6.8s">
+      <text x="0" y="0" font-size="6" fill="#d4d4d8" text-anchor="middle">DeepSeek-R1</text>
+    </g>
+    <g class="mesh-label" transform="translate(1030 375)" style="animation-delay:-2.2s">
+      <text x="0" y="0" font-size="6" fill="#d4d4d8" text-anchor="middle">Kimi K2</text>
+    </g>
+    <g class="mesh-label" transform="translate(1040 233)" style="animation-delay:-7.7s">
+      <text x="0" y="0" font-size="6" fill="#d4d4d8" text-anchor="middle">Llama 3.1</text>
+    </g>
+  </svg>
+  <span class="hero-packet packet-a"></span>
+  <span class="hero-packet packet-b"></span>
+  <span class="hero-packet packet-c"></span>
+  <span class="hero-packet packet-d"></span>
+  <span class="hero-packet packet-e"></span>
+  <span class="hero-packet packet-f"></span>
+</div>
 
-          <rect width="1200" height="620" fill="url(#hero-grid)" opacity="0.2"/>
-          <rect width="1200" height="620" fill="url(#hero-vignette)"/>
-          <g fill="none" stroke-linecap="round" stroke-width="1.4">
-            <path class="mesh-line" d="M120 250 C230 120 430 150 560 250 S830 395 1040 220" stroke="#3b82f6" stroke-opacity="0.42"/>
-            <path class="mesh-line" d="M190 430 C360 310 470 385 610 310 S840 185 1030 360" stroke="#22c55e" stroke-opacity="0.36" style="animation-delay:-2.2s"/>
-            <path class="mesh-line" d="M120 250 C280 350 405 260 560 250 S830 255 1030 360" stroke="#94a3b8" stroke-opacity="0.28" style="animation-delay:-4s"/>
-            <path class="mesh-line" d="M300 160 C380 250 470 300 610 310 S805 350 1040 220" stroke="#38bdf8" stroke-opacity="0.34" style="animation-delay:-1.2s"/>
-            <path class="mesh-line" d="M20 360 C185 235 290 480 470 390 S770 130 1180 155" stroke="#60a5fa" stroke-opacity="0.2" style="animation-delay:-5.1s"/>
-            <path class="mesh-line" d="M40 120 C240 45 365 75 560 250 S840 500 1160 435" stroke="#22c55e" stroke-opacity="0.18" style="animation-delay:-3.5s"/>
-          </g>
-
-          <g color="#60a5fa">
-            <circle class="mesh-packet" r="3.5" fill="currentColor">
-              <animateMotion dur="9s" repeatCount="indefinite" path="M120 250 C230 120 430 150 560 250 S830 395 1040 220"/>
-            </circle>
-            <circle class="mesh-packet" r="2.7" fill="currentColor" opacity="0.72">
-              <animateMotion dur="7.2s" begin="-3s" repeatCount="indefinite" path="M20 360 C185 235 290 480 470 390 S770 130 1180 155"/>
-            </circle>
-          </g>
-          <g color="#86efac">
-            <circle class="mesh-packet" r="3.5" fill="currentColor">
-              <animateMotion dur="8s" repeatCount="indefinite" path="M190 430 C360 310 470 385 610 310 S840 185 1030 360"/>
-            </circle>
-            <circle class="mesh-packet" r="2.8" fill="currentColor" opacity="0.78">
-              <animateMotion dur="10.5s" begin="-4.5s" repeatCount="indefinite" path="M40 120 C240 45 365 75 560 250 S840 500 1160 435"/>
-            </circle>
-          </g>
-          <g color="#93c5fd">
-            <circle class="mesh-packet" r="3" fill="currentColor">
-              <animateMotion dur="10s" repeatCount="indefinite" path="M300 160 C380 250 470 300 610 310 S805 350 1040 220"/>
-            </circle>
-            <circle class="mesh-packet" r="2.5" fill="currentColor" opacity="0.68">
-              <animateMotion dur="8.8s" begin="-6s" repeatCount="indefinite" path="M120 250 C280 350 405 260 560 250 S830 255 1030 360"/>
-            </circle>
-          </g>
-
-          <g class="mesh-node">
-            <circle cx="120" cy="250" r="44" fill="url(#hero-node-blue)"/>
-            <circle class="mesh-ring slow" cx="120" cy="250" r="16" fill="none" stroke="#60a5fa" stroke-width="1.4"/>
-            <circle class="node-core" cx="120" cy="250" r="6" fill="#93c5fd"/>
-            <circle cx="300" cy="160" r="34" fill="url(#hero-node-blue)" opacity="0.75"/>
-            <circle class="node-core alt" cx="300" cy="160" r="5" fill="#60a5fa"/>
-            <circle cx="560" cy="250" r="50" fill="url(#hero-node-green)"/>
-            <circle class="mesh-ring" cx="560" cy="250" r="18" fill="none" stroke="#86efac" stroke-width="1.5"/>
-            <circle class="mesh-ring slow" cx="560" cy="250" r="26" fill="none" stroke="#22c55e" stroke-width="1"/>
-            <circle class="node-core" cx="560" cy="250" r="7" fill="#86efac"/>
-            <circle cx="610" cy="310" r="36" fill="url(#hero-node-blue)" opacity="0.7"/>
-            <circle class="node-core alt" cx="610" cy="310" r="5" fill="#7dd3fc"/>
-            <circle cx="1030" cy="360" r="42" fill="url(#hero-node-green)" opacity="0.68"/>
-            <circle class="mesh-ring" cx="1030" cy="360" r="15" fill="none" stroke="#86efac" stroke-width="1.4"/>
-            <circle class="node-core" cx="1030" cy="360" r="6" fill="#86efac"/>
-            <circle cx="1040" cy="220" r="30" fill="url(#hero-node-blue)" opacity="0.62"/>
-            <circle class="node-core alt" cx="1040" cy="220" r="5" fill="#93c5fd"/>
-          </g>
-        </svg>
+    <div>
+      <h1>Run large models across every machine you own</h1>
+      <p class="lead">Mesh pools machines into a distributed inference network, so you can serve large models across multiple devices through one OpenAI-compatible endpoint.</p>
+      <div class="hero-actions">
+        <a class="button primary" href="#install">Install Mesh</a>
+        <a class="button" href="https://public.meshllm.cloud">Open Public Mesh</a>
+        <a class="button ghost" href="/catalog/">Browse Catalog</a>
       </div>
-      <div>
-        <div class="eyebrow"><span class="dot"></span> Public Mesh available at public.meshllm.cloud</div>
-        <h1>Run large models across every machine you own</h1>
-        <p class="lead">Mesh pools machines into a distributed inference network, so you can serve large models across multiple devices through one OpenAI-compatible endpoint.</p>
-        <div class="hero-actions">
-          <a class="button primary" href="#install">Install Mesh</a>
-          <a class="button" href="https://public.meshllm.cloud">Open Public Mesh</a>
-          <a class="button ghost" href="catalog/">Browse Catalog</a>
-        </div>
-      </div>
+    </div>
 
-      <div class="terminal" id="install">
-        <div class="terminal-head">
-          <span class="terminal-dot"></span>
-          <span class="terminal-dot"></span>
-          <span class="terminal-dot"></span>
-          <span class="mono">quickstart</span>
-        </div>
-        <pre><code><span class="comment"># Install Mesh</span>
+    <div class="terminal" id="install">
+      <div class="terminal-head">
+        <span class="terminal-dot"></span>
+        <span class="terminal-dot"></span>
+        <span class="terminal-dot"></span>
+        <span class="mono">quickstart</span>
+      </div>
+      <pre><code><span class="comment"># Install Mesh</span>
 <span class="cmd">curl</span> <span class="flag">-fsSL</span> <span class="value">https://mesh-llm.cloud/install.sh</span> | <span class="cmd">sh</span>
 
 <span class="comment"># Join the public mesh and serve if this machine can</span>
@@ -627,197 +140,251 @@
 <span class="comment"># Or join as an API-only client</span>
 <span class="cmd">mesh-llm</span> <span class="value">client</span> <span class="flag">--auto</span>
 
-<span class="comment"># Or serve a local model</span>
-<span class="cmd">mesh-llm</span> <span class="value">serve</span> <span class="flag">--model</span> <span class="value">Qwen3-8B</span>
+<span class="comment"># Or serve an 8GB VRAM-friendly catalog model</span>
+<span class="cmd">mesh-llm</span> <span class="value">serve</span> <span class="flag">--model</span> <span class="value">gemma-4-26B-A4B-it-UD-Q4_K_M</span>
 
 <span class="comment"># Point agents at Mesh</span>
 <span class="cmd">export</span> <span class="value">OPENAI_BASE_URL=http://localhost:3131/v1</span></code></pre>
-      </div>
-    </section>
-
-    <div class="shell status-strip" aria-label="Mesh highlights">
-      <div class="status-item"><strong>Public Mesh</strong>Join a running network</div>
-      <div class="status-item"><strong>OpenAI API</strong>Use existing clients</div>
-      <div class="status-item"><strong>macOS</strong>Apple Silicon support</div>
-      <div class="status-item"><strong>Linux</strong>CUDA, ROCm, CPU</div>
-      <div class="status-item"><strong>Windows</strong>Setup docs planned</div>
     </div>
+  </section>
 
-    <section class="section">
-      <div class="shell">
-        <div class="section-head">
-          <div>
-            <h2>One endpoint, many machines</h2>
-            <p class="section-copy">Mesh handles discovery, placement, routing, and model serving so tools can talk to a single local API while the work happens across available machines.</p>
-          </div>
+  <section class="section">
+    <div class="shell">
+      <div class="section-head">
+        <div>
+          <p class="section-kicker">Why Mesh</p>
+          <h2 class="section-title">One endpoint, many machines</h2>
         </div>
-        <div class="grid">
-          <article class="card">
-            <h3>Join or create a mesh</h3>
-            <p>Start with one machine, join the public mesh, or create a private mesh for your team, lab, or home network.</p>
-          </article>
-          <article class="card">
-            <h3>Serve models locally</h3>
-            <p>Use catalog names, Hugging Face GGUF URLs, or local model files. Mesh exposes an OpenAI-compatible endpoint.</p>
-          </article>
-          <article class="card">
-            <h3>Run beyond one device</h3>
-            <p>Large models can use layer packages so multiple machines participate in one served model.</p>
-          </article>
-        </div>
+        <p class="section-copy">Mesh handles discovery, placement, routing, and model serving so tools can talk to a single local API while the work happens across available machines.</p>
       </div>
-    </section>
-
-    <section class="section">
-      <div class="shell">
-        <div class="section-head">
-          <div>
-            <h2>Catalog</h2>
-            <p class="section-copy">Browse mesh-ready models, layer packages, Hugging Face repositories, hardware guidance, and commands for public or private meshes.</p>
-          </div>
-          <a class="button" href="catalog/">Open Catalog</a>
-        </div>
-        <div class="table-card">
-          <table>
-            <thead>
-              <tr>
-                <th>Model</th>
-                <th>Runtime</th>
-                <th>Source</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td><strong>Qwen3 32B</strong><br><span>Text, reasoning, GGUF</span></td>
-                <td>Multi-machine</td>
-                <td>Hugging Face</td>
-                <td><span class="badge green">Layer packages available</span></td>
-              </tr>
-              <tr>
-                <td><strong>Llama 3.1 8B</strong><br><span>Text, tools, GGUF</span></td>
-                <td>Single-machine</td>
-                <td>Mesh catalog</td>
-                <td><span class="badge blue">Mesh-ready</span></td>
-              </tr>
-              <tr>
-                <td><strong>Large community models</strong><br><span>Catalog entries coming next</span></td>
-                <td>Single or multi-machine</td>
-                <td>Hugging Face</td>
-                <td><span class="badge amber">Contribution path planned</span></td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+      <div class="grid">
+        <article class="card"><h3>Multi-machine serving</h3><p>Run larger models by placing work across machines instead of requiring one oversized GPU.</p><div class="badge-row"><span class="badge green">Layer packages</span></div></article>
+        <article class="card"><h3>OpenAI-compatible</h3><p>Use existing SDKs, agent tools, and local workflows through a familiar `/v1` API.</p><div class="badge-row"><span class="badge blue">Agents ready</span></div></article>
+        <article class="card"><h3>Public or private</h3><p>Join the public mesh, keep a private mesh for your own machines, or publish a mesh you operate.</p><div class="badge-row"><span class="badge">Your boundary</span></div></article>
       </div>
-    </section>
+    </div>
+  </section>
 
-    <section class="section">
-      <div class="shell">
-        <div class="section-head">
-          <div>
-            <h2>Use Mesh with agents</h2>
-            <p class="section-copy">Point OpenAI-compatible tools at Mesh and run agents through your local, private, or public mesh.</p>
-          </div>
+  <section class="section">
+    <div class="shell">
+      <div class="section-head">
+        <div>
+          <p class="section-kicker">Catalog</p>
+          <h2 class="section-title">Mesh-ready model refs</h2>
         </div>
-        <div class="grid">
-          <article class="card">
-            <h3>Goose</h3>
-            <p>Launch Goose against the strongest model available through your mesh.</p>
-            <div class="badge-row"><span class="badge blue">OpenAI-compatible</span></div>
-          </article>
-          <article class="card">
-            <h3>Pi</h3>
-            <p>Write Mesh models into Pi config and use local or remote mesh endpoints.</p>
-            <div class="badge-row"><span class="badge blue">Agent workflow</span></div>
-          </article>
-          <article class="card">
-            <h3>opencode</h3>
-            <p>Use Mesh as the OpenAI provider for coding agents and command-line workflows.</p>
-            <div class="badge-row"><span class="badge blue">Coding agents</span></div>
-          </article>
-        </div>
+        <p class="section-copy">Browse live Hugging Face catalog data, copy `org/repo:quant` refs, and see which models have layer packages.</p>
       </div>
-    </section>
+      <div class="grid">
+        <article class="card"><h3>Copy model refs</h3><p>Use catalog refs directly with `mesh-llm serve --model`.</p></article>
+        <article class="card"><h3>Layer packages</h3><p>See which packages can be served across machines.</p></article>
+        <article class="card"><h3>Source links</h3><p>Jump to the source model and package repos on Hugging Face.</p></article>
+      </div>
+    </div>
+  </section>
 
-    <section class="section">
-      <div class="shell docs-grid">
+  <section class="section">
+    <div class="shell docs-grid">
+
         <article class="card">
           <h3>Get started</h3>
-          <p>Install Mesh, run the quickstart, and update to new versions.</p>
+          <p>Install Mesh, run the quickstart, and serve your first model.</p>
           <div class="doc-list">
-            <a href="USAGE.md">Installing Mesh</a>
-            <a href="CLI.md">CLI reference</a>
-            <a href="docs/">Documentation index</a>
+
+              <a href="/docs/pages/quickstart/">Quickstart</a>
+
+              <a href="/docs/pages/installing-mesh/">Installing Mesh</a>
+
+              <a href="/docs/pages/updating-mesh/">Updating Mesh</a>
+
           </div>
         </article>
+
+        <article class="card">
+          <h3>Install</h3>
+          <p>Platform-specific install notes and hardware expectations.</p>
+          <div class="doc-list">
+
+              <a href="/docs/pages/installing-mesh/#macos">macOS</a>
+
+              <a href="/docs/pages/installing-mesh/#linux">Linux</a>
+
+              <a href="/docs/pages/installing-mesh/#windows">Windows</a>
+
+              <a href="/docs/pages/hardware-support/">Hardware support</a>
+
+          </div>
+        </article>
+
         <article class="card">
           <h3>Running models</h3>
-          <p>Run your first model, use multi-machine model serving, contribute layer packages, and certify new model families.</p>
+          <p>Serve local models, use Hugging Face GGUFs, and scale across machines.</p>
           <div class="doc-list">
-            <a href="specs/layer-package-repos.md">Layer package repos</a>
-            <a href="skippy/FAMILY_CERTIFY.md">Model family certification</a>
-            <a href="BENCHMARKS.md">Benchmarks</a>
-            <a href="catalog/">Catalog</a>
+
+              <a href="/docs/pages/quickstart/#serve-a-model">Run your first model</a>
+
+              <a href="/docs/pages/running-large-models/">Running large models</a>
+
+              <a href="/docs/pages/contributing-layer-packages/">Layer packages</a>
+
+              <a href="/catalog/">Catalog</a>
+
           </div>
         </article>
+
+        <article class="card">
+          <h3>Capabilities</h3>
+          <p>Use Mesh through OpenAI-compatible clients and model-serving features.</p>
+          <div class="doc-list">
+
+              <a href="/docs/pages/openai-compatible-api/">OpenAI-compatible API</a>
+
+              <a href="/docs/pages/openai-compatible-api/#streaming">Streaming</a>
+
+              <a href="/docs/pages/openai-compatible-api/#tool-calling">Tool calling</a>
+
+              <a href="/docs/pages/openai-compatible-api/#structured-outputs">Structured outputs</a>
+
+          </div>
+        </article>
+
+        <article class="card">
+          <h3>Catalog</h3>
+          <p>Browse mesh-ready models and contribute catalog entries.</p>
+          <div class="doc-list">
+
+              <a href="/catalog/">Browse Catalog</a>
+
+              <a href="/docs/pages/contributing-layer-packages/">Contributing layer packages</a>
+
+              <a href="/docs/pages/certifying-model-families/">Certifying model families</a>
+
+          </div>
+        </article>
+
         <article class="card">
           <h3>Meshes</h3>
           <p>Join the public mesh, create private meshes, and publish your own mesh.</p>
           <div class="doc-list">
-            <a href="USAGE.md">Usage docs</a>
-            <a href="design/DESIGN.md">Design notes</a>
-            <a href="https://public.meshllm.cloud">Public Mesh</a>
+
+              <a href="/docs/pages/public-mesh/">Join the public mesh</a>
+
+              <a href="/docs/pages/private-meshes/">Private meshes</a>
+
+              <a href="/docs/pages/publish-mesh/">Publish mesh</a>
+
           </div>
         </article>
+
         <article class="card">
           <h3>Integrations</h3>
-          <p>Use Goose, Pi, opencode, curl, and OpenAI-compatible clients.</p>
+          <p>Connect agent tools and OpenAI-compatible applications.</p>
           <div class="doc-list">
-            <a href="AGENTS.md">Agent setup</a>
-            <a href="plugins/README.md">Plugins</a>
-            <a href="https://github.com/Mesh-LLM/mesh-llm">GitHub</a>
+
+              <a href="/docs/pages/agents/">Integrations overview</a>
+
+              <a href="/docs/pages/agents/">Agent setup</a>
+
+              <a href="/docs/pages/exo-comparison/">exo comparison</a>
+
+              <a href="/docs/pages/plugins/">Plugins</a>
+
           </div>
         </article>
-      </div>
-    </section>
-  </main>
+
+        <article class="card">
+          <h3>API reference</h3>
+          <p>Base URLs, endpoints, CLI commands, and compatibility notes.</p>
+          <div class="doc-list">
+
+              <a href="/docs/pages/api-reference/">API reference</a>
+
+              <a href="/docs/pages/openai-compatible-api/">OpenAI-compatible API</a>
+
+              <a href="/docs/pages/CLI/">CLI reference</a>
+
+          </div>
+        </article>
+
+        <article class="card">
+          <h3>Help</h3>
+          <p>Common questions, troubleshooting, and operational checks.</p>
+          <div class="doc-list">
+
+              <a href="/docs/pages/faq/">FAQ</a>
+
+              <a href="/docs/pages/troubleshooting/">Troubleshooting</a>
+
+              <a href="/docs/pages/testing/">Testing playbook</a>
+
+          </div>
+        </article>
+
+        <article class="card">
+          <h3>Contributing</h3>
+          <p>Understand the roadmap, testing requirements, and project contribution workflow.</p>
+          <div class="doc-list">
+
+              <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/CONTRIBUTING.md">Contributing guide</a>
+
+              <a href="/docs/pages/testing/">Testing playbook</a>
+
+              <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/ROADMAP.md">Roadmap</a>
+
+          </div>
+        </article>
+
+    </div>
+  </section>
+</main>
 
   <footer class="footer">
-    <div class="shell">
-      <div class="footer-grid">
-        <div class="footer-brand">
-          <img src="mesh-llm-logo.svg" alt="Mesh LLM">
-          <p>Run bigger local models by linking the machines you already have.</p>
-        </div>
-        <div class="footer-col">
-          <h2>Product</h2>
-          <a href="catalog/">Catalog</a>
-          <a href="https://public.meshllm.cloud">Public Mesh</a>
-          <a href="#install">Install</a>
-        </div>
-        <div class="footer-col">
-          <h2>Docs</h2>
-          <a href="docs/">Documentation</a>
-          <a href="USAGE.md">Install and usage</a>
-          <a href="CLI.md">CLI reference</a>
-        </div>
-        <div class="footer-col">
-          <h2>Models</h2>
-          <a href="catalog/">Mesh-ready models</a>
-          <a href="specs/layer-package-repos.md">Layer packages</a>
-          <a href="skippy/FAMILY_CERTIFY.md">Family certification</a>
-          <a href="BENCHMARKS.md">Benchmarks</a>
-        </div>
-        <div class="footer-col">
-          <h2>Project</h2>
-          <a href="https://github.com/Mesh-LLM/mesh-llm">GitHub</a>
-          <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/ROADMAP.md">Roadmap</a>
-          <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/LICENSE">License</a>
-        </div>
+  <div class="shell">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a class="brand" href="/" aria-label="Mesh LLM home"><span class="brand-lockup">
+  <svg class="brand-mark" width="32" height="32" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+    <path d="M32 8c-12.8 0-23 8.2-23 18.4 0 3.1.9 5.9 2.6 8.4l.2.3c2.6-2.5 6.9-4 11.8-4h16.8c4.9 0 9.2 1.5 11.8 4l.2-.3c1.7-2.5 2.6-5.3 2.6-8.4C55 16.2 44.8 8 32 8Z"/>
+    <path d="M11.9 35.8c1.6 2.2 3.6 4.1 6 5.6 2.6 1.6 5.4 2.4 8.3 2.4h11.6c2.9 0 5.8-.8 8.3-2.4 2.4-1.5 4.4-3.4 6-5.6-2.3-2.1-6.4-3.4-10.8-3.4H22.7c-4.4 0-8.5 1.3-10.8 3.4Z"/>
+    <path d="M17.5 38.8c1.3 0 2.3 1 2.3 2.3v8.4c0 1.8-.7 3.2-1.3 4.5-.6 1.2-1.1 2.1-1.1 3.3 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-2 .7-3.4 1.4-4.8.6-1.1 1-2 1-3v-8.4c0-1.3 1-2.3 2.3-2.3Z"/>
+    <path d="M24.5 39.2c1.3 0 2.4 1.1 2.4 2.4v10.8c0 2.2-.8 3.9-1.6 5.4-.8 1.5-1.5 2.8-1.5 4.7 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-2.7 1-4.5 1.9-6.2.7-1.4 1.3-2.5 1.3-3.9V41.6c0-1.3 1.1-2.4 2.4-2.4Z"/>
+    <path d="M32 38.2c1.7 0 3 1.3 3 3v17.6c0 2.1-.7 3.8-1.5 5.2-.5.8-1.5 1.1-2.3.6-.8-.5-1.1-1.5-.6-2.3.6-1 1.1-2 1.1-3.5V41.2c0-1.7 1.3-3 3-3Z"/>
+    <path d="M39.5 39.2c1.3 0 2.4 1.1 2.4 2.4v10.8c0 1.4.6 2.5 1.3 3.9.9 1.7 1.9 3.5 1.9 6.2 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-1.9-.7-3.2-1.5-4.7-.8-1.5-1.6-3.2-1.6-5.4V41.6c0-1.3 1.1-2.4 2.4-2.4Z"/>
+    <path d="M46.5 38.8c1.3 0 2.3 1 2.3 2.3v8.4c0 1 .4 1.9 1 3 .7 1.4 1.4 2.8 1.4 4.8 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-1.2-.5-2.2-1.1-3.3-.6-1.3-1.3-2.7-1.3-4.5v-8.4c0-1.3 1-2.3 2.3-2.3Z"/>
+  </svg>
+  <span class="brand-text"><span>mesh</span>-llm</span>
+</span>
+</a>
+        <p>Run bigger local models by linking the machines you already have.</p>
       </div>
-      <div class="footer-bottom">Mesh LLM is open source under MIT. Built with Rust, QUIC networking, and llama.cpp.</div>
+      <div class="footer-col">
+        <h2>Product</h2>
+        <a href="/catalog/">Catalog</a>
+        <a href="https://public.meshllm.cloud">Public Mesh</a>
+        <a href="/#install">Install</a>
+      </div>
+      <div class="footer-col">
+        <h2>Docs</h2>
+        <a href="/docs/">Documentation</a>
+        <a href="/docs/pages/installing-mesh/">Installing Mesh</a>
+        <a href="/docs/pages/CLI/">CLI reference</a>
+      </div>
+      <div class="footer-col">
+        <h2>Models</h2>
+        <a href="/catalog/">Mesh-ready models</a>
+        <a href="/docs/pages/contributing-layer-packages/">Layer packages</a>
+        <a href="/docs/pages/certifying-model-families/">Family certification</a>
+        <a href="/docs/pages/running-large-models/">Large models</a>
+      </div>
+      <div class="footer-col">
+        <h2>Project</h2>
+        <a href="https://github.com/Mesh-LLM/mesh-llm">GitHub</a>
+        <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/ROADMAP.md">Roadmap</a>
+        <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/LICENSE">License</a>
+      </div>
     </div>
-  </footer>
+    <div class="footer-bottom">Mesh LLM is open source under MIT. Built with Rust, QUIC networking, and llama.cpp.</div>
+  </div>
+</footer>
+
 </body>
 </html>

@@ -1,0 +1,92 @@
+---
+layout: base.njk
+title: Mesh LLM
+description: Mesh serves large local models across multiple machines through one OpenAI-compatible endpoint.
+---
+<main>
+  <section class="shell hero">
+    {% include "hero-viz.njk" %}
+    <div>
+      <h1>Run large models across every machine you own</h1>
+      <p class="lead">Mesh pools machines into a distributed inference network, so you can serve large models across multiple devices through one OpenAI-compatible endpoint.</p>
+      <div class="hero-actions">
+        <a class="button primary" href="#install">Install Mesh</a>
+        <a class="button" href="{{ site.publicMeshUrl }}">Open Public Mesh</a>
+        <a class="button ghost" href="/catalog/">Browse Catalog</a>
+      </div>
+    </div>
+
+    <div class="terminal" id="install">
+      <div class="terminal-head">
+        <span class="terminal-dot"></span>
+        <span class="terminal-dot"></span>
+        <span class="terminal-dot"></span>
+        <span class="mono">quickstart</span>
+      </div>
+      <pre><code><span class="comment"># Install Mesh</span>
+<span class="cmd">curl</span> <span class="flag">-fsSL</span> <span class="value">https://mesh-llm.cloud/install.sh</span> | <span class="cmd">sh</span>
+
+<span class="comment"># Join the public mesh and serve if this machine can</span>
+<span class="cmd">mesh-llm</span> <span class="value">serve</span> <span class="flag">--auto</span>
+
+<span class="comment"># Or join as an API-only client</span>
+<span class="cmd">mesh-llm</span> <span class="value">client</span> <span class="flag">--auto</span>
+
+<span class="comment"># Or serve an 8GB VRAM-friendly catalog model</span>
+<span class="cmd">mesh-llm</span> <span class="value">serve</span> <span class="flag">--model</span> <span class="value">gemma-4-26B-A4B-it-UD-Q4_K_M</span>
+
+<span class="comment"># Point agents at Mesh</span>
+<span class="cmd">export</span> <span class="value">OPENAI_BASE_URL=http://localhost:3131/v1</span></code></pre>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="shell">
+      <div class="section-head">
+        <div>
+          <p class="section-kicker">Why Mesh</p>
+          <h2 class="section-title">One endpoint, many machines</h2>
+        </div>
+        <p class="section-copy">Mesh handles discovery, placement, routing, and model serving so tools can talk to a single local API while the work happens across available machines.</p>
+      </div>
+      <div class="grid">
+        <article class="card"><h3>Multi-machine serving</h3><p>Run larger models by placing work across machines instead of requiring one oversized GPU.</p><div class="badge-row"><span class="badge green">Layer packages</span></div></article>
+        <article class="card"><h3>OpenAI-compatible</h3><p>Use existing SDKs, agent tools, and local workflows through a familiar `/v1` API.</p><div class="badge-row"><span class="badge blue">Agents ready</span></div></article>
+        <article class="card"><h3>Public or private</h3><p>Join the public mesh, keep a private mesh for your own machines, or publish a mesh you operate.</p><div class="badge-row"><span class="badge">Your boundary</span></div></article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="shell">
+      <div class="section-head">
+        <div>
+          <p class="section-kicker">Catalog</p>
+          <h2 class="section-title">Mesh-ready model refs</h2>
+        </div>
+        <p class="section-copy">Browse live Hugging Face catalog data, copy `org/repo:quant` refs, and see which models have layer packages.</p>
+      </div>
+      <div class="grid">
+        <article class="card"><h3>Copy model refs</h3><p>Use catalog refs directly with `mesh-llm serve --model`.</p></article>
+        <article class="card"><h3>Layer packages</h3><p>See which packages can be served across machines.</p></article>
+        <article class="card"><h3>Source links</h3><p>Jump to the source model and package repos on Hugging Face.</p></article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="shell docs-grid">
+      {% for group in docs %}
+        <article class="card">
+          <h3>{{ group.title }}</h3>
+          <p>{{ group.description }}</p>
+          <div class="doc-list">
+            {% for link in group.links %}
+              <a href="{{ link[1] }}">{{ link[0] }}</a>
+            {% endfor %}
+          </div>
+        </article>
+      {% endfor %}
+    </div>
+  </section>
+</main>

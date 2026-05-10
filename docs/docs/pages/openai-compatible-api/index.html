@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Docs - Mesh LLM</title>
-  <meta name="description" content="Mesh LLM documentation for installing Mesh, running models, joining meshes, using the Catalog, and connecting agents.">
+  <title>Openai Compatible Api - Mesh LLM</title>
+  <meta name="description" content="Mesh serves large local models across multiple machines through one OpenAI-compatible endpoint.">
   <link rel="icon" href="/mesh-llm-logo.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/assets/site.css">
 </head>
@@ -34,12 +34,7 @@
   </div>
 </nav>
 
-  <header class="docs-page-hero">
-  <h1>Documentation</h1>
-  <p class="lead">Install Mesh, join or publish meshes, run models across machines, contribute layer packages, certify model families, and connect agents.</p>
-</header>
-
-<main class="docs-shell">
+  <main class="docs-shell">
   <aside class="docs-sidebar" aria-label="Documentation navigation">
   <div class="docs-sidebar-inner">
     <div class="docs-search docs-sidebar-search" aria-label="Search">Search... <span>⌘K</span></div>
@@ -84,7 +79,7 @@
       <section class="docs-nav-group">
         <h2>Capabilities</h2>
 
-          <a href="/docs/pages/openai-compatible-api/">OpenAI-compatible API</a>
+          <a href="/docs/pages/openai-compatible-api/" aria-current="page">OpenAI-compatible API</a>
 
           <a href="/docs/pages/openai-compatible-api/#streaming">Streaming</a>
 
@@ -134,7 +129,7 @@
 
           <a href="/docs/pages/api-reference/">API reference</a>
 
-          <a href="/docs/pages/openai-compatible-api/">OpenAI-compatible API</a>
+          <a href="/docs/pages/openai-compatible-api/" aria-current="page">OpenAI-compatible API</a>
 
           <a href="/docs/pages/CLI/">CLI reference</a>
 
@@ -209,7 +204,7 @@
       <section class="docs-nav-group">
         <h2>Capabilities</h2>
 
-          <a href="/docs/pages/openai-compatible-api/">OpenAI-compatible API</a>
+          <a href="/docs/pages/openai-compatible-api/" aria-current="page">OpenAI-compatible API</a>
 
           <a href="/docs/pages/openai-compatible-api/#streaming">Streaming</a>
 
@@ -259,7 +254,7 @@
 
           <a href="/docs/pages/api-reference/">API reference</a>
 
-          <a href="/docs/pages/openai-compatible-api/">OpenAI-compatible API</a>
+          <a href="/docs/pages/openai-compatible-api/" aria-current="page">OpenAI-compatible API</a>
 
           <a href="/docs/pages/CLI/">CLI reference</a>
 
@@ -290,162 +285,29 @@
   </div>
 </details>
 
-  <section class="docs-index">
-    <div class="docs-grid">
+  <article class="doc">
+    <div class="crumb"><a href="/docs/">Docs</a> / Openai Compatible Api</div>
+    <h1 id="openai-compatible-api" tabindex="-1">OpenAI-Compatible API</h1>
+<p>Mesh exposes an OpenAI-compatible endpoint so existing tools can use Mesh without a custom client.</p>
+<h2 id="base-url" tabindex="-1">Base URL</h2>
+<pre><code class="language-text">http://localhost:3131/v1
+</code></pre>
+<p>Set it for tools that read OpenAI-style environment variables:</p>
+<pre><code class="language-sh">export OPENAI_BASE_URL=http://localhost:3131/v1
+</code></pre>
+<h2 id="chat-completions" tabindex="-1">Chat completions</h2>
+<p>Use OpenAI-compatible chat clients against the local Mesh endpoint. Mesh handles model routing and placement behind the API.</p>
+<h2 id="streaming" tabindex="-1">Streaming</h2>
+<p>Clients that support streamed OpenAI-compatible responses can use the same base URL.</p>
+<h2 id="tool-calling" tabindex="-1">Tool calling</h2>
+<p>Tool-calling support depends on the selected model family and the agent client. Use the catalog to choose models with the right capabilities.</p>
+<h2 id="structured-outputs" tabindex="-1">Structured outputs</h2>
+<p>Structured output support depends on the model and client behavior. Treat schema enforcement as model- and tool-specific until the catalog marks stronger guarantees.</p>
 
-        <article class="card">
-          <h2>Get started</h2>
-          <p>Install Mesh, run the quickstart, and serve your first model.</p>
-          <div class="links">
-
-              <a href="/docs/pages/quickstart/">Quickstart</a>
-
-              <a href="/docs/pages/installing-mesh/">Installing Mesh</a>
-
-              <a href="/docs/pages/updating-mesh/">Updating Mesh</a>
-
-          </div>
-        </article>
-
-        <article class="card">
-          <h2>Install</h2>
-          <p>Platform-specific install notes and hardware expectations.</p>
-          <div class="links">
-
-              <a href="/docs/pages/installing-mesh/#macos">macOS</a>
-
-              <a href="/docs/pages/installing-mesh/#linux">Linux</a>
-
-              <a href="/docs/pages/installing-mesh/#windows">Windows</a>
-
-              <a href="/docs/pages/hardware-support/">Hardware support</a>
-
-          </div>
-        </article>
-
-        <article class="card">
-          <h2>Running models</h2>
-          <p>Serve local models, use Hugging Face GGUFs, and scale across machines.</p>
-          <div class="links">
-
-              <a href="/docs/pages/quickstart/#serve-a-model">Run your first model</a>
-
-              <a href="/docs/pages/running-large-models/">Running large models</a>
-
-              <a href="/docs/pages/contributing-layer-packages/">Layer packages</a>
-
-              <a href="/catalog/">Catalog</a>
-
-          </div>
-        </article>
-
-        <article class="card">
-          <h2>Capabilities</h2>
-          <p>Use Mesh through OpenAI-compatible clients and model-serving features.</p>
-          <div class="links">
-
-              <a href="/docs/pages/openai-compatible-api/">OpenAI-compatible API</a>
-
-              <a href="/docs/pages/openai-compatible-api/#streaming">Streaming</a>
-
-              <a href="/docs/pages/openai-compatible-api/#tool-calling">Tool calling</a>
-
-              <a href="/docs/pages/openai-compatible-api/#structured-outputs">Structured outputs</a>
-
-          </div>
-        </article>
-
-        <article class="card">
-          <h2>Catalog</h2>
-          <p>Browse mesh-ready models and contribute catalog entries.</p>
-          <div class="links">
-
-              <a href="/catalog/">Browse Catalog</a>
-
-              <a href="/docs/pages/contributing-layer-packages/">Contributing layer packages</a>
-
-              <a href="/docs/pages/certifying-model-families/">Certifying model families</a>
-
-          </div>
-        </article>
-
-        <article class="card">
-          <h2>Meshes</h2>
-          <p>Join the public mesh, create private meshes, and publish your own mesh.</p>
-          <div class="links">
-
-              <a href="/docs/pages/public-mesh/">Join the public mesh</a>
-
-              <a href="/docs/pages/private-meshes/">Private meshes</a>
-
-              <a href="/docs/pages/publish-mesh/">Publish mesh</a>
-
-          </div>
-        </article>
-
-        <article class="card">
-          <h2>Integrations</h2>
-          <p>Connect agent tools and OpenAI-compatible applications.</p>
-          <div class="links">
-
-              <a href="/docs/pages/agents/">Integrations overview</a>
-
-              <a href="/docs/pages/agents/">Agent setup</a>
-
-              <a href="/docs/pages/exo-comparison/">exo comparison</a>
-
-              <a href="/docs/pages/plugins/">Plugins</a>
-
-          </div>
-        </article>
-
-        <article class="card">
-          <h2>API reference</h2>
-          <p>Base URLs, endpoints, CLI commands, and compatibility notes.</p>
-          <div class="links">
-
-              <a href="/docs/pages/api-reference/">API reference</a>
-
-              <a href="/docs/pages/openai-compatible-api/">OpenAI-compatible API</a>
-
-              <a href="/docs/pages/CLI/">CLI reference</a>
-
-          </div>
-        </article>
-
-        <article class="card">
-          <h2>Help</h2>
-          <p>Common questions, troubleshooting, and operational checks.</p>
-          <div class="links">
-
-              <a href="/docs/pages/faq/">FAQ</a>
-
-              <a href="/docs/pages/troubleshooting/">Troubleshooting</a>
-
-              <a href="/docs/pages/testing/">Testing playbook</a>
-
-          </div>
-        </article>
-
-        <article class="card">
-          <h2>Contributing</h2>
-          <p>Understand the roadmap, testing requirements, and project contribution workflow.</p>
-          <div class="links">
-
-              <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/CONTRIBUTING.md">Contributing guide</a>
-
-              <a href="/docs/pages/testing/">Testing playbook</a>
-
-              <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/ROADMAP.md">Roadmap</a>
-
-          </div>
-        </article>
-
-    </div>
-  </section>
+  </article>
   <aside class="docs-toc" aria-label="On this page">
     <h2>☰ On this page</h2>
-    <a href="#documentation">Documentation</a>
+    <a href="#openai-compatible-api">Openai Compatible Api</a>
   </aside>
 </main>
 

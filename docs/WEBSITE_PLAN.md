@@ -99,58 +99,66 @@ the console.
 
 ## Documentation information architecture
 
+Inspired by the Ollama docs shape, Mesh docs should optimize for the user path:
+quickstart first, install by platform, model usage, capabilities, API/reference,
+integrations, and help. Mesh-specific concepts such as public/private meshes,
+layer packages, and Catalog contribution get first-class sections.
+
 ```text
 Docs
 ├── Get started
-│   ├── Welcome
 │   ├── Quickstart
-│   ├── Install on macOS
-│   ├── Install on Linux
-│   ├── Install on Windows
+│   ├── Installing Mesh
 │   └── Update Mesh
+│
+├── Install
+│   ├── macOS
+│   ├── Linux
+│   ├── Windows
+│   └── Hardware support
 │
 ├── Running models
 │   ├── Run your first model
 │   ├── Multi-machine model serving
 │   ├── Layer packages
-│   ├── Hardware planning
-│   └── Troubleshooting model startup
+│   └── Catalog
+│
+├── Capabilities
+│   ├── OpenAI-compatible API
+│   ├── Streaming
+│   ├── Tool calling
+│   └── Structured outputs
 │
 ├── Meshes
 │   ├── Join the public mesh
 │   ├── Create a private mesh
-│   ├── Publish your own mesh
-│   ├── Discovery and peers
-│   └── Troubleshooting mesh connections
+│   └── Publish your own mesh
 │
 ├── Catalog
-│   ├── Using the catalog
-│   ├── Mesh-ready models
-│   ├── Hugging Face model entries
+│   ├── Browse Catalog
 │   ├── Contributing layer packages
-│   ├── Contributing layer packages from local artifacts
-│   ├── Contributing layer packages from Hugging Face
-│   ├── Catalog pull request workflow
-│   ├── Certifying model architectures and families
-│   └── Catalog metadata format
+│   └── Certifying model families
 │
 ├── Integrations
-│   ├── Overview
-│   ├── Goose
-│   ├── Pi
-│   ├── opencode
-│   └── OpenAI-compatible clients
+│   ├── Integrations overview
+│   ├── Agent setup
+│   ├── exo comparison
+│   └── Plugins
 │
-├── Comparisons
-│   └── Mesh vs exo
+├── API reference
+│   ├── API reference
+│   ├── OpenAI-compatible API
+│   └── CLI reference
 │
-└── Reference
-    ├── CLI reference
-    ├── Configuration
-    ├── API reference
-    ├── Environment variables
-    ├── FAQ
-    └── Troubleshooting
+├── Help
+│   ├── FAQ
+│   ├── Troubleshooting
+│   └── Testing playbook
+│
+└── Contributing
+    ├── Contributing guide
+    ├── Testing playbook
+    └── Roadmap
 ```
 
 ## Catalog requirements
@@ -312,9 +320,18 @@ Target shape:
 - Catalog pages generated from metadata.
 - Output published as the `mesh-llm.cloud` static site.
 
-The current hand-written HTML is a temporary scaffold only. The next durable
-implementation should move to Astro + MDX, or another static generator that can
-render both marketing pages and docs from one build.
+The current implementation uses Eleventy from `website/src` and writes generated
+static output into `docs/`.
+
+```sh
+cd website
+npm install
+npm run build
+```
+
+Eleventy is intentionally lightweight for the first website: it renders Markdown
+docs, shared Nunjucks layouts, shared CSS, and the live Catalog page without
+adding a client runtime.
 
 ## Initial scaffold
 
@@ -325,16 +342,18 @@ The current scaffold keeps GitHub Pages compatibility by using static files unde
 - `docs/catalog/index.html` - first Catalog surface
 - `docs/CNAME` - existing custom domain
 
-This is intentionally lightweight. It should be replaced by a generated static
-site before the docs become the primary user-facing documentation surface.
+The files under `docs/` are generated output plus static hosting assets. Edit
+`website/src` for website changes, then rebuild.
 
-## Recommended future stack
+## Possible future stack
 
-- Astro for static generation and docs routing.
-- MDX for documentation pages.
-- Tailwind CSS.
-- shadcn/ui components.
-- lucide-react icons.
+- Keep Eleventy while the site is mostly static Markdown and lightweight
+  JavaScript.
+- Consider Astro or another component SSG if the site needs richer component
+  islands.
+- Consider MDX if docs need embedded interactive components.
+- Keep shadcn-style primitives and lucide-style icons when the site gains a
+  component framework.
 - Build-time catalog generation from checked-in metadata and Hugging Face.
 
 ## First implementation milestones
@@ -350,5 +369,5 @@ site before the docs become the primary user-facing documentation surface.
    installer route used by the homepage quickstart.
 6. Add `/llms.txt` so agents can discover the public docs.
 7. Add catalog metadata and generate real Catalog rows from it.
-8. Migrate to Astro/MDX so landing, Catalog, and documentation render from one
-   static-site build.
+8. Move live Catalog data from client-side fetch to build-time generation if SEO
+   or availability requires static rows.
