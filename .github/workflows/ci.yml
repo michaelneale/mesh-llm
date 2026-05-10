@@ -236,6 +236,41 @@ jobs:
         if: always()
         run: sccache --show-stats || true
 
+  hf_download_smoke:
+    needs: changes
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
+    name: HuggingFace download smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev libdbus-1-dev lld
+
+      - name: Configure Linux Rust linker
+        run: |
+          mkdir -p .cargo
+          cat > .cargo/config.toml <<'EOF'
+          [target.x86_64-unknown-linux-gnu]
+          rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+          EOF
+
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: HuggingFace download integration tests
+        env:
+          MESH_TEST_HF_DOWNLOAD: "1"
+        run: scripts/ci-hf-download-smoke.sh
+
   inference_smoke_tests:
     needs: [changes, linux]
     if: ${{ needs.linux.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') }}
