@@ -442,6 +442,7 @@ const PRETTY_DASHBOARD_REQUEST_MAX_WINDOW_SECS: u32 = 24 * 60 * 60;
 const PRETTY_DASHBOARD_PANEL_COUNT: usize = 6;
 const PRETTY_TUI_REDRAW_INTERVAL: Duration = Duration::from_millis(33);
 const PRETTY_TUI_SNAPSHOT_INTERVAL: Duration = Duration::from_millis(250);
+const PRETTY_TUI_JOIN_TOKEN_COPY_STATUS_TTL: Duration = Duration::from_secs(5);
 const PRETTY_TUI_MODEL_CARD_HEIGHT: usize = 8;
 const PRETTY_TUI_MODEL_CARD_STRIDE: usize = PRETTY_TUI_MODEL_CARD_HEIGHT;
 const PRETTY_TUI_LIST_HIGHLIGHT_SYMBOL_WIDTH: u16 = 2;
@@ -1609,8 +1610,17 @@ struct DashboardJoinTokenState {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum DashboardJoinTokenCopyStatus {
     Idle,
-    Copied,
-    Failed(String),
+    Copied { at: Instant },
+    Failed { message: String, at: Instant },
+}
+
+impl DashboardJoinTokenCopyStatus {
+    fn feedback_at(&self) -> Option<Instant> {
+        match self {
+            Self::Idle => None,
+            Self::Copied { at } | Self::Failed { at, .. } => Some(*at),
+        }
+    }
 }
 
 impl DashboardJoinTokenState {
@@ -3546,11 +3556,30 @@ impl DashboardState {
         else {
             return;
         };
+        let now = Instant::now();
         let copy_status = match copy_join_token_to_clipboard(&token) {
-            Ok(()) => DashboardJoinTokenCopyStatus::Copied,
-            Err(message) => DashboardJoinTokenCopyStatus::Failed(message),
+            Ok(()) => DashboardJoinTokenCopyStatus::Copied { at: now },
+            Err(message) => DashboardJoinTokenCopyStatus::Failed { message, at: now },
         };
         self.reduce(DashboardAction::SetJoinTokenCopyStatus(copy_status));
+    }
+
+    fn join_token_copy_shortcut_enabled(&self) -> bool {
+        !self.events_filter.editing && self.join_token.is_some()
+    }
+
+    fn clear_expired_join_token_copy_status(&mut self, now: Instant) -> bool {
+        let Some(join_token) = self.join_token.as_mut() else {
+            return false;
+        };
+        let Some(feedback_at) = join_token.copy_status.feedback_at() else {
+            return false;
+        };
+        if now.saturating_duration_since(feedback_at) < PRETTY_TUI_JOIN_TOKEN_COPY_STATUS_TTL {
+            return false;
+        }
+        join_token.copy_status = DashboardJoinTokenCopyStatus::Idle;
+        true
     }
 
     fn join_token_copy_button_contains(&self, column: u16, row: u16) -> bool {
@@ -3649,11 +3678,7 @@ impl DashboardState {
                 self.reduce(DashboardAction::ToggleEventsFollow);
                 TuiControlFlow::Continue
             }
-            TuiEvent::Key(TuiKeyEvent::Char('c'))
-                if !self.events_filter.editing
-                    && self.panel_focus == DashboardPanel::JoinToken
-                    && self.join_token.is_some() =>
-            {
+            TuiEvent::Key(TuiKeyEvent::Char('c')) if self.join_token_copy_shortcut_enabled() => {
                 self.copy_join_token();
                 TuiControlFlow::Continue
             }
@@ -4821,14 +4846,14 @@ fn render_join_token_panel(
             .as_ref()
             .map(|join_token| &join_token.copy_status)
         {
-            Some(DashboardJoinTokenCopyStatus::Copied) => (
+            Some(DashboardJoinTokenCopyStatus::Copied { .. }) => (
                 " Copied ",
                 Style::default()
                     .fg(theme.surface)
                     .bg(theme.success)
                     .add_modifier(Modifier::BOLD),
             ),
-            Some(DashboardJoinTokenCopyStatus::Failed(_)) => (
+            Some(DashboardJoinTokenCopyStatus::Failed { .. }) => (
                 " Failed ",
                 Style::default()
                     .fg(theme.surface)
@@ -4922,8 +4947,8 @@ fn join_token_panel_right_title(state: &DashboardState) -> String {
     };
     match &join_token.copy_status {
         DashboardJoinTokenCopyStatus::Idle => "press c to copy".to_string(),
-        DashboardJoinTokenCopyStatus::Copied => "copied to clipboard".to_string(),
-        DashboardJoinTokenCopyStatus::Failed(message) => {
+        DashboardJoinTokenCopyStatus::Copied { .. } => "copied to clipboard".to_string(),
+        DashboardJoinTokenCopyStatus::Failed { message, .. } => {
             format!("copy failed: {}", truncate_with_ellipsis(message, 40))
         }
     }
@@ -8073,6 +8098,13 @@ impl InteractiveDashboardFormatter {
     }
 
     fn render_if_dirty(&mut self) -> io::Result<bool> {
+        if self
+            .state
+            .clear_expired_join_token_copy_status(Instant::now())
+            && self.terminal_active
+        {
+            self.dirty = true;
+        }
         if !self.terminal_active || !self.dirty {
             return Ok(false);
         }
@@ -10683,6 +10715,22 @@ mod tests {
     }
 
     #[test]
+    fn tui_join_token_copy_shortcut_does_not_require_panel_focus() {
+        let mut state = DashboardState::default();
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::InviteToken {
+            token: "mesh-invite-token-123".to_string(),
+            mesh_id: "mesh-alpha".to_string(),
+            mesh_name: None,
+        }));
+        state.panel_focus = DashboardPanel::Events;
+
+        assert!(state.join_token_copy_shortcut_enabled());
+
+        state.events_filter.editing = true;
+        assert!(!state.join_token_copy_shortcut_enabled());
+    }
+
+    #[test]
     fn tui_join_token_scrolls_horizontally_with_left_right_keys() {
         let mut state = DashboardState::default();
         state.apply_tui_event(TuiEvent::Resize {
@@ -10741,7 +10789,7 @@ mod tests {
             mesh_name: None,
         }));
         state.reduce(DashboardAction::SetJoinTokenCopyStatus(
-            DashboardJoinTokenCopyStatus::Copied,
+            DashboardJoinTokenCopyStatus::Copied { at: Instant::now() },
         ));
 
         let rendered = render_tui_frame_snapshot(&state, 120, 24);
@@ -10763,6 +10811,47 @@ mod tests {
         assert!(
             rendered.contains("Copied"),
             "copy status should be visible on the copy control too\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn tui_join_token_copy_status_clears_after_ttl() {
+        let mut state = DashboardState::default();
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::InviteToken {
+            token: "mesh-invite-token-123".to_string(),
+            mesh_id: "mesh-alpha".to_string(),
+            mesh_name: None,
+        }));
+        let now = Instant::now();
+        state.reduce(DashboardAction::SetJoinTokenCopyStatus(
+            DashboardJoinTokenCopyStatus::Copied {
+                at: now - Duration::from_secs(1),
+            },
+        ));
+
+        assert!(!state.clear_expired_join_token_copy_status(now));
+        assert!(matches!(
+            state
+                .join_token
+                .as_ref()
+                .map(|join_token| &join_token.copy_status),
+            Some(DashboardJoinTokenCopyStatus::Copied { .. })
+        ));
+
+        state.reduce(DashboardAction::SetJoinTokenCopyStatus(
+            DashboardJoinTokenCopyStatus::Failed {
+                message: "clipboard unavailable".to_string(),
+                at: now - PRETTY_TUI_JOIN_TOKEN_COPY_STATUS_TTL - Duration::from_millis(1),
+            },
+        ));
+
+        assert!(state.clear_expired_join_token_copy_status(now));
+        assert_eq!(
+            state
+                .join_token
+                .as_ref()
+                .map(|join_token| &join_token.copy_status),
+            Some(&DashboardJoinTokenCopyStatus::Idle)
         );
     }
 
