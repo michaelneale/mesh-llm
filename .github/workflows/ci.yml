@@ -25,11 +25,14 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      rust: ${{ steps.filter.outputs.rust }}
-      ui: ${{ steps.filter.outputs.ui }}
-      benchmarks: ${{ steps.filter.outputs.benchmarks }}
-      sdk: ${{ steps.filter.outputs.sdk }}
-      docker: ${{ steps.filter.outputs.docker }}
+       rust: ${{ steps.filter.outputs.rust }}
+       ui: ${{ steps.filter.outputs.ui }}
+       benchmarks: ${{ steps.filter.outputs.benchmarks }}
+       sdk: ${{ steps.filter.outputs.sdk }}
+       docker: ${{ steps.filter.outputs.docker }}
+       affected_crates: ${{ steps.detect.outputs.affected_crates }}
+       batches_json: ${{ steps.detect.outputs.batches_json }}
+       all_rust_changed: ${{ steps.detect.outputs.all_rust_changed }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -83,6 +86,21 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.github/workflows/docker.yml'
+
+      - name: Detect changed files for crate analysis
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          CHANGED=$(git diff --name-only ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }})
+          echo "$CHANGED" > /tmp/changed-files.txt
+
+      - name: Detect affected crates
+        id: detect
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          RESULT=$(cat /tmp/changed-files.txt | bash scripts/affected-crates.sh --stdin)
+          echo "affected_crates=$(echo "$RESULT" | jq -r '.affected')" >> $GITHUB_OUTPUT
+          echo "batches_json=$(echo "$RESULT" | jq -c '.batches')" >> $GITHUB_OUTPUT
+          echo "all_rust_changed=$(echo "$RESULT" | jq -r '.all_rust_changed')" >> $GITHUB_OUTPUT
 
   resolve_llama_cache_keys:
     needs: changes
@@ -163,6 +181,20 @@ jobs:
             exit 1
           fi
 
+      - name: Crate tests (affected source only)
+        if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.affected_crates != '' && needs.changes.outputs.affected_crates != '[]' }}
+        run: |
+          CRATES=$(echo '${{ needs.changes.outputs.affected_crates }}' | jq -r '.[]')
+          if [ -z "$CRATES" ]; then
+            echo "No Rust crates affected, skipping crate tests"
+          else
+            for crate in $CRATES; do
+              echo "::group::Testing $crate"
+              cargo test -p "$crate" --lib || exit 1
+              echo "::endgroup::"
+            done
+          fi
+
       - name: SDK and API crate tests
         run: |
           cargo test -p mesh-llm-client
@@ -203,8 +235,23 @@ jobs:
           cargo test -p mesh-llm --test protocol_compat_v0_client
           cargo test -p mesh-llm --test protocol_convert_matrix
 
-      - name: Clippy
-        run: cargo clippy -p mesh-llm -- -D warnings
+      - name: Clippy (all crates — full check)
+        if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'push' }}
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: Clippy (affected crates only)
+        if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.affected_crates != '' && needs.changes.outputs.affected_crates != '[]' }}
+        run: |
+          CRATES=$(echo '${{ needs.changes.outputs.affected_crates }}' | jq -r '.[]')
+          if [ -z "$CRATES" ]; then
+            echo "No Rust crates affected, skipping clippy"
+          else
+            CLIPPY_ARGS=""
+            for crate in $CRATES; do
+              CLIPPY_ARGS="$CLIPPY_ARGS -p $crate"
+            done
+            cargo clippy $CLIPPY_ARGS -- -D warnings
+          fi
 
       - name: CLI smoke test
         run: |
@@ -464,10 +511,25 @@ jobs:
         run: brew install cmake ninja jq
       - name: Format check
         run: cargo fmt --all -- --check
+      - name: Clippy (affected crates only)
+        if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.affected_crates != '' && needs.changes.outputs.affected_crates != '[]' }}
+        run: |
+          CRATES=$(echo '${{ needs.changes.outputs.affected_crates }}' | jq -r '.[]')
+          if [ -z "$CRATES" ]; then
+            echo "No Rust crates affected, skipping clippy"
+          else
+            CLIPPY_ARGS=""
+            for crate in $CRATES; do
+              CLIPPY_ARGS="$CLIPPY_ARGS -p $crate"
+            done
+            cargo clippy $CLIPPY_ARGS -- -D warnings
+          fi
       - name: Prepare patched llama.cpp ABI checkout
         run: scripts/prepare-llama.sh pinned
+
       - name: Build patched llama.cpp ABI libraries
         run: scripts/build-llama.sh
+
       - name: Build mesh-llm binary (debug)
         run: cargo build -p mesh-llm --bin mesh-llm
       - name: Unit tests

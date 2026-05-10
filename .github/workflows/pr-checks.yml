@@ -1,0 +1,145 @@
+name: PR Checks (Quality)
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      affected_crates: ${{ steps.detect.outputs.affected_crates }}
+      batches_json: ${{ steps.detect.outputs.batches_json }}
+      ui_changed: ${{ steps.detect.outputs.ui_changed }}
+      all_rust_changed: ${{ steps.detect.outputs.all_rust_changed }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed files
+        id: changed_files
+        run: |
+          CHANGED=$(git diff --name-only ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }})
+          echo "$CHANGED" > /tmp/changed-files.txt
+          echo "Changed files:" >&2
+          cat /tmp/changed-files.txt >&2
+
+      - name: Detect affected crates
+        id: detect
+        run: |
+          RESULT=$(cat /tmp/changed-files.txt | bash scripts/affected-crates.sh --stdin)
+          echo "$RESULT" > /tmp/affected-result.json
+
+          AFFECTED_CRATES=$(echo "$RESULT" | jq -c '.affected')
+          BATCHES_JSON=$(echo "$RESULT" | jq -c '.batches')
+          ALL_RUST_CHANGED=$(echo "$RESULT" | jq -r '.all_rust_changed')
+          UI_CHANGED=$(echo "$RESULT" | jq -r '.ui_changed')
+
+          echo "affected_crates=$AFFECTED_CRATES" >> $GITHUB_OUTPUT
+          echo "batches_json=$BATCHES_JSON" >> $GITHUB_OUTPUT
+          echo "all_rust_changed=$ALL_RUST_CHANGED" >> $GITHUB_OUTPUT
+          echo "ui_changed=$UI_CHANGED" >> $GITHUB_OUTPUT
+
+  rust-fmt:
+    needs: changes
+    if: ${{ needs.changes.outputs.affected_crates != '[]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Format check (all crates)
+        run: cargo fmt --all -- --check
+
+  rust-clippy-batches:
+    needs: changes
+    if: ${{ needs.changes.outputs.affected_crates != '[]' }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        batch: [0, 1, 2]
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+          prefix-key: mesh-llm-rust-pr-checks-${{ hashFiles('.github/cache-version.txt') }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Prepare patched llama.cpp ABI checkout
+        if: ${{ needs.changes.outputs.all_rust_changed == 'true' || matrix.batch == 0 }}
+        run: scripts/prepare-llama.sh pinned
+
+      - name: Build patched llama.cpp ABI libraries
+        if: ${{ needs.changes.outputs.all_rust_changed == 'true' || matrix.batch == 0 }}
+        run: scripts/build-llama.sh
+
+      - name: Clippy (all crates — shared file changed)
+        if: ${{ needs.changes.outputs.all_rust_changed == 'true' && matrix.batch == 0 }}
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: Clippy (batch ${{ matrix.batch }})
+        if: ${{ needs.changes.outputs.all_rust_changed != 'true' }}
+        run: |
+          CRATES=$(echo '${{ needs.changes.outputs.batches_json }}' | jq -r ".[${{ matrix.batch }}] // [] | .[]" 2>/dev/null) || CRATES=""
+          if [ -z "$CRATES" ]; then
+            echo "No crates in batch ${{ matrix.batch }}, skipping"
+            exit 0
+          fi
+          CLIPPY_ARGS=""
+          for crate in $CRATES; do
+            CLIPPY_ARGS="$CLIPPY_ARGS -p $crate"
+          done
+          cargo clippy $CLIPPY_ARGS -- -D warnings
+
+  ui-lint-typecheck:
+    needs: changes
+    if: ${{ needs.changes.outputs.ui_changed == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: crates/mesh-llm-ui/pnpm-lock.yaml
+
+      - name: Install UI dependencies
+        working-directory: crates/mesh-llm-ui
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint UI
+        working-directory: crates/mesh-llm-ui
+        run: pnpm run lint
+
+      - name: Typecheck UI
+        working-directory: crates/mesh-llm-ui
+        run: pnpm run typecheck
