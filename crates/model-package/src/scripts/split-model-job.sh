@@ -79,6 +79,50 @@ cleanup_job_work_dir() {
 }
 trap cleanup_job_work_dir EXIT
 
+log_storage_snapshot() {
+    local label="$1"
+    echo "  Storage snapshot (${label}):"
+    df -h / /bucket "$PACKAGE_DIR" "$TMPDIR" 2>/dev/null || true
+    echo "  Mounts (${label}):"
+    mount | grep -E ' on / | on /bucket ' || true
+}
+
+on_error() {
+    local status=$?
+    local line=${BASH_LINENO[0]:-unknown}
+    local command=${BASH_COMMAND:-unknown}
+    echo "ERROR: split job command failed at line ${line} with status ${status}: ${command}" >&2
+    log_storage_snapshot "error" >&2 || true
+    exit "$status"
+}
+trap on_error ERR
+
+start_heartbeat() {
+    local label="$1"
+    (
+        while true; do
+            sleep "${JOB_HEARTBEAT_SECONDS:-60}"
+            echo "  Heartbeat (${label}) $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            df -h / /bucket "$PACKAGE_DIR" "$TMPDIR" 2>/dev/null || true
+            if [ -d "$PACKAGE_DIR" ]; then
+                du -sh "$PACKAGE_DIR" 2>/dev/null || true
+            fi
+            if [ -d "$HF_HUB_CACHE" ]; then
+                du -sh "$HF_HUB_CACHE" 2>/dev/null || true
+            fi
+        done
+    ) &
+    HEARTBEAT_PID=$!
+}
+
+stop_heartbeat() {
+    if [ -n "${HEARTBEAT_PID:-}" ]; then
+        kill "$HEARTBEAT_PID" 2>/dev/null || true
+        wait "$HEARTBEAT_PID" 2>/dev/null || true
+        HEARTBEAT_PID=""
+    fi
+}
+
 mkdir -p "$PACKAGE_DIR" "$HF_HUB_CACHE" "$HF_XET_CACHE" "$JOB_TMP_DIR" "$TOOL_DIR" \
     "$CARGO_HOME" "$RUSTUP_HOME" "$CARGO_TARGET_DIR" "$XDG_CACHE_HOME" "$PIP_CACHE_DIR" \
     "$BUILD_TMP_DIR"
@@ -189,6 +233,7 @@ fi
 echo "  Hugging Face cache: $HF_HUB_CACHE"
 echo "  Package workspace: $PACKAGE_DIR"
 echo "  Temporary workspace: $TMPDIR"
+log_storage_snapshot "before write-package"
 ROOT_FS="$(df -P / | awk 'NR==2 {print $1}')"
 PACKAGE_FS="$(df -P "$PACKAGE_DIR" | awk 'NR==2 {print $1}')"
 if [ -n "$ROOT_FS" ] && [ "$ROOT_FS" = "$PACKAGE_FS" ]; then
@@ -201,8 +246,21 @@ if [ -n "${ESTIMATED_BUCKET_BYTES:-}" ]; then
         echo "WARNING: package workspace has $(format_bytes "$PACKAGE_AVAILABLE_BYTES") available, below estimated need $(format_bytes "$ESTIMATED_BUCKET_BYTES")." >&2
     fi
 fi
-time $SLICER write-package "$SOURCE_REF" \
+echo "  Starting write-package at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+start_heartbeat "write-package"
+set +e
+time "$SLICER" write-package "$SOURCE_REF" \
     --out-dir "$PACKAGE_DIR"
+WRITE_PACKAGE_STATUS=$?
+set -e
+stop_heartbeat
+if [ "$WRITE_PACKAGE_STATUS" -ne 0 ]; then
+    echo "ERROR: write-package failed with status $WRITE_PACKAGE_STATUS" >&2
+    log_storage_snapshot "write-package failed" >&2 || true
+    exit "$WRITE_PACKAGE_STATUS"
+fi
+echo "  Finished write-package at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+log_storage_snapshot "after write-package"
 
 SOURCE_PATH="$(python3 -c "import json, os; m=json.load(open(os.path.join(os.environ['PACKAGE_DIR'], 'model-package.json'))); print(m['source_model']['path'])")"
 echo "  Cached source: $SOURCE_PATH ($(du -h "$SOURCE_PATH" | cut -f1))"

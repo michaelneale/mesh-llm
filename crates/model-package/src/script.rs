@@ -163,7 +163,10 @@ mod tests {
         assert!(EMBEDDED_SCRIPT.contains(r#"SOURCE_REF="${SOURCE_REPO}:${SOURCE_QUANT}""#));
         assert!(EMBEDDED_SCRIPT
             .contains(r#"SOURCE_REF="${SOURCE_REPO}@${SOURCE_REVISION}:${SOURCE_QUANT}""#));
-        assert!(EMBEDDED_SCRIPT.contains(r#"time $SLICER write-package "$SOURCE_REF""#));
+        assert!(EMBEDDED_SCRIPT.contains("log_storage_snapshot"));
+        assert!(EMBEDDED_SCRIPT.contains("start_heartbeat"));
+        assert!(EMBEDDED_SCRIPT.contains("Starting write-package"));
+        assert!(EMBEDDED_SCRIPT.contains(r#"time "$SLICER" write-package "$SOURCE_REF""#));
         assert!(!EMBEDDED_SCRIPT.contains(r#"SOURCE_PATH="/source/${SOURCE_FILE}""#));
         assert!(!EMBEDDED_SCRIPT.contains(r#"time $SLICER write-package "$SOURCE_PATH""#));
     }
