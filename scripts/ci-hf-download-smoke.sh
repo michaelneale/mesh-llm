@@ -9,7 +9,6 @@
 #   scripts/ci-hf-download-smoke.sh
 #
 # Environment:
-#   MESH_TEST_HF_DOWNLOAD  — set automatically by this script
 #   HF_TOKEN               — optional, speeds up API calls / avoids rate limits
 
 set -euo pipefail
@@ -18,8 +17,6 @@ echo "=== CI HuggingFace Download Smoke ==="
 echo "  rust toolchain: $(rustc --version 2>/dev/null || echo 'not found')"
 echo "  os:             $(uname -s)"
 echo ""
-
-export MESH_TEST_HF_DOWNLOAD=1
 
 echo "Running model-hf integration tests (API-only: resolve, list, artifact resolution)..."
 cargo test -p model-hf --test hf_download -- \

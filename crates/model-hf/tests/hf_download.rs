@@ -1,10 +1,9 @@
 //! Integration tests that exercise real HuggingFace API calls and downloads.
 //!
-//! These tests hit the network and are **ignored by default**. Enable them by
-//! setting the `MESH_TEST_HF_DOWNLOAD` environment variable:
+//! These tests hit the network and are **ignored by default**. Run them with:
 //!
 //! ```sh
-//! MESH_TEST_HF_DOWNLOAD=1 cargo test -p model-hf --test hf_download
+//! cargo test -p model-hf --test hf_download -- --ignored
 //! ```
 //!
 //! The download tests use `jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF` — the
@@ -16,10 +15,6 @@
 use model_artifact::{resolve_model_artifact_ref, ModelArtifactFile, ModelFormat, ModelRepository};
 use model_hf::HfModelRepository;
 use std::path::Path;
-
-fn hf_test_enabled() -> bool {
-    std::env::var("MESH_TEST_HF_DOWNLOAD").is_ok()
-}
 
 /// Build a repository pointed at a fresh temp cache directory.
 fn make_repo(tmp: &Path) -> HfModelRepository {
@@ -37,9 +32,6 @@ fn make_repo(tmp: &Path) -> HfModelRepository {
 #[tokio::test]
 #[ignore]
 async fn resolve_revision_returns_commit_sha() {
-    if !hf_test_enabled() {
-        return;
-    }
     let tmp = tempfile::tempdir().unwrap();
     let repo = make_repo(tmp.path());
 
@@ -61,9 +53,6 @@ async fn resolve_revision_returns_commit_sha() {
 #[tokio::test]
 #[ignore]
 async fn list_files_single_gguf_repo() {
-    if !hf_test_enabled() {
-        return;
-    }
     let tmp = tempfile::tempdir().unwrap();
     let repo = make_repo(tmp.path());
 
@@ -101,9 +90,6 @@ async fn list_files_single_gguf_repo() {
 #[tokio::test]
 #[ignore]
 async fn list_files_split_gguf_repo() {
-    if !hf_test_enabled() {
-        return;
-    }
     let tmp = tempfile::tempdir().unwrap();
     let repo = make_repo(tmp.path());
 
@@ -141,9 +127,6 @@ async fn list_files_split_gguf_repo() {
 #[tokio::test]
 #[ignore]
 async fn resolve_artifact_ref_single_gguf() {
-    if !hf_test_enabled() {
-        return;
-    }
     let tmp = tempfile::tempdir().unwrap();
     let repo = make_repo(tmp.path());
 
@@ -172,9 +155,6 @@ async fn resolve_artifact_ref_single_gguf() {
 #[tokio::test]
 #[ignore]
 async fn resolve_artifact_ref_split_gguf() {
-    if !hf_test_enabled() {
-        return;
-    }
     let tmp = tempfile::tempdir().unwrap();
     let repo = make_repo(tmp.path());
 
@@ -223,9 +203,6 @@ async fn resolve_artifact_ref_split_gguf() {
 #[tokio::test]
 #[ignore]
 async fn download_single_gguf_file() {
-    if !hf_test_enabled() {
-        return;
-    }
     let tmp = tempfile::tempdir().unwrap();
     let repo = make_repo(tmp.path());
 
@@ -277,9 +254,6 @@ async fn download_single_gguf_file() {
 #[tokio::test]
 #[ignore]
 async fn full_resolve_download_identity_pipeline() {
-    if !hf_test_enabled() {
-        return;
-    }
     let tmp = tempfile::tempdir().unwrap();
     let repo = make_repo(tmp.path());
 
@@ -343,9 +317,6 @@ async fn full_resolve_download_identity_pipeline() {
 #[tokio::test]
 #[ignore]
 async fn resolve_nonexistent_repo_returns_error() {
-    if !hf_test_enabled() {
-        return;
-    }
     let tmp = tempfile::tempdir().unwrap();
     let repo = make_repo(tmp.path());
 
@@ -361,9 +332,6 @@ async fn resolve_nonexistent_repo_returns_error() {
 #[tokio::test]
 #[ignore]
 async fn download_nonexistent_file_returns_error() {
-    if !hf_test_enabled() {
-        return;
-    }
     let tmp = tempfile::tempdir().unwrap();
     let repo = make_repo(tmp.path());
 

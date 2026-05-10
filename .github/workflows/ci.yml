@@ -267,8 +267,6 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: HuggingFace download integration tests
-        env:
-          MESH_TEST_HF_DOWNLOAD: "1"
         run: scripts/ci-hf-download-smoke.sh
 
   inference_smoke_tests:
