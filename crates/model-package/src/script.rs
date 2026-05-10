@@ -166,8 +166,10 @@ mod tests {
         assert!(EMBEDDED_SCRIPT.contains("log_storage_snapshot"));
         assert!(EMBEDDED_SCRIPT.contains("start_heartbeat"));
         assert!(EMBEDDED_SCRIPT.contains("Starting write-package"));
-        assert!(EMBEDDED_SCRIPT.contains(r#"time "$SLICER" write-package "$SOURCE_REF""#));
-        assert!(!EMBEDDED_SCRIPT.contains(r#"SOURCE_PATH="/source/${SOURCE_FILE}""#));
+        assert!(EMBEDDED_SCRIPT.contains(r#"MOUNTED_SOURCE_PATH="/source/${SOURCE_FILE}""#));
+        assert!(EMBEDDED_SCRIPT.contains(r#"WRITE_PACKAGE_INPUT="$MOUNTED_SOURCE_PATH""#));
+        assert!(EMBEDDED_SCRIPT.contains(r#"--source-file "$SOURCE_FILE""#));
+        assert!(EMBEDDED_SCRIPT.contains(r#"time "$SLICER" write-package "$WRITE_PACKAGE_INPUT""#));
         assert!(!EMBEDDED_SCRIPT.contains(r#"time $SLICER write-package "$SOURCE_PATH""#));
     }
 }

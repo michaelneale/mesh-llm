@@ -230,6 +230,21 @@ if [ -n "${SOURCE_TOTAL_BYTES:-}" ]; then
     ESTIMATED_BUCKET_BYTES="$(estimate_bucket_workspace_bytes "$SOURCE_TOTAL_BYTES")"
     echo "  Estimated /bucket workspace needed: $(format_bytes "$ESTIMATED_BUCKET_BYTES")"
 fi
+MOUNTED_SOURCE_PATH="/source/${SOURCE_FILE}"
+if [ -f "$MOUNTED_SOURCE_PATH" ]; then
+    WRITE_PACKAGE_INPUT="$MOUNTED_SOURCE_PATH"
+    WRITE_PACKAGE_IDENTITY_ARGS=(
+        --model-id "$MODEL_ID"
+        --source-repo "$SOURCE_REPO"
+        --source-revision "$SOURCE_REVISION"
+        --source-file "$SOURCE_FILE"
+    )
+    echo "  Source mount: $MOUNTED_SOURCE_PATH"
+else
+    WRITE_PACKAGE_INPUT="$SOURCE_REF"
+    WRITE_PACKAGE_IDENTITY_ARGS=()
+    echo "  Source mount: not available; falling back to Hugging Face cache download"
+fi
 echo "  Hugging Face cache: $HF_HUB_CACHE"
 echo "  Package workspace: $PACKAGE_DIR"
 echo "  Temporary workspace: $TMPDIR"
@@ -249,8 +264,9 @@ fi
 echo "  Starting write-package at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 start_heartbeat "write-package"
 set +e
-time "$SLICER" write-package "$SOURCE_REF" \
-    --out-dir "$PACKAGE_DIR"
+time "$SLICER" write-package "$WRITE_PACKAGE_INPUT" \
+    --out-dir "$PACKAGE_DIR" \
+    "${WRITE_PACKAGE_IDENTITY_ARGS[@]}"
 WRITE_PACKAGE_STATUS=$?
 set -e
 stop_heartbeat

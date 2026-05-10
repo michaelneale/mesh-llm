@@ -209,12 +209,20 @@ pub async fn resolve(
         secrets.insert("HF_TOKEN".into(), hf_token);
     }
 
-    let volumes = vec![JobVolume {
-        volume_type: "bucket".into(),
-        source: "meshllm/layer-split-output".into(),
-        mount_path: "/bucket".into(),
-        read_only: None,
-    }];
+    let volumes = vec![
+        JobVolume {
+            volume_type: "bucket".into(),
+            source: "meshllm/layer-split-output".into(),
+            mount_path: "/bucket".into(),
+            read_only: None,
+        },
+        JobVolume {
+            volume_type: "model".into(),
+            source: params.source_repo.clone(),
+            mount_path: "/source".into(),
+            read_only: Some(true),
+        },
+    ];
 
     let spec = JobSpec {
         docker_image: "ubuntu:22.04".into(),

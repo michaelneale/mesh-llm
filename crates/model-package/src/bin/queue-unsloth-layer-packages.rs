@@ -886,12 +886,20 @@ fn job_spec_with_token(
         secrets,
         flavor: job_plan.flavor.clone(),
         timeout_seconds: job_plan.timeout_seconds,
-        volumes: vec![JobVolume {
-            volume_type: "bucket".into(),
-            source: "meshllm/layer-split-output".into(),
-            mount_path: "/bucket".into(),
-            read_only: None,
-        }],
+        volumes: vec![
+            JobVolume {
+                volume_type: "bucket".into(),
+                source: "meshllm/layer-split-output".into(),
+                mount_path: "/bucket".into(),
+                read_only: None,
+            },
+            JobVolume {
+                volume_type: "model".into(),
+                source: candidate.model.repo_id.clone(),
+                mount_path: "/source".into(),
+                read_only: Some(true),
+            },
+        ],
     })
 }
 
@@ -1201,13 +1209,13 @@ mod tests {
                 .map(String::as_str),
             Some("401")
         );
-        assert_eq!(spec.volumes.len(), 1);
+        assert_eq!(spec.volumes.len(), 2);
         assert_eq!(spec.volumes[0].volume_type, "bucket");
         assert_eq!(spec.volumes[0].mount_path, "/bucket");
-        assert!(!spec
-            .volumes
-            .iter()
-            .any(|volume| volume.volume_type == "model"));
+        assert_eq!(spec.volumes[1].volume_type, "model");
+        assert_eq!(spec.volumes[1].source, candidate.model.repo_id);
+        assert_eq!(spec.volumes[1].mount_path, "/source");
+        assert_eq!(spec.volumes[1].read_only, Some(true));
     }
 
     #[test]
