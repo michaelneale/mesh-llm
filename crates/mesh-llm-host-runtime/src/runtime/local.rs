@@ -1025,7 +1025,7 @@ fn spawn_split_topology_coordinator(
     coordinator: SplitTopologyCoordinator,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        coordinator.run().await;
+        Box::pin(coordinator.run()).await;
     })
 }
 

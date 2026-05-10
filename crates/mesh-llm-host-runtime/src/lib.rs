@@ -26,11 +26,11 @@ use std::time::Duration;
 pub const VERSION: &str = "0.65.1+skippy.20260504.kv.2";
 
 pub async fn run() -> Result<()> {
-    runtime::run().await
+    Box::pin(runtime::run()).await
 }
 
 pub async fn run_main() -> i32 {
-    match run().await {
+    match Box::pin(run()).await {
         Ok(()) => 0,
         Err(err) => {
             let _ = cli::output::emit_fatal_error(&err);

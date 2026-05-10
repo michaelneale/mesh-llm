@@ -4777,7 +4777,7 @@ async fn run_auto(
     let runtime_instance_registry_for_primary_task = runtime_instance_registry.clone();
     let primary_startup_load_gate = startup_load_gate.clone();
     let primary_task = tokio::spawn(async move {
-        startup_local_model_loop(StartupLocalModelTask {
+        Box::pin(startup_local_model_loop(StartupLocalModelTask {
             node: node2,
             tunnel_mgr: tunnel_mgr2,
             target_tx: primary_target_tx,
@@ -4811,7 +4811,7 @@ async fn run_auto(
             interactive_started,
             interactive_control_tx,
             interactive_console_state,
-        })
+        }))
         .await;
     });
     managed_models.insert(
@@ -4872,7 +4872,7 @@ async fn run_auto(
             let extra_control_tx = control_tx.clone();
             let extra_survey_telemetry = survey_telemetry.clone();
             let extra_task = tokio::spawn(async move {
-                startup_local_model_loop(StartupLocalModelTask {
+                Box::pin(startup_local_model_loop(StartupLocalModelTask {
                     node: extra_node,
                     tunnel_mgr: extra_tunnel,
                     target_tx: extra_target_tx,
@@ -4906,7 +4906,7 @@ async fn run_auto(
                     interactive_started: Arc::new(AtomicBool::new(true)),
                     interactive_control_tx: extra_control_tx,
                     interactive_console_state: None,
-                })
+                }))
                 .await;
             });
             managed_models.insert(
