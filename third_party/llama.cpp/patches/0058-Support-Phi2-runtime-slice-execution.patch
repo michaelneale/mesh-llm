@@ -1,13 +1,13 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From cfabb1b93914cce374da44d1e862f0bc84f5efd1 Mon Sep 17 00:00:00 2001
 From: mesh-llm <mesh-llm@example.com>
 Date: Wed, 6 May 2026 00:00:00 +1000
-Subject: [PATCH] Support Phi2 runtime-slice execution
+Subject: [PATCH 58/80] Support Phi2 runtime-slice execution
 
 ---
- src/llama-model-loader.cpp | 10 ++++++++++
+ src/llama-model-loader.cpp | 11 +++++++++++
  src/llama-model-loader.h   |  1 +
  src/llama-model.cpp        |  3 ++-
- src/models/phi2.cpp        | 22 ++++++++++++++++++----
+ src/models/phi2.cpp        | 21 +++++++++++++++++----
  src/skippy.cpp             |  1 +
  5 files changed, 32 insertions(+), 5 deletions(-)
 
@@ -73,10 +73,10 @@ index b7b054d1..54f56d98 100644
  enum llama_fver {
      GGUF_FILE_VERSION_V1 = 1,
 diff --git a/src/llama-model.cpp b/src/llama-model.cpp
-index 9365db5e..f718d2a5 100644
+index 88b5b685..f5399168 100644
 --- a/src/llama-model.cpp
 +++ b/src/llama-model.cpp
-@@ -2504,7 +2504,8 @@ void llama_model_base::create_tensor_qkv(llama_layer & layer, int bid,
+@@ -2501,7 +2501,8 @@ void llama_model_base::create_tensor_qkv(llama_layer & layer, int bid,
          int flags) {
      const int64_t n_embd_qkv = n_embd_q_ + n_embd_k_ + n_embd_v_;
      layer.wqkv = create_tensor(tn(LLM_TENSOR_ATTN_QKV, "weight", bid), {n_embd_, n_embd_qkv}, TENSOR_NOT_REQUIRED | TENSOR_SKIP_IF_VIRTUAL);
@@ -140,7 +140,7 @@ index a333602c..20a9752e 100644
              model.output_norm,
              model.output_norm_b,
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 91887b70..d96fbb44 100644
+index 18bbebf0..8831d968 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -1615,6 +1615,7 @@ static enum skippy_status skippy_finish_model_open(

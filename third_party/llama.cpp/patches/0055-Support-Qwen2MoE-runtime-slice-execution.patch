@@ -1,7 +1,7 @@
-From e146d3186116c6e1fe29216650f0be8221d0b7df Mon Sep 17 00:00:00 2001
+From 9e3d4ad6b4894df20216ac1d3540ecfd84f586eb Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Wed, 6 May 2026 10:14:02 +1000
-Subject: [PATCH] Support Qwen2MoE runtime-slice execution
+Subject: [PATCH 55/80] Support Qwen2MoE runtime-slice execution
 
 ---
  src/models/qwen2moe.cpp | 25 ++++++++++++++++++++-----
@@ -73,7 +73,7 @@ index 7587c802..705abb47 100644
              model.output_norm, NULL,
              LLM_NORM_RMS, -1);
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index bf2b07b4..7a6756ac 100644
+index 5b914a78..9190dd8c 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -1485,6 +1485,7 @@ static enum skippy_status skippy_finish_model_open(

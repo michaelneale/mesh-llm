@@ -1,7 +1,7 @@
-From 4f4a06f3457e0064702481a33c891a71033af9f6 Mon Sep 17 00:00:00 2001
+From 645ed16bb29f31c753e2e327c961e7ae33276180 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Wed, 6 May 2026 11:23:13 +1000
-Subject: [PATCH] Support RWKV7 activation sideband
+Subject: [PATCH 57/80] Support RWKV7 activation sideband
 
 ---
  include/skippy.h      |   2 +
@@ -28,7 +28,7 @@ index 84169398..1c6d2c9f 100644
  struct skippy_session;
  struct skippy_model_info;
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 61f26773..e33df849 100644
+index 71a59395..a4d2d788 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
 @@ -2084,6 +2084,10 @@ llm_graph_result * llama_context::get_gf_res_reserve() const {
@@ -334,7 +334,7 @@ index b205e393..c3dc9eb0 100644
      cur = build_norm(cur, model.output_norm, model.output_norm_b, LLM_NORM, -1);
  
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 1010874c..91887b70 100644
+index 940b420a..18bbebf0 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -631,6 +631,34 @@ struct skippy_activation_tokens_scope {

@@ -1,7 +1,7 @@
-From 967c43af264f9607c591c61ab8175da826036bf6 Mon Sep 17 00:00:00 2001
+From 0a0f04eb889fd7f58f499f9ef6cad6b761812fea Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Wed, 6 May 2026 08:32:41 +1000
-Subject: [PATCH] Support initial dense runtime-slice families
+Subject: [PATCH 47/80] Support initial dense runtime-slice families
 
 ---
  src/models/baichuan.cpp | 20 ++++++++++++++++----
@@ -285,7 +285,7 @@ index 8f613e55..178803e6 100644
              model.output_norm,
              model.output_norm_b,
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 4486ad78..a7e4c19c 100644
+index 1f6fe94a..a8a4f78e 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -1461,6 +1461,9 @@ static enum skippy_status skippy_finish_model_open(

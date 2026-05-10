@@ -1,7 +1,7 @@
-From cd69683c7364e9b47b0c06f1fc6db4d3a9cc6bbc Mon Sep 17 00:00:00 2001
+From 63035d5f6cc8217d022f72c4a8afcda9b05b3bcf Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Wed, 6 May 2026 08:58:17 +1000
-Subject: [PATCH] Support more decoder runtime-slice families
+Subject: [PATCH 50/80] Support more decoder runtime-slice families
 
 ---
  src/models/gpt2.cpp    | 33 +++++++++++++++++++++++----------
@@ -357,7 +357,7 @@ index 7871f8f7..5e2fc616 100644
              model.output_norm, NULL,
              LLM_NORM_RMS, -1);
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 3c93625a..26662aa3 100644
+index 9b564cc6..6d9e2fcc 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -1468,13 +1468,19 @@ static enum skippy_status skippy_finish_model_open(

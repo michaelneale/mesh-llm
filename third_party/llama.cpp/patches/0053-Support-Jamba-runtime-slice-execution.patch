@@ -1,7 +1,7 @@
-From 680cbaf1d55a8b25797cd395b38260e65f0a4cf7 Mon Sep 17 00:00:00 2001
+From ad14159a18de054e08d9d0553ce6e8f966c0ce96 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Wed, 6 May 2026 09:36:46 +1000
-Subject: [PATCH] Support Jamba runtime-slice execution
+Subject: [PATCH 53/80] Support Jamba runtime-slice execution
 
 ---
  src/models/jamba.cpp | 20 ++++++++++++++++----
@@ -59,7 +59,7 @@ index e1b8d137..8c49fc68 100644
      cur = build_norm(inpL, model.output_norm, NULL, LLM_NORM_RMS, -1);
  
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 1e9e72f5..73f9e0cb 100644
+index cd9f1142..a4c7d09f 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -1472,6 +1472,7 @@ static enum skippy_status skippy_finish_model_open(

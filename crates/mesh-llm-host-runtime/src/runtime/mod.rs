@@ -2641,9 +2641,6 @@ fn preflight_config_owned_startup_models(
         .and_then(|probe| probe.flavor)
         .or(binary_flavor);
     let mut survey = hardware::query(pinned_startup_preflight_metrics());
-    if binary_flavor == Some(backend::BinaryFlavor::Vulkan) {
-        hardware::augment_gpu_facts_with_vulkan_devices(&mut survey.gpus);
-    }
     apply_backend_devices_for_flavor(&mut survey.gpus, binary_flavor);
     preflight_config_owned_startup_models_with_gpus(
         config,

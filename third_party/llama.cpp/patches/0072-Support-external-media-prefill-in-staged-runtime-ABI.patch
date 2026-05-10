@@ -1,7 +1,7 @@
-From 38c346557de8b535eb7f5b83a4509aa4792bd416 Mon Sep 17 00:00:00 2001
+From c8bcb97e61e9b36657bc2e2647b183e58feaa0a9 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Thu, 7 May 2026 18:18:58 +1000
-Subject: [PATCH] Support external media prefill in staged runtime ABI
+Subject: [PATCH 72/80] Support external media prefill in staged runtime ABI
 
 ---
  include/skippy.h | 14 ++++++++++

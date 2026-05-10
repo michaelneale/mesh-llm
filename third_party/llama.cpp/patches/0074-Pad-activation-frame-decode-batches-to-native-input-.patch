@@ -1,7 +1,8 @@
-From cb81dd9d88f0dcabb76ba58a4a09cfe00ffa6a6d Mon Sep 17 00:00:00 2001
+From 2c999c27b013177a6303fee4ad34defbc6110bfb Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Thu, 7 May 2026 18:34:54 +1000
-Subject: [PATCH] Pad activation frame decode batches to native input width
+Subject: [PATCH 74/80] Pad activation frame decode batches to native input
+ width
 
 ---
  src/skippy.cpp | 14 ++++++++++++--

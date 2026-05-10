@@ -1,7 +1,7 @@
-From 298fe08fb00f815d39fc3a38a0f496d3d0790e02 Mon Sep 17 00:00:00 2001
+From ea3e4856439ed5418ea984a053e9ebeaeb2e7b9d Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Wed, 6 May 2026 10:02:20 +1000
-Subject: [PATCH] Support RWKV6 runtime-slice execution
+Subject: [PATCH 54/80] Support RWKV6 runtime-slice execution
 
 ---
  src/models/rwkv6.cpp | 25 +++++++++++++++++++------
@@ -74,7 +74,7 @@ index 2944711a..dd4fad68 100644
      cur = build_norm(cur, model.output_norm, model.output_norm_b, LLM_NORM, -1);
  
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 73f9e0cb..bf2b07b4 100644
+index a4c7d09f..5b914a78 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -1487,6 +1487,7 @@ static enum skippy_status skippy_finish_model_open(

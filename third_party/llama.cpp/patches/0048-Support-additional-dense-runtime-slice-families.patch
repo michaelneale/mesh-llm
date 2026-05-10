@@ -1,7 +1,7 @@
-From 4574e1eaf056be259370e90a6d0e8ef4b41f23bd Mon Sep 17 00:00:00 2001
+From 3f4fb5ab4d2bf0db9b2c96e36d95bdea67bc0fba Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Wed, 6 May 2026 08:38:54 +1000
-Subject: [PATCH] Support additional dense runtime-slice families
+Subject: [PATCH 48/80] Support additional dense runtime-slice families
 
 ---
  src/models/cohere2.cpp    | 20 ++++++++++++++++----
@@ -488,7 +488,7 @@ index 45dae060..0bc9aaa4 100644
              model.output_norm, model.output_norm_b,
              LLM_NORM, -1);
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index a7e4c19c..3c93625a 100644
+index a8a4f78e..9b564cc6 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -1463,7 +1463,15 @@ static enum skippy_status skippy_finish_model_open(

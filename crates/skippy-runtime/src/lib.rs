@@ -19,6 +19,7 @@ use skippy_ffi::{
     TokenSignal as RawTokenSignal,
 };
 
+mod devices;
 pub mod package;
 
 pub const MAX_LOGIT_BIAS: usize = 256;
@@ -37,6 +38,7 @@ pub enum FlashAttentionType {
     Enabled = 1,
 }
 
+pub use devices::{backend_devices, BackendDevice, BackendDeviceType};
 pub use skippy_ffi::LoadMode as RuntimeLoadMode;
 pub use skippy_ffi::{
     ActivationDType as RuntimeActivationDType, ActivationLayout as RuntimeActivationLayout,

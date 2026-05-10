@@ -1,7 +1,7 @@
-From 4ce87b0de3d429482fe749b89687e41685a02097 Mon Sep 17 00:00:00 2001
+From 31638cc7e2b3e0dc52da810ebc0c3f8889e7cb53 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Wed, 6 May 2026 08:42:26 +1000
-Subject: [PATCH] Avoid rescaling staged activation inputs
+Subject: [PATCH 49/80] Avoid rescaling staged activation inputs
 
 ---
  src/llama-graph.cpp | 8 ++++++--

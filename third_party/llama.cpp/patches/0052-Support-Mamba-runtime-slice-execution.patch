@@ -1,7 +1,7 @@
-From b03bb4d82b162f4c9b12a95541485fea47930b1f Mon Sep 17 00:00:00 2001
+From e365274b06562fdc765956beb3f8765b2a624795 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Wed, 6 May 2026 09:32:21 +1000
-Subject: [PATCH] Support Mamba runtime-slice execution
+Subject: [PATCH 52/80] Support Mamba runtime-slice execution
 
 ---
  src/models/mamba.cpp | 20 ++++++++++++++++----
@@ -59,7 +59,7 @@ index b7708d7f..35cbce71 100644
      cur = build_norm(inpL, model.output_norm, NULL, LLM_NORM_RMS, -1);
  
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 74cb0918..1e9e72f5 100644
+index 891e9c41..cd9f1142 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -1473,6 +1473,8 @@ static enum skippy_status skippy_finish_model_open(
