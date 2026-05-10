@@ -227,15 +227,15 @@ export function PeerRow({ peer, active, isLast, onSelect, onHoverPeerIdChange }:
           <div className="hidden lg:block">
             <ShareMeter sharePct={peer.sharePct} />
           </div>
-           <div className="hidden text-right font-mono text-[length:var(--density-type-caption-lg)] text-fg-dim lg:block">
-              {formatPeerLatencySummary({
-                latencyMs: peer.latencyMs ?? null,
-                source: peer.latencySource ?? LatencySource.UNSPECIFIED,
-                ageMs: peer.latencyAgeMs ?? null,
-                observerId: peer.latencyObserverId ?? null
-              })}
-            </div>
-           <div className="hidden justify-end text-right lg:flex">{peer.role && <RolePill role={peer.role} />}</div>
+          <div className="hidden text-right font-mono text-[length:var(--density-type-caption-lg)] text-fg-dim lg:block">
+            {formatPeerLatencySummary({
+              latencyMs: peer.latencyMs ?? null,
+              source: peer.latencySource ?? LatencySource.UNSPECIFIED,
+              ageMs: peer.latencyAgeMs ?? null,
+              observerId: peer.latencyObserverId ?? null
+            })}
+          </div>
+          <div className="hidden justify-end text-right lg:flex">{peer.role && <RolePill role={peer.role} />}</div>
           <div className="hidden justify-end text-right lg:flex">
             <StatusPill peer={peer} />
           </div>
@@ -263,14 +263,14 @@ export function PeerRow({ peer, active, isLast, onSelect, onHoverPeerIdChange }:
           </div>
         </PeerValueTooltip>
         <div className="col-span-2 grid min-w-0 grid-cols-[auto_auto_minmax(92px,1fr)] items-center gap-x-3 gap-y-1 lg:hidden">
-           <div className="text-right font-mono text-[length:var(--density-type-caption-lg)] text-fg-dim">
-              {formatPeerLatencySummary({
-                latencyMs: peer.latencyMs ?? null,
-                source: peer.latencySource ?? LatencySource.UNSPECIFIED,
-                ageMs: peer.latencyAgeMs ?? null,
-                observerId: peer.latencyObserverId ?? null
-              })}
-           </div>
+          <div className="text-right font-mono text-[length:var(--density-type-caption-lg)] text-fg-dim">
+            {formatPeerLatencySummary({
+              latencyMs: peer.latencyMs ?? null,
+              source: peer.latencySource ?? LatencySource.UNSPECIFIED,
+              ageMs: peer.latencyAgeMs ?? null,
+              observerId: peer.latencyObserverId ?? null
+            })}
+          </div>
           <div className="text-right font-mono text-[length:var(--density-type-caption-lg)]">
             {peer.vramGB?.toFixed(1) ?? '—'} GB
           </div>

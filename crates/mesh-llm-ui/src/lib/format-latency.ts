@@ -31,10 +31,10 @@ export function peerLatencyHint(latency: PeerLatencyState): string {
   if (latency.latencyMs == null) {
     return 'unknown'
   }
-  
+
   const ageSecs = Math.round((latency.ageMs ?? 0) / 1000)
   const ageText = ageSecs > 0 ? ` (${ageSecs}s old)` : ''
-  
+
   switch (latency.source) {
     case LatencySource.DIRECT:
       return `direct${ageText}`
@@ -52,8 +52,8 @@ export function peerLatencyHint(latency: PeerLatencyState): string {
  */
 export function formatPeerLatency(latencyMs: number | null): string {
   if (latencyMs == null) return '?'
-  if (latencyMs > 0 && latencyMs < 1) return '<1'
-  return Math.max(0, Math.round(latencyMs)).toString()
+  if (latencyMs > 0 && latencyMs < 1) return '<1ms'
+  return `${Math.max(0, Math.round(latencyMs))}ms`
 }
 
 /**
@@ -61,9 +61,9 @@ export function formatPeerLatency(latencyMs: number | null): string {
  */
 export function formatPeerLatencySummary(latency: PeerLatencyState): string {
   if (latency.latencyMs == null) return '?'
-  
+
   const base = formatPeerLatency(latency.latencyMs)
-  
+
   switch (latency.source) {
     case LatencySource.DIRECT:
       return base

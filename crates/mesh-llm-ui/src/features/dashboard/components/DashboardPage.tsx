@@ -168,26 +168,26 @@ export function DashboardPage({
     })
   }, [status?.peers])
   const peerRows = useMemo(() => {
-     return sortedPeers.map((peer) => {
-       const primaryModel = peerPrimaryModel(peer)
-       const modelLabel = primaryModel && primaryModel !== '(idle)' ? modelRefLabel(primaryModel) : 'idle'
-         const latencyLabel = formatPeerLatencySummary({
-          latencyMs: peer.latency_ms ?? null,
-          source: peer.latency_source ?? LatencySource.UNSPECIFIED,
-          ageMs: peer.latency_age_ms ?? null,
-          observerId: peer.latency_observer_id ?? null
-        })
-       const peerDisplayVramGb = displayVramGb(peer.state === 'client', peer.vram_gb, peer.gpus)
-       const sharePct =
-         peer.state !== 'client' && totalMeshVramGb > 0 ? Math.round((peerDisplayVramGb / totalMeshVramGb) * 100) : null
-       return {
-         ...peer,
-         displayVramGb: peerDisplayVramGb,
-         modelLabel,
-         latencyLabel,
-         shareLabel: sharePct == null ? 'n/a' : `${sharePct}%`
-       }
-     })
+    return sortedPeers.map((peer) => {
+      const primaryModel = peerPrimaryModel(peer)
+      const modelLabel = primaryModel && primaryModel !== '(idle)' ? modelRefLabel(primaryModel) : 'idle'
+      const latencyLabel = formatPeerLatencySummary({
+        latencyMs: peer.latency_ms ?? null,
+        source: peer.latency_source ?? LatencySource.UNSPECIFIED,
+        ageMs: peer.latency_age_ms ?? null,
+        observerId: peer.latency_observer_id ?? null
+      })
+      const peerDisplayVramGb = displayVramGb(peer.state === 'client', peer.vram_gb, peer.gpus)
+      const sharePct =
+        peer.state !== 'client' && totalMeshVramGb > 0 ? Math.round((peerDisplayVramGb / totalMeshVramGb) * 100) : null
+      return {
+        ...peer,
+        displayVramGb: peerDisplayVramGb,
+        modelLabel,
+        latencyLabel,
+        shareLabel: sharePct == null ? 'n/a' : `${sharePct}%`
+      }
+    })
   }, [sortedPeers, totalMeshVramGb])
   const activePeerRows = useMemo(() => {
     const activeModelName = activeDetail?.kind === 'model' ? activeDetail.modelName : null

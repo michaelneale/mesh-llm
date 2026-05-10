@@ -10,7 +10,10 @@ import type {
 } from '@/features/app-shell/lib/status-types'
 import type { TopologyNode } from '@/features/app-shell/lib/topology-types'
 import type { PeerLatencyState } from '@/lib/format-latency'
-import { peerLatencyHint as formatPeerLatencyHint, formatPeerLatencySummary as formatPeerLatencySummaryFn } from '@/lib/format-latency'
+import {
+  peerLatencyHint as formatPeerLatencyHint,
+  formatPeerLatencySummary as formatPeerLatencySummaryFn
+} from '@/lib/format-latency'
 
 type GpuInventory = Array<{ vram_bytes: number }>
 

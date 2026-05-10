@@ -179,23 +179,30 @@ function ModelDrawerContent({
             <div>Share</div>
           </div>
 
-{activePeers.length ? (
-             activePeers.map((peer) => (
-               <div
-                 className="grid grid-cols-[1.5fr_0.7fr_0.7fr_0.6fr] items-center border-t border-border-soft px-[12px] py-[10px] font-mono text-[length:var(--density-type-caption-lg)]"
-                 key={peer.id}
-               >
-                 <span>{peer.shortId ?? peer.hostname}</span>
-                 <span className="text-fg-faint">{formatPeerLatencySummary({ latencyMs: peer.latencyMs ?? null, source: peer.latencySource ?? LatencySource.UNSPECIFIED, ageMs: peer.latencyAgeMs ?? null, observerId: peer.latencyObserverId ?? null })}</span>
-                 <span>{modelSummarySize(model)}</span>
-                 <StatusBadge tone="accent">100%</StatusBadge>
-               </div>
-             ))
-           ) : (
-             <div className="border-t border-border-soft px-[12px] py-[12px] text-[length:var(--density-type-caption-lg)] text-fg-faint">
-               No active peers for this model.
-             </div>
-           )}
+          {activePeers.length ? (
+            activePeers.map((peer) => (
+              <div
+                className="grid grid-cols-[1.5fr_0.7fr_0.7fr_0.6fr] items-center border-t border-border-soft px-[12px] py-[10px] font-mono text-[length:var(--density-type-caption-lg)]"
+                key={peer.id}
+              >
+                <span>{peer.shortId ?? peer.hostname}</span>
+                <span className="text-fg-faint">
+                  {formatPeerLatencySummary({
+                    latencyMs: peer.latencyMs ?? null,
+                    source: peer.latencySource ?? LatencySource.UNSPECIFIED,
+                    ageMs: peer.latencyAgeMs ?? null,
+                    observerId: peer.latencyObserverId ?? null
+                  })}
+                </span>
+                <span>{modelSummarySize(model)}</span>
+                <StatusBadge tone="accent">100%</StatusBadge>
+              </div>
+            ))
+          ) : (
+            <div className="border-t border-border-soft px-[12px] py-[12px] text-[length:var(--density-type-caption-lg)] text-fg-faint">
+              No active peers for this model.
+            </div>
+          )}
         </div>
 
         {model.activitySummary ? (

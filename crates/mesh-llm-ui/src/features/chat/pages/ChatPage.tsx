@@ -623,15 +623,18 @@ export function ChatPageContent({ data = CHAT_HARNESS }: ChatPageProps) {
   const composerIsStreaming = selectedConversationHasActiveLane && isStreaming
   const composerShouldQueue = isStreaming || (liveMode && !selectedConversationHasActiveLane)
 
-  const options = useMemo<ModelSelectOption[]>(() => [
-    AUTO_MODEL_OPTION,
-    ...displayModels.map((item) => ({
-      value: item.name,
-      label: item.name,
-      meta: `${item.family} · ${item.context}`,
-      status: modelStatusBadge(item)
-    }))
-  ], [displayModels])
+  const options = useMemo<ModelSelectOption[]>(
+    () => [
+      AUTO_MODEL_OPTION,
+      ...displayModels.map((item) => ({
+        value: item.name,
+        label: item.name,
+        meta: `${item.family} · ${item.context}`,
+        status: modelStatusBadge(item)
+      }))
+    ],
+    [displayModels]
+  )
   const canRetry = hasLastUserTurn(activeMessages.map((message) => ({ role: message.messageRole })))
 
   const inspectMessage = (message: TransparencyMessage) => {

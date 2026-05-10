@@ -304,9 +304,16 @@ function NodeDrawerContent({
       <div className="pb-6 pt-3">
         <h3 className="sr-only">Node metadata</h3>
         <div className="flex gap-2 px-[18px]">
-<KV icon={drawerIcon(Activity)} label="Latency">
-  {peer ? formatPeerLatencySummary({ latencyMs: peer.latencyMs ?? null, source: peer.latencySource ?? LatencySource.UNSPECIFIED, ageMs: peer.latencyAgeMs ?? null, observerId: peer.latencyObserverId ?? null }) : 'N/A'}
-</KV>
+          <KV icon={drawerIcon(Activity)} label="Latency">
+            {peer
+              ? formatPeerLatencySummary({
+                  latencyMs: peer.latencyMs ?? null,
+                  source: peer.latencySource ?? LatencySource.UNSPECIFIED,
+                  ageMs: peer.latencyAgeMs ?? null,
+                  observerId: peer.latencyObserverId ?? null
+                })
+              : 'N/A'}
+          </KV>
           <KV icon={drawerIcon(HardDrive)} label="Node VRAM">
             {peer?.vramGB != null ? `${peer.vramGB.toFixed(1)} GB` : 'N/A'}
           </KV>

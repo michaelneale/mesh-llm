@@ -95,10 +95,7 @@ describe('WakeableCapacity', () => {
   })
 })
 
-function renderDashboard(
-  status: StatusPayload,
-  options: { wakeableCapacityEnabled?: boolean } = {}
-) {
+function renderDashboard(status: StatusPayload, options: { wakeableCapacityEnabled?: boolean } = {}) {
   if (options.wakeableCapacityEnabled != null && options.wakeableCapacityEnabled) {
     window.localStorage.setItem(
       APP_STORAGE_KEYS.featureFlagOverrides,

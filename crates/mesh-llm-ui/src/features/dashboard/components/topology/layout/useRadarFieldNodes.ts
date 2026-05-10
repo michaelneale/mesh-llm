@@ -235,16 +235,21 @@ export function useRadarFieldNodes(
         selectedModelMatch,
         z: 1
       })
-       output.push({
-         id: node.id,
-         label: node.hostname || node.id,
-         subtitle: 'Client',
-         hostname: node.hostname,
-         role: 'Client',
-         latencyLabel: formatPeerLatencySummary({ latencyMs: node.latencyMs ?? null, source: node.latencySource ?? LatencySource.UNSPECIFIED, ageMs: node.latencyAgeMs ?? null, observerId: node.latencyObserverId ?? null }),
-         vramLabel: 'n/a',
-         modelLabel: 'API-only',
-         gpuLabel: 'No GPU',
+      output.push({
+        id: node.id,
+        label: node.hostname || node.id,
+        subtitle: 'Client',
+        hostname: node.hostname,
+        role: 'Client',
+        latencyLabel: formatPeerLatencySummary({
+          latencyMs: node.latencyMs ?? null,
+          source: node.latencySource ?? LatencySource.UNSPECIFIED,
+          ageMs: node.latencyAgeMs ?? null,
+          observerId: node.latencyObserverId ?? null
+        }),
+        vramLabel: 'n/a',
+        modelLabel: 'API-only',
+        gpuLabel: 'No GPU',
         x,
         y,
         size: tuned.size,
@@ -271,16 +276,21 @@ export function useRadarFieldNodes(
         selectedModelMatch,
         z: 2
       })
-     output.push({
-         id: node.id,
-         label: node.hostname || node.id,
-         subtitle: formatLiveNodeState(node.state),
-         hostname: node.hostname,
-         role: node.host ? 'Host' : 'Worker',
-         latencyLabel: formatPeerLatencySummary({ latencyMs: node.latencyMs ?? null, source: node.latencySource ?? LatencySource.UNSPECIFIED, ageMs: node.latencyAgeMs ?? null, observerId: node.latencyObserverId ?? null }),
-         vramLabel: `${Math.max(0, node.vram).toFixed(1)} GB`,
-         modelLabel: modelLabel(models),
-         gpuLabel: computeLabel(node),
+      output.push({
+        id: node.id,
+        label: node.hostname || node.id,
+        subtitle: formatLiveNodeState(node.state),
+        hostname: node.hostname,
+        role: node.host ? 'Host' : 'Worker',
+        latencyLabel: formatPeerLatencySummary({
+          latencyMs: node.latencyMs ?? null,
+          source: node.latencySource ?? LatencySource.UNSPECIFIED,
+          ageMs: node.latencyAgeMs ?? null,
+          observerId: node.latencyObserverId ?? null
+        }),
+        vramLabel: `${Math.max(0, node.vram).toFixed(1)} GB`,
+        modelLabel: modelLabel(models),
+        gpuLabel: computeLabel(node),
         x,
         y,
         size: tuned.size,
@@ -307,16 +317,21 @@ export function useRadarFieldNodes(
         selectedModelMatch,
         z: 3
       })
-       output.push({
-         id: node.id,
-         label: node.hostname || node.id,
-         subtitle: formatLiveNodeState(node.state),
-         hostname: node.hostname,
-         role: node.host ? 'Host' : 'Serving',
-         latencyLabel: formatPeerLatencySummary({ latencyMs: node.latencyMs ?? null, source: node.latencySource ?? LatencySource.UNSPECIFIED, ageMs: node.latencyAgeMs ?? null, observerId: node.latencyObserverId ?? null }),
-         vramLabel: `${Math.max(0, node.vram).toFixed(1)} GB`,
-         modelLabel: modelLabel(models),
-         gpuLabel: computeLabel(node),
+      output.push({
+        id: node.id,
+        label: node.hostname || node.id,
+        subtitle: formatLiveNodeState(node.state),
+        hostname: node.hostname,
+        role: node.host ? 'Host' : 'Serving',
+        latencyLabel: formatPeerLatencySummary({
+          latencyMs: node.latencyMs ?? null,
+          source: node.latencySource ?? LatencySource.UNSPECIFIED,
+          ageMs: node.latencyAgeMs ?? null,
+          observerId: node.latencyObserverId ?? null
+        }),
+        vramLabel: `${Math.max(0, node.vram).toFixed(1)} GB`,
+        modelLabel: modelLabel(models),
+        gpuLabel: computeLabel(node),
         x,
         y,
         size: tuned.size,
@@ -343,16 +358,21 @@ export function useRadarFieldNodes(
         selectedModelMatch,
         z: 4
       })
-       output.push({
-         id: node.id,
-         label: node.hostname || node.id,
-         subtitle: focusModel ? modelRefLabel(focusModel) : formatLiveNodeState(node.state),
-         hostname: node.hostname,
-         role: node.host ? 'Host' : 'Serving',
-         latencyLabel: formatPeerLatencySummary({ latencyMs: node.latencyMs ?? null, source: node.latencySource ?? LatencySource.UNSPECIFIED, ageMs: node.latencyAgeMs ?? null, observerId: node.latencyObserverId ?? null }),
-         vramLabel: `${Math.max(0, node.vram).toFixed(1)} GB`,
-         modelLabel: modelLabel(models),
-         gpuLabel: computeLabel(node),
+      output.push({
+        id: node.id,
+        label: node.hostname || node.id,
+        subtitle: focusModel ? modelRefLabel(focusModel) : formatLiveNodeState(node.state),
+        hostname: node.hostname,
+        role: node.host ? 'Host' : 'Serving',
+        latencyLabel: formatPeerLatencySummary({
+          latencyMs: node.latencyMs ?? null,
+          source: node.latencySource ?? LatencySource.UNSPECIFIED,
+          ageMs: node.latencyAgeMs ?? null,
+          observerId: node.latencyObserverId ?? null
+        }),
+        vramLabel: `${Math.max(0, node.vram).toFixed(1)} GB`,
+        modelLabel: modelLabel(models),
+        gpuLabel: computeLabel(node),
         x,
         y,
         size: tuned.size,
