@@ -115,11 +115,6 @@ You can override arches with a positional argument, e.g.:
 - The default toolkit versions are configurable at the repo level via
   Actions variables `vars.CUDA_VERSION` (primary, default `12.6.3`) and
   `vars.CUDA_BLACKWELL_VERSION` (Blackwell, default `12.8.0`).
-- `.github/workflows/llama-cache-keys.yml` emits
-  `cuda_fat_cache_key` for the primary lane and
-  `cuda_blackwell_fat_cache_key` for the Blackwell lane so the warm
-  caches do not collide.
-
 ## History
 
 The split was introduced in [PR #355](https://github.com/Mesh-LLM/mesh-llm/pull/355)

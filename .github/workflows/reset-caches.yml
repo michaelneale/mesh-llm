@@ -7,16 +7,6 @@ on:
         description: Type DELETE ALL CACHES to continue.
         required: true
         type: string
-      restart_ci:
-        description: Run the GPU cache warmer after deleting caches.
-        required: false
-        default: true
-        type: boolean
-      ci_ref:
-        description: Git ref to dispatch CI against after the purge.
-        required: false
-        default: main
-        type: string
 
 permissions:
   actions: write
@@ -82,41 +72,12 @@ jobs:
 
             return String(caches.length);
 
-      - name: Trigger GPU cache warm run
-        if: ${{ inputs.restart_ci }}
-        uses: actions/github-script@v8
-        env:
-          CI_REF: ${{ inputs.ci_ref }}
-        with:
-          script: |
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const ref = process.env.CI_REF;
-
-            core.notice(`Dispatching warm-caches.yml on ${ref} to repopulate GPU caches.`);
-            await github.request(
-              "POST /repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches",
-              {
-                owner,
-                repo,
-                workflow_id: "warm-caches.yml",
-                ref,
-              },
-            );
-
       - name: Summarize reset
         env:
           DELETED_COUNT: ${{ steps.delete-caches.outputs.result }}
-          RESTART_CI: ${{ inputs.restart_ci }}
-          CI_REF: ${{ inputs.ci_ref }}
         run: |
           {
             echo "## Cache reset"
             echo
             echo "- Deleted caches: ${DELETED_COUNT}"
-            if [ "${RESTART_CI}" = "true" ]; then
-              echo "- GPU cache warm dispatched on ref: ${CI_REF}"
-            else
-              echo "- GPU cache warm dispatched: no"
-            fi
           } >> "$GITHUB_STEP_SUMMARY"

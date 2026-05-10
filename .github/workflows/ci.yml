@@ -50,9 +50,6 @@ jobs:
               - '.github/cache-version.txt'
               - '.github/workflows/ci.yml'
               - '.github/workflows/smoke.yml'
-              - '.github/workflows/warm-caches.yml'
-              - '.github/workflows/gpu-warm-cache-job.yml'
-              - '.github/workflows/llama-cache-keys.yml'
             ui:
               - 'crates/mesh-llm-ui/**'
             benchmarks:
@@ -84,11 +81,6 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.github/workflows/docker.yml'
-
-  resolve_llama_cache_keys:
-    needs: changes
-    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.benchmarks == 'true' }}
-    uses: ./.github/workflows/llama-cache-keys.yml
 
   linux:
     needs: changes
@@ -538,12 +530,12 @@ jobs:
           path: target/release/membench-fingerprint
 
   linux_cuda:
-    needs: [changes, resolve_llama_cache_keys]
+    needs: changes
     if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.benchmarks == 'true' }}
     name: Linux CUDA slim
     runs-on: ubuntu-latest
     container:
-      image: nvidia/cuda:${{ needs.resolve_llama_cache_keys.outputs.cuda_version }}-devel-ubuntu22.04
+      image: nvidia/cuda:${{ vars.CUDA_VERSION || '12.6.3' }}-devel-ubuntu22.04
     env:
       LLAMA_STAGE_BUILD_DIR: .deps/llama-build/build-stage-abi-cuda-sm89
       LLAMA_STAGE_BACKEND: cuda
@@ -589,17 +581,8 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Prepare UI placeholder
         run: mkdir -p crates/mesh-llm-ui/dist && printf '<html></html>' > crates/mesh-llm-ui/dist/index.html
-      - uses: actions/cache/restore@v5
-        id: llama_cache
-        with:
-          path: .deps/llama-build/build-stage-abi-cuda-sm89
-          key: ${{ needs.resolve_llama_cache_keys.outputs.cuda_slim_cache_key }}
       - name: Build Linux CUDA backend
-        if: steps.llama_cache.outputs.cache-hit != 'true'
         run: just --shell bash --shell-arg -lc release-build-cuda 89
-      - name: Build mesh-llm binary only
-        if: steps.llama_cache.outputs.cache-hit == 'true'
-        run: cargo build --release -p mesh-llm
       - name: CLI smoke test
         run: |
           cuda_stub_runtime="$(mktemp -d)"
@@ -617,7 +600,7 @@ jobs:
           path: target/release/membench-fingerprint-cuda
 
   linux_rocm:
-    needs: [changes, resolve_llama_cache_keys]
+    needs: changes
     if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.benchmarks == 'true' }}
     name: Linux ROCm slim
     runs-on: ubuntu-latest
@@ -664,17 +647,8 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Prepare UI placeholder
         run: mkdir -p crates/mesh-llm-ui/dist && printf '<html></html>' > crates/mesh-llm-ui/dist/index.html
-      - uses: actions/cache/restore@v5
-        id: llama_cache
-        with:
-          path: .deps/llama-build/build-stage-abi-rocm-gfx1100
-          key: ${{ needs.resolve_llama_cache_keys.outputs.rocm_slim_cache_key }}
       - name: Build Linux ROCm backend
-        if: steps.llama_cache.outputs.cache-hit != 'true'
         run: just --shell bash --shell-arg -lc release-build-rocm gfx1100
-      - name: Build mesh-llm binary only
-        if: steps.llama_cache.outputs.cache-hit == 'true'
-        run: cargo build --release -p mesh-llm
       - name: CLI smoke test
         run: |
           export LD_LIBRARY_PATH="/opt/rocm/lib:${LD_LIBRARY_PATH:-}"

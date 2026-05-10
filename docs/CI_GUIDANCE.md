@@ -9,10 +9,9 @@ The core rule is to keep ordinary pull request CI fast and targeted, while keepi
 The workflow layout should preserve these invariants:
 
 1. Pull request feedback should optimize for fast validation, not release-like fidelity everywhere.
-2. GPU caches restored in PR CI should be warmed on `main`, with PR jobs acting as restore-only consumers.
-3. Slim CI GPU shapes should stay distinct from fat release artifact shapes.
-4. Release-only behavior should stay in `.github/workflows/release.yml`.
-5. Script-level tuning for determinism and cache correctness should remain intact.
+2. Slim CI GPU shapes should stay distinct from fat release artifact shapes.
+3. Release-only behavior should stay in `.github/workflows/release.yml`.
+4. Script-level tuning for determinism and cache correctness should remain intact.
 
 ## Workflow responsibilities
 
@@ -22,7 +21,7 @@ PR CI is the fast validation path.
 
 - Keep the `changes` path filter gate so docs-only and other low-impact edits do not trigger unnecessary backend work.
 - Keep Linux and macOS producer lanes focused on the smallest work that still proves correctness.
-- Keep GPU PR lanes slim and tuned for cache restore plus representative validation, not release-style rebuilds.
+- Keep GPU PR lanes slim and representative (single arch), not release-style rebuilds.
 - Allow producer jobs to upload the exact binary shape they already build for their lane.
 - Keep cheap CLI and boot smokes in producer jobs when they provide fast early failure.
 
@@ -34,29 +33,9 @@ Smoke testing should consume previously built Linux inference binaries instead o
 - Stage the built `mesh-llm` binary and any current runtime assets into the expected paths.
 - Own the heavier inference checks, including real inference, OpenAI compatibility, and staged serving smokes.
 
-### `.github/workflows/warm-caches.yml`
-
-This workflow is the single writer for warmed GPU caches.
-
-- Keep explicit cache input hashing and pruning.
-- Preserve both slim and fat warming where needed.
-- Do not move warmed GPU cache writes back into PR CI.
-- Treat "save succeeded" as insufficient by itself. The warm path must fail if a newly written GPU cache never becomes visible on `refs/heads/main`.
-
-### `.github/workflows/gpu-warm-cache-job.yml`
-
-This reusable job is cache warm plumbing, not a PR CI artifact producer.
-
-- Preserve the restore, short-circuit, build, save flow.
-- Keep verification of restored and saved binaries.
-- Keep a post-save visibility check against the Actions cache inventory for `refs/heads/main` so cache disappearance is caught during warming, not later by a PR consumer.
-
 ### `.github/workflows/reset-caches.yml`
 
-Cache reset is destructive and must repopulate the real writers, not the restore-only consumers.
-
-- After deleting repository caches, dispatch `warm-caches.yml`, not `ci.yml`.
-- Do not treat restore-only CI as a cache repopulation mechanism.
+Cache reset deletes all repository caches. Use it sparingly when cache corruption or stale state needs a full purge.
 
 ### `.github/workflows/release.yml`
 
@@ -80,21 +59,12 @@ For Linux inference smoke reuse in PR CI:
 
 ## Cache boundaries
 
-GPU cache behavior is intentionally asymmetric.
+CI caching is straightforward: sccache handles Rust compilation artifacts, Swatinem/rust-cache provides artifact reuse, and actions/cache stores integration test models. No separate GPU cache warming mechanism exists.
 
-- PR CI restores warmed GPU caches.
-- `warm-caches.yml` writes warmed GPU caches for `main`.
-- Cache keys and pruning rules should stay explicit and deterministic.
-- CI cache tuning in scripts and workflows should not be weakened just to make packaging easier.
-
-The operational finding from the slim CUDA cache incident is that the historical miss was not caused by a bad key and not by PR jobs being unable to restore from `main`. The real failure mode was cache availability under repository cache pressure: large PR-scoped Rust and model caches crowded the shared cache budget, while the old reset workflow repopulated the wrong path.
-
-Keep these follow-on rules in place:
+Keep these rules in place:
 
 - PR merge refs should not save the large shared Rust caches.
-- PR merge refs should not save the large model caches.
 - Main remains the place where shared caches are written and refreshed.
-- If a main GPU cache cannot stay visible after save, treat that as a warm failure that needs investigation.
 
 ## Build shape rules
 
@@ -139,8 +109,7 @@ Changes to CI are only correct when all of the following remain true:
 
 - docs-only changes still skip expensive backend work
 - UI-only changes still avoid the full backend and GPU matrix
-- PR CI does not write warmed GPU caches
-- GPU PR lanes still consume slim warmed caches
+- GPU PR lanes stay slim (single arch) and representative
 - Linux inference smokes reuse uploaded binaries instead of rebuilding the same payload
 - release workflows still build shipping artifacts separately from PR CI
 - release publish remains gated on release smoke success
