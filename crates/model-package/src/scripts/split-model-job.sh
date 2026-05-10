@@ -35,12 +35,12 @@ echo "║  Build:  mesh-llm @ ${MESH_LLM_REF}"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo ""
 
-# Keep every large cache, temporary file, build artifact, and package output off
-# the container root filesystem. HF Jobs evicts pods when root ephemeral storage
-# exceeds 50G, while large GGUF splits can be hundreds of GB.
+# Keep the model-scale cache, split scratch, and package output on the bucket
+# volume. Keep executable toolchains/build products on local ephemeral storage:
+# HF bucket mounts can be unsuitable for dynamic loader/toolchain execution.
 JOB_WORK_ROOT="${JOB_WORK_ROOT:-/bucket/job-work}"
+SAFE_TARGET_REPO="$(printf '%s' "$TARGET_REPO" | tr -c '[:alnum:]._-' '_')"
 if [ -z "${JOB_WORK_DIR:-}" ]; then
-    SAFE_TARGET_REPO="$(printf '%s' "$TARGET_REPO" | tr -c '[:alnum:]._-' '_')"
     JOB_WORK_DIR="${JOB_WORK_ROOT}/${SAFE_TARGET_REPO}-$(date +%Y%m%d%H%M%S)-$$"
     CLEANUP_JOB_WORK_DIR="${CLEANUP_JOB_WORK_DIR:-true}"
 else
@@ -51,30 +51,37 @@ HF_HOME="${HF_HOME:-${JOB_WORK_DIR}/hf-home}"
 HF_HUB_CACHE="${HF_HUB_CACHE:-${HF_HOME}/hub}"
 HF_XET_CACHE="${HF_XET_CACHE:-${HF_HOME}/xet}"
 JOB_TMP_DIR="${JOB_TMP_DIR:-${JOB_WORK_DIR}/tmp}"
-BUILD_DIR="${BUILD_DIR:-${JOB_WORK_DIR}/build}"
-TOOL_DIR="${TOOL_DIR:-${JOB_WORK_DIR}/tools}"
-VENV_DIR="${VENV_DIR:-${JOB_WORK_DIR}/venv}"
-CARGO_HOME="${CARGO_HOME:-${JOB_WORK_DIR}/cargo-home}"
-RUSTUP_HOME="${RUSTUP_HOME:-${JOB_WORK_DIR}/rustup-home}"
-CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${JOB_WORK_DIR}/cargo-target}"
-XDG_CACHE_HOME="${XDG_CACHE_HOME:-${JOB_WORK_DIR}/xdg-cache}"
-PIP_CACHE_DIR="${PIP_CACHE_DIR:-${JOB_WORK_DIR}/pip-cache}"
-TMPDIR="$JOB_TMP_DIR"
-TEMP="$JOB_TMP_DIR"
-TMP="$JOB_TMP_DIR"
+LOCAL_WORK_DIR="${LOCAL_WORK_DIR:-/tmp/meshllm-layer-job-${SAFE_TARGET_REPO}-$$}"
+BUILD_DIR="${BUILD_DIR:-${LOCAL_WORK_DIR}/build}"
+TOOL_DIR="${TOOL_DIR:-${LOCAL_WORK_DIR}/tools}"
+VENV_DIR="${VENV_DIR:-${LOCAL_WORK_DIR}/venv}"
+CARGO_HOME="${CARGO_HOME:-${LOCAL_WORK_DIR}/cargo-home}"
+RUSTUP_HOME="${RUSTUP_HOME:-${LOCAL_WORK_DIR}/rustup-home}"
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${LOCAL_WORK_DIR}/cargo-target}"
+XDG_CACHE_HOME="${XDG_CACHE_HOME:-${LOCAL_WORK_DIR}/xdg-cache}"
+PIP_CACHE_DIR="${PIP_CACHE_DIR:-${LOCAL_WORK_DIR}/pip-cache}"
+BUILD_TMP_DIR="${BUILD_TMP_DIR:-${LOCAL_WORK_DIR}/tmp}"
+TMPDIR="$BUILD_TMP_DIR"
+TEMP="$BUILD_TMP_DIR"
+TMP="$BUILD_TMP_DIR"
 export JOB_WORK_DIR PACKAGE_DIR HF_HOME HF_HUB_CACHE HF_XET_CACHE
 export TMPDIR TEMP TMP CARGO_HOME RUSTUP_HOME CARGO_TARGET_DIR XDG_CACHE_HOME PIP_CACHE_DIR
 
 cleanup_job_work_dir() {
+    if [ -n "${LOCAL_WORK_DIR:-}" ]; then
+        echo "Cleaning local work dir: ${LOCAL_WORK_DIR}"
+        rm -rf "$LOCAL_WORK_DIR" || true
+    fi
     if [ "${CLEANUP_JOB_WORK_DIR}" = "true" ] && [ -n "${JOB_WORK_DIR:-}" ]; then
         echo "Cleaning job work dir: ${JOB_WORK_DIR}"
-        rm -rf "$JOB_WORK_DIR"
+        rm -rf "$JOB_WORK_DIR" || true
     fi
 }
 trap cleanup_job_work_dir EXIT
 
 mkdir -p "$PACKAGE_DIR" "$HF_HUB_CACHE" "$HF_XET_CACHE" "$JOB_TMP_DIR" "$TOOL_DIR" \
-    "$CARGO_HOME" "$RUSTUP_HOME" "$CARGO_TARGET_DIR" "$XDG_CACHE_HOME" "$PIP_CACHE_DIR"
+    "$CARGO_HOME" "$RUSTUP_HOME" "$CARGO_TARGET_DIR" "$XDG_CACHE_HOME" "$PIP_CACHE_DIR" \
+    "$BUILD_TMP_DIR"
 
 format_bytes() {
     python3 - "$1" <<'PYTHON'
@@ -157,6 +164,10 @@ SLICER="${TOOL_DIR}/skippy-model-package"
 chmod +x "$SLICER"
 cd /
 rm -rf "$BUILD_DIR" "$CARGO_TARGET_DIR" "$CARGO_HOME" "$RUSTUP_HOME"
+TMPDIR="$JOB_TMP_DIR"
+TEMP="$JOB_TMP_DIR"
+TMP="$JOB_TMP_DIR"
+export TMPDIR TEMP TMP
 echo "  ✓ Built: $SLICER"
 echo "  Root filesystem after build cleanup:"
 df -h / || true
