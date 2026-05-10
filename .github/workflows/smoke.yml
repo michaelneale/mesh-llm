@@ -106,3 +106,15 @@ jobs:
             "${{ inputs.mesh_binary_target }}" \
             ci-artifacts/linux \
             "$HOME/.models/$MODEL_FILE"
+
+      - name: Constrained-stack smoke (detect oversized spawned futures)
+        env:
+          MESH_TOKIO_STACK_SIZE: "1048576"
+          MESH_CI_API_PORT: "9347"
+          MESH_CI_CONSOLE_PORT: "3141"
+          MESH_CI_LOG: /tmp/mesh-llm-ci-constrained-stack.log
+        run: |
+          scripts/ci-smoke-test.sh \
+            "${{ inputs.mesh_binary_target }}" \
+            ci-artifacts/linux \
+            "$HOME/.models/$MODEL_FILE"
