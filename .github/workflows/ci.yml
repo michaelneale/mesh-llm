@@ -31,6 +31,8 @@ jobs:
       benchmarks: ${{ steps.filter.outputs.benchmarks }}
       sdk: ${{ steps.filter.outputs.sdk }}
       docker: ${{ steps.filter.outputs.docker }}
+      windows_cpu: ${{ steps.filter.outputs.windows_cpu }}
+      windows_gpu: ${{ steps.filter.outputs.windows_gpu }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -50,6 +52,7 @@ jobs:
               - '.github/cache-version.txt'
               - '.github/workflows/ci.yml'
               - '.github/workflows/smoke.yml'
+
             ui:
               - 'crates/mesh-llm-ui/**'
             benchmarks:
@@ -81,6 +84,26 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.github/workflows/docker.yml'
+            windows_cpu:
+              - 'crates/skippy-ffi/**'
+              - 'scripts/build-windows.ps1'
+              - 'third_party/llama.cpp/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'Justfile'
+              - '.github/cache-version.txt'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/windows-warm-caches.yml'
+            windows_gpu:
+              - 'crates/skippy-ffi/**'
+              - 'scripts/build-windows.ps1'
+              - 'scripts/install-windows-sdk.ps1'
+              - 'third_party/llama.cpp/**'
+              - 'Justfile'
+              - '.github/cache-version.txt'
+              - '.github/actions/setup-windows-rocm-sdk/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/windows-warm-caches.yml'
 
   linux:
     needs: changes
@@ -147,7 +170,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: . -> target
-          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
+          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ runner.os }}-${{ hashFiles('.github/cache-version.txt') }}
+          shared-key: linux
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Format check
@@ -172,10 +196,22 @@ jobs:
           cargo test -p mesh-api
           cargo test -p mesh-api-ffi
 
+      - name: Ensure ABI cache directory
+        run: mkdir -p "$LLAMA_STAGE_BUILD_DIR"
+
+      - name: Cache patched llama.cpp ABI build
+        id: llama_cache
+        uses: actions/cache@v5
+        with:
+          path: .deps/llama.cpp/build-stage-abi-static
+          key: ${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-skippy-abi-cpu-${{ hashFiles('scripts/build-llama.sh', 'third_party/llama.cpp/upstream.txt', 'third_party/llama.cpp/patches/**', 'Justfile', '.github/cache-version.txt') }}
+
       - name: Prepare patched llama.cpp ABI checkout
+        if: steps.llama_cache.outputs.cache-hit != 'true'
         run: scripts/prepare-llama.sh pinned
 
       - name: Build patched llama.cpp ABI libraries
+        if: steps.llama_cache.outputs.cache-hit != 'true'
         run: scripts/build-llama.sh
 
       - name: Skippy crate tests
@@ -417,6 +453,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ runner.os }}-${{ hashFiles('.github/cache-version.txt') }}
+          shared-key: swift-sdk
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install tools
         run: brew install cmake ninja jq lld
       - name: Configure macOS Rust linker
@@ -432,9 +474,19 @@ jobs:
           EOF
       - name: Build UI placeholder
         run: mkdir -p crates/mesh-llm-ui/dist && printf '<html></html>' > crates/mesh-llm-ui/dist/index.html
+      - name: Ensure ABI cache directory
+        run: mkdir -p "$LLAMA_STAGE_BUILD_DIR"
+      - name: Cache patched llama.cpp ABI build
+        id: llama_cache
+        uses: actions/cache@v5
+        with:
+          path: .deps/llama.cpp/build-stage-abi-metal
+          key: ${{ env.CACHE_NAMESPACE }}-macos-14-skippy-abi-metal-${{ hashFiles('scripts/build-mac.sh', 'scripts/build-llama.sh', 'third_party/llama.cpp/upstream.txt', 'third_party/llama.cpp/patches/**', 'Justfile', '.github/cache-version.txt') }}
       - name: Prepare patched llama.cpp ABI checkout
+        if: steps.llama_cache.outputs.cache-hit != 'true'
         run: scripts/prepare-llama.sh pinned
       - name: Build patched llama.cpp ABI libraries
+        if: steps.llama_cache.outputs.cache-hit != 'true'
         run: scripts/build-llama.sh
       - name: Build mesh-llm binary (debug)
         run: cargo build -p mesh-llm --bin mesh-llm
@@ -490,6 +542,12 @@ jobs:
         working-directory: crates/mesh-llm-ui
         run: pnpm test
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ runner.os }}-${{ hashFiles('.github/cache-version.txt') }}
+          shared-key: macos
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install build dependencies
         run: brew install cmake ninja jq lld
       - name: Configure macOS Rust linker
@@ -505,9 +563,19 @@ jobs:
           EOF
       - name: Format check
         run: cargo fmt --all -- --check
+      - name: Ensure ABI cache directory
+        run: mkdir -p "$LLAMA_STAGE_BUILD_DIR"
+      - name: Cache patched llama.cpp ABI build
+        id: llama_cache
+        uses: actions/cache@v5
+        with:
+          path: .deps/llama.cpp/build-stage-abi-metal
+          key: ${{ env.CACHE_NAMESPACE }}-macos-14-skippy-abi-metal-${{ hashFiles('scripts/build-mac.sh', 'scripts/build-llama.sh', 'third_party/llama.cpp/upstream.txt', 'third_party/llama.cpp/patches/**', 'Justfile', '.github/cache-version.txt') }}
       - name: Prepare patched llama.cpp ABI checkout
+        if: steps.llama_cache.outputs.cache-hit != 'true'
         run: scripts/prepare-llama.sh pinned
       - name: Build patched llama.cpp ABI libraries
+        if: steps.llama_cache.outputs.cache-hit != 'true'
         run: scripts/build-llama.sh
       - name: Build mesh-llm binary (debug)
         run: cargo build -p mesh-llm --bin mesh-llm
@@ -579,8 +647,15 @@ jobs:
           EOF
       - uses: taiki-e/install-action@just
       - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ runner.os }}-${{ hashFiles('.github/cache-version.txt') }}
+          shared-key: linux-cuda-slim
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Prepare UI placeholder
         run: mkdir -p crates/mesh-llm-ui/dist && printf '<html></html>' > crates/mesh-llm-ui/dist/index.html
+
       - name: Build Linux CUDA backend
         run: just --shell bash --shell-arg -lc release-build-cuda 89
       - name: CLI smoke test
@@ -645,8 +720,15 @@ jobs:
           EOF
       - uses: taiki-e/install-action@just
       - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ runner.os }}-${{ hashFiles('.github/cache-version.txt') }}
+          shared-key: linux-rocm-slim
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Prepare UI placeholder
         run: mkdir -p crates/mesh-llm-ui/dist && printf '<html></html>' > crates/mesh-llm-ui/dist/index.html
+
       - name: Build Linux ROCm backend
         run: just --shell bash --shell-arg -lc release-build-rocm gfx1100
       - name: CLI smoke test
@@ -686,12 +768,243 @@ jobs:
           EOF
       - uses: taiki-e/install-action@just
       - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ runner.os }}-${{ hashFiles('.github/cache-version.txt') }}
+          shared-key: linux-vulkan
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Prepare UI placeholder
         run: mkdir -p crates/mesh-llm-ui/dist && printf '<html></html>' > crates/mesh-llm-ui/dist/index.html
+      - name: Ensure ABI cache directory
+        run: mkdir -p "$LLAMA_STAGE_BUILD_DIR"
+      - name: Cache patched llama.cpp ABI build
+        id: llama_cache
+        uses: actions/cache@v5
+        with:
+          path: .deps/llama-build/build-stage-abi-vulkan
+          key: ${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-skippy-abi-vulkan-${{ hashFiles('scripts/build-linux.sh', 'scripts/build-llama.sh', 'third_party/llama.cpp/upstream.txt', 'third_party/llama.cpp/patches/**', 'Justfile', '.github/cache-version.txt') }}
       - name: Build Linux Vulkan backend
+        if: steps.llama_cache.outputs.cache-hit != 'true'
         run: just --shell bash --shell-arg -lc release-build-vulkan
+      - name: Build mesh-llm binary only
+        if: steps.llama_cache.outputs.cache-hit == 'true'
+        run: cargo build --release -p mesh-llm
       - name: CLI smoke test
         run: target/release/mesh-llm --version
+
+  windows_cpu:
+    needs: changes
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
+    name: Windows CPU
+    runs-on: windows-2022
+    env:
+      RUN_WINDOWS_CPU_FULL: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.windows_cpu == 'true' }}
+      LLAMA_STAGE_BACKEND: cpu
+      LLAMA_STAGE_BUILD_DIR: .deps/llama.cpp/build-stage-abi-cpu
+      MESH_LLM_SKIP_UI: "1"
+      MESH_LLM_REQUIRE_SCCACHE: "1"
+      RUSTC_WRAPPER: sccache
+    steps:
+      - uses: actions/checkout@v5
+      - name: Use fast Windows CPU check
+        if: ${{ env.RUN_WINDOWS_CPU_FULL != 'true' }}
+        shell: pwsh
+        run: Write-Host "Running Windows CPU cargo check because this change does not touch Windows CPU build inputs."
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@just
+        if: ${{ env.RUN_WINDOWS_CPU_FULL == 'true' }}
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ runner.os }}-${{ hashFiles('.github/cache-version.txt') }}
+          shared-key: windows-cpu
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Prepare UI placeholder
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path crates/mesh-llm-ui/dist | Out-Null
+          '<html></html>' | Set-Content -Path crates/mesh-llm-ui/dist/index.html -Encoding utf8
+      - name: Ensure ABI cache directory
+        if: ${{ env.RUN_WINDOWS_CPU_FULL == 'true' }}
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path $env:LLAMA_STAGE_BUILD_DIR | Out-Null
+      - name: Cache patched llama.cpp ABI build
+        if: ${{ env.RUN_WINDOWS_CPU_FULL == 'true' }}
+        id: llama_cache
+        uses: actions/cache@v5
+        with:
+          path: .deps/llama.cpp/build-stage-abi-cpu
+          key: ${{ env.CACHE_NAMESPACE }}-windows-2022-skippy-abi-cpu-${{ hashFiles('scripts/build-windows.ps1', 'third_party/llama.cpp/upstream.txt', 'third_party/llama.cpp/patches/**', 'Justfile', '.github/cache-version.txt') }}
+      - name: Build Windows CPU backend
+        if: ${{ env.RUN_WINDOWS_CPU_FULL == 'true' && steps.llama_cache.outputs.cache-hit != 'true' }}
+        shell: pwsh
+        run: just release-build-windows
+      - name: Build mesh-llm binary only
+        if: ${{ env.RUN_WINDOWS_CPU_FULL == 'true' && steps.llama_cache.outputs.cache-hit == 'true' }}
+        shell: pwsh
+        run: cargo build --release --locked -p mesh-llm
+      - name: Check mesh-llm binary on Windows
+        if: ${{ env.RUN_WINDOWS_CPU_FULL != 'true' }}
+        shell: pwsh
+        run: cargo check --locked -p mesh-llm --bin mesh-llm
+      - name: CLI smoke test
+        if: ${{ env.RUN_WINDOWS_CPU_FULL == 'true' }}
+        shell: pwsh
+        run: |
+          .\target\release\mesh-llm.exe --version
+          .\target\release\mesh-llm.exe --help | Select-Object -First 5
+
+  windows_gpu:
+    needs: changes
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
+    name: Windows ${{ matrix.name }}
+    runs-on: windows-2022
+    env:
+      RUN_WINDOWS_GPU: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.windows_gpu == 'true' }}
+      LLAMA_STAGE_BUILD_DIR: .deps/llama.cpp/build-stage-abi-${{ matrix.backend }}
+      MESH_LLM_SKIP_UI: "1"
+      RUSTC_WRAPPER: sccache
+      WINDOWS_CUDA_VERSION: ${{ vars.CUDA_VERSION || '12.6.3' }}
+      WINDOWS_VULKAN_SDK_VERSION: ${{ vars.VULKAN_SDK_VERSION || '1.4.328.1' }}
+      ROCM_HIP_SDK_FILENAME: AMD-Software-PRO-Edition-25.Q3-WinSvr2022-For-HIP.exe
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: CUDA
+            backend: cuda
+            build_recipe: release-build-cuda-windows
+            build_args: "75"
+          - name: ROCm
+            backend: rocm
+            build_recipe: release-build-rocm-windows
+            build_args: "gfx1100"
+          - name: Vulkan
+            backend: vulkan
+            build_recipe: release-build-vulkan-windows
+            build_args: ""
+    steps:
+      - name: Skip Windows GPU build
+        if: ${{ env.RUN_WINDOWS_GPU != 'true' }}
+        shell: pwsh
+        run: Write-Host "Skipping Windows ${{ matrix.name }} because this change does not touch Windows GPU build inputs."
+      - uses: actions/checkout@v5
+        if: ${{ env.RUN_WINDOWS_GPU == 'true' }}
+      - uses: dtolnay/rust-toolchain@stable
+        if: ${{ env.RUN_WINDOWS_GPU == 'true' }}
+      - uses: taiki-e/install-action@just
+        if: ${{ env.RUN_WINDOWS_GPU == 'true' }}
+      - uses: mozilla-actions/sccache-action@v0.0.9
+        if: ${{ env.RUN_WINDOWS_GPU == 'true' }}
+      - uses: Swatinem/rust-cache@v2
+        if: ${{ env.RUN_WINDOWS_GPU == 'true' }}
+        with:
+          workspaces: . -> target
+          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ runner.os }}-${{ hashFiles('.github/cache-version.txt') }}
+          shared-key: windows-${{ matrix.backend }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Prepare UI placeholder
+        if: ${{ env.RUN_WINDOWS_GPU == 'true' }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path crates/mesh-llm-ui/dist | Out-Null
+          '<html></html>' | Set-Content -Path crates/mesh-llm-ui/dist/index.html -Encoding utf8
+      - name: Ensure ABI cache directory
+        if: ${{ env.RUN_WINDOWS_GPU == 'true' }}
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path $env:LLAMA_STAGE_BUILD_DIR | Out-Null
+      - name: Cache patched llama.cpp ABI build
+        if: ${{ env.RUN_WINDOWS_GPU == 'true' }}
+        id: llama_cache
+        uses: actions/cache@v5
+        with:
+          path: .deps/llama.cpp/build-stage-abi-${{ matrix.backend }}
+          key: ${{ env.CACHE_NAMESPACE }}-windows-2022-skippy-abi-${{ matrix.backend }}-${{ matrix.build_args }}-${{ matrix.backend == 'cuda' && format('cuda-{0}-Jimver-v0.2.35', env.WINDOWS_CUDA_VERSION) || matrix.backend == 'vulkan' && format('vulkan-{0}-jakoch-v1.5.2', env.WINDOWS_VULKAN_SDK_VERSION) || format('rocm-{0}', env.ROCM_HIP_SDK_FILENAME) }}-${{ hashFiles('scripts/build-windows.ps1', 'scripts/install-windows-sdk.ps1', '.github/actions/setup-windows-rocm-sdk/action.yml', 'third_party/llama.cpp/upstream.txt', 'third_party/llama.cpp/patches/**', 'Justfile', '.github/cache-version.txt') }}
+      - name: Install CUDA toolkit
+        if: ${{ env.RUN_WINDOWS_GPU == 'true' && matrix.backend == 'cuda' && steps.llama_cache.outputs.cache-hit != 'true' }}
+        uses: Jimver/cuda-toolkit@v0.2.35
+        with:
+          cuda: ${{ env.WINDOWS_CUDA_VERSION }}
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "visual_studio_integration"]'
+          use-github-cache: true
+          use-local-cache: true
+          log-file-suffix: windows-cuda
+      - name: Verify CUDA toolkit
+        if: ${{ env.RUN_WINDOWS_GPU == 'true' && matrix.backend == 'cuda' && steps.llama_cache.outputs.cache-hit != 'true' }}
+        shell: pwsh
+        run: |
+          if (-not $env:CUDA_PATH -or -not (Test-Path $env:CUDA_PATH)) {
+            throw "CUDA_PATH was not configured by Jimver/cuda-toolkit."
+          }
+          & nvcc --version
+          foreach ($library in @("cuda.lib", "cudart.lib", "cublas.lib", "cublasLt.lib")) {
+            $path = Join-Path $env:CUDA_PATH "lib\x64\$library"
+            if (-not (Test-Path $path)) {
+              throw "Expected CUDA import library was not found: $path"
+            }
+          }
+      - name: Install Vulkan SDK
+        if: ${{ env.RUN_WINDOWS_GPU == 'true' && matrix.backend == 'vulkan' && steps.llama_cache.outputs.cache-hit != 'true' }}
+        uses: jakoch/install-vulkan-sdk-action@v1.5.2
+        with:
+          vulkan_version: ${{ env.WINDOWS_VULKAN_SDK_VERSION }}
+          cache: true
+          stripdown: true
+      - name: Verify Vulkan SDK
+        if: ${{ env.RUN_WINDOWS_GPU == 'true' && matrix.backend == 'vulkan' && steps.llama_cache.outputs.cache-hit != 'true' }}
+        shell: pwsh
+        run: |
+          if (-not $env:VULKAN_SDK -or -not (Test-Path $env:VULKAN_SDK)) {
+            throw "VULKAN_SDK was not configured by jakoch/install-vulkan-sdk-action."
+          }
+          $glslc = Join-Path $env:VULKAN_SDK "Bin\glslc.exe"
+          if (-not (Test-Path $glslc)) {
+            throw "glslc.exe was not found at $glslc"
+          }
+          & $glslc --version
+          $vulkanLib = Join-Path $env:VULKAN_SDK "Lib\vulkan-1.lib"
+          if (-not (Test-Path $vulkanLib)) {
+            throw "Expected Vulkan import library was not found: $vulkanLib"
+          }
+      - name: Install ROCm HIP SDK
+        if: ${{ env.RUN_WINDOWS_GPU == 'true' && matrix.backend == 'rocm' && steps.llama_cache.outputs.cache-hit != 'true' }}
+        uses: ./.github/actions/setup-windows-rocm-sdk
+        with:
+          rocm-hip-sdk-filename: ${{ env.ROCM_HIP_SDK_FILENAME }}
+      - name: Build Windows GPU backend
+        if: ${{ env.RUN_WINDOWS_GPU == 'true' && steps.llama_cache.outputs.cache-hit != 'true' }}
+        shell: pwsh
+        env:
+          MESH_LLM_REQUIRE_SCCACHE: "1"
+        run: |
+          if ("${{ matrix.build_args }}" -ne "") {
+            just ${{ matrix.build_recipe }} "${{ matrix.build_args }}"
+          } else {
+            just ${{ matrix.build_recipe }}
+          }
+      - name: Verify cached Windows GPU ABI build
+        if: ${{ env.RUN_WINDOWS_GPU == 'true' && steps.llama_cache.outputs.cache-hit == 'true' }}
+        shell: pwsh
+        run: |
+          $libs = Get-ChildItem -Path $env:LLAMA_STAGE_BUILD_DIR -Recurse -File -Filter *.lib -ErrorAction SilentlyContinue | Select-Object -First 20
+          if (-not $libs) {
+            throw "No static libraries were found under $env:LLAMA_STAGE_BUILD_DIR."
+          }
+          $libs | ForEach-Object { Write-Host $_.FullName }
+      - name: CLI smoke test
+        if: ${{ env.RUN_WINDOWS_GPU == 'true' }}
+        shell: pwsh
+        run: |
+          if ("${{ steps.llama_cache.outputs.cache-hit }}" -eq "true") {
+            Write-Host "Skipping Windows ${{ matrix.name }} launch smoke because the cached ABI was verified without relinking."
+          } elseif (-not (Test-Path .\target\release\mesh-llm.exe)) {
+            throw "target\release\mesh-llm.exe was not produced"
+          } else {
+            Write-Host "Skipping Windows ${{ matrix.name }} launch smoke on the hosted runner because GPU drivers are not available."
+          }
 
   macos_benchmark_smoke:
     needs: macos

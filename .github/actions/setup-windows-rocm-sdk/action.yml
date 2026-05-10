@@ -1,0 +1,122 @@
+name: Setup Windows ROCm HIP SDK
+description: Install and verify the Windows ROCm HIP SDK used by Mesh-LLM CI.
+
+inputs:
+  rocm-hip-sdk-filename:
+    description: Windows HIP SDK installer filename to try first.
+    required: false
+    default: AMD-Software-PRO-Edition-25.Q3-WinSvr2022-For-HIP.exe
+  installer-cache-dir:
+    description: Directory used to cache downloaded HIP SDK installers.
+    required: false
+    default: sdk-installer-cache
+
+outputs:
+  rocm-path:
+    description: Resolved ROCm/HIP SDK root.
+    value: ${{ steps.resolve.outputs.rocm-path }}
+  hipcc:
+    description: Resolved HIP C compiler path.
+    value: ${{ steps.resolve.outputs.hipcc }}
+  hipcxx:
+    description: Resolved HIP C++ compiler path.
+    value: ${{ steps.resolve.outputs.hipcxx }}
+  installer-cache-hit:
+    description: Whether the HIP SDK installer cache restored exactly.
+    value: ${{ steps.installer-cache.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    - name: Cache HIP SDK installers
+      id: installer-cache
+      uses: actions/cache@v5
+      with:
+        path: ${{ inputs.installer-cache-dir }}/rocm
+        key: windows-ci-sdk-installers-rocm-${{ inputs.rocm-hip-sdk-filename }}-v1
+
+    - name: Install HIP SDK
+      shell: pwsh
+      run: |
+        .\scripts\install-windows-sdk.ps1 `
+          -Backend rocm `
+          -RocmHipSdkFilename "${{ inputs.rocm-hip-sdk-filename }}" `
+          -InstallerCacheDir "${{ inputs.installer-cache-dir }}"
+
+    - name: Verify HIP SDK
+      id: resolve
+      shell: pwsh
+      run: |
+        if (-not $env:ROCM_PATH -or -not (Test-Path $env:ROCM_PATH)) {
+          throw "ROCM_PATH was not configured by the HIP SDK installer."
+        }
+        if (-not $env:HIP_PATH -or -not (Test-Path $env:HIP_PATH)) {
+          throw "HIP_PATH was not configured by the HIP SDK installer."
+        }
+
+        $hipConfig = Join-Path $env:ROCM_PATH "lib\cmake\hip\hip-config.cmake"
+        if (-not (Test-Path $hipConfig)) {
+          throw "hip-config.cmake was not found at $hipConfig"
+        }
+
+        $compilerRoots = @()
+        $hipConfigTool = Get-Command hipconfig -ErrorAction SilentlyContinue
+        if ($hipConfigTool) {
+          try {
+            $hipConfigCompilerRoot = (& $hipConfigTool.Source -l).Trim()
+            if ($hipConfigCompilerRoot) {
+              $compilerRoots += $hipConfigCompilerRoot
+            }
+          } catch {
+          }
+        }
+
+        $compilerRoots += @(
+          (Join-Path $env:ROCM_PATH "llvm\bin"),
+          (Join-Path $env:ROCM_PATH "bin"),
+          (Join-Path $env:HIP_PATH "llvm\bin"),
+          (Join-Path $env:HIP_PATH "bin")
+        )
+        $compilerRoots = $compilerRoots | Where-Object { $_ } | Select-Object -Unique
+
+        $hipcc = if ($env:HIPCC -and (Test-Path $env:HIPCC)) { $env:HIPCC } else { $null }
+        $hipcxx = if ($env:HIPCXX -and (Test-Path $env:HIPCXX)) { $env:HIPCXX } else { $null }
+        foreach ($compilerRoot in $compilerRoots) {
+          if (-not $hipcc) {
+            $candidate = Join-Path $compilerRoot "clang.exe"
+            if (Test-Path $candidate) {
+              $hipcc = $candidate
+            }
+          }
+          if (-not $hipcxx) {
+            $candidate = Join-Path $compilerRoot "clang++.exe"
+            if (Test-Path $candidate) {
+              $hipcxx = $candidate
+            }
+          }
+          if ($hipcc -and $hipcxx) {
+            break
+          }
+        }
+
+        if (-not $hipcc) {
+          throw "HIP C compiler was not found. Searched: $($compilerRoots -join ', ')"
+        }
+        if (-not $hipcxx) {
+          throw "HIP C++ compiler was not found. Searched: $($compilerRoots -join ', ')"
+        }
+
+        foreach ($library in @("amdhip64.lib", "rocblas.lib", "hipblas.lib")) {
+          $matches = Get-ChildItem -Path $env:ROCM_PATH -Recurse -Filter $library -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $matches) {
+            throw "Expected HIP SDK import library was not found: $library"
+          }
+          Write-Host "Found $library at $($matches.FullName)"
+        }
+
+        & $hipcc --version
+        "HIPCC=$hipcc" >> $env:GITHUB_ENV
+        "HIPCXX=$hipcxx" >> $env:GITHUB_ENV
+        "rocm-path=$env:ROCM_PATH" >> $env:GITHUB_OUTPUT
+        "hipcc=$hipcc" >> $env:GITHUB_OUTPUT
+        "hipcxx=$hipcxx" >> $env:GITHUB_OUTPUT

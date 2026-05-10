@@ -42,10 +42,10 @@ fn runtime_100_create_drop_no_thread_leak() {
         drop(rt);
     }
     let after = thread_count();
-    let diff = after.saturating_sub(before);
-    println!("threads_before={before} threads_after={after} diff={diff}");
+    let growth = after.saturating_sub(before);
+    println!("threads_before={before} threads_after={after} growth={growth}");
     assert!(
-        diff <= 3,
+        growth <= 3,
         "thread leak detected: before={before} after={after}"
     );
 }

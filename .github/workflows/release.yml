@@ -10,7 +10,7 @@ on:
         required: true
         type: string
       skip_gpu_bundles:
-        description: Skip Linux CUDA, ROCm, and Vulkan release bundles
+        description: Skip CUDA, CUDA Blackwell, ROCm, and Vulkan release bundles
         required: true
         default: false
         type: boolean
@@ -359,6 +359,102 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  build_windows_cpu:
+    name: Build Windows CPU
+    needs: metadata
+    runs-on: windows-2022
+    env:
+      LLAMA_STAGE_BACKEND: cpu
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            .github/cache-version.txt
+            crates/mesh-llm-ui/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@just
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - name: Build Windows CPU release bundle
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+          MESH_LLM_REQUIRE_SCCACHE: "1"
+        run: |
+          just release-build-windows
+          just release-bundle-windows "$env:RELEASE_TAG" dist
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-windows
+          path: dist/*
+          if-no-files-found: error
+
+  build_windows_gpu:
+    name: Build Windows ${{ matrix.name }}
+    needs: metadata
+    if: ${{ needs.metadata.outputs.skip_gpu_bundles != 'true' }}
+    runs-on: windows-2022
+    env:
+      ROCM_HIP_SDK_FILENAME: AMD-Software-PRO-Edition-25.Q3-WinSvr2022-For-HIP.exe
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: CUDA
+            backend: cuda
+            build_recipe: release-build-cuda-windows
+            bundle_recipe: release-bundle-cuda-windows
+            artifact_name: release-windows-cuda
+          - name: ROCm
+            backend: rocm
+            build_recipe: release-build-rocm-windows
+            bundle_recipe: release-bundle-rocm-windows
+            artifact_name: release-windows-rocm
+          - name: Vulkan
+            backend: vulkan
+            build_recipe: release-build-vulkan-windows
+            bundle_recipe: release-bundle-vulkan-windows
+            artifact_name: release-windows-vulkan
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            .github/cache-version.txt
+            crates/mesh-llm-ui/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@just
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - name: Cache Windows SDK installers
+        uses: actions/cache@v5
+        with:
+          path: ~/sdk-installer-cache/${{ matrix.backend }}
+          key: windows-sdk-installers-${{ matrix.backend }}-${{ env.ROCM_HIP_SDK_FILENAME }}-${{ hashFiles('scripts/install-windows-sdk.ps1') }}
+      - name: Install backend SDK
+        shell: pwsh
+        run: |
+          .\scripts\install-windows-sdk.ps1 `
+            -Backend "${{ matrix.backend }}" `
+            -RocmHipSdkFilename "$env:ROCM_HIP_SDK_FILENAME" `
+            -InstallerCacheDir "$HOME\sdk-installer-cache"
+      - name: Build Windows GPU release bundle
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+          MESH_LLM_REQUIRE_SCCACHE: "1"
+        run: |
+          just ${{ matrix.build_recipe }}
+          just ${{ matrix.bundle_recipe }} "$env:RELEASE_TAG" dist
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/*
+          if-no-files-found: error
+
   publish:
     name: Publish GitHub release
     needs:
@@ -370,9 +466,9 @@ jobs:
       - build_linux_cuda_blackwell
       - build_linux_rocm
       - build_linux_vulkan
-      # build_windows:
-      # - build_windows  # disabled until llama.cpp CUDA fix
-    if: ${{ always() && needs.metadata.result == 'success' && needs.build.result == 'success' && needs.inference_smoke_tests.result == 'success' && needs.build_linux_arm64.result == 'success' && (needs.build_linux_cuda.result == 'success' || needs.build_linux_cuda.result == 'skipped') && (needs.build_linux_cuda_blackwell.result == 'success' || needs.build_linux_cuda_blackwell.result == 'skipped') && (needs.build_linux_rocm.result == 'success' || needs.build_linux_rocm.result == 'skipped') && (needs.build_linux_vulkan.result == 'success' || needs.build_linux_vulkan.result == 'skipped') }}
+      - build_windows_cpu
+      - build_windows_gpu
+    if: ${{ always() && needs.metadata.result == 'success' && needs.build.result == 'success' && needs.inference_smoke_tests.result == 'success' && needs.build_linux_arm64.result == 'success' && (needs.build_linux_cuda.result == 'success' || needs.build_linux_cuda.result == 'skipped') && (needs.build_linux_cuda_blackwell.result == 'success' || needs.build_linux_cuda_blackwell.result == 'skipped') && (needs.build_linux_rocm.result == 'success' || needs.build_linux_rocm.result == 'skipped') && (needs.build_linux_vulkan.result == 'success' || needs.build_linux_vulkan.result == 'skipped') && needs.build_windows_cpu.result == 'success' && (needs.build_windows_gpu.result == 'success' || needs.build_windows_gpu.result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
       - name: Download release artifacts
