@@ -212,6 +212,7 @@ impl MeshApi {
                     .iter()
                     .map(|s| s.to_string())
                     .collect(),
+                mesh_discovery_mode: crate::network::discovery::MeshDiscoveryMode::Nostr,
                 nostr_discovery: false,
                 publication_state: state::PublicationState::Private,
                 runtime_control: None,
@@ -342,6 +343,13 @@ impl MeshApi {
 
     pub async fn set_nostr_relays(&self, relays: Vec<String>) {
         self.inner.lock().await.nostr_relays = relays;
+    }
+
+    pub async fn set_mesh_discovery_mode(
+        &self,
+        mode: crate::network::discovery::MeshDiscoveryMode,
+    ) {
+        self.inner.lock().await.mesh_discovery_mode = mode;
     }
 
     pub async fn set_nostr_discovery(&self, v: bool) {

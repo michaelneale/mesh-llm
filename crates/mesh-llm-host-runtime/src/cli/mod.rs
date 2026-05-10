@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use crate::cli::benchmark::BenchmarkCommand;
 use crate::cli::runtime::RuntimeCommand;
 use crate::crypto::TrustPolicy;
+use crate::network::discovery::MeshDiscoveryMode;
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum TrustCommand {
@@ -255,13 +256,17 @@ pub(crate) struct Cli {
     #[arg(long, short)]
     pub(crate) join: Vec<String>,
 
-    /// Discover a mesh via Nostr and join it.
+    /// Discover a mesh and join it.
     #[arg(long, default_missing_value = "", num_args = 0..=1)]
     pub(crate) discover: Option<String>,
 
-    /// Auto-join the best mesh found via Nostr.
+    /// Auto-join the best mesh found via discovery.
     #[arg(long)]
     pub(crate) auto: bool,
+
+    /// Discovery provider for --auto, --discover, --publish, and the discover command.
+    #[arg(long, value_enum, default_value_t = MeshDiscoveryMode::Nostr, global = true)]
+    pub(crate) mesh_discovery_mode: MeshDiscoveryMode,
 
     /// Model to serve (path, remote catalog name, or Hugging Face ref).
     #[arg(long)]
@@ -291,7 +296,7 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) headless: bool,
 
-    /// Publish this mesh to Nostr for public discovery by other nodes.
+    /// Publish this mesh for discovery by other nodes.
     /// Without this flag, your mesh is private and only joinable via invite token.
     #[arg(long)]
     pub(crate) publish: bool,
@@ -419,6 +424,23 @@ pub(crate) struct Cli {
     pub(crate) nostr_discovery: bool,
 }
 
+pub(crate) fn validate_discovery_mode_args(cli: &Cli) -> anyhow::Result<()> {
+    if cli.mesh_discovery_mode != MeshDiscoveryMode::Mdns {
+        return Ok(());
+    }
+
+    if !cli.nostr_relay.is_empty() {
+        anyhow::bail!("--nostr-relay is only valid with --mesh-discovery-mode nostr");
+    }
+    if let Some(Command::Discover { relay, .. }) = cli.command.as_ref() {
+        if !relay.is_empty() {
+            anyhow::bail!("discover --relay is only valid with --mesh-discovery-mode nostr");
+        }
+    }
+
+    Ok(())
+}
+
 #[derive(Subcommand, Debug)]
 pub(crate) enum Command {
     /// Manage model storage, migration, and update checks.
@@ -478,7 +500,7 @@ pub(crate) enum Command {
         #[arg(long, default_value = "3131")]
         port: u16,
     },
-    /// Discover meshes on Nostr and optionally auto-join one.
+    /// Discover meshes and optionally auto-join one.
     Discover {
         /// Filter by mesh name (case-insensitive exact match)
         #[arg(long)]
@@ -1219,6 +1241,47 @@ mod tests {
 
         assert_eq!(cli.log_format, LogFormat::Json);
         assert_eq!(normalized.explicit_surface, Some(RuntimeSurface::Client));
+    }
+
+    #[test]
+    fn cli_defaults_mesh_discovery_mode_to_nostr() {
+        let normalized = normalize_runtime_surface_args(["mesh-llm", "serve", "--auto"]);
+        let cli = Cli::parse_from(normalized.normalized);
+
+        assert_eq!(
+            cli.mesh_discovery_mode,
+            crate::network::discovery::MeshDiscoveryMode::Nostr
+        );
+    }
+
+    #[test]
+    fn cli_accepts_mdns_discovery_mode_for_runtime_surfaces() {
+        let normalized =
+            normalize_runtime_surface_args(["mesh-llm", "client", "--mesh-discovery-mode", "mdns"]);
+        let cli = Cli::parse_from(normalized.normalized);
+
+        assert!(cli.client);
+        assert_eq!(
+            cli.mesh_discovery_mode,
+            crate::network::discovery::MeshDiscoveryMode::Mdns
+        );
+    }
+
+    #[test]
+    fn cli_rejects_nostr_relays_in_mdns_mode() {
+        let normalized = normalize_runtime_surface_args([
+            "mesh-llm",
+            "serve",
+            "--mesh-discovery-mode",
+            "mdns",
+            "--nostr-relay",
+            "wss://relay.example",
+        ]);
+        let cli = Cli::parse_from(normalized.normalized);
+
+        let err = validate_discovery_mode_args(&cli)
+            .expect_err("mdns mode must reject Nostr relay overrides");
+        assert!(err.to_string().contains("--nostr-relay"));
     }
 
     #[test]

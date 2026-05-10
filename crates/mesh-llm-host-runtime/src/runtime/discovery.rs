@@ -171,9 +171,9 @@ pub(super) fn start_new_mesh(
         format!("serving: {primary}")
     };
     let discovery = if cli.publish {
-        "publishing to Nostr for public discovery"
+        "publishing for discovery"
     } else {
-        "mesh is private — add --publish for public discovery"
+        "mesh is private — add --publish to advertise it for discovery"
     };
     let _ = emit_event(OutputEvent::Info {
         message: format!(

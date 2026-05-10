@@ -15,7 +15,7 @@ use anyhow::Result;
 
 use crate::cli::commands::benchmark::dispatch_benchmark_command;
 use crate::cli::commands::blackboard::{install_skill, run_blackboard};
-use crate::cli::commands::discover::{run_discover, run_stop};
+use crate::cli::commands::discover::{run_discover, run_stop, DiscoverOptions};
 use crate::cli::commands::download::dispatch_download_command;
 use crate::cli::commands::gpus::dispatch_gpu_command;
 use crate::cli::commands::integrations::{run_claude, run_goose, run_opencode, run_pi};
@@ -56,14 +56,16 @@ pub(crate) async fn dispatch(cli: &Cli) -> Result<bool> {
             auto,
             relay,
         } => {
-            run_discover(
-                name.clone(),
-                model.clone(),
-                *min_vram,
-                region.clone(),
-                *auto,
-                relay.clone(),
-            )
+            run_discover(DiscoverOptions {
+                name: name.clone(),
+                model: model.clone(),
+                min_vram_gb: *min_vram,
+                region: region.clone(),
+                auto_join: *auto,
+                relays: relay.clone(),
+                discovery_mode: cli.mesh_discovery_mode,
+                supplied_join_tokens: cli.join.clone(),
+            })
             .await
         }
         Command::RotateKey => nostr::rotate_keys(),

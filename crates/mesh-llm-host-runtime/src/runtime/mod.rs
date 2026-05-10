@@ -38,7 +38,7 @@ use crate::inference::{election, skippy};
 use crate::mesh;
 use crate::mesh::NodeRole;
 use crate::models;
-use crate::network::{affinity, nostr, tunnel};
+use crate::network::{affinity, discovery as mesh_discovery, nostr, tunnel};
 use crate::plugin;
 use crate::system::{autoupdate, backend, benchmark, hardware};
 use anyhow::{Context, Result};
@@ -2129,6 +2129,7 @@ pub(crate) async fn run() -> Result<()> {
 
     let normalized_args = crate::cli::normalize_runtime_surface_args(std::env::args_os());
     let mut cli = Cli::parse_from(normalized_args.normalized.clone());
+    crate::cli::validate_discovery_mode_args(&cli)?;
     crate::cli::output::OutputManager::init_global(
         cli.log_format,
         initial_console_session_mode(normalized_args.explicit_surface),
@@ -2229,7 +2230,8 @@ pub(crate) async fn run() -> Result<()> {
     // If the previous run was public (--auto or --publish) but this run is
     // private, clear the stored identity so the private mesh gets a fresh key
     // that isn't associated with the old public listing.
-    let is_public = cli.auto || cli.publish || cli.discover.is_some();
+    let is_public = cli.mesh_discovery_mode == mesh_discovery::MeshDiscoveryMode::Nostr
+        && (cli.auto || cli.publish || cli.discover.is_some());
     if is_public {
         mesh::mark_was_public();
     } else if mesh::was_previously_public() {
@@ -2256,90 +2258,115 @@ pub(crate) async fn run() -> Result<()> {
                 cli.mesh_name = Some(name.clone());
             }
         }
-        cli.nostr_discovery = true;
-        let _ = emit_event(OutputEvent::DiscoveryStarting {
-            source: "Nostr auto-discovery".to_string(),
-        });
-
-        let relays = nostr_relays(&cli.nostr_relay);
-        let filter = nostr::MeshFilter::default();
-        let meshes = match nostr::discover(&relays, &filter, None).await {
-            Ok(meshes) => meshes,
-            Err(err) => {
-                let _ = emit_event(OutputEvent::DiscoveryFailed {
-                    message: "Nostr auto-discovery failed".to_string(),
-                    detail: Some(err.to_string()),
-                });
-                return Err(err);
-            }
-        };
-
         let my_vram_gb = mesh::detect_vram_bytes_capped(cli.max_vram) as f64 / 1e9;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        let last_mesh_id = mesh::load_last_mesh_id();
         let target_name = cli.mesh_name.clone();
-        // When the user did not target a specific mesh, `--auto` only joins
-        // the community mesh (unnamed or name == "mesh-llm"). Other named
-        // meshes are still publicly discoverable on Nostr, but the user has
-        // to opt in by name. Hide them from the listing so the output matches
-        // what auto will actually consider.
-        let listed: Vec<&nostr::DiscoveredMesh> = if target_name.is_some() {
-            meshes.iter().collect()
-        } else {
-            meshes
-                .iter()
-                .filter(|m| nostr::is_auto_eligible(m))
-                .collect()
-        };
-        for m in &listed {
-            let score = nostr::score_mesh(m, now, last_mesh_id.as_deref());
-            let _ = emit_event(OutputEvent::MeshFound {
-                mesh: m.listing.name.as_deref().unwrap_or("unnamed").to_string(),
-                peers: m.listing.node_count,
-                region: m.listing.region.clone(),
-            });
-            tracing::debug!(
-                "Nostr auto-discovery candidate: {} score={} nodes={} vram_gb={:.0} clients={}",
-                m.listing.name.as_deref().unwrap_or("unnamed"),
-                score,
-                m.listing.node_count,
-                m.listing.total_vram_bytes as f64 / 1e9,
-                m.listing.client_count
-            );
-        }
 
-        match smart_auto_blocking(meshes.clone(), my_vram_gb, target_name.clone()).await? {
-            nostr::AutoDecision::Join { candidates } => {
-                if cli.client {
-                    // Clients skip health probe — joining itself is the test.
-                    // Queue all candidates so we can fall back if the top one is unreachable.
-                    let (_, mesh) = &candidates[0];
-                    if cli.mesh_name.is_none() {
-                        if let Some(ref name) = mesh.listing.name {
-                            cli.mesh_name = Some(name.clone());
-                        }
+        match cli.mesh_discovery_mode {
+            mesh_discovery::MeshDiscoveryMode::Nostr => {
+                cli.nostr_discovery = true;
+                let _ = emit_event(OutputEvent::DiscoveryStarting {
+                    source: mesh_discovery::discovery_source_label(
+                        cli.mesh_discovery_mode,
+                        "auto-discovery",
+                    ),
+                });
+
+                let relays = nostr_relays(&cli.nostr_relay);
+                let filter = nostr::MeshFilter::default();
+                let meshes = match nostr::discover(&relays, &filter, None).await {
+                    Ok(meshes) => meshes,
+                    Err(err) => {
+                        let _ = emit_event(OutputEvent::DiscoveryFailed {
+                            message: "Nostr auto-discovery failed".to_string(),
+                            detail: Some(err.to_string()),
+                        });
+                        return Err(err);
                     }
-                    let _ = emit_event(OutputEvent::DiscoveryJoined {
-                        mesh: mesh
-                            .listing
-                            .name
-                            .as_deref()
-                            .unwrap_or("unnamed")
-                            .to_string(),
+                };
+
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let last_mesh_id = mesh::load_last_mesh_id();
+                // When the user did not target a specific mesh, `--auto` only joins
+                // the community mesh (unnamed or name == "mesh-llm"). Other named
+                // meshes are still publicly discoverable on Nostr, but the user has
+                // to opt in by name. Hide them from the listing so the output matches
+                // what auto will actually consider.
+                let listed: Vec<&nostr::DiscoveredMesh> = if target_name.is_some() {
+                    meshes.iter().collect()
+                } else {
+                    meshes
+                        .iter()
+                        .filter(|m| nostr::is_auto_eligible(m))
+                        .collect()
+                };
+                for m in &listed {
+                    let score = nostr::score_mesh(m, now, last_mesh_id.as_deref());
+                    let _ = emit_event(OutputEvent::MeshFound {
+                        mesh: m.listing.name.as_deref().unwrap_or("unnamed").to_string(),
+                        peers: m.listing.node_count,
+                        region: m.listing.region.clone(),
                     });
-                    for (token, _) in &candidates {
-                        cli.join.push(token.clone());
+                    tracing::debug!(
+                        "Nostr auto-discovery candidate: {} score={} nodes={} vram_gb={:.0} clients={}",
+                        m.listing.name.as_deref().unwrap_or("unnamed"),
+                        score,
+                        m.listing.node_count,
+                        m.listing.total_vram_bytes as f64 / 1e9,
+                        m.listing.client_count
+                    );
+                }
+
+                handle_auto_decision(
+                    &mut cli,
+                    smart_auto_blocking(meshes.clone(), my_vram_gb, target_name.clone()).await?,
+                    &mut auto_join_candidates,
+                    my_vram_gb,
+                    has_startup_models,
+                )
+                .await?;
+            }
+            mesh_discovery::MeshDiscoveryMode::Mdns => {
+                let _ = emit_event(OutputEvent::DiscoveryStarting {
+                    source: mesh_discovery::discovery_source_label(
+                        cli.mesh_discovery_mode,
+                        "auto-discovery",
+                    ),
+                });
+                let filter = nostr::MeshFilter {
+                    name: target_name.clone(),
+                    region: cli.region.clone(),
+                    ..Default::default()
+                };
+                let candidates = mesh_discovery::discover_lan_join_candidates(
+                    &filter,
+                    cli.join.first().map(String::as_str),
+                    std::time::Duration::from_secs(5),
+                )
+                .await?;
+
+                if candidates.is_empty() {
+                    let _ = emit_event(OutputEvent::DiscoveryFailed {
+                        message:
+                            "No joinable LAN meshes found — mDNS requires a supplied invite token"
+                                .to_string(),
+                        detail: Some("Pass --join <token> or start a new LAN mesh.".to_string()),
+                    });
+                    let models = default_models_for_vram_blocking(my_vram_gb).await?;
+                    if cli.client {
+                        let _ = emit_event(OutputEvent::Info {
+                            message:
+                                "No joinable LAN mesh yet — starting client API; pass --join with a LAN invite token to connect"
+                                    .to_string(),
+                            context: None,
+                        });
+                    } else {
+                        start_new_mesh(&mut cli, &models, my_vram_gb, has_startup_models);
                     }
                 } else {
-                    // GPU nodes: try to join each candidate directly.
-                    // No ephemeral probe — it fails when the target has a firewall
-                    // even though the real join (via relay) would succeed.
-                    let mut joined = false;
-                    for (token, mesh) in &candidates {
+                    for (token, mesh) in candidates {
                         let _ = emit_event(OutputEvent::MeshFound {
                             mesh: mesh
                                 .listing
@@ -2350,34 +2377,8 @@ pub(crate) async fn run() -> Result<()> {
                             peers: mesh.listing.node_count,
                             region: mesh.listing.region.clone(),
                         });
-                        auto_join_candidates.push((token.clone(), mesh.listing.name.clone()));
-                        joined = true;
+                        auto_join_candidates.push((token, mesh.listing.name));
                     }
-                    if !joined {
-                        let _ = emit_event(OutputEvent::DiscoveryFailed {
-                            message: "No meshes found — starting new".to_string(),
-                            detail: None,
-                        });
-                        let models = default_models_for_vram_blocking(my_vram_gb).await?;
-                        start_new_mesh(&mut cli, &models, my_vram_gb, has_startup_models);
-                    }
-                }
-            }
-            nostr::AutoDecision::StartNew { models } => {
-                if cli.client {
-                    // Client mode should still expose its local proxy and
-                    // management API while it waits for a mesh to appear.
-                    // The passive runtime path starts background Nostr
-                    // rediscovery, so leave the join list empty and continue
-                    // startup instead of blocking before the API can bind.
-                    let _ = emit_event(OutputEvent::Info {
-                        message:
-                            "No meshes found yet — starting client API while discovery continues"
-                                .to_string(),
-                        context: None,
-                    });
-                } else {
-                    start_new_mesh(&mut cli, &models, my_vram_gb, has_startup_models);
                 }
             }
         }
@@ -3595,6 +3596,80 @@ async fn smart_auto_blocking(
     .context("join smart auto task")
 }
 
+async fn handle_auto_decision(
+    cli: &mut Cli,
+    decision: nostr::AutoDecision,
+    auto_join_candidates: &mut Vec<(String, Option<String>)>,
+    my_vram_gb: f64,
+    has_startup_models: bool,
+) -> Result<()> {
+    match decision {
+        nostr::AutoDecision::Join { candidates } => {
+            if cli.client {
+                // Clients skip health probe — joining itself is the test.
+                // Queue all candidates so we can fall back if the top one is unreachable.
+                let (_, mesh) = &candidates[0];
+                if cli.mesh_name.is_none() {
+                    if let Some(ref name) = mesh.listing.name {
+                        cli.mesh_name = Some(name.clone());
+                    }
+                }
+                let _ = emit_event(OutputEvent::DiscoveryJoined {
+                    mesh: mesh
+                        .listing
+                        .name
+                        .as_deref()
+                        .unwrap_or("unnamed")
+                        .to_string(),
+                });
+                for (token, _) in &candidates {
+                    cli.join.push(token.clone());
+                }
+            } else {
+                // GPU nodes try each candidate directly. The real join path can use relays,
+                // so a separate local probe would reject reachable meshes behind firewalls.
+                let mut joined = false;
+                for (token, mesh) in &candidates {
+                    let _ = emit_event(OutputEvent::MeshFound {
+                        mesh: mesh
+                            .listing
+                            .name
+                            .as_deref()
+                            .unwrap_or("unnamed")
+                            .to_string(),
+                        peers: mesh.listing.node_count,
+                        region: mesh.listing.region.clone(),
+                    });
+                    auto_join_candidates.push((token.clone(), mesh.listing.name.clone()));
+                    joined = true;
+                }
+                if !joined {
+                    let _ = emit_event(OutputEvent::DiscoveryFailed {
+                        message: "No meshes found — starting new".to_string(),
+                        detail: None,
+                    });
+                    let models = default_models_for_vram_blocking(my_vram_gb).await?;
+                    start_new_mesh(cli, &models, my_vram_gb, has_startup_models);
+                }
+            }
+        }
+        nostr::AutoDecision::StartNew { models } => {
+            if cli.client {
+                // Client mode should still expose its local proxy and management API while
+                // it waits for a mesh to appear.
+                let _ = emit_event(OutputEvent::Info {
+                    message: "No meshes found yet — starting client API while discovery continues"
+                        .to_string(),
+                    context: None,
+                });
+            } else {
+                start_new_mesh(cli, &models, my_vram_gb, has_startup_models);
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn default_models_for_vram_blocking(my_vram_gb: f64) -> Result<Vec<String>> {
     tokio::task::spawn_blocking(move || nostr::default_models_for_vram(my_vram_gb))
         .await
@@ -3964,6 +4039,75 @@ async fn join_mesh_for_mcp(cli: &Cli, node: &mesh::Node) -> Result<()> {
     }
 
     if cli.auto || cli.discover.is_some() {
+        if cli.mesh_discovery_mode == mesh_discovery::MeshDiscoveryMode::Mdns {
+            let filter = nostr::MeshFilter {
+                region: cli.region.clone(),
+                name: cli
+                    .discover
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .or(cli.mesh_name.as_deref())
+                    .map(str::to_owned),
+                ..Default::default()
+            };
+            let _ = emit_event(OutputEvent::DiscoveryStarting {
+                source: mesh_discovery::discovery_source_label(
+                    cli.mesh_discovery_mode,
+                    "discovery",
+                ),
+            });
+            let candidates = mesh_discovery::discover_lan_join_candidates(
+                &filter,
+                cli.join.first().map(String::as_str),
+                std::time::Duration::from_secs(5),
+            )
+            .await?;
+            if candidates.is_empty() {
+                let _ = emit_event(OutputEvent::DiscoveryFailed {
+                    message: "No joinable LAN mesh found for MCP mode".to_string(),
+                    detail: Some("Pass --join or start a LAN mesh first.".to_string()),
+                });
+                anyhow::bail!(
+                    "No joinable LAN mesh found for MCP mode. Pass --join or start a LAN mesh first."
+                );
+            }
+
+            let mut last_err = None;
+            for (token, mesh) in candidates {
+                let label = mesh
+                    .listing
+                    .name
+                    .as_deref()
+                    .unwrap_or("unnamed")
+                    .to_string();
+                let _ = emit_event(OutputEvent::MeshFound {
+                    mesh: label.clone(),
+                    peers: mesh.listing.node_count,
+                    region: mesh.listing.region.clone(),
+                });
+                match node.join_with_retry(&token).await {
+                    Ok(()) => {
+                        if node.mesh_id().await.is_some() {
+                            record_first_joined_mesh_ts(node).await;
+                        }
+                        let _ = emit_event(OutputEvent::DiscoveryJoined { mesh: label });
+                        return Ok(());
+                    }
+                    Err(err) => {
+                        let _ = emit_event(OutputEvent::DiscoveryFailed {
+                            message: format!("Failed to join LAN mesh {label}"),
+                            detail: Some(err.to_string()),
+                        });
+                        last_err = Some(err);
+                    }
+                }
+            }
+            if let Some(err) = last_err {
+                return Err(err);
+            }
+            return Ok(());
+        }
+
         let relays = nostr_relays(&cli.nostr_relay);
         let filter = nostr::MeshFilter {
             region: cli.region.clone(),
@@ -4382,7 +4526,9 @@ async fn run_auto(
         // Nostr re-discovery: if we joined via --auto or --discover and lose
         // all peers, re-discover and join a new mesh. This handles the case where
         // the original mesh publisher restarts with a new identity.
-        if cli.auto || cli.discover.is_some() {
+        if cli.mesh_discovery_mode == mesh_discovery::MeshDiscoveryMode::Nostr
+            && (cli.auto || cli.discover.is_some())
+        {
             let rediscover_node = node.clone();
             let rediscover_relays = nostr_relays(&cli.nostr_relay);
             let rediscover_relay_urls = cli.relay.clone();
@@ -4396,13 +4542,14 @@ async fn run_auto(
         }
     } else {
         // Originator — generate mesh_id
-        let nostr_pubkey = if cli.publish {
-            nostr::load_or_create_keys()
-                .ok()
-                .map(|k| k.public_key().to_hex())
-        } else {
-            None
-        };
+        let nostr_pubkey =
+            if cli.publish && cli.mesh_discovery_mode == mesh_discovery::MeshDiscoveryMode::Nostr {
+                nostr::load_or_create_keys()
+                    .ok()
+                    .map(|k| k.public_key().to_hex())
+            } else {
+                None
+            };
         let mesh_id = mesh::generate_mesh_id(cli.mesh_name.as_deref(), nostr_pubkey.as_deref());
         node.set_mesh_id_force(mesh_id.clone()).await;
         record_first_joined_mesh_ts(&node).await;
@@ -4417,7 +4564,9 @@ async fn run_auto(
 
         // Originator also re-discovers: if we started solo and a matching mesh
         // already exists on Nostr, we should join it instead of staying alone.
-        if cli.auto || cli.discover.is_some() {
+        if cli.mesh_discovery_mode == mesh_discovery::MeshDiscoveryMode::Nostr
+            && (cli.auto || cli.discover.is_some())
+        {
             let rediscover_node = node.clone();
             let rediscover_relays = nostr_relays(&cli.nostr_relay);
             let rediscover_relay_urls = cli.relay.clone();
@@ -4627,6 +4776,7 @@ async fn run_auto(
         cs.set_primary_backend("skippy".into()).await;
         cs.set_runtime_control(control_tx.clone()).await;
         cs.set_nostr_relays(nostr_relays(&cli.nostr_relay)).await;
+        cs.set_mesh_discovery_mode(cli.mesh_discovery_mode).await;
         cs.set_nostr_discovery(cli.nostr_discovery).await;
         if let Some(draft) = &cli.draft {
             let dn = draft
@@ -5004,48 +5154,74 @@ async fn run_auto(
         }
     }
 
-    // Nostr publish loop (if --publish) or watchdog (if --auto, to take over if publisher dies)
-    let nostr_publisher = if cli.publish {
-        match nostr::load_or_create_keys() {
-            Ok(nostr_keys) => {
-                let relays = nostr_relays(&cli.nostr_relay);
+    // Discovery publish loop (if --publish) or Nostr watchdog (if --auto, to take over if publisher dies).
+    let discovery_publisher = if cli.publish {
+        match cli.mesh_discovery_mode {
+            mesh_discovery::MeshDiscoveryMode::Nostr => match nostr::load_or_create_keys() {
+                Ok(nostr_keys) => {
+                    let relays = nostr_relays(&cli.nostr_relay);
+                    let pub_node = node.clone();
+                    let pub_name = cli.mesh_name.clone();
+                    let pub_region = cli.region.clone();
+                    let pub_max_clients = cli.max_clients;
+                    let (status_tx, status_rx) = tokio::sync::watch::channel(None);
+                    if let Some(ref cs) = console_state {
+                        bridge_publication_state(cs.clone(), status_rx);
+                    }
+                    Some(tokio::spawn(Box::pin(nostr::publish_loop(
+                        pub_node,
+                        nostr_keys,
+                        nostr::PublishLoopConfig {
+                            relays,
+                            name: pub_name,
+                            region: pub_region,
+                            max_clients: pub_max_clients,
+                            interval_secs: 60,
+                            status_tx: Some(status_tx),
+                        },
+                    ))))
+                }
+                Err(e) => {
+                    let _ = emit_event(OutputEvent::Warning {
+                        message: format!(
+                            "Publishing to Nostr failed: {e}. Mesh is running privately — add --publish after fixing the issue to make discoverable."
+                        ),
+                        context: cli.mesh_name.as_ref().map(|mesh_name| format!("mesh={mesh_name}")),
+                    });
+                    tracing::warn!("Nostr publish failed: {e}");
+                    if let Some(ref cs) = console_state {
+                        cs.set_publication_state(api::PublicationState::PublishFailed)
+                            .await;
+                    }
+                    None
+                }
+            },
+            mesh_discovery::MeshDiscoveryMode::Mdns => {
                 let pub_node = node.clone();
                 let pub_name = cli.mesh_name.clone();
                 let pub_region = cli.region.clone();
                 let pub_max_clients = cli.max_clients;
+                let pub_api_port = cli.console;
                 let (status_tx, status_rx) = tokio::sync::watch::channel(None);
                 if let Some(ref cs) = console_state {
                     bridge_publication_state(cs.clone(), status_rx);
                 }
-                Some(tokio::spawn(Box::pin(nostr::publish_loop(
+                Some(tokio::spawn(Box::pin(mesh_discovery::publish_lan_loop(
                     pub_node,
-                    nostr_keys,
-                    nostr::PublishLoopConfig {
-                        relays,
+                    mesh_discovery::LanPublishConfig {
                         name: pub_name,
                         region: pub_region,
                         max_clients: pub_max_clients,
+                        api_port: pub_api_port,
                         interval_secs: 60,
                         status_tx: Some(status_tx),
                     },
                 ))))
             }
-            Err(e) => {
-                let _ = emit_event(OutputEvent::Warning {
-                    message: format!(
-                        "Publishing to Nostr failed: {e}. Mesh is running privately — add --publish after fixing the issue to make discoverable."
-                    ),
-                    context: cli.mesh_name.as_ref().map(|mesh_name| format!("mesh={mesh_name}")),
-                });
-                tracing::warn!("Nostr publish failed: {e}");
-                if let Some(ref cs) = console_state {
-                    cs.set_publication_state(api::PublicationState::PublishFailed)
-                        .await;
-                }
-                None
-            }
         }
-    } else if cli.auto || cli.discover.is_some() {
+    } else if cli.mesh_discovery_mode == mesh_discovery::MeshDiscoveryMode::Nostr
+        && (cli.auto || cli.discover.is_some())
+    {
         // Watchdog: if we joined via --auto/--discover, watch for the publisher to die and take over
         let relays = nostr_relays(&cli.nostr_relay);
         let wd_node = node.clone();
@@ -5476,7 +5652,7 @@ async fn run_auto(
     node.broadcast_leaving().await;
 
     // Clean up Nostr listing on shutdown
-    if cli.publish {
+    if cli.publish && cli.mesh_discovery_mode == mesh_discovery::MeshDiscoveryMode::Nostr {
         if let Ok(keys) = nostr::load_or_create_keys() {
             let relays = nostr_relays(&cli.nostr_relay);
             if let Ok(publisher) = nostr::Publisher::new(keys, &relays).await {
@@ -5488,7 +5664,7 @@ async fn run_auto(
             }
         }
     }
-    if let Some(handle) = nostr_publisher {
+    if let Some(handle) = discovery_publisher {
         handle.abort();
     }
 
@@ -5600,42 +5776,66 @@ async fn run_passive(
     let mut passive_publication_state = None;
     let mut passive_publication_rx = None;
 
-    // Nostr publishing (if --publish, for standby GPU nodes advertising capacity)
+    // Discovery publishing (if --publish, for standby GPU nodes advertising capacity)
     if cli.publish && !is_client {
         let pub_node = node.clone();
-        match nostr::load_or_create_keys() {
-            Ok(nostr_keys) => {
-                let relays = nostr_relays(&cli.nostr_relay);
+        match cli.mesh_discovery_mode {
+            mesh_discovery::MeshDiscoveryMode::Nostr => match nostr::load_or_create_keys() {
+                Ok(nostr_keys) => {
+                    let relays = nostr_relays(&cli.nostr_relay);
+                    let pub_name = cli.mesh_name.clone();
+                    let pub_region = cli.region.clone();
+                    let pub_max_clients = cli.max_clients;
+                    let (status_tx, status_rx) = tokio::sync::watch::channel(None);
+                    passive_publication_rx = Some(status_rx);
+                    tokio::spawn(Box::pin(nostr::publish_loop(
+                        pub_node,
+                        nostr_keys,
+                        nostr::PublishLoopConfig {
+                            relays,
+                            name: pub_name,
+                            region: pub_region,
+                            max_clients: pub_max_clients,
+                            interval_secs: 60,
+                            status_tx: Some(status_tx),
+                        },
+                    )));
+                }
+                Err(e) => {
+                    let _ = emit_event(OutputEvent::Warning {
+                        message: format!(
+                            "Publishing to Nostr failed: {e}. Standby node is running privately — add --publish after fixing the issue to make discoverable."
+                        ),
+                        context: cli.mesh_name.as_ref().map(|mesh_name| format!("mesh={mesh_name}")),
+                    });
+                    tracing::warn!("Passive Nostr publish failed: {e}");
+                    passive_publication_state = Some(api::PublicationState::PublishFailed);
+                }
+            },
+            mesh_discovery::MeshDiscoveryMode::Mdns => {
                 let pub_name = cli.mesh_name.clone();
                 let pub_region = cli.region.clone();
                 let pub_max_clients = cli.max_clients;
+                let pub_api_port = cli.console;
                 let (status_tx, status_rx) = tokio::sync::watch::channel(None);
                 passive_publication_rx = Some(status_rx);
-                tokio::spawn(Box::pin(nostr::publish_loop(
+                tokio::spawn(Box::pin(mesh_discovery::publish_lan_loop(
                     pub_node,
-                    nostr_keys,
-                    nostr::PublishLoopConfig {
-                        relays,
+                    mesh_discovery::LanPublishConfig {
                         name: pub_name,
                         region: pub_region,
                         max_clients: pub_max_clients,
+                        api_port: pub_api_port,
                         interval_secs: 60,
                         status_tx: Some(status_tx),
                     },
                 )));
             }
-            Err(e) => {
-                let _ = emit_event(OutputEvent::Warning {
-                    message: format!(
-                        "Publishing to Nostr failed: {e}. Standby node is running privately — add --publish after fixing the issue to make discoverable."
-                    ),
-                    context: cli.mesh_name.as_ref().map(|mesh_name| format!("mesh={mesh_name}")),
-                });
-                tracing::warn!("Passive Nostr publish failed: {e}");
-                passive_publication_state = Some(api::PublicationState::PublishFailed);
-            }
         }
-    } else if (cli.auto || cli.discover.is_some()) && !is_client {
+    } else if cli.mesh_discovery_mode == mesh_discovery::MeshDiscoveryMode::Nostr
+        && (cli.auto || cli.discover.is_some())
+        && !is_client
+    {
         // Watchdog: take over publishing if the original publisher dies
         let relays = nostr_relays(&cli.nostr_relay);
         let wd_node = node.clone();
@@ -5728,6 +5928,9 @@ async fn run_passive(
     });
     console_state
         .set_nostr_relays(nostr_relays(&cli.nostr_relay))
+        .await;
+    console_state
+        .set_mesh_discovery_mode(cli.mesh_discovery_mode)
         .await;
     console_state.set_nostr_discovery(cli.nostr_discovery).await;
     if is_client {

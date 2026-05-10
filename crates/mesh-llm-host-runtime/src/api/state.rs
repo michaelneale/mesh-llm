@@ -1,5 +1,6 @@
 use crate::mesh;
 use crate::network::affinity;
+use crate::network::discovery::MeshDiscoveryMode;
 use crate::plugin;
 use crate::runtime_data;
 use serde::{Serialize, Serializer};
@@ -118,6 +119,7 @@ pub(super) struct ApiInner {
     pub(super) mesh_name: Option<String>,
     pub(super) latest_version: Option<String>,
     pub(super) nostr_relays: Vec<String>,
+    pub(super) mesh_discovery_mode: MeshDiscoveryMode,
     pub(super) nostr_discovery: bool,
     pub(super) publication_state: PublicationState,
     pub(super) runtime_control: Option<tokio::sync::mpsc::UnboundedSender<RuntimeControlRequest>>,
