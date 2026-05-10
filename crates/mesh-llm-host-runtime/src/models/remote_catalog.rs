@@ -837,7 +837,14 @@ mod tests {
             variant.curated.draft.as_deref(),
             Some("Qwen3-Coder-Draft-Q4_K_M")
         );
-        assert_eq!(variant.curated.moe.as_deref(), Some("480B/35B"));
+        assert_eq!(
+            variant
+                .curated
+                .moe
+                .as_ref()
+                .and_then(|value| value.as_str()),
+            Some("480B/35B")
+        );
         assert!(matches!(
             variant.curated.mmproj.as_ref(),
             Some(CatalogSidecar::Asset(asset))
