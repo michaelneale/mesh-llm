@@ -35,19 +35,88 @@ echo "║  Build:  mesh-llm @ ${MESH_LLM_REF}"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo ""
 
+# Keep every large cache, temporary file, build artifact, and package output off
+# the container root filesystem. HF Jobs evicts pods when root ephemeral storage
+# exceeds 50G, while large GGUF splits can be hundreds of GB.
+JOB_WORK_ROOT="${JOB_WORK_ROOT:-/bucket/job-work}"
+if [ -z "${JOB_WORK_DIR:-}" ]; then
+    SAFE_TARGET_REPO="$(printf '%s' "$TARGET_REPO" | tr -c '[:alnum:]._-' '_')"
+    JOB_WORK_DIR="${JOB_WORK_ROOT}/${SAFE_TARGET_REPO}-$(date +%Y%m%d%H%M%S)-$$"
+    CLEANUP_JOB_WORK_DIR="${CLEANUP_JOB_WORK_DIR:-true}"
+else
+    CLEANUP_JOB_WORK_DIR="${CLEANUP_JOB_WORK_DIR:-false}"
+fi
+PACKAGE_DIR="${PACKAGE_DIR:-${JOB_WORK_DIR}/package}"
+HF_HOME="${HF_HOME:-${JOB_WORK_DIR}/hf-home}"
+HF_HUB_CACHE="${HF_HUB_CACHE:-${HF_HOME}/hub}"
+HF_XET_CACHE="${HF_XET_CACHE:-${HF_HOME}/xet}"
+JOB_TMP_DIR="${JOB_TMP_DIR:-${JOB_WORK_DIR}/tmp}"
+BUILD_DIR="${BUILD_DIR:-${JOB_WORK_DIR}/build}"
+TOOL_DIR="${TOOL_DIR:-${JOB_WORK_DIR}/tools}"
+VENV_DIR="${VENV_DIR:-${JOB_WORK_DIR}/venv}"
+CARGO_HOME="${CARGO_HOME:-${JOB_WORK_DIR}/cargo-home}"
+RUSTUP_HOME="${RUSTUP_HOME:-${JOB_WORK_DIR}/rustup-home}"
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${JOB_WORK_DIR}/cargo-target}"
+XDG_CACHE_HOME="${XDG_CACHE_HOME:-${JOB_WORK_DIR}/xdg-cache}"
+PIP_CACHE_DIR="${PIP_CACHE_DIR:-${JOB_WORK_DIR}/pip-cache}"
+TMPDIR="$JOB_TMP_DIR"
+TEMP="$JOB_TMP_DIR"
+TMP="$JOB_TMP_DIR"
+export JOB_WORK_DIR PACKAGE_DIR HF_HOME HF_HUB_CACHE HF_XET_CACHE
+export TMPDIR TEMP TMP CARGO_HOME RUSTUP_HOME CARGO_TARGET_DIR XDG_CACHE_HOME PIP_CACHE_DIR
+
+cleanup_job_work_dir() {
+    if [ "${CLEANUP_JOB_WORK_DIR}" = "true" ] && [ -n "${JOB_WORK_DIR:-}" ]; then
+        echo "Cleaning job work dir: ${JOB_WORK_DIR}"
+        rm -rf "$JOB_WORK_DIR"
+    fi
+}
+trap cleanup_job_work_dir EXIT
+
+mkdir -p "$PACKAGE_DIR" "$HF_HUB_CACHE" "$HF_XET_CACHE" "$JOB_TMP_DIR" "$TOOL_DIR" \
+    "$CARGO_HOME" "$RUSTUP_HOME" "$CARGO_TARGET_DIR" "$XDG_CACHE_HOME" "$PIP_CACHE_DIR"
+
+format_bytes() {
+    python3 - "$1" <<'PYTHON'
+import sys
+value = float(int(sys.argv[1]))
+for unit in ["B", "KiB", "MiB", "GiB", "TiB", "PiB"]:
+    if value < 1024 or unit == "PiB":
+        if unit == "B":
+            print(f"{int(value)} {unit}")
+        else:
+            print(f"{value:.1f} {unit}")
+        break
+    value /= 1024
+PYTHON
+}
+
+estimate_bucket_workspace_bytes() {
+    python3 - "$1" <<'PYTHON'
+import sys
+source = int(sys.argv[1])
+# Peak workspace is source cache + generated package + one current artifact's
+# transient sharded-slice scratch, plus fixed tool/cache headroom.
+headroom = 32 * 1024 ** 3
+print((source * 9 + 3) // 4 + headroom)
+PYTHON
+}
+
 # ─── Build tools ──────────────────────────────────────────────────────────
 echo "=== [1/9] Installing build dependencies ==="
 apt-get update -qq && apt-get install -y -qq \
     cmake git curl build-essential pkg-config libssl-dev \
     python3-pip python3-venv > /dev/null 2>&1
+apt-get clean
+rm -rf /var/lib/apt/lists/*
 
 echo "=== [2/9] Installing Rust ==="
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y > /dev/null 2>&1
-source /root/.cargo/env
+source "${CARGO_HOME}/env"
 
 echo "=== [3/9] Cloning mesh-llm and building skippy-model-package ==="
-git clone --filter=blob:none https://github.com/Mesh-LLM/mesh-llm.git /tmp/build
-cd /tmp/build
+git clone --filter=blob:none https://github.com/Mesh-LLM/mesh-llm.git "$BUILD_DIR"
+cd "$BUILD_DIR"
 if git ls-remote --exit-code --heads origin "$MESH_LLM_REF" >/dev/null 2>&1 || \
    git ls-remote --exit-code --tags origin "$MESH_LLM_REF" >/dev/null 2>&1; then
     git fetch --depth 1 origin "$MESH_LLM_REF"
@@ -75,7 +144,7 @@ find "$LLAMA_BUILD_DIR" -name "*.a" 2>/dev/null | head -10 || echo "  WARNING: n
 echo "  Building skippy-model-package..."
 SKIPPY_LLAMA_BUILD_DIR="$LLAMA_BUILD_DIR" \
     cargo build --release -p skippy-model-package 2>&1 | tail -20
-SLICER=/tmp/build/target/release/skippy-model-package
+SLICER="${CARGO_TARGET_DIR}/release/skippy-model-package"
 if [ ! -f "$SLICER" ]; then
     echo "ERROR: Build failed — binary not found at $SLICER"
     echo "Retrying with full output..."
@@ -83,43 +152,44 @@ if [ ! -f "$SLICER" ]; then
         cargo build --release -p skippy-model-package 2>&1
     exit 1
 fi
+cp "$SLICER" "${TOOL_DIR}/skippy-model-package"
+SLICER="${TOOL_DIR}/skippy-model-package"
+chmod +x "$SLICER"
+cd /
+rm -rf "$BUILD_DIR" "$CARGO_TARGET_DIR" "$CARGO_HOME" "$RUSTUP_HOME"
 echo "  ✓ Built: $SLICER"
+echo "  Root filesystem after build cleanup:"
+df -h / || true
 
 # ─── Split ────────────────────────────────────────────────────────────────
 echo ""
 echo "=== [4/9] Splitting model ==="
-JOB_WORK_ROOT="${JOB_WORK_ROOT:-/bucket/job-work}"
-if [ -z "${JOB_WORK_DIR:-}" ]; then
-    SAFE_TARGET_REPO="$(printf '%s' "$TARGET_REPO" | tr -c '[:alnum:]._-' '_')"
-    JOB_WORK_DIR="${JOB_WORK_ROOT}/${SAFE_TARGET_REPO}-$(date +%Y%m%d%H%M%S)-$$"
-    CLEANUP_JOB_WORK_DIR="${CLEANUP_JOB_WORK_DIR:-true}"
-else
-    CLEANUP_JOB_WORK_DIR="${CLEANUP_JOB_WORK_DIR:-false}"
-fi
-PACKAGE_DIR="${PACKAGE_DIR:-${JOB_WORK_DIR}/package}"
-HF_HOME="${HF_HOME:-${JOB_WORK_DIR}/hf-home}"
-HF_HUB_CACHE="${HF_HUB_CACHE:-${HF_HOME}/hub}"
-HF_XET_CACHE="${HF_XET_CACHE:-${HF_HOME}/xet}"
-export JOB_WORK_DIR PACKAGE_DIR HF_HOME HF_HUB_CACHE HF_XET_CACHE
-
-cleanup_job_work_dir() {
-    if [ "${CLEANUP_JOB_WORK_DIR}" = "true" ] && [ -n "${JOB_WORK_DIR:-}" ]; then
-        echo "Cleaning job work dir: ${JOB_WORK_DIR}"
-        rm -rf "$JOB_WORK_DIR"
-    fi
-}
-trap cleanup_job_work_dir EXIT
-
-mkdir -p "$PACKAGE_DIR" "$HF_HUB_CACHE" "$HF_XET_CACHE"
-
 if [ "$SOURCE_REVISION" = "main" ]; then
     SOURCE_REF="${SOURCE_REPO}:${SOURCE_QUANT}"
 else
     SOURCE_REF="${SOURCE_REPO}@${SOURCE_REVISION}:${SOURCE_QUANT}"
 fi
 echo "  Source ref: $SOURCE_REF"
+if [ -n "${SOURCE_TOTAL_BYTES:-}" ]; then
+    echo "  Source bytes: $SOURCE_TOTAL_BYTES"
+    ESTIMATED_BUCKET_BYTES="$(estimate_bucket_workspace_bytes "$SOURCE_TOTAL_BYTES")"
+    echo "  Estimated /bucket workspace needed: $(format_bytes "$ESTIMATED_BUCKET_BYTES")"
+fi
 echo "  Hugging Face cache: $HF_HUB_CACHE"
 echo "  Package workspace: $PACKAGE_DIR"
+echo "  Temporary workspace: $TMPDIR"
+ROOT_FS="$(df -P / | awk 'NR==2 {print $1}')"
+PACKAGE_FS="$(df -P "$PACKAGE_DIR" | awk 'NR==2 {print $1}')"
+if [ -n "$ROOT_FS" ] && [ "$ROOT_FS" = "$PACKAGE_FS" ]; then
+    echo "WARNING: package workspace is on the container root filesystem; very large splits may hit the HF Jobs 50G ephemeral storage limit." >&2
+fi
+if [ -n "${ESTIMATED_BUCKET_BYTES:-}" ]; then
+    PACKAGE_AVAILABLE_BYTES="$(df -Pk "$PACKAGE_DIR" | awk 'NR==2 {printf "%.0f", $4 * 1024}')"
+    if [ -n "$PACKAGE_AVAILABLE_BYTES" ] && [ "$PACKAGE_AVAILABLE_BYTES" -gt 0 ] && \
+        [ "$PACKAGE_AVAILABLE_BYTES" -lt "$ESTIMATED_BUCKET_BYTES" ]; then
+        echo "WARNING: package workspace has $(format_bytes "$PACKAGE_AVAILABLE_BYTES") available, below estimated need $(format_bytes "$ESTIMATED_BUCKET_BYTES")." >&2
+    fi
+fi
 time $SLICER write-package "$SOURCE_REF" \
     --out-dir "$PACKAGE_DIR"
 
@@ -139,10 +209,10 @@ echo "  ✓ Validation passed — all tensors accounted for"
 # ─── Publish ──────────────────────────────────────────────────────────────
 echo ""
 echo "=== [6/9] Publishing to HuggingFace ==="
-python3 -m venv /tmp/venv > /dev/null
-/tmp/venv/bin/pip install -q huggingface_hub
+python3 -m venv "$VENV_DIR" > /dev/null
+"$VENV_DIR/bin/pip" install -q huggingface_hub
 
-/tmp/venv/bin/python3 << PYTHON
+"$VENV_DIR/bin/python3" << PYTHON
 from huggingface_hub import HfApi
 import os, json
 
@@ -172,7 +242,7 @@ PYTHON
 # ─── Update catalog ───────────────────────────────────────────────────────
 echo ""
 echo "=== [7/9] Updating meshllm/catalog ==="
-/tmp/venv/bin/python3 << 'PYTHON'
+"$VENV_DIR/bin/python3" << 'PYTHON'
 from huggingface_hub import HfApi
 import os, json, tempfile
 
@@ -292,7 +362,7 @@ PYTHON
 # ─── Model Card ────────────────────────────────────────────────────────────
 echo ""
 echo "=== [8/9] Uploading model card ==="
-/tmp/venv/bin/python3 << 'PYTHON'
+"$VENV_DIR/bin/python3" << 'PYTHON'
 from huggingface_hub import HfApi
 from pathlib import Path
 import hashlib
