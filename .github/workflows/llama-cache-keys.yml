@@ -36,6 +36,12 @@ on:
       rocm_fat_cache_key:
         description: Exact fat ROCm cache key
         value: ${{ jobs.resolve.outputs.rocm_fat_cache_key }}
+      cpu_cache_inputs_hash:
+        description: Hash of repo inputs that affect CPU cache artifacts
+        value: ${{ jobs.resolve.outputs.cpu_cache_inputs_hash }}
+      cpu_cache_key:
+        description: Exact CPU cache key for shared llama.cpp ABI build
+        value: ${{ jobs.resolve.outputs.cpu_cache_key }}
 
 permissions:
   contents: read
@@ -59,6 +65,8 @@ jobs:
       cuda_blackwell_version: ${{ steps.cuda_blackwell_version.outputs.value }}
       rocm_slim_cache_key: ${{ steps.render.outputs.rocm_slim_cache_key }}
       rocm_fat_cache_key: ${{ steps.render.outputs.rocm_fat_cache_key }}
+      cpu_cache_inputs_hash: ${{ steps.cache_inputs.outputs.cpu_hash }}
+      cpu_cache_key: ${{ steps.render.outputs.cpu_cache_key }}
 
     steps:
       - uses: actions/checkout@v5
@@ -92,6 +100,7 @@ jobs:
           set -euo pipefail
           echo "cuda_hash=${{ hashFiles('scripts/build-linux.sh', 'scripts/build-llama.sh', 'third_party/llama.cpp/upstream.txt', 'third_party/llama.cpp/patches/**', 'Justfile', '.github/workflows/ci.yml', '.github/workflows/warm-caches.yml', '.github/workflows/gpu-warm-cache-job.yml', '.github/workflows/llama-cache-keys.yml', '.github/cache-version.txt') }}" >> "$GITHUB_OUTPUT"
           echo "rocm_hash=${{ hashFiles('scripts/build-linux.sh', 'scripts/build-linux-rocm.sh', 'scripts/build-llama.sh', 'third_party/llama.cpp/upstream.txt', 'third_party/llama.cpp/patches/**', 'Justfile', '.github/workflows/ci.yml', '.github/workflows/warm-caches.yml', '.github/workflows/gpu-warm-cache-job.yml', '.github/workflows/llama-cache-keys.yml', '.github/cache-version.txt') }}" >> "$GITHUB_OUTPUT"
+          echo "cpu_hash=${{ hashFiles('scripts/build-llama.sh', 'third_party/llama.cpp/upstream.txt', 'third_party/llama.cpp/patches/**', '.github/workflows/ci.yml', '.github/workflows/pr-checks.yml', '.github/workflows/warm-caches.yml', '.github/workflows/gpu-warm-cache-job.yml', '.github/workflows/llama-abi-build.yml', '.github/workflows/llama-cache-keys.yml', '.github/cache-version.txt') }}" >> "$GITHUB_OUTPUT"
 
       - name: Render cache keys
         id: render
@@ -102,6 +111,7 @@ jobs:
           LLAMA_SHA: ${{ steps.resolve.outputs.sha }}
           CUDA_HASH: ${{ steps.cache_inputs.outputs.cuda_hash }}
           ROCM_HASH: ${{ steps.cache_inputs.outputs.rocm_hash }}
+          CPU_HASH: ${{ steps.cache_inputs.outputs.cpu_hash }}
         run: |
           set -euo pipefail
           {
@@ -110,4 +120,5 @@ jobs:
             echo "cuda_blackwell_fat_cache_key=${CACHE_NAMESPACE}-skippy-abi-cuda-blackwell-fat-${LLAMA_SHA}-${CUDA_HASH}-arch75-80-86-87-89-90-100-120-cuda${CUDA_BLACKWELL_VERSION}"
             echo "rocm_slim_cache_key=${CACHE_NAMESPACE}-skippy-abi-rocm-slim-${LLAMA_SHA}-${ROCM_HASH}-gfx1100-rocm7.0"
             echo "rocm_fat_cache_key=${CACHE_NAMESPACE}-skippy-abi-rocm-fat-${LLAMA_SHA}-${ROCM_HASH}-gfx90a-gfx942-gfx1100-gfx1101-gfx1102-gfx1200-gfx1201-rocm7.0"
+            echo "cpu_cache_key=${CACHE_NAMESPACE}-skippy-abi-cpu-${LLAMA_SHA}-${CPU_HASH}"
           } >> "$GITHUB_OUTPUT"

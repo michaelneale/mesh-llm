@@ -67,6 +67,8 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.affected_crates != '[]' }}
     runs-on: ubuntu-latest
+    env:
+      LLAMA_STAGE_BUILD_DIR: .deps/llama-build/build-stage-abi-cpu
     strategy:
       matrix:
         batch: [0, 1, 2]
@@ -81,21 +83,25 @@ jobs:
         with:
           components: clippy
 
-      - uses: mozilla-actions/sccache-action@v0.0.9
-
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: . -> target
           prefix-key: mesh-llm-rust-pr-checks-${{ hashFiles('.github/cache-version.txt') }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Prepare patched llama.cpp ABI checkout
+      - name: Restore shared CPU ABI build
+        id: llama_cache_cpu
         if: ${{ needs.changes.outputs.all_rust_changed == 'true' || matrix.batch == 0 }}
-        run: scripts/prepare-llama.sh pinned
+        uses: actions/cache/restore@v5
+        with:
+          path: .deps/llama-build/build-stage-abi-cpu
+          key: mesh-llm-skippy-abi-cpu-${{ hashFiles('third_party/llama.cpp/upstream.txt') }}-${{ hashFiles('scripts/build-llama.sh', 'third_party/llama.cpp/upstream.txt', 'third_party/llama.cpp/patches/**', '.github/workflows/ci.yml', '.github/workflows/pr-checks.yml', '.github/workflows/warm-caches.yml', '.github/workflows/gpu-warm-cache-job.yml', '.github/workflows/llama-abi-build.yml', '.github/workflows/llama-cache-keys.yml', '.github/cache-version.txt') }}
 
-      - name: Build patched llama.cpp ABI libraries
-        if: ${{ needs.changes.outputs.all_rust_changed == 'true' || matrix.batch == 0 }}
-        run: scripts/build-llama.sh
+      - name: Prepare & build CPU ABI on cache miss
+        if: ${{ (needs.changes.outputs.all_rust_changed == 'true' || matrix.batch == 0) && steps.llama_cache_cpu.outputs.cache-hit != 'true' }}
+        run: |
+          scripts/prepare-llama.sh pinned
+          LLAMA_STAGE_BUILD_DIR=.deps/llama-build/build-stage-abi-cpu scripts/build-llama.sh
 
       - name: Clippy (all crates — shared file changed)
         if: ${{ needs.changes.outputs.all_rust_changed == 'true' && matrix.batch == 0 }}

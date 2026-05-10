@@ -15,8 +15,6 @@ env:
   CACHE_NAMESPACE: mesh-llm
   MODEL_URL: https://huggingface.co/unsloth/SmolLM2-135M-Instruct-GGUF/resolve/9e6855bc4be717fca1ef21360a1db4b29d5c559a/SmolLM2-135M-Instruct-Q8_0.gguf
   MODEL_FILE: SmolLM2-135M-Instruct-Q8_0.gguf
-  SCCACHE_GHA_ENABLED: "true"
-  LLAMA_STAGE_BUILD_DIR: .deps/llama.cpp/build-stage-abi-static
 
 jobs:
   changes:
@@ -54,6 +52,7 @@ jobs:
               - '.github/workflows/smoke.yml'
               - '.github/workflows/warm-caches.yml'
               - '.github/workflows/gpu-warm-cache-job.yml'
+              - '.github/workflows/llama-abi-build.yml'
               - '.github/workflows/llama-cache-keys.yml'
             ui:
               - 'crates/mesh-llm-ui/**'
@@ -107,10 +106,18 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.benchmarks == 'true' }}
     uses: ./.github/workflows/llama-cache-keys.yml
 
+  # TEMPORARY: warm CPU ABI before linux job runs. Remove after verifying cache flow end-to-end.
+  warm_llama_cpu:
+    needs: [changes, resolve_llama_cache_keys]
+    if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.rust == 'true' }}
+    uses: ./.github/workflows/llama-abi-build.yml
+
   linux:
-    needs: changes
+    needs: [changes, resolve_llama_cache_keys, warm_llama_cpu]
     if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
     runs-on: ubuntu-latest
+    env:
+      LLAMA_STAGE_BUILD_DIR: .deps/llama-build/build-stage-abi-cpu
     steps:
       - uses: actions/checkout@v5
 
@@ -157,8 +164,6 @@ jobs:
         with:
           targets: aarch64-linux-android
 
-      - uses: mozilla-actions/sccache-action@v0.0.9
-
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: . -> target
@@ -201,11 +206,24 @@ jobs:
           cargo test -p mesh-api
           cargo test -p mesh-api-ffi
 
-      - name: Prepare patched llama.cpp ABI checkout
-        run: scripts/prepare-llama.sh pinned
+      - name: Restore shared CPU ABI build
+        id: llama_cache_cpu
+        uses: actions/cache/restore@v5
+        with:
+          path: .deps/llama-build/build-stage-abi-cpu
+          key: ${{ needs.resolve_llama_cache_keys.outputs.cpu_cache_key }}
 
-      - name: Build patched llama.cpp ABI libraries
-        run: scripts/build-llama.sh
+      - name: Prepare & build CPU ABI on cache miss
+        if: steps.llama_cache_cpu.outputs.cache-hit != 'true'
+        run: |
+          scripts/prepare-llama.sh pinned
+          LLAMA_STAGE_BUILD_DIR=.deps/llama-build/build-stage-abi-cpu scripts/build-llama.sh
+
+      - name: Verify CPU ABI build
+        run: |
+          set -euo pipefail
+          test -d ".deps/llama-build/build-stage-abi-cpu"
+          find .deps/llama-build/build-stage-abi-cpu -maxdepth 3 -type f \( -name '*.a' -o -name 'libllama*' \) | head -20
 
       - name: Skippy crate tests
         run: |
@@ -267,10 +285,6 @@ jobs:
           name: ci-linux-inference-binaries
           path: target/debug/mesh-llm
           if-no-files-found: error
-
-      - name: Show sccache stats
-        if: always()
-        run: sccache --show-stats || true
 
   inference_smoke_tests:
     needs: [changes, linux]
@@ -592,7 +606,6 @@ jobs:
           fi
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@just
-      - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Prepare UI placeholder
         run: mkdir -p crates/mesh-llm-ui/dist && printf '<html></html>' > crates/mesh-llm-ui/dist/index.html
       - uses: actions/cache/restore@v5
@@ -660,7 +673,6 @@ jobs:
           fi
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@just
-      - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Prepare UI placeholder
         run: mkdir -p crates/mesh-llm-ui/dist && printf '<html></html>' > crates/mesh-llm-ui/dist/index.html
       - uses: actions/cache/restore@v5
@@ -703,7 +715,6 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev glslc libvulkan-dev spirv-headers
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@just
-      - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Prepare UI placeholder
         run: mkdir -p crates/mesh-llm-ui/dist && printf '<html></html>' > crates/mesh-llm-ui/dist/index.html
       - name: Build Linux Vulkan backend

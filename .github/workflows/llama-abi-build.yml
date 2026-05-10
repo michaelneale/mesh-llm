@@ -1,0 +1,88 @@
+name: Build shared llama.cpp CPU ABI cache
+
+on:
+  # TEMPORARY: also runs on PRs to test shared CPU ABI cache flow — remove after verification
+  pull_request:
+    paths:
+      - 'third_party/llama.cpp/upstream.txt'
+      - 'third_party/llama.cpp/patches/**'
+      - '.github/workflows/ci.yml'
+      - '.github/workflows/pr-checks.yml'
+      - '.github/workflows/warm-caches.yml'
+      - '.github/workflows/gpu-warm-cache-job.yml'
+      - '.github/workflows/llama-abi-build.yml'
+      - '.github/workflows/llama-cache-keys.yml'
+      - '.github/cache-version.txt'
+      - 'scripts/build-llama.sh'
+  push:
+    branches: [main]
+    paths:
+      - 'third_party/llama.cpp/upstream.txt'
+      - 'third_party/llama.cpp/patches/**'
+      - '.github/workflows/ci.yml'
+      - '.github/workflows/pr-checks.yml'
+      - '.github/workflows/warm-caches.yml'
+      - '.github/workflows/gpu-warm-cache-job.yml'
+      - '.github/workflows/llama-abi-build.yml'
+      - '.github/workflows/llama-cache-keys.yml'
+      - '.github/cache-version.txt'
+      - 'scripts/build-llama.sh'
+  workflow_dispatch:
+
+concurrency:
+  group: llama-abi-build-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CACHE_NAMESPACE: mesh-llm
+
+jobs:
+  resolve_llama_cache_keys:
+    uses: ./.github/workflows/llama-cache-keys.yml
+
+  warm_llama_cpu:
+    name: Build shared llama.cpp CPU ABI cache
+    needs: resolve_llama_cache_keys
+    runs-on: ubuntu-latest
+    env:
+      LLAMA_STAGE_BUILD_DIR: .deps/llama-build/build-stage-abi-cpu
+      LLAMA_STAGE_BACKEND: cpu
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Restore shared CPU ABI build
+        id: llama_cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ env.LLAMA_STAGE_BUILD_DIR }}
+          key: ${{ needs.resolve_llama_cache_keys.outputs.cpu_cache_key }}
+
+      - name: Build CPU ABI cache on miss
+        if: steps.llama_cache.outputs.cache-hit != 'true'
+        run: |
+          scripts/prepare-llama.sh pinned
+          scripts/build-llama.sh
+
+      - name: Verify CPU ABI build
+        run: |
+          set -euo pipefail
+          test -d "${{ env.LLAMA_STAGE_BUILD_DIR }}"
+          find "${{ env.LLAMA_STAGE_BUILD_DIR }}" -maxdepth 3 -type f \( -name '*.a' -o -name 'libllama*' \) | head -20
+
+      - name: Save shared CPU ABI build
+        if: steps.llama_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ env.LLAMA_STAGE_BUILD_DIR }}
+          key: ${{ steps.llama_cache.outputs.cache-primary-key }}
