@@ -71,7 +71,7 @@ jobs:
 
   rust-clippy-batches:
     needs: [changes, warm_llama_cpu]
-    if: ${{ needs.changes.outputs.affected_crates != '[]' }}
+    if: ${{ needs.changes.outputs.affected_crates != '[]' && needs.warm_llama_cpu.result != 'failure' }}
     runs-on: ubuntu-latest
     env:
       LLAMA_STAGE_BUILD_DIR: .deps/llama-build/build-stage-abi-cpu

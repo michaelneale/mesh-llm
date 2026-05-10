@@ -97,7 +97,7 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         run: |
           RESULT=$(cat /tmp/changed-files.txt | bash scripts/affected-crates.sh --stdin)
-          echo "affected_crates=$(echo "$RESULT" | jq -r '.affected')" >> $GITHUB_OUTPUT
+          echo "affected_crates=$(echo "$RESULT" | jq -c '.affected')" >> $GITHUB_OUTPUT
           echo "batches_json=$(echo "$RESULT" | jq -c '.batches')" >> $GITHUB_OUTPUT
           echo "all_rust_changed=$(echo "$RESULT" | jq -r '.all_rust_changed')" >> $GITHUB_OUTPUT
 
@@ -114,7 +114,7 @@ jobs:
 
   linux:
     needs: [changes, resolve_llama_cache_keys, warm_llama_cpu]
-    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true') && needs.warm_llama_cpu.result != 'failure' }}
     runs-on: ubuntu-latest
     env:
       LLAMA_STAGE_BUILD_DIR: .deps/llama-build/build-stage-abi-cpu
