@@ -47,6 +47,17 @@ message PeerAnnouncement {
   reserved 36;
   reserved "artifact_transfer_supported";
   repeated MeshSubprotocol subprotocols = 37;       // Additive feature discovery for admitted subsystem protocols
+  optional uint32 latency_ms = 40;
+  optional LatencySource latency_source = 41;
+  optional uint32 latency_age_ms = 42;
+  optional bytes latency_observer_id = 43;
+
+enum LatencySource {
+  LATENCY_SOURCE_UNSPECIFIED = 0;
+  LATENCY_SOURCE_DIRECT = 1;       // Measured directly by this node
+  LATENCY_SOURCE_ESTIMATED = 2;    // Estimated via transitive gossip
+  LATENCY_SOURCE_UNKNOWN = 3;      // Unknown source (e.g. propagated with no origin)
+}
 }
 
 message MeshSubprotocol {

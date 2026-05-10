@@ -42,7 +42,7 @@ fn runtime_100_create_drop_no_thread_leak() {
         drop(rt);
     }
     let after = thread_count();
-    let diff = (after as i64 - before as i64).abs();
+    let diff = after.saturating_sub(before);
     println!("threads_before={before} threads_after={after} diff={diff}");
     assert!(
         diff <= 3,

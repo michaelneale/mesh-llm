@@ -108,6 +108,14 @@ pub struct PeerAnnouncement {
     /// Additive feature discovery for admitted subsystem protocols
     #[prost(message, repeated, tag = "37")]
     pub subprotocols: ::prost::alloc::vec::Vec<MeshSubprotocol>,
+    #[prost(uint32, optional, tag = "40")]
+    pub latency_ms: ::core::option::Option<u32>,
+    #[prost(enumeration = "LatencySource", tag = "41")]
+    pub latency_source: i32,
+    #[prost(uint32, optional, tag = "42")]
+    pub latency_age_ms: ::core::option::Option<u32>,
+    #[prost(bytes = "vec", optional, tag = "43")]
+    pub latency_observer_id: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MeshSubprotocol {
@@ -638,6 +646,34 @@ impl NodeRole {
             "WORKER" => Some(Self::Worker),
             "HOST" => Some(Self::Host),
             "CLIENT" => Some(Self::Client),
+            _ => None,
+        }
+    }
+}
+/// Latency source type for peer latency data
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum LatencySource {
+    Unspecified = 0,
+    Direct = 1,
+    Estimated = 2,
+    Unknown = 3,
+}
+impl LatencySource {
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "LATENCY_SOURCE_UNSPECIFIED",
+            Self::Direct => "DIRECT",
+            Self::Estimated => "ESTIMATED",
+            Self::Unknown => "UNKNOWN",
+        }
+    }
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "LATENCY_SOURCE_UNSPECIFIED" => Some(Self::Unspecified),
+            "DIRECT" => Some(Self::Direct),
+            "ESTIMATED" => Some(Self::Estimated),
+            "UNKNOWN" => Some(Self::Unknown),
             _ => None,
         }
     }

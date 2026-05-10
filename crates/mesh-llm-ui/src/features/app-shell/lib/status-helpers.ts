@@ -1,3 +1,4 @@
+import { LatencySource } from '@/lib/api/types'
 import { LIVE_NODE_STATE_LABELS } from '@/features/app-shell/lib/status-types'
 import type {
   LiveNodeState,
@@ -8,6 +9,11 @@ import type {
   ThemeMode
 } from '@/features/app-shell/lib/status-types'
 import type { TopologyNode } from '@/features/app-shell/lib/topology-types'
+import type { PeerLatencyState } from '@/lib/format-latency'
+import {
+  peerLatencyHint as formatPeerLatencyHint,
+  formatPeerLatencySummary as formatPeerLatencySummaryFn
+} from '@/lib/format-latency'
 
 type GpuInventory = Array<{ vram_bytes: number }>
 
@@ -217,4 +223,23 @@ export function applyThemeMode(mode: ThemeMode) {
   const dark = mode === 'dark' || (mode === 'auto' && media.matches)
   document.documentElement.classList.toggle('dark', dark)
   document.documentElement.style.colorScheme = mode === 'auto' ? 'light dark' : dark ? 'dark' : 'light'
+}
+
+export function peerLatencyState(peer: Peer): PeerLatencyState {
+  return {
+    latencyMs: peer.latency_ms ?? null,
+    source: peer.latency_source ?? LatencySource.UNSPECIFIED,
+    ageMs: peer.latency_age_ms ?? null,
+    observerId: peer.latency_observer_id ?? null
+  }
+}
+
+export function peerLatencyHint(peer: Peer): string {
+  const state = peerLatencyState(peer)
+  return formatPeerLatencyHint(state)
+}
+
+export function formatPeerLatencySummary(peer: Peer): string {
+  const state = peerLatencyState(peer)
+  return formatPeerLatencySummaryFn(state)
 }

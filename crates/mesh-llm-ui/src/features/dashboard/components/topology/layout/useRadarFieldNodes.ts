@@ -1,7 +1,9 @@
 /* eslint-disable react-hooks/refs -- previousLayout, previousSignatures, previousContext are snapshot values captured from refs at render time, not live ref access in callbacks */
 import { useEffect, useMemo, useRef } from 'react'
 
-import { formatLatency, formatLiveNodeState, modelRefLabel } from '@/features/app-shell/lib/status-helpers'
+import { LatencySource } from '@/lib/api/types'
+import { formatPeerLatencySummary } from '@/lib/format-latency'
+import { formatLiveNodeState, modelRefLabel } from '@/features/app-shell/lib/status-helpers'
 import type { TopologyNode } from '@/features/app-shell/lib/topology-types'
 
 import { color, hashString, nodeUpdateSignature, TAU } from '@/features/dashboard/components/topology/helpers'
@@ -239,7 +241,12 @@ export function useRadarFieldNodes(
         subtitle: 'Client',
         hostname: node.hostname,
         role: 'Client',
-        latencyLabel: formatLatency(node.latencyMs),
+        latencyLabel: formatPeerLatencySummary({
+          latencyMs: node.latencyMs ?? null,
+          source: node.latencySource ?? LatencySource.UNSPECIFIED,
+          ageMs: node.latencyAgeMs ?? null,
+          observerId: node.latencyObserverId ?? null
+        }),
         vramLabel: 'n/a',
         modelLabel: 'API-only',
         gpuLabel: 'No GPU',
@@ -275,7 +282,12 @@ export function useRadarFieldNodes(
         subtitle: formatLiveNodeState(node.state),
         hostname: node.hostname,
         role: node.host ? 'Host' : 'Worker',
-        latencyLabel: formatLatency(node.latencyMs),
+        latencyLabel: formatPeerLatencySummary({
+          latencyMs: node.latencyMs ?? null,
+          source: node.latencySource ?? LatencySource.UNSPECIFIED,
+          ageMs: node.latencyAgeMs ?? null,
+          observerId: node.latencyObserverId ?? null
+        }),
         vramLabel: `${Math.max(0, node.vram).toFixed(1)} GB`,
         modelLabel: modelLabel(models),
         gpuLabel: computeLabel(node),
@@ -311,7 +323,12 @@ export function useRadarFieldNodes(
         subtitle: formatLiveNodeState(node.state),
         hostname: node.hostname,
         role: node.host ? 'Host' : 'Serving',
-        latencyLabel: formatLatency(node.latencyMs),
+        latencyLabel: formatPeerLatencySummary({
+          latencyMs: node.latencyMs ?? null,
+          source: node.latencySource ?? LatencySource.UNSPECIFIED,
+          ageMs: node.latencyAgeMs ?? null,
+          observerId: node.latencyObserverId ?? null
+        }),
         vramLabel: `${Math.max(0, node.vram).toFixed(1)} GB`,
         modelLabel: modelLabel(models),
         gpuLabel: computeLabel(node),
@@ -347,7 +364,12 @@ export function useRadarFieldNodes(
         subtitle: focusModel ? modelRefLabel(focusModel) : formatLiveNodeState(node.state),
         hostname: node.hostname,
         role: node.host ? 'Host' : 'Serving',
-        latencyLabel: formatLatency(node.latencyMs),
+        latencyLabel: formatPeerLatencySummary({
+          latencyMs: node.latencyMs ?? null,
+          source: node.latencySource ?? LatencySource.UNSPECIFIED,
+          ageMs: node.latencyAgeMs ?? null,
+          observerId: node.latencyObserverId ?? null
+        }),
         vramLabel: `${Math.max(0, node.vram).toFixed(1)} GB`,
         modelLabel: modelLabel(models),
         gpuLabel: computeLabel(node),

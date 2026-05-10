@@ -20,6 +20,36 @@ BACKEND=""
 CUDA_ARCH=""
 ROCM_ARCH=""
 
+append_rustflag() {
+    local flag="$1"
+    case " ${RUSTFLAGS:-} " in
+        *" $flag "*) ;;
+        *) export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }$flag" ;;
+    esac
+}
+
+configure_lld_linker() {
+    if ! command -v ld.lld >/dev/null 2>&1; then
+        cat >&2 <<'EOF'
+Error: LLVM ld.lld was not found.
+
+lld is required for faster Rust builds (measured up to 26% faster locally).
+
+Install lld, then rerun the just command. Common Linux packages:
+  Ubuntu/Debian: sudo apt-get update && sudo apt-get install -y lld
+  Fedora:        sudo dnf install lld
+  Arch Linux:    sudo pacman -S lld
+  openSUSE:      sudo zypper install lld
+
+The build requires ld.lld to be available on PATH.
+EOF
+        exit 1
+    fi
+
+    append_rustflag "-C link-arg=-fuse-ld=lld"
+    echo "Using Rust linker: $(command -v ld.lld)"
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --clean)
@@ -190,6 +220,8 @@ if [[ "$CLEAN" -eq 1 ]]; then
     rm -rf "$LLAMA_STAGE_BUILD_DIR"
 fi
 
+configure_lld_linker
+
 echo "Preparing patched llama.cpp ABI checkout..."
 LLAMA_WORKDIR="$LLAMA_DIR" "$SCRIPT_DIR/prepare-llama.sh" "${MESH_LLM_LLAMA_PIN_SHA:-pinned}"
 
@@ -207,12 +239,15 @@ elif [[ -d "$UI_DIR" ]]; then
     "$SCRIPT_DIR/build-ui.sh" "$UI_DIR"
 fi
 
-if [[ "${MESH_LLM_BUILD_PROFILE:-release}" == "dev" || "${MESH_LLM_BUILD_PROFILE:-release}" == "debug" ]]; then
+if [[ "${MESH_LLM_BUILD_PROFILE:-debug}" == "dev" || "${MESH_LLM_BUILD_PROFILE:-debug}" == "debug" ]]; then
     echo "Building mesh-llm (profile: dev, bin only)..."
     (cd "$REPO_ROOT" && cargo build -p mesh-llm --bin mesh-llm)
     echo "Mesh binary: target/debug/mesh-llm"
-else
+elif [[ "${MESH_LLM_BUILD_PROFILE:-debug}" == "release" ]]; then
     echo "Building mesh-llm (profile: release)..."
     (cd "$REPO_ROOT" && cargo build --release -p mesh-llm)
     echo "Mesh binary: target/release/mesh-llm"
+else
+    echo "Unsupported MESH_LLM_BUILD_PROFILE '${MESH_LLM_BUILD_PROFILE:-debug}'. Expected debug, dev, or release." >&2
+    exit 1
 fi

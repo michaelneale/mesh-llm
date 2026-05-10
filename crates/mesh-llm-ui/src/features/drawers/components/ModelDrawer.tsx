@@ -7,7 +7,8 @@ import { modelStatusBadge } from '@/features/drawers/lib/model-status'
 import { DrawerHeader } from '@/features/drawers/components/DrawerHeader'
 import { KV } from '@/features/drawers/components/KV'
 import { SectionHead } from '@/features/drawers/components/SectionHead'
-import { formatLatency } from '@/lib/format-latency'
+import { LatencySource } from '@/lib/api/types'
+import { formatPeerLatencySummary } from '@/lib/format-latency'
 import type { ConfigModel, ModelSummary, Peer } from '@/features/app-tabs/types'
 
 type DrawerModel = ConfigModel | ModelSummary
@@ -185,7 +186,14 @@ function ModelDrawerContent({
                 key={peer.id}
               >
                 <span>{peer.shortId ?? peer.hostname}</span>
-                <span className="text-fg-faint">{formatLatency(peer.latencyMs)} ms</span>
+                <span className="text-fg-faint">
+                  {formatPeerLatencySummary({
+                    latencyMs: peer.latencyMs ?? null,
+                    source: peer.latencySource ?? LatencySource.UNSPECIFIED,
+                    ageMs: peer.latencyAgeMs ?? null,
+                    observerId: peer.latencyObserverId ?? null
+                  })}
+                </span>
                 <span>{modelSummarySize(model)}</span>
                 <StatusBadge tone="accent">100%</StatusBadge>
               </div>

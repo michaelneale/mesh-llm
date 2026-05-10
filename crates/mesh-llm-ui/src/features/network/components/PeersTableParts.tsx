@@ -15,7 +15,8 @@ import {
   type SortDirection
 } from '@/features/network/lib/peers-table-utils'
 import { cn } from '@/lib/cn'
-import { formatLatency } from '@/lib/format-latency'
+import { LatencySource } from '@/lib/api/types'
+import { formatPeerLatencySummary } from '@/lib/format-latency'
 import type { PeerDTO } from '@/features/app-tabs/types'
 
 export const PEERS_TABLE_GRID_COLUMNS =
@@ -227,7 +228,12 @@ export function PeerRow({ peer, active, isLast, onSelect, onHoverPeerIdChange }:
             <ShareMeter sharePct={peer.sharePct} />
           </div>
           <div className="hidden text-right font-mono text-[length:var(--density-type-caption-lg)] text-fg-dim lg:block">
-            {formatLatency(peer.latencyMs)} ms
+            {formatPeerLatencySummary({
+              latencyMs: peer.latencyMs ?? null,
+              source: peer.latencySource ?? LatencySource.UNSPECIFIED,
+              ageMs: peer.latencyAgeMs ?? null,
+              observerId: peer.latencyObserverId ?? null
+            })}
           </div>
           <div className="hidden justify-end text-right lg:flex">{peer.role && <RolePill role={peer.role} />}</div>
           <div className="hidden justify-end text-right lg:flex">
@@ -258,7 +264,12 @@ export function PeerRow({ peer, active, isLast, onSelect, onHoverPeerIdChange }:
         </PeerValueTooltip>
         <div className="col-span-2 grid min-w-0 grid-cols-[auto_auto_minmax(92px,1fr)] items-center gap-x-3 gap-y-1 lg:hidden">
           <div className="text-right font-mono text-[length:var(--density-type-caption-lg)] text-fg-dim">
-            {formatLatency(peer.latencyMs)} ms
+            {formatPeerLatencySummary({
+              latencyMs: peer.latencyMs ?? null,
+              source: peer.latencySource ?? LatencySource.UNSPECIFIED,
+              ageMs: peer.latencyAgeMs ?? null,
+              observerId: peer.latencyObserverId ?? null
+            })}
           </div>
           <div className="text-right font-mono text-[length:var(--density-type-caption-lg)]">
             {peer.vramGB?.toFixed(1) ?? '—'} GB

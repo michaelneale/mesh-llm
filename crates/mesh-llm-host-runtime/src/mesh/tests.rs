@@ -828,11 +828,18 @@ fn make_test_peer_info(peer_id: EndpointId) -> PeerInfo {
         experts_summary: None,
         available_model_sizes: HashMap::new(),
         served_model_descriptors: vec![],
-        served_model_runtime: vec![],
+        served_model_runtime: vec![ModelRuntimeDescriptor {
+            model_name: "Qwen3-8B-Q4_K_M".to_string(),
+            identity_hash: Some("sha256:abc123".into()),
+            context_length: Some(32768),
+            ready: true,
+        }],
         owner_attestation: None,
         artifact_transfer_supported: false,
         stage_status_list_supported: false,
         owner_summary: OwnershipSummary::default(),
+        display_rtt: None,
+        propagated_latency: None,
     }
 }
 
@@ -1672,22 +1679,19 @@ fn gossip_frame_roundtrip_preserves_scanned_model_metadata() {
                 canonical_ref: Some("hf/bartowski/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf".into()),
                 repository: Some("bartowski/Qwen3-8B-GGUF".into()),
                 revision: Some("main".into()),
-                artifact: Some("Qwen3-8B-Q4_K_M.gguf".into()),
-                local_file_name: Some("Qwen3-8B-Q4_K_M.gguf".into()),
-                identity_hash: Some("sha256:abc123".into()),
             },
-            capabilities: crate::models::ModelCapabilities::default(),
-            topology: Some(crate::models::ModelTopology { moe: None }),
+            format: ModelFormat::LlamaGGUF,
+            quantization: "Q4_K_M".to_string(),
+            size_bytes: 4_800_000_000,
         }],
-        served_model_runtime: vec![ModelRuntimeDescriptor {
-            model_name: "Qwen3-8B-Q4_K_M".to_string(),
-            identity_hash: Some("sha256:abc123".into()),
-            context_length: Some(32768),
-            ready: true,
-        }],
+        served_model_runtime: vec![],
         owner_attestation: None,
-        artifact_transfer_supported: true,
-        stage_status_list_supported: true,
+        artifact_transfer_supported: false,
+        stage_status_list_supported: false,
+        latency_ms: None,
+        latency_source: None,
+        latency_age_ms: None,
+        latency_observer_id: None,
     };
 
     let proto_pa = local_ann_to_proto_ann(&local_ann);
@@ -1912,9 +1916,13 @@ fn transitive_peer_update_refreshes_metadata_fields() {
         owner_attestation: None,
         artifact_transfer_supported: true,
         stage_status_list_supported: true,
+        latency_ms: None,
+        latency_source: None,
+        latency_age_ms: None,
+        latency_observer_id: None,
     };
 
-    apply_transitive_ann(&mut existing, &addr, &ann);
+    apply_transitive_ann(&mut existing, &addr, &ann, test_endpoint_id(0xee));
 
     assert!(
         existing.available_models.is_empty(),
@@ -1992,9 +2000,13 @@ fn transitive_peer_merge_preserves_richer_direct_address() {
         owner_attestation: None,
         artifact_transfer_supported: true,
         stage_status_list_supported: true,
+        latency_ms: None,
+        latency_source: None,
+        latency_age_ms: None,
+        latency_observer_id: None,
     };
 
-    apply_transitive_ann(&mut existing, &weak_addr, &ann);
+    apply_transitive_ann(&mut existing, &weak_addr, &ann, test_endpoint_id(0xee));
 
     assert_eq!(
         existing.addr.addrs.len(),
@@ -2047,7 +2059,7 @@ fn transitive_peer_merge_preserves_richer_direct_address() {
         artifact_transfer_supported: true,
         stage_status_list_supported: true,
     };
-    apply_transitive_ann(&mut existing, &richer_addr, &ann2);
+    apply_transitive_ann(&mut existing, &richer_addr, &ann2, test_endpoint_id(0xee));
 
     assert_eq!(
         existing.addr.addrs.len(),
@@ -2618,9 +2630,13 @@ fn transitive_peer_update_refreshes_last_mentioned() {
         owner_attestation: None,
         artifact_transfer_supported: true,
         stage_status_list_supported: true,
+        latency_ms: None,
+        latency_source: None,
+        latency_age_ms: None,
+        latency_observer_id: None,
     };
 
-    apply_transitive_ann(&mut peer, &addr, &ann);
+    apply_transitive_ann(&mut peer, &addr, &ann, test_endpoint_id(0xee));
 
     // Before refreshing last_mentioned, verify the peer WOULD be pruned.
     let prune_cutoff_pre =
@@ -3365,6 +3381,8 @@ fn make_test_peer(id: EndpointId, rtt_ms: Option<u32>, vram_gb: u64) -> PeerInfo
         artifact_transfer_supported: false,
         stage_status_list_supported: false,
         owner_summary: OwnershipSummary::default(),
+        display_rtt: None,
+        propagated_latency: None,
     }
 }
 

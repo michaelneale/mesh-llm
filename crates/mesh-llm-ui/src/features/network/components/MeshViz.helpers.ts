@@ -3,6 +3,8 @@ import type { CSSProperties } from 'react'
 import type { MeshVizNodeColors } from '@/features/network/lib/mesh-viz-dot-color-schemes'
 import type { MeshNode, MeshNodeRenderKind, Peer } from '@/features/app-tabs/types'
 import { nonBlankText } from '@/features/network/lib/mesh-node-labels'
+import { LatencySource } from '@/lib/api/types'
+import { formatPeerLatencySummary } from '@/lib/format-latency'
 
 export type HoverMetric = {
   id: string
@@ -282,13 +284,19 @@ export function roleLabel(node: MeshNode, peer: Peer | undefined) {
 
 export function latencyLabel(node: MeshNode, peer: Peer | undefined) {
   if (!peer) {
+    // For mesh nodes (not peers), fall back to simple latency display
     const latencyMs = node.latencyMs
-
     if (latencyMs == null) return 'N/A'
     return latencyMs < 2 ? '<1 ms' : `${latencyMs.toFixed(1)} ms`
   }
 
-  return peer.latencyMs < 2 ? '<1 ms' : `${peer.latencyMs.toFixed(1)} ms`
+  // For peers, use the new latency formatting with source information
+  return formatPeerLatencySummary({
+    latencyMs: peer.latencyMs ?? null,
+    source: peer.latencySource ?? LatencySource.UNSPECIFIED,
+    ageMs: peer.latencyAgeMs ?? null,
+    observerId: peer.latencyObserverId ?? null
+  })
 }
 
 export function hoverCardPlacement(node: MeshNode): HoverCardPlacement {

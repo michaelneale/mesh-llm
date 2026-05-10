@@ -64,7 +64,8 @@ export function compareText(a: string, b: string): number {
 }
 
 export function comparePeers(a: Peer, b: Peer, sort: SortState): number {
-  const numericCompare = (left: number | undefined, right: number | undefined) => (left ?? -1) - (right ?? -1)
+  const numericCompare = (left: number | null | undefined, right: number | null | undefined) =>
+    (left ?? -1) - (right ?? -1)
   const result =
     sort.key === 'id'
       ? compareText(`${a.shortId ?? a.id} ${a.hostname}`, `${b.shortId ?? b.id} ${b.hostname}`)

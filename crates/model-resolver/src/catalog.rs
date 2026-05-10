@@ -2,11 +2,93 @@ use std::collections::HashMap;
 
 use serde::{de, Deserialize, Deserializer, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CatalogEntry {
     pub schema_version: u32,
     pub source_repo: String,
     pub variants: HashMap<String, CatalogVariant>,
+}
+
+impl<'de> Deserialize<'de> for CatalogEntry {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawCatalogEntry {
+            schema_version: u32,
+            #[serde(default)]
+            source_repo: Option<String>,
+            variants: CatalogVariants,
+        }
+
+        let raw = RawCatalogEntry::deserialize(deserializer)?;
+        let source_repo = raw
+            .source_repo
+            .or_else(|| {
+                raw.variants
+                    .0
+                    .values()
+                    .next()
+                    .map(|variant| variant.source.repo.clone())
+            })
+            .ok_or_else(|| de::Error::missing_field("source_repo"))?;
+
+        Ok(CatalogEntry {
+            schema_version: raw.schema_version,
+            source_repo,
+            variants: raw.variants.0,
+        })
+    }
+}
+
+struct CatalogVariants(HashMap<String, CatalogVariant>);
+
+impl<'de> Deserialize<'de> for CatalogVariants {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value {
+            serde_json::Value::Object(object) => {
+                let mut variants = HashMap::with_capacity(object.len());
+                for (name, value) in object {
+                    let variant = CatalogVariant::deserialize(value).map_err(de::Error::custom)?;
+                    variants.insert(name, variant);
+                }
+                Ok(Self(variants))
+            }
+            serde_json::Value::Array(array) => {
+                let mut variants = HashMap::with_capacity(array.len());
+                for (index, value) in array.into_iter().enumerate() {
+                    let variant = CatalogVariant::deserialize(value).map_err(de::Error::custom)?;
+                    let key = catalog_variant_key_from_list_item(&variant, index);
+                    variants.insert(key, variant);
+                }
+                Ok(Self(variants))
+            }
+            value => Err(de::Error::custom(format!(
+                "catalog variants must be an object or array; got {value}"
+            ))),
+        }
+    }
+}
+
+fn catalog_variant_key_from_list_item(variant: &CatalogVariant, index: usize) -> String {
+    variant
+        .source
+        .file
+        .as_deref()
+        .map(|file| file.strip_suffix(".gguf").unwrap_or(file).to_string())
+        .filter(|file| !file.is_empty())
+        .unwrap_or_else(|| {
+            if variant.curated.name.is_empty() {
+                format!("variant-{index}")
+            } else {
+                variant.curated.name.clone()
+            }
+        })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,8 +120,8 @@ pub struct CuratedMeta {
         deserialize_with = "deserialize_optional_string_or_legacy_bool"
     )]
     pub draft: Option<String>,
-    #[serde(default)]
-    pub moe: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_moe")]
+    pub moe: Option<serde_json::Value>,
     #[serde(default)]
     pub extra_files: Vec<serde_json::Value>,
     #[serde(default)]
@@ -76,6 +158,23 @@ where
         Some(serde_json::Value::Bool(_)) => Ok(None),
         Some(value) => Err(de::Error::custom(format!(
             "catalog curated.draft must be a string, null, or legacy bool; got {value}"
+        ))),
+    }
+}
+
+fn deserialize_optional_moe<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<serde_json::Value>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(value)) => Ok(Some(serde_json::Value::String(value))),
+        Some(serde_json::Value::Object(value)) => Ok(Some(serde_json::Value::Object(value))),
+        Some(value) => Err(de::Error::custom(format!(
+            "catalog curated.moe must be a string, object, or null; got {value}"
         ))),
     }
 }
@@ -128,7 +227,14 @@ mod tests {
             variant.curated.draft.as_deref(),
             Some("Qwen3-Coder-Draft-Q4_K_M")
         );
-        assert_eq!(variant.curated.moe.as_deref(), Some("480B/35B"));
+        assert_eq!(
+            variant
+                .curated
+                .moe
+                .as_ref()
+                .and_then(|value| value.as_str()),
+            Some("480B/35B")
+        );
         assert!(matches!(
             variant.curated.mmproj.as_ref(),
             Some(CatalogSidecarRef::Asset(asset))
@@ -213,5 +319,78 @@ mod tests {
         let entry: CatalogEntry = serde_json::from_str(json).unwrap();
         let variant = entry.variants.get("repo-Q4_K_M").unwrap();
         assert_eq!(variant.curated.draft, None);
+    }
+
+    #[test]
+    fn deserializes_moe_object() {
+        let json = r#"{
+            "schema_version": 1,
+            "source_repo": "org/repo",
+            "variants": {
+                "repo-Q4_K_M": {
+                    "source": { "repo": "org/repo", "revision": "main", "file": "repo-Q4_K_M.gguf" },
+                    "curated": {
+                        "name": "Repo Q4",
+                        "moe": { "n_expert": 128, "n_expert_used": 8, "min_experts_per_node": 46 }
+                    },
+                    "packages": []
+                }
+            }
+        }"#;
+
+        let entry: CatalogEntry = serde_json::from_str(json).unwrap();
+        let moe = entry
+            .variants
+            .get("repo-Q4_K_M")
+            .unwrap()
+            .curated
+            .moe
+            .as_ref()
+            .and_then(|value| value.as_object())
+            .unwrap();
+        assert_eq!(
+            moe.get("n_expert").and_then(|value| value.as_u64()),
+            Some(128)
+        );
+        assert_eq!(
+            moe.get("n_expert_used").and_then(|value| value.as_u64()),
+            Some(8)
+        );
+    }
+
+    #[test]
+    fn deserializes_legacy_variant_list_and_infers_source_repo() {
+        let json = r#"{
+            "schema_version": 1,
+            "variants": [
+                {
+                    "source": {
+                        "repo": "unsloth/Kimi-K2-Thinking-GGUF",
+                        "revision": "main",
+                        "file": "UD-Q4_K_XL/Kimi-K2-Thinking-UD-Q4_K_XL-00001-of-00014.gguf"
+                    },
+                    "curated": {
+                        "name": "unsloth/Kimi-K2-Thinking-GGUF:UD-Q4_K_XL",
+                        "size": "61 layers",
+                        "description": "Layer package"
+                    },
+                    "packages": [
+                        { "type": "layer-package", "repo": "meshllm/Kimi-K2-Thinking-UD-Q4_K_XL-layers", "layer_count": 61 }
+                    ]
+                }
+            ]
+        }"#;
+
+        let entry: CatalogEntry = serde_json::from_str(json).unwrap();
+        assert_eq!(entry.source_repo, "unsloth/Kimi-K2-Thinking-GGUF");
+        let variant = entry
+            .variants
+            .get("UD-Q4_K_XL/Kimi-K2-Thinking-UD-Q4_K_XL-00001-of-00014")
+            .unwrap();
+        assert_eq!(
+            variant.curated.name,
+            "unsloth/Kimi-K2-Thinking-GGUF:UD-Q4_K_XL"
+        );
+        assert_eq!(variant.packages[0].layer_count, Some(61));
     }
 }

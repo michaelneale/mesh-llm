@@ -260,9 +260,9 @@ describe('PeersTable', () => {
 
     render(<PeersTable peers={peers} summary={{ total: peers.length, online: peers.length, capacity: '12 GB' }} />)
 
-    expect(screen.getAllByText('241 ms').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('<1 ms').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('0 ms').length).toBeGreaterThan(0)
-    expect(screen.queryByText('241.4 ms')).not.toBeInTheDocument()
+    expect(screen.getAllByText('241ms').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('<1ms').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('0ms').length).toBeGreaterThan(0)
+    expect(screen.queryByText('241.4')).not.toBeInTheDocument()
   })
 })

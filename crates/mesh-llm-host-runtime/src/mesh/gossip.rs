@@ -40,6 +40,7 @@ pub(super) fn peer_meaningfully_changed(old: &PeerInfo, new: &PeerInfo) -> bool 
         || old.version != new.version
         || old.owner_summary != new.owner_summary
         || old.gpu_reserved_bytes != new.gpu_reserved_bytes
+        || old.propagated_latency != new.propagated_latency
 }
 
 fn merge_first_joined_mesh_ts(existing: &mut Option<u64>, incoming: Option<u64>) {
@@ -55,6 +56,7 @@ pub(super) fn apply_transitive_ann(
     existing: &mut PeerInfo,
     addr: &EndpointAddr,
     ann: &PeerAnnouncement,
+    bridge_id: EndpointId,
 ) -> bool {
     let ann_hosted_models = ann.hosted_models.clone().unwrap_or_default();
     let serving_changed = existing.serving_models != ann.serving_models
@@ -112,6 +114,29 @@ pub(super) fn apply_transitive_ann(
     existing.stage_status_list_supported = ann.stage_status_list_supported;
     if ann.experts_summary.is_some() {
         existing.experts_summary = ann.experts_summary.clone();
+    }
+    // Propagate latency from the announcement (transitive gossip).
+    if let Some(latency_ms) = ann.latency_ms {
+        let source = ann
+            .latency_source
+            .unwrap_or(crate::proto::node::LatencySource::Unspecified);
+        let is_propagatable_source = matches!(
+            source,
+            crate::proto::node::LatencySource::Direct
+                | crate::proto::node::LatencySource::Estimated
+        );
+        if latency_ms > 0 && is_propagatable_source {
+            let observer_id = ann
+                .latency_observer_id
+                .as_ref()
+                .and_then(|id_bytes| EndpointId::from_bytes(id_bytes).ok());
+            existing.propagated_latency = Some(PropagatedLatencyObservation {
+                latency_ms,
+                age_ms_at_received: ann.latency_age_ms.unwrap_or(0),
+                received_at: std::time::Instant::now(),
+                observer_id: observer_id.or(Some(bridge_id)),
+            });
+        }
     }
     serving_changed
 }
@@ -196,7 +221,8 @@ impl Node {
                 self.add_peer(remote, addr.clone(), ann).await;
                 self.update_peer_rtt(remote, rtt_ms).await;
             } else {
-                self.update_transitive_peer(peer_id, addr, ann).await;
+                self.update_transitive_peer(peer_id, addr, ann, remote)
+                    .await;
             }
         }
 
@@ -297,7 +323,8 @@ impl Node {
                 self.merge_remote_demand(&ann.model_demand);
                 self.add_peer(remote, addr.clone(), ann).await;
             } else {
-                self.update_transitive_peer(peer_id, addr, ann).await;
+                self.update_transitive_peer(peer_id, addr, ann, remote)
+                    .await;
             }
         }
 
@@ -545,6 +572,7 @@ impl Node {
         id: EndpointId,
         addr: &EndpointAddr,
         ann: &PeerAnnouncement,
+        bridge_id: EndpointId,
     ) {
         let trust_store = self.trust_store.lock().await.clone();
         let owner_summary = verify_node_ownership(
@@ -574,7 +602,7 @@ impl Node {
         }
         if let Some(existing) = state.peers.get_mut(&id) {
             let old_peer = existing.clone();
-            let serving_changed = apply_transitive_ann(existing, addr, ann);
+            let serving_changed = apply_transitive_ann(existing, addr, ann, bridge_id);
             existing.owner_summary = owner_summary;
             // Refresh last_mentioned: the bridge peer vouches for this peer
             // being alive (collect_announcements already filters stale peers).
@@ -654,37 +682,54 @@ impl Node {
                 .peers
                 .values()
                 .filter(|p| p.last_seen >= stale_cutoff || p.last_mentioned >= stale_cutoff)
-                .map(|p| PeerAnnouncement {
-                    addr: p.addr.clone(),
-                    role: p.role.clone(),
-                    first_joined_mesh_ts: p.first_joined_mesh_ts,
-                    models: p.models.clone(),
-                    vram_bytes: p.vram_bytes,
-                    model_source: p.model_source.clone(),
-                    serving_models: p.serving_models.clone(),
-                    hosted_models: p.hosted_models_known.then(|| p.hosted_models.clone()),
-                    available_models: p.available_models.clone(),
-                    requested_models: p.requested_models.clone(),
-                    explicit_model_interests: p.explicit_model_interests.clone(),
-                    version: p.version.clone(),
-                    model_demand: HashMap::new(),
-                    mesh_id: None,
-                    gpu_name: p.gpu_name.clone(),
-                    hostname: p.hostname.clone(),
-                    is_soc: p.is_soc,
-                    gpu_vram: p.gpu_vram.clone(),
-                    gpu_reserved_bytes: p.gpu_reserved_bytes.clone(),
-                    gpu_mem_bandwidth_gbps: p.gpu_mem_bandwidth_gbps.clone(),
-                    gpu_compute_tflops_fp32: p.gpu_compute_tflops_fp32.clone(),
-                    gpu_compute_tflops_fp16: p.gpu_compute_tflops_fp16.clone(),
-                    available_model_metadata: p.available_model_metadata.clone(),
-                    experts_summary: p.experts_summary.clone(),
-                    available_model_sizes: p.available_model_sizes.clone(),
-                    served_model_descriptors: p.served_model_descriptors.clone(),
-                    served_model_runtime: p.served_model_runtime.clone(),
-                    owner_attestation: p.owner_attestation.clone(),
-                    artifact_transfer_supported: p.artifact_transfer_supported,
-                    stage_status_list_supported: p.stage_status_list_supported,
+                .map(|p| {
+                    let latency = p.display_latency();
+                    PeerAnnouncement {
+                        addr: p.addr.clone(),
+                        role: p.role.clone(),
+                        first_joined_mesh_ts: p.first_joined_mesh_ts,
+                        models: p.models.clone(),
+                        vram_bytes: p.vram_bytes,
+                        model_source: p.model_source.clone(),
+                        serving_models: p.serving_models.clone(),
+                        hosted_models: p.hosted_models_known.then(|| p.hosted_models.clone()),
+                        available_models: p.available_models.clone(),
+                        requested_models: p.requested_models.clone(),
+                        explicit_model_interests: p.explicit_model_interests.clone(),
+                        version: p.version.clone(),
+                        model_demand: HashMap::new(),
+                        mesh_id: None,
+                        gpu_name: p.gpu_name.clone(),
+                        hostname: p.hostname.clone(),
+                        is_soc: p.is_soc,
+                        gpu_vram: p.gpu_vram.clone(),
+                        gpu_reserved_bytes: p.gpu_reserved_bytes.clone(),
+                        gpu_mem_bandwidth_gbps: p.gpu_mem_bandwidth_gbps.clone(),
+                        gpu_compute_tflops_fp32: p.gpu_compute_tflops_fp32.clone(),
+                        gpu_compute_tflops_fp16: p.gpu_compute_tflops_fp16.clone(),
+                        available_model_metadata: p.available_model_metadata.clone(),
+                        experts_summary: p.experts_summary.clone(),
+                        available_model_sizes: p.available_model_sizes.clone(),
+                        served_model_descriptors: p.served_model_descriptors.clone(),
+                        served_model_runtime: p.served_model_runtime.clone(),
+                        owner_attestation: p.owner_attestation.clone(),
+                        artifact_transfer_supported: p.artifact_transfer_supported,
+                        stage_status_list_supported: p.stage_status_list_supported,
+                        latency_ms: latency.latency_ms,
+                        latency_source: Some(match latency.source {
+                            DisplayLatencySource::Direct => {
+                                crate::proto::node::LatencySource::Direct
+                            }
+                            DisplayLatencySource::Estimated => {
+                                crate::proto::node::LatencySource::Estimated
+                            }
+                            DisplayLatencySource::Unknown => {
+                                crate::proto::node::LatencySource::Unknown
+                            }
+                        }),
+                        latency_age_ms: Some(latency.age_ms),
+                        latency_observer_id: latency.observer_id,
+                    }
                 })
                 .collect()
         };
@@ -752,6 +797,10 @@ impl Node {
             artifact_transfer_supported:
                 crate::models::artifact_transfer::artifact_transfer_enabled(),
             stage_status_list_supported: true,
+            latency_ms: None,
+            latency_source: None,
+            latency_age_ms: None,
+            latency_observer_id: None,
         });
         announcements
     }
@@ -807,6 +856,10 @@ mod tests {
             owner_attestation: None,
             artifact_transfer_supported: true,
             stage_status_list_supported: true,
+            latency_ms: None,
+            latency_source: None,
+            latency_age_ms: None,
+            latency_observer_id: None,
         }
     }
 
@@ -824,7 +877,12 @@ mod tests {
         let mut existing = test_peer(None);
         let ann = test_announcement(Some(100));
 
-        apply_transitive_ann(&mut existing, &test_addr(0x33), &ann);
+        apply_transitive_ann(
+            &mut existing,
+            &test_addr(0x33),
+            &ann,
+            test_endpoint_id(0xee),
+        );
 
         assert_eq!(existing.first_joined_mesh_ts, Some(100));
     }
@@ -834,7 +892,12 @@ mod tests {
         let mut existing = test_peer(Some(100));
         let ann = test_announcement(None);
 
-        apply_transitive_ann(&mut existing, &test_addr(0x33), &ann);
+        apply_transitive_ann(
+            &mut existing,
+            &test_addr(0x33),
+            &ann,
+            test_endpoint_id(0xee),
+        );
 
         assert_eq!(existing.first_joined_mesh_ts, Some(100));
     }
@@ -844,7 +907,12 @@ mod tests {
         let mut existing = test_peer(Some(200));
         let ann = test_announcement(Some(100));
 
-        apply_transitive_ann(&mut existing, &test_addr(0x33), &ann);
+        apply_transitive_ann(
+            &mut existing,
+            &test_addr(0x33),
+            &ann,
+            test_endpoint_id(0xee),
+        );
 
         assert_eq!(existing.first_joined_mesh_ts, Some(100));
     }
@@ -854,7 +922,12 @@ mod tests {
         let mut existing = test_peer(Some(100));
         let ann = test_announcement(Some(200));
 
-        apply_transitive_ann(&mut existing, &test_addr(0x33), &ann);
+        apply_transitive_ann(
+            &mut existing,
+            &test_addr(0x33),
+            &ann,
+            test_endpoint_id(0xee),
+        );
 
         assert_eq!(existing.first_joined_mesh_ts, Some(100));
     }
@@ -864,7 +937,12 @@ mod tests {
         let mut existing = test_peer(Some(100));
         let ann = test_announcement(Some(100));
 
-        apply_transitive_ann(&mut existing, &test_addr(0x33), &ann);
+        apply_transitive_ann(
+            &mut existing,
+            &test_addr(0x33),
+            &ann,
+            test_endpoint_id(0xee),
+        );
 
         assert_eq!(existing.first_joined_mesh_ts, Some(100));
     }
@@ -901,7 +979,12 @@ mod tests {
         let mut ann = test_announcement(Some(100));
         ann.explicit_model_interests = vec!["Qwen/Qwen3-Coder-Next-GGUF@main:Q4_K_M".into()];
 
-        apply_transitive_ann(&mut existing, &test_addr(0x33), &ann);
+        apply_transitive_ann(
+            &mut existing,
+            &test_addr(0x33),
+            &ann,
+            test_endpoint_id(0xee),
+        );
 
         assert_eq!(
             existing.explicit_model_interests,
@@ -916,7 +999,12 @@ mod tests {
         let mut ann = test_announcement(Some(100));
         ann.stage_status_list_supported = true;
 
-        apply_transitive_ann(&mut existing, &test_addr(0x33), &ann);
+        apply_transitive_ann(
+            &mut existing,
+            &test_addr(0x33),
+            &ann,
+            test_endpoint_id(0xee),
+        );
 
         assert!(existing.stage_status_list_supported);
     }

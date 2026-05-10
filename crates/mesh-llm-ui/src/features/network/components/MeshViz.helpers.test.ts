@@ -47,11 +47,11 @@ describe('MeshViz helpers', () => {
   it('derives render labels and hover metrics from node and peer data', () => {
     expect(renderKind(servingNode, undefined)).toBe('serving')
     expect(roleLabel(servingNode, hostPeer)).toBe('Host')
-    expect(latencyLabel(servingNode, hostPeer)).toBe('<1 ms')
+    expect(latencyLabel(servingNode, hostPeer)).toBe('1ms')
 
     expect(nodeMetrics(servingNode, hostPeer).map(({ id, label, value }) => ({ id, label, value }))).toEqual([
       { id: 'model', label: 'Model', value: 'peer-model-q8' },
-      { id: 'latency', label: 'Latency', value: '<1 ms' },
+      { id: 'latency', label: 'Latency', value: '1ms' },
       { id: 'compute', label: 'Compute', value: 'us-east' },
       { id: 'vram', label: 'VRAM', value: '48.0 GB' }
     ])

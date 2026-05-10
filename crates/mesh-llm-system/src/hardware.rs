@@ -230,8 +230,9 @@ fn derive_macos_gpu_budget(total_bytes: u64, iogpu_output: Option<&str>) -> (u64
 pub fn parse_rocm_gpu_names(output: &str) -> Vec<String> {
     let mut names = Vec::new();
     for line in output.lines() {
-        if let Some(pos) = line.find("Card series:") {
-            let val = line[pos + "Card series:".len()..].trim();
+        let lower = line.to_ascii_lowercase();
+        if let Some(pos) = lower.find("card series:") {
+            let val = line[pos + "card series:".len()..].trim();
             if !val.is_empty() {
                 names.push(val.to_string());
             }
@@ -257,6 +258,38 @@ pub fn parse_rocm_gpu_memory_and_used(output: &str) -> Vec<(u64, Option<u64>)> {
             Some((total, used))
         })
         .collect()
+}
+
+#[cfg(any(target_os = "linux", test))]
+const ROCM_UNIFIED_VRAM_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+#[cfg(any(target_os = "linux", test))]
+const ROCM_UNIFIED_MIN_GTT_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
+#[cfg(any(target_os = "linux", test))]
+fn rocm_unified_memory_usable_bytes(
+    vram_totals: &[u64],
+    gtt_totals: &[u64],
+    system_ram: u64,
+) -> Option<u64> {
+    if vram_totals.len() != 1 || gtt_totals.len() != 1 {
+        return None;
+    }
+    let vram = vram_totals[0];
+    let gtt = gtt_totals[0];
+    if vram == 0
+        || vram > ROCM_UNIFIED_VRAM_MAX_BYTES
+        || gtt < ROCM_UNIFIED_MIN_GTT_BYTES
+        || gtt < vram.saturating_mul(8)
+    {
+        return None;
+    }
+
+    let unified_total = if system_ram > 0 {
+        gtt.min(system_ram)
+    } else {
+        gtt
+    };
+    Some((unified_total as f64 * 0.75) as u64)
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -679,7 +712,7 @@ impl Collector for DefaultCollector {
                     survey.vram_bytes = vram + (ram_offload as f64 * 0.75) as u64;
                 } else {
                     // Try AMD ROCm (mesh.rs:295-316)
-                    let rocm_vram: Option<Vec<u64>> = (|| {
+                    let rocm_vram: Option<(Vec<u64>, bool)> = (|| {
                         let out = std::process::Command::new("rocm-smi")
                             .args(["--showmeminfo", "vram", "--csv"])
                             .output()
@@ -697,15 +730,39 @@ impl Collector for DefaultCollector {
                         if vrams.is_empty() {
                             None
                         } else {
-                            Some(vrams)
+                            let gtt_totals = std::process::Command::new("rocm-smi")
+                                .args(["--showmeminfo", "gtt", "--csv"])
+                                .output()
+                                .ok()
+                                .filter(|out| out.status.success())
+                                .and_then(|out| String::from_utf8(out.stdout).ok())
+                                .map(|stdout| {
+                                    parse_rocm_gpu_memory_and_used(&stdout)
+                                        .into_iter()
+                                        .map(|(total, _)| total)
+                                        .collect::<Vec<_>>()
+                                })
+                                .unwrap_or_default();
+                            if let Some(usable_bytes) =
+                                rocm_unified_memory_usable_bytes(&vrams, &gtt_totals, system_ram)
+                            {
+                                Some((vec![usable_bytes], true))
+                            } else {
+                                Some((vrams, false))
+                            }
                         }
                     })();
 
-                    if let Some(per_gpu) = rocm_vram {
+                    if let Some((per_gpu, unified_memory)) = rocm_vram {
                         let vram: u64 = per_gpu.iter().sum();
                         survey.gpu_vram = per_gpu;
-                        let ram_offload = system_ram.saturating_sub(vram);
-                        survey.vram_bytes = vram + (ram_offload as f64 * 0.75) as u64;
+                        if unified_memory {
+                            survey.is_soc = true;
+                            survey.vram_bytes = vram;
+                        } else {
+                            let ram_offload = system_ram.saturating_sub(vram);
+                            survey.vram_bytes = vram + (ram_offload as f64 * 0.75) as u64;
+                        }
                     } else {
                         let intel_gpus: Option<Vec<XpuSmiGpuInfo>> = (|| {
                             for args in [["discovery", "--json"], ["discovery", "-j"]] {
@@ -1627,7 +1684,7 @@ iogpu.wired_limit_mb: 0";
         let fixture = "\
 ======================= ROCm System Management Interface =======================
 ================================= Product Info =================================
-GPU[0]\t\t: Card series:\t\t\tNavi31 [Radeon RX 7900 XTX]
+GPU[0]\t\t: Card Series:\t\t\tNavi31 [Radeon RX 7900 XTX]
 ================================================================================";
         assert_eq!(
             parse_rocm_gpu_names(fixture),
@@ -1649,6 +1706,30 @@ GPU[1]\t\t: Card series:\t\t\tAMD Instinct MI300X
                 "AMD Instinct MI300X".to_string(),
                 "AMD Instinct MI300X".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn test_rocm_tiny_vram_large_gtt_is_unified_memory() {
+        let vram = vec![536_870_912];
+        let gtt = vec![137_438_953_472];
+        let system_ram = 137_438_953_472;
+
+        assert_eq!(
+            rocm_unified_memory_usable_bytes(&vram, &gtt, system_ram),
+            Some(103_079_215_104)
+        );
+    }
+
+    #[test]
+    fn test_rocm_discrete_vram_large_gtt_is_not_unified_memory() {
+        let vram = vec![24 * 1024 * 1024 * 1024];
+        let gtt = vec![137_438_953_472];
+        let system_ram = 137_438_953_472;
+
+        assert_eq!(
+            rocm_unified_memory_usable_bytes(&vram, &gtt, system_ram),
+            None
         );
     }
 

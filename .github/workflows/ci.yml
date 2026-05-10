@@ -15,6 +15,7 @@ env:
   CACHE_NAMESPACE: mesh-llm
   MODEL_URL: https://huggingface.co/unsloth/SmolLM2-135M-Instruct-GGUF/resolve/9e6855bc4be717fca1ef21360a1db4b29d5c559a/SmolLM2-135M-Instruct-Q8_0.gguf
   MODEL_FILE: SmolLM2-135M-Instruct-Q8_0.gguf
+  CARGO_INCREMENTAL: "0"
   SCCACHE_GHA_ENABLED: "true"
   LLAMA_STAGE_BUILD_DIR: .deps/llama.cpp/build-stage-abi-static
 
@@ -97,10 +98,12 @@ jobs:
       - uses: actions/checkout@v5
 
       - uses: pnpm/action-setup@v4
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
         with:
           version: latest
 
       - uses: actions/setup-node@v5
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
         with:
           node-version: 24
           cache: pnpm
@@ -133,11 +136,19 @@ jobs:
         run: python -m pip install --upgrade "huggingface_hub[cli]"
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev curl jq lsof
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev curl jq lsof lld
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
+
+      - name: Configure Linux Rust linker
+        run: |
+          mkdir -p .cargo
+          cat > .cargo/config.toml <<'EOF'
+          [target.x86_64-unknown-linux-gnu]
+          rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+          EOF
 
       - uses: mozilla-actions/sccache-action@v0.0.9
 
@@ -328,7 +339,14 @@ jobs:
           python-version: "3.12"
       - uses: dtolnay/rust-toolchain@stable
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev curl jq lsof
+        run: sudo apt-get update && sudo apt-get install -y build-essential libdbus-1-dev curl jq lsof lld
+      - name: Configure Linux Rust linker
+        run: |
+          mkdir -p .cargo
+          cat > .cargo/config.toml <<'EOF'
+          [target.x86_64-unknown-linux-gnu]
+          rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+          EOF
       - uses: actions/download-artifact@v7
         with:
           name: ci-linux-inference-binaries
@@ -368,7 +386,14 @@ jobs:
           java-version: '21'
       - uses: dtolnay/rust-toolchain@stable
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev curl jq lsof
+        run: sudo apt-get update && sudo apt-get install -y build-essential libdbus-1-dev curl jq lsof lld
+      - name: Configure Linux Rust linker
+        run: |
+          mkdir -p .cargo
+          cat > .cargo/config.toml <<'EOF'
+          [target.x86_64-unknown-linux-gnu]
+          rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+          EOF
       - uses: actions/download-artifact@v7
         with:
           name: ci-linux-inference-binaries
@@ -401,7 +426,18 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - name: Install tools
-        run: brew install cmake ninja jq
+        run: brew install cmake ninja jq lld
+      - name: Configure macOS Rust linker
+        run: |
+          mkdir -p .cargo
+          lld_prefix="$(brew --prefix lld)"
+          cat > .cargo/config.toml <<EOF
+          [target.aarch64-apple-darwin]
+          rustflags = ["-C", "link-arg=-fuse-ld=$lld_prefix/bin/ld64.lld"]
+
+          [target.x86_64-apple-darwin]
+          rustflags = ["-C", "link-arg=-fuse-ld=$lld_prefix/bin/ld64.lld"]
+          EOF
       - name: Build UI placeholder
         run: mkdir -p crates/mesh-llm-ui/dist && printf '<html></html>' > crates/mesh-llm-ui/dist/index.html
       - name: Prepare patched llama.cpp ABI checkout
@@ -442,9 +478,11 @@ jobs:
             echo "ready=false" >> "$GITHUB_OUTPUT"
           fi
       - uses: pnpm/action-setup@v4
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
         with:
           version: latest
       - uses: actions/setup-node@v5
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
         with:
           node-version: 24
           cache: pnpm
@@ -461,7 +499,18 @@ jobs:
         run: pnpm test
       - uses: dtolnay/rust-toolchain@stable
       - name: Install build dependencies
-        run: brew install cmake ninja jq
+        run: brew install cmake ninja jq lld
+      - name: Configure macOS Rust linker
+        run: |
+          mkdir -p .cargo
+          lld_prefix="$(brew --prefix lld)"
+          cat > .cargo/config.toml <<EOF
+          [target.aarch64-apple-darwin]
+          rustflags = ["-C", "link-arg=-fuse-ld=$lld_prefix/bin/ld64.lld"]
+
+          [target.x86_64-apple-darwin]
+          rustflags = ["-C", "link-arg=-fuse-ld=$lld_prefix/bin/ld64.lld"]
+          EOF
       - name: Format check
         run: cargo fmt --all -- --check
       - name: Prepare patched llama.cpp ABI checkout
@@ -511,7 +560,7 @@ jobs:
         run: |
           for attempt in 1 2 3; do
             apt-get -o Acquire::Retries=5 update &&
-              DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --fix-missing ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential &&
+              DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --fix-missing ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential lld &&
               break
             if [ "$attempt" -eq 3 ]; then
               exit 1
@@ -529,6 +578,13 @@ jobs:
             echo "ready=false" >> "$GITHUB_OUTPUT"
           fi
       - uses: dtolnay/rust-toolchain@stable
+      - name: Configure Linux Rust linker
+        run: |
+          mkdir -p .cargo
+          cat > .cargo/config.toml <<'EOF'
+          [target.x86_64-unknown-linux-gnu]
+          rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+          EOF
       - uses: taiki-e/install-action@just
       - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Prepare UI placeholder
@@ -579,7 +635,7 @@ jobs:
         run: |
           for attempt in 1 2 3; do
             apt-get -o Acquire::Retries=5 update &&
-              DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --fix-missing ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential &&
+              DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --fix-missing ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential lld &&
               break
             if [ "$attempt" -eq 3 ]; then
               exit 1
@@ -597,6 +653,13 @@ jobs:
             echo "ready=false" >> "$GITHUB_OUTPUT"
           fi
       - uses: dtolnay/rust-toolchain@stable
+      - name: Configure Linux Rust linker
+        run: |
+          mkdir -p .cargo
+          cat > .cargo/config.toml <<'EOF'
+          [target.x86_64-unknown-linux-gnu]
+          rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+          EOF
       - uses: taiki-e/install-action@just
       - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Prepare UI placeholder
@@ -638,8 +701,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Install Vulkan build packages
-        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev glslc libvulkan-dev spirv-headers
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev glslc libvulkan-dev spirv-headers lld
       - uses: dtolnay/rust-toolchain@stable
+      - name: Configure Linux Rust linker
+        run: |
+          mkdir -p .cargo
+          cat > .cargo/config.toml <<'EOF'
+          [target.x86_64-unknown-linux-gnu]
+          rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+          EOF
       - uses: taiki-e/install-action@just
       - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Prepare UI placeholder

@@ -110,11 +110,11 @@ jobs:
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev curl
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev curl lld
 
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
-        run: brew install cmake ninja
+        run: brew install cmake ninja lld
 
       - name: Build release bundle
         env:
@@ -170,7 +170,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@just
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev curl
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev curl lld
       - name: Build ARM64 CPU release bundle
         env:
           RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
@@ -197,7 +197,7 @@ jobs:
         run: |
           for attempt in 1 2 3; do
             apt-get -o Acquire::Retries=5 update &&
-              DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --fix-missing ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential &&
+              DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --fix-missing ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential lld &&
               break
             if [ "$attempt" -eq 3 ]; then
               exit 1
@@ -244,7 +244,7 @@ jobs:
         run: |
           for attempt in 1 2 3; do
             apt-get -o Acquire::Retries=5 update &&
-              DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --fix-missing ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential &&
+              DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --fix-missing ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential lld &&
               break
             if [ "$attempt" -eq 3 ]; then
               exit 1
@@ -291,7 +291,7 @@ jobs:
         run: |
           for attempt in 1 2 3; do
             apt-get -o Acquire::Retries=5 update &&
-              DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --fix-missing ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential &&
+              DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --fix-missing ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential lld &&
               break
             if [ "$attempt" -eq 3 ]; then
               exit 1
@@ -346,7 +346,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@just
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev curl glslc libvulkan-dev spirv-headers
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev curl glslc libvulkan-dev spirv-headers lld
       - name: Build Vulkan release bundle
         env:
           RELEASE_TAG: ${{ needs.metadata.outputs.tag }}

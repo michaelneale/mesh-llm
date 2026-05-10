@@ -1,7 +1,8 @@
 param(
     [string]$Backend = "",
     [string]$CudaArch = "",
-    [string]$RocmArch = ""
+    [string]$RocmArch = "",
+    [string]$BuildProfile = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -12,9 +13,9 @@ $llamaDir = if ($env:MESH_LLM_LLAMA_DIR) { $env:MESH_LLM_LLAMA_DIR } else { Join
 $llamaBuildRoot = if ($env:MESH_LLM_LLAMA_BUILD_ROOT) { $env:MESH_LLM_LLAMA_BUILD_ROOT } else { Join-Path $repoRoot ".deps\llama-build" }
 $buildDir = if ($env:LLAMA_STAGE_BUILD_DIR) { $env:LLAMA_STAGE_BUILD_DIR } else { Join-Path $llamaBuildRoot "build-stage-abi" }
 $meshUiDir = Join-Path $repoRoot "crates\mesh-llm-ui"
-$buildProfile = if ($env:MESH_LLM_BUILD_PROFILE) { $env:MESH_LLM_BUILD_PROFILE.ToLowerInvariant() } else { "release" }
 $compilerLauncherArgs = @()
 $compilerCacheBin = $null
+$buildProfile = if ($BuildProfile) { $BuildProfile.ToLowerInvariant() } elseif ($env:MESH_LLM_BUILD_PROFILE) { $env:MESH_LLM_BUILD_PROFILE.ToLowerInvariant() } else { "debug" }
 
 function Prepare-Llama {
     $pinFile = Join-Path $repoRoot "third_party\llama.cpp\upstream.txt"
@@ -101,6 +102,59 @@ function Resolve-CommandPath {
         return $command.Source
     }
     return $null
+}
+
+function Show-LldInstallInstructions {
+    throw @"
+LLVM lld was not found for the Windows MSVC target.
+
+lld is required for faster Rust builds (measured up to 26% faster locally).
+
+Install one of these, then rerun the just command:
+  rustup component add llvm-tools-preview
+
+Or install LLVM lld-link:
+  winget install LLVM.LLVM
+  choco install llvm
+
+The build requires lld. It looks for rust-lld.exe in the active Rust sysroot first, then falls
+back to rust-lld.exe or lld-link.exe on PATH.
+"@
+}
+
+function Resolve-LldLinker {
+    try {
+        $sysroot = (& rustc --print sysroot).Trim()
+        if ($LASTEXITCODE -eq 0 -and $sysroot) {
+            foreach ($target in @("x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc")) {
+                $candidate = Join-Path $sysroot "lib\rustlib\$target\bin\rust-lld.exe"
+                if (Test-Path $candidate) {
+                    return $candidate
+                }
+            }
+        }
+    } catch {
+    }
+
+    foreach ($name in @("rust-lld.exe", "lld-link.exe")) {
+        $command = Resolve-CommandPath $name
+        if ($command) {
+            return $command
+        }
+    }
+
+    return $null
+}
+
+function Configure-LldLinker {
+    $linker = Resolve-LldLinker
+    if (-not $linker) {
+        Show-LldInstallInstructions
+    }
+
+    $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = $linker
+    $env:CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER = $linker
+    Write-Host "Using Rust linker: $linker"
 }
 
 function Configure-CompilerCache {
@@ -613,6 +667,7 @@ $buildDir = if ($env:LLAMA_STAGE_BUILD_DIR) { $env:LLAMA_STAGE_BUILD_DIR } else 
 Write-Host "Using Windows backend: $backendName"
 
 Ensure-MsvcToolchain
+Configure-LldLinker
 Configure-CompilerCache
 
 switch ($backendName) {
@@ -742,7 +797,7 @@ Invoke-InRepo {
             Write-Host "Mesh binary: target\release\mesh-llm.exe"
         }
         default {
-            throw "Unsupported MESH_LLM_BUILD_PROFILE: $buildProfile (expected dev, debug, or release)"
+            throw "Unsupported MESH_LLM_BUILD_PROFILE/BuildProfile '$buildProfile'. Expected debug, dev, or release."
         }
     }
 }

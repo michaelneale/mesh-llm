@@ -70,24 +70,27 @@ export function RootLayout({ data = SHELL_HARNESS }: RootLayoutProps = {}) {
   const activeTab = pathToTab(pathname)
   const [preferencesOpen, setPreferencesOpen] = useState(false)
   const topNavData = useMemo(
-    () => liveMode ? resolveLiveTopNavData(statusQuery.data) : resolveHarnessTopNavData(data),
+    () => (liveMode ? resolveLiveTopNavData(statusQuery.data) : resolveHarnessTopNavData(data)),
     [liveMode, statusQuery.data, data]
   )
   const apiTargetLiveness = resolveApiTargetLiveness(statusQuery, liveMode)
   const tabHrefs = useMemo(() => tabHrefsForPath(pathname), [pathname])
   const showDevelopmentNavControls = import.meta.env.DEV
 
-  const onTabChange = useCallback((tab: AppTab | null) => {
-    if (tab === 'configuration' && !newConfigurationPageEnabled) return
-    if (tab === 'configuration') {
-      void router.navigate({
-        to: '/configuration/$configurationTab',
-        params: { configurationTab: pathToConfigurationTab(pathname) ?? 'defaults' }
-      })
-      return
-    }
-    void router.navigate({ to: tabToPath(tab!) })
-  }, [router, pathname, newConfigurationPageEnabled])
+  const onTabChange = useCallback(
+    (tab: AppTab | null) => {
+      if (tab === 'configuration' && !newConfigurationPageEnabled) return
+      if (tab === 'configuration') {
+        void router.navigate({
+          to: '/configuration/$configurationTab',
+          params: { configurationTab: pathToConfigurationTab(pathname) ?? 'defaults' }
+        })
+        return
+      }
+      void router.navigate({ to: tabToPath(tab!) })
+    },
+    [router, pathname, newConfigurationPageEnabled]
+  )
 
   const onTogglePreferences = useCallback(() => setPreferencesOpen((value) => !value), [])
 
@@ -97,10 +100,7 @@ export function RootLayout({ data = SHELL_HARNESS }: RootLayoutProps = {}) {
 
   const onOpenIdentity = useCallback(() => setPreferencesOpen(true), [])
 
-  const enabledTabs = useMemo(
-    () => ({ configuration: newConfigurationPageEnabled }),
-    [newConfigurationPageEnabled]
-  )
+  const enabledTabs = useMemo(() => ({ configuration: newConfigurationPageEnabled }), [newConfigurationPageEnabled])
 
   return (
     <>

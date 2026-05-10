@@ -28,8 +28,8 @@ use super::{
     RuntimeLlamaRuntimeSnapshot, RuntimeLlamaSlotItem, RuntimeLlamaSlotsSnapshot,
 };
 use crate::api::status::{
-    build_gpus, build_ownership_payload, LocalInstance, MeshModelPayload, NodeState, PeerPayload,
-    WakeableNode, WakeableNodeState,
+    build_gpus, build_ownership_payload, LatencySource, LocalInstance, MeshModelPayload, NodeState,
+    PeerPayload, WakeableNode, WakeableNodeState,
 };
 use crate::mesh;
 use crate::models::LocalModelInventorySnapshot;
@@ -980,6 +980,7 @@ fn derive_peer_state(peer: &mesh::PeerInfo) -> NodeState {
 }
 
 fn build_peer_payload(peer: &mesh::PeerInfo) -> PeerPayload {
+    let display_latency = peer.display_latency();
     PeerPayload {
         id: peer.id.fmt_short().to_string(),
         owner: build_ownership_payload(&peer.owner_summary),
@@ -998,6 +999,17 @@ fn build_peer_payload(peer: &mesh::PeerInfo) -> PeerPayload {
         hosted_models_known: peer.hosted_models_known,
         version: peer.version.clone(),
         rtt_ms: peer.rtt_ms,
+        latency_ms: display_latency.latency_ms,
+        latency_source: Some(match display_latency.source {
+            mesh::DisplayLatencySource::Direct => LatencySource::Direct,
+            mesh::DisplayLatencySource::Estimated => LatencySource::Estimated,
+            mesh::DisplayLatencySource::Unknown => LatencySource::Unknown,
+        }),
+        latency_age_ms: Some(display_latency.age_ms),
+        latency_observer_id: display_latency
+            .observer_id
+            .as_ref()
+            .map(|id| id.fmt_short().to_string()),
         hostname: peer.hostname.clone(),
         is_soc: peer.is_soc,
         gpus: build_gpus(

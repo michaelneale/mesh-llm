@@ -28,7 +28,6 @@ import { cn } from '@/lib/utils'
 import { useBooleanFeatureFlag } from '@/lib/feature-flags/hooks'
 import {
   formatLiveNodeState,
-  formatLatency,
   displayVramGb,
   localRoutableModels,
   meshGpuVram,
@@ -46,6 +45,8 @@ import {
   topologyStatusTooltip,
   uniqueModels
 } from '@/features/app-shell/lib/status-helpers'
+import { LatencySource } from '@/lib/api/types'
+import { formatPeerLatency, formatPeerLatencySummary } from '@/lib/format-latency'
 import type {
   LiveNodeState,
   MeshModel,
@@ -170,7 +171,12 @@ export function DashboardPage({
     return sortedPeers.map((peer) => {
       const primaryModel = peerPrimaryModel(peer)
       const modelLabel = primaryModel && primaryModel !== '(idle)' ? modelRefLabel(primaryModel) : 'idle'
-      const latencyLabel = formatLatency(peer.rtt_ms)
+      const latencyLabel = formatPeerLatencySummary({
+        latencyMs: peer.latency_ms ?? null,
+        source: peer.latency_source ?? LatencySource.UNSPECIFIED,
+        ageMs: peer.latency_age_ms ?? null,
+        observerId: peer.latency_observer_id ?? null
+      })
       const peerDisplayVramGb = displayVramGb(peer.state === 'client', peer.vram_gb, peer.gpus)
       const sharePct =
         peer.state !== 'client' && totalMeshVramGb > 0 ? Math.round((peerDisplayVramGb / totalMeshVramGb) * 100) : null
@@ -239,7 +245,7 @@ export function DashboardPage({
       self: topologyNode.self,
       state: topologyNode.state,
       role: topologyNodeRole(topologyNode),
-      latencyLabel: topologyNode.self ? 'local' : formatLatency(topologyNode.latencyMs),
+      latencyLabel: topologyNode.self ? 'local' : formatPeerLatency(topologyNode.latencyMs ?? null),
       vramGb: Math.max(0, topologyNode.vram),
       vramSharePct:
         topologyNode.state === 'client'

@@ -13,6 +13,113 @@ hf_home := env("HF_HOME", xdg_cache_dir / "huggingface")
 models_dir := env("HF_HUB_CACHE", hf_home / "hub")
 model := models_dir / "GLM-4.7-Flash-Q4_K_M.gguf"
 
+# Build for the current platform.
+default: build
+
+[private]
+[unix]
+_lld-cargo-config:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p .cargo
+    config=".cargo/config.toml"
+    tmp="$(mktemp)"
+    if [[ -f "$config" ]]; then
+        awk '
+            /^# BEGIN Mesh-LLM lld config$/ { skip = 1; next }
+            /^# END Mesh-LLM lld config$/ { skip = 0; next }
+            !skip { print }
+        ' "$config" > "$tmp"
+    else
+        : > "$tmp"
+    fi
+    if [[ -s "$tmp" && "$(tail -c 1 "$tmp")" != "" ]]; then
+        printf '\n' >> "$tmp"
+    fi
+    case "$(uname -s)" in
+        Linux)
+            if ! command -v ld.lld >/dev/null 2>&1; then
+                cat >&2 <<'EOF'
+    Error: LLVM ld.lld was not found.
+
+    lld is required for faster Rust builds (measured up to 26% faster locally).
+
+    Install lld, then rerun the just command. Common Linux packages:
+      Ubuntu/Debian: sudo apt-get update && sudo apt-get install -y lld
+      Fedora:        sudo dnf install lld
+      Arch Linux:    sudo pacman -S lld
+      openSUSE:      sudo zypper install lld
+
+    The build requires ld.lld to be available on PATH.
+    EOF
+                exit 1
+            fi
+            cat >> "$tmp" <<'EOF'
+    # BEGIN Mesh-LLM lld config
+    [target.x86_64-unknown-linux-gnu]
+    rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+    [target.aarch64-unknown-linux-gnu]
+    rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+    # END Mesh-LLM lld config
+    EOF
+            ;;
+        Darwin)
+            lld=""
+            if command -v ld64.lld >/dev/null 2>&1; then
+                lld="$(command -v ld64.lld)"
+            elif command -v brew >/dev/null 2>&1; then
+                lld_prefix="$(brew --prefix lld 2>/dev/null || true)"
+                if [[ -n "$lld_prefix" && -x "$lld_prefix/bin/ld64.lld" ]]; then
+                    lld="$lld_prefix/bin/ld64.lld"
+                fi
+            fi
+            if [[ -z "$lld" ]]; then
+                for candidate in /opt/homebrew/opt/lld/bin/ld64.lld /usr/local/opt/lld/bin/ld64.lld; do
+                    if [[ -x "$candidate" ]]; then
+                        lld="$candidate"
+                        break
+                    fi
+                done
+            fi
+            if [[ -z "$lld" ]]; then
+                cat >&2 <<'EOF'
+    Error: LLVM ld64.lld was not found.
+
+    lld is required for faster Rust builds (measured up to 26% faster locally).
+
+    Install lld, then rerun the just command:
+      brew install lld
+
+    If Homebrew installed lld but it is not on PATH, Mesh-LLM also checks:
+      $(brew --prefix lld)/bin/ld64.lld
+      /opt/homebrew/opt/lld/bin/ld64.lld
+      /usr/local/opt/lld/bin/ld64.lld
+    EOF
+                exit 1
+            fi
+            cat >> "$tmp" <<EOF
+    # BEGIN Mesh-LLM lld config
+    [target.aarch64-apple-darwin]
+    rustflags = ["-C", "link-arg=-fuse-ld=$lld"]
+
+    [target.x86_64-apple-darwin]
+    rustflags = ["-C", "link-arg=-fuse-ld=$lld"]
+    # END Mesh-LLM lld config
+    EOF
+            ;;
+        *)
+            echo "Unsupported OS for lld cargo config: $(uname -s)" >&2
+            exit 1
+            ;;
+    esac
+    mv "$tmp" "$config"
+
+[private]
+[windows]
+_lld-cargo-config:
+    @powershell -NoProfile -ExecutionPolicy Bypass -Command "$$ErrorActionPreference = 'Stop'; $$linker = $$null; try { $$sysroot = (& rustc --print sysroot).Trim(); foreach ($$target in @('x86_64-pc-windows-msvc', 'aarch64-pc-windows-msvc')) { $$candidate = Join-Path $$sysroot \"lib\rustlib\$$target\bin\rust-lld.exe\"; if (Test-Path $$candidate) { $$linker = $$candidate; break } } } catch {}; if (-not $$linker) { foreach ($$name in @('rust-lld.exe', 'lld-link.exe')) { $$command = Get-Command $$name -ErrorAction SilentlyContinue; if ($$command) { $$linker = $$command.Source; break } } }; if (-not $$linker) { Write-Error \"LLVM lld was not found for the Windows MSVC target.`n`nlld is required for faster Rust builds (measured up to 26% faster locally).`n`nInstall one of these, then rerun the just command:`n  rustup component add llvm-tools-preview`n`nOr install LLVM lld-link:`n  winget install LLVM.LLVM`n  choco install llvm`n`nThe build requires lld. It looks for rust-lld.exe in the active Rust sysroot first, then falls back to rust-lld.exe or lld-link.exe on PATH.\"; exit 1 }; New-Item -ItemType Directory -Force -Path .cargo | Out-Null; $$config = '.cargo/config.toml'; $$body = if (Test-Path $$config) { Get-Content -Raw $$config } else { '' }; $$body = [regex]::Replace($$body, '(?ms)^# BEGIN Mesh-LLM lld config\\r?\\n.*?^# END Mesh-LLM lld config\\r?\\n?', ''); if ($$body -and -not $$body.EndsWith(\"`n\")) { $$body += \"`n\" }; $$body += \"# BEGIN Mesh-LLM lld config`n[target.x86_64-pc-windows-msvc]`nlinker = `\"$$linker`\"`n`n[target.aarch64-pc-windows-msvc]`nlinker = `\"$$linker`\"`n# END Mesh-LLM lld config`n\"; Set-Content -Path $$config -Value $$body"
+
 # Build for the current platform (macOS Metal ABI, Linux/Windows auto ABI backend)
 [macos]
 build: build-mac
@@ -86,54 +193,59 @@ llama-build: llama-prepare
     @scripts/build-llama.sh
 
 release-build-windows:
-    @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend cpu
+    @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend cpu -BuildProfile release
 
 # Build a Linux CUDA release artifact (primary / R535-compatible lane).
 release-build-cuda cuda_arch="75;80;86;87;89;90":
-    @scripts/build-linux.sh --backend cuda --cuda-arch "{{ cuda_arch }}"
+    @MESH_LLM_BUILD_PROFILE=release scripts/build-linux.sh --backend cuda --cuda-arch "{{ cuda_arch }}"
 
 release-build-cuda-blackwell cuda_arch="75;80;86;87;89;90;100;120":
-    @scripts/build-linux.sh --backend cuda --cuda-arch "{{ cuda_arch }}"
+    @MESH_LLM_BUILD_PROFILE=release scripts/build-linux.sh --backend cuda --cuda-arch "{{ cuda_arch }}"
 
 release-build-cuda-windows cuda_arch="75;80;86;87;89;90":
-    @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend cuda -CudaArch "{{cuda_arch}}"
+    @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend cuda -CudaArch "{{cuda_arch}}" -BuildProfile release
 
 release-build-cuda-blackwell-windows cuda_arch="75;80;86;87;89;90;100;120":
-    @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend cuda -CudaArch "{{cuda_arch}}"
+    @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend cuda -CudaArch "{{cuda_arch}}" -BuildProfile release
 
 # Build a Linux ROCm ABI release artifact with an explicit architecture list.
 release-build-rocm rocm_arch="gfx90a;gfx942;gfx1100;gfx1101;gfx1102;gfx1200;gfx1201":
-    @scripts/build-linux-rocm.sh "{{ rocm_arch }}"
+    @MESH_LLM_BUILD_PROFILE=release scripts/build-linux-rocm.sh "{{ rocm_arch }}"
 
 release-build-rocm-windows rocm_arch="gfx90a;gfx942;gfx1100;gfx1101;gfx1102;gfx1200;gfx1201":
-    @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend rocm -RocmArch "{{rocm_arch}}"
+    @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend rocm -RocmArch "{{rocm_arch}}" -BuildProfile release
 
 # Build a Linux Vulkan ABI release artifact.
 release-build-vulkan:
-    @scripts/build-linux.sh --backend vulkan
+    @MESH_LLM_BUILD_PROFILE=release scripts/build-linux.sh --backend vulkan
 
 release-build-vulkan-windows:
-    @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend vulkan
+    @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend vulkan -BuildProfile release
 
 # Build the skippy benchmark/debug telemetry collector.
-metrics-server-build:
+[unix]
+metrics-server-build: _lld-cargo-config
     cargo build -p metrics-server
+
+[windows]
+metrics-server-build: _lld-cargo-config
+    @cargo build -p metrics-server
 
 # Generate a reproducible benchmark corpus for skippy bench tooling.
 bench-corpus tier="smoke" *ARGS:
     scripts/generate-bench-corpus.py "{{ tier }}" {{ ARGS }}
 
 # Run skippy family certification checks.
-family-certify *ARGS:
+family-certify *ARGS: _lld-cargo-config
     scripts/family-certify.sh {{ ARGS }}
 
 # Run target/draft speculative compatibility checks.
-spec-bench target draft *ARGS:
+spec-bench target draft *ARGS: _lld-cargo-config
     LLAMA_STAGE_BUILD_DIR=".deps/llama-build/build-stage-abi-static" cargo build -p llama-spec-bench
     LLAMA_STAGE_BUILD_DIR=".deps/llama-build/build-stage-abi-static" target/debug/llama-spec-bench --target-model-path "{{ target }}" --draft-model-path "{{ draft }}" {{ ARGS }}
 
 # Smoke a standalone skippy OpenAI frontend stage.
-skippy-openai-smoke *ARGS:
+skippy-openai-smoke *ARGS: _lld-cargo-config
     scripts/skippy-openai-smoke.sh {{ ARGS }}
 
 # Run the skippy benchmark/debug telemetry collector.
@@ -211,12 +323,12 @@ release-bundle-arm64 version output="dist":
 
 # Run repo-level release-target consistency checks.
 [unix]
-check-release:
+check-release: _lld-cargo-config
     cargo run -p xtask -- repo-consistency release-targets
 
 [windows]
-check-release:
-    cargo run -p xtask -- repo-consistency release-targets
+check-release: _lld-cargo-config
+    @cargo run -p xtask -- repo-consistency release-targets
 
 release-bundle-windows version output="dist":
     @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Version "{{version}}" -OutputDir "{{output}}"
@@ -312,7 +424,7 @@ ui-test:
 # ── Full Validation Gate ───────────────────────────────────────
 
 # Run all checks: Rust tests, fmt, clippy, ESLint, Prettier, E2E smoke.
-test-all:
+test-all: _lld-cargo-config
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -406,6 +518,24 @@ llama-update-pin:
 # Render a Markdown summary for a llama.cpp upstream pin change.
 llama-summary old new:
     scripts/summarize-llama-upstream.sh "{{ old }}" "{{ new }}"
+
+# Clean Rust, llama.cpp, and UI build artifacts.
+[unix]
+clean:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rm -rf \
+        target \
+        .deps/llama.cpp/build-stage-abi-* \
+        .deps/llama-build/build-stage-abi-* \
+        "{{ ui_dir }}/node_modules" \
+        "{{ ui_dir }}/dist"
+    echo "Cleaned Rust target, llama.cpp build dirs, and UI artifacts"
+
+[windows]
+clean:
+    @powershell -NoProfile -ExecutionPolicy Bypass -Command "Remove-Item -Recurse -Force target,'.deps/llama.cpp/build-stage-abi-*','.deps/llama-build/build-stage-abi-*','{{ ui_dir }}/node_modules','{{ ui_dir }}/dist' -ErrorAction SilentlyContinue"
+    echo "Cleaned Rust target, llama.cpp build dirs, and UI artifacts"
 
 # Clean UI build artifacts (node_modules, dist). Fixes stale pnpm state.
 [unix]

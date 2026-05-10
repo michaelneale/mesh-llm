@@ -11,7 +11,8 @@ import { KV } from '@/features/drawers/components/KV'
 import { SectionHead } from '@/features/drawers/components/SectionHead'
 import { meshNodeStatusSource, meshStatusLabel, meshStatusTone } from '@/features/network/lib/mesh-status'
 import { useLlamaRuntime } from '@/features/network/api/use-llama-runtime'
-import { formatLatency } from '@/lib/format-latency'
+import { LatencySource } from '@/lib/api/types'
+import { formatPeerLatencySummary } from '@/lib/format-latency'
 import type { ConfigNode, MeshNode, ModelSummary, Peer } from '@/features/app-tabs/types'
 import type { LlamaRuntimeMetricSample, LlamaRuntimePayload, LlamaRuntimeSlotItem } from '@/lib/api/types'
 
@@ -304,7 +305,14 @@ function NodeDrawerContent({
         <h3 className="sr-only">Node metadata</h3>
         <div className="flex gap-2 px-[18px]">
           <KV icon={drawerIcon(Activity)} label="Latency">
-            {peer ? `${formatLatency(peer.latencyMs)} ms` : 'N/A'}
+            {peer
+              ? formatPeerLatencySummary({
+                  latencyMs: peer.latencyMs ?? null,
+                  source: peer.latencySource ?? LatencySource.UNSPECIFIED,
+                  ageMs: peer.latencyAgeMs ?? null,
+                  observerId: peer.latencyObserverId ?? null
+                })
+              : 'N/A'}
           </KV>
           <KV icon={drawerIcon(HardDrive)} label="Node VRAM">
             {peer?.vramGB != null ? `${peer.vramGB.toFixed(1)} GB` : 'N/A'}
