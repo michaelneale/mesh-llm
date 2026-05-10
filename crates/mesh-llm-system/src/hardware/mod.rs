@@ -830,12 +830,39 @@ fn is_pinnable_gpu_stable_id(stable_id: &str) -> bool {
         || stable_id.starts_with("metal:")
 }
 
+fn is_placeholder_pci_bdf(pci_bdf: &str) -> bool {
+    matches!(
+        pci_bdf.trim().to_ascii_lowercase().as_str(),
+        "0000:00:00.0" | "00000000:00:00.0"
+    )
+}
+
+fn push_unique_pinnable_id(ids: &mut Vec<String>, id: String) {
+    if is_pinnable_gpu_stable_id(&id) && !ids.iter().any(|existing| existing == &id) {
+        ids.push(id);
+    }
+}
+
+fn gpu_pinnable_ids(gpu: &GpuFacts) -> Vec<String> {
+    let mut ids = Vec::new();
+    if let Some(stable_id) = gpu.stable_id.as_deref() {
+        push_unique_pinnable_id(&mut ids, stable_id.to_string());
+    }
+    if let Some(pci_bdf) = gpu
+        .pci_bdf
+        .as_deref()
+        .filter(|pci_bdf| !is_placeholder_pci_bdf(pci_bdf))
+    {
+        push_unique_pinnable_id(&mut ids, format!("pci:{pci_bdf}"));
+    }
+    if let Some(vendor_uuid) = gpu.vendor_uuid.as_deref() {
+        push_unique_pinnable_id(&mut ids, format!("uuid:{vendor_uuid}"));
+    }
+    ids
+}
+
 pub fn pinnable_gpu_stable_ids(gpus: &[GpuFacts]) -> Vec<String> {
-    gpus.iter()
-        .filter_map(|gpu| gpu.stable_id.as_deref())
-        .filter(|stable_id| is_pinnable_gpu_stable_id(stable_id))
-        .map(str::to_string)
-        .collect()
+    gpus.iter().flat_map(gpu_pinnable_ids).collect()
 }
 
 fn format_pinnable_gpu_ids(ids: &[String]) -> String {
@@ -875,20 +902,30 @@ pub fn resolve_pinned_gpu<'a>(
     let matches = gpus
         .iter()
         .enumerate()
-        .filter(|(_, gpu)| gpu.stable_id.as_deref() == Some(configured_id.as_str()))
-        .filter(|(_, gpu)| {
-            gpu.stable_id
-                .as_deref()
-                .is_some_and(is_pinnable_gpu_stable_id)
-        })
+        .filter(|(_, gpu)| gpu_pinnable_ids(gpu).iter().any(|id| id == &configured_id))
         .collect::<Vec<_>>();
 
     match matches.as_slice() {
         [(_, gpu)] => Ok(*gpu),
-        [] => Err(PinnedGpuResolverError::NoMatch {
-            configured_id,
-            available_pinnable_ids,
-        }),
+        [] => {
+            let pinnable_gpus = gpus
+                .iter()
+                .filter(|gpu| !gpu_pinnable_ids(gpu).is_empty())
+                .collect::<Vec<_>>();
+            if let [gpu] = pinnable_gpus.as_slice() {
+                tracing::warn!(
+                    "configured gpu_id '{}' did not match the single available pinnable GPU; accepting '{}' for compatibility",
+                    configured_id,
+                    gpu_pinnable_ids(gpu).join(", ")
+                );
+                Ok(*gpu)
+            } else {
+                Err(PinnedGpuResolverError::NoMatch {
+                    configured_id,
+                    available_pinnable_ids,
+                })
+            }
+        }
         _ => Err(PinnedGpuResolverError::AmbiguousMatch {
             configured_id,
             available_pinnable_ids,
@@ -956,7 +993,10 @@ fn hydrate_gpu_facts_with_identities(
             let (pci_bdf, vendor_uuid) = nvidia_identities.get(index).cloned().unwrap_or_default();
             let stable_id = if survey.is_soc && soc_backend_is_metal {
                 Some(format!("metal:{index}"))
-            } else if let Some(ref pci_bdf) = pci_bdf {
+            } else if let Some(pci_bdf) = pci_bdf
+                .as_deref()
+                .filter(|pci_bdf| !is_placeholder_pci_bdf(pci_bdf))
+            {
                 Some(format!("pci:{pci_bdf}"))
             } else if let Some(ref vendor_uuid) = vendor_uuid {
                 Some(format!("uuid:{vendor_uuid}"))

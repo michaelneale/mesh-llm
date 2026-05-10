@@ -105,10 +105,19 @@ mod linux {
             }
             if let Some(uuid) = &info.uuid {
                 gpu.vendor_uuid = Some(uuid.clone());
+                if gpu.stable_id.as_deref().is_none_or(|stable_id| {
+                    stable_id.starts_with("index:")
+                        || stable_id.starts_with("cuda")
+                        || stable_id.starts_with("vulkan")
+                }) {
+                    gpu.stable_id = Some(format!("uuid:{uuid}"));
+                }
             }
             if let Some(pci_bdf) = &info.pci_bdf {
                 gpu.pci_bdf = Some(pci_bdf.clone());
-                gpu.stable_id = Some(format!("pci:{pci_bdf}"));
+                if !super::super::is_placeholder_pci_bdf(pci_bdf) {
+                    gpu.stable_id = Some(format!("pci:{pci_bdf}"));
+                }
             }
         }
     }
@@ -338,6 +347,7 @@ mod linux {
         let stable_id = info
             .pci_bdf
             .as_ref()
+            .filter(|pci_bdf| !super::super::is_placeholder_pci_bdf(pci_bdf))
             .map(|pci_bdf| format!("pci:{pci_bdf}"));
         Some(GpuFacts {
             index,

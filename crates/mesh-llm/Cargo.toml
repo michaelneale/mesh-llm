@@ -3,6 +3,11 @@ name = "mesh-llm"
 version = "0.65.1"
 edition = "2021"
 
+[features]
+gpu-bench-cuda = ["mesh-llm-host-runtime/gpu-bench-cuda"]
+gpu-bench-hip = ["mesh-llm-host-runtime/gpu-bench-hip"]
+gpu-bench-intel = ["mesh-llm-host-runtime/gpu-bench-intel"]
+
 [dependencies]
 mesh-llm-host-runtime = { path = "../mesh-llm-host-runtime" }
 tokio = { version = "1", features = ["full"] }

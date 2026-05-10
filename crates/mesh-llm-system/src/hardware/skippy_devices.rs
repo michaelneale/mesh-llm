@@ -25,6 +25,7 @@ pub fn gpu_facts() -> anyhow::Result<Vec<GpuFacts>> {
         } else {
             pci_bdf
                 .as_ref()
+                .filter(|id| !super::is_placeholder_pci_bdf(id))
                 .map(|id| format!("pci:{id}"))
                 .or_else(|| Some(device.name.to_ascii_lowercase()))
         };

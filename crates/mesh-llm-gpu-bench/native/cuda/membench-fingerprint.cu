@@ -1,6 +1,5 @@
 // membench-fingerprint.cu — Memory bandwidth fingerprint for NVIDIA GPUs
-// Build: nvcc -O3 -o membench-fingerprint-cuda membench-fingerprint.cu
-// Run:   ./membench-fingerprint-cuda [--json]
+// Compiled into mesh-llm-gpu-bench for CUDA-flavored mesh-llm builds.
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>

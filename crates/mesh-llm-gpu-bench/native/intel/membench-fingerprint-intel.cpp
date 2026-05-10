@@ -1,6 +1,5 @@
 // membench-fingerprint-intel.cpp — Memory bandwidth fingerprint for Intel Arc / Xe GPUs
-// Build: icpx -O3 -fsycl -o membench-fingerprint-intel membench-fingerprint-intel.cpp
-// Run:   ./membench-fingerprint-intel [--json]
+// Compiled into mesh-llm-gpu-bench for Intel/SYCL-flavored mesh-llm builds.
 //
 // TODO: Unvalidated — no Intel Arc hardware available at time of writing.
 //       Verify output format, xpu-smi field names, and SYCL queue behaviour

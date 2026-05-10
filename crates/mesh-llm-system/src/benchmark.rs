@@ -1,32 +1,13 @@
 use anyhow::{bail, Context, Result};
+pub use mesh_llm_gpu_bench::BenchmarkOutput;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::hardware::HardwareSurvey;
 
 #[cfg(test)]
 use crate::hardware::GpuFacts;
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct BenchmarkOutput {
-    pub device: String,
-    pub buffer_mb: u32,
-    pub runs: u32,
-    pub p50_gbps: f64,
-    pub p90_gbps: f64,
-    pub compute_tflops_fp32: Option<f64>,
-    pub compute_tflops_fp16: Option<f64>,
-    pub noise_pct: f64,
-    pub runtime_s: f64,
-    pub rated_gbps: Option<f64>,
-    pub rated_estimated: Option<bool>,
-    pub efficiency_pct: Option<f64>,
-    pub bus_width_bits: Option<u32>,
-    pub mem_clock_mhz: Option<u64>,
-    pub gcn_arch: Option<String>,
-    pub hbm: Option<bool>,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GpuBandwidth {
@@ -142,90 +123,6 @@ pub fn fingerprint_path() -> PathBuf {
         .join("benchmark-fingerprint.json")
 }
 
-fn benchmark_binary_name_for(os: &str, base: &str) -> String {
-    if os == "windows" {
-        format!("{base}.exe")
-    } else {
-        base.to_string()
-    }
-}
-
-fn push_search_dir(dirs: &mut Vec<PathBuf>, dir: PathBuf) {
-    let normalized = dir.canonicalize().unwrap_or(dir);
-    if !dirs.iter().any(|existing| existing == &normalized) {
-        dirs.push(normalized);
-    }
-}
-
-fn benchmark_search_dirs(bin_dir: &Path, exe_dir: Option<&Path>) -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    push_search_dir(&mut dirs, bin_dir.to_path_buf());
-
-    if let Some(exe_dir) = exe_dir {
-        push_search_dir(&mut dirs, exe_dir.to_path_buf());
-        push_search_dir(&mut dirs, exe_dir.join("../../target/release"));
-    }
-
-    push_search_dir(&mut dirs, bin_dir.join("../../../target/release"));
-    push_search_dir(&mut dirs, bin_dir.join("../../../../target/release"));
-    dirs
-}
-
-fn detect_benchmark_binary_for_with_exe_dir(
-    os: &str,
-    hw: &HardwareSurvey,
-    bin_dir: &Path,
-    exe_dir: Option<&Path>,
-) -> Option<PathBuf> {
-    if hw.gpu_count == 0 {
-        tracing::debug!("no GPUs detected — skipping benchmark");
-        return None;
-    }
-
-    let gpu_upper = hw.gpu_name.as_deref().unwrap_or("").to_uppercase();
-
-    let candidate_name = if os == "macos" && hw.is_soc {
-        benchmark_binary_name_for(os, "membench-fingerprint")
-    } else if os == "linux" || os == "windows" {
-        if gpu_upper.contains("NVIDIA") {
-            benchmark_binary_name_for(os, "membench-fingerprint-cuda")
-        } else if gpu_upper.contains("AMD") || gpu_upper.contains("RADEON") {
-            benchmark_binary_name_for(os, "membench-fingerprint-hip")
-        } else if gpu_upper.contains("INTEL") || gpu_upper.contains("ARC") {
-            tracing::info!("Intel Arc benchmark is unvalidated — results may be inaccurate");
-            benchmark_binary_name_for(os, "membench-fingerprint-intel")
-        } else if os == "linux" && hw.is_soc {
-            tracing::warn!("Jetson benchmark is unvalidated for ARM CUDA — attempting");
-            benchmark_binary_name_for(os, "membench-fingerprint-cuda")
-        } else {
-            tracing::warn!(
-                "could not identify benchmark binary for this GPU platform: {:?}",
-                hw.gpu_name
-            );
-            return None;
-        }
-    } else {
-        tracing::warn!(
-            "could not identify benchmark binary for this GPU platform: {:?}",
-            hw.gpu_name
-        );
-        return None;
-    };
-
-    for search_dir in benchmark_search_dirs(bin_dir, exe_dir) {
-        let candidate = search_dir.join(&candidate_name);
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-
-    tracing::warn!(
-        "{candidate_name} not found in benchmark search dirs: {:?}",
-        benchmark_search_dirs(bin_dir, exe_dir)
-    );
-    None
-}
-
 /// Load a `BenchmarkFingerprint` from disk.  Returns `None` on any error.
 pub fn load_fingerprint(path: &Path) -> Option<BenchmarkFingerprint> {
     let content = std::fs::read_to_string(path).ok()?;
@@ -274,19 +171,16 @@ pub fn try_save_fingerprint(path: &Path, fp: &BenchmarkFingerprint) -> Result<()
     Ok(())
 }
 
-/// Determine which benchmark binary to use for the current hardware platform.
-///
-/// Returns `None` (soft failure) if:
-/// - No GPUs are present
-/// - The binary is not found on disk
-/// - The platform/GPU combination is unrecognised
-///
-/// Never panics or hard-fails with `ensure!`.
+/// Determine whether this hardware maps to a benchmark backend.
 pub fn detect_benchmark_binary(hw: &HardwareSurvey, bin_dir: &Path) -> Option<PathBuf> {
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|exe_path| exe_path.parent().map(Path::to_path_buf));
-    detect_benchmark_binary_for_with_exe_dir(std::env::consts::OS, hw, bin_dir, exe_dir.as_deref())
+    let _ = bin_dir;
+    let runner = mesh_llm_gpu_bench::runner_for(
+        std::env::consts::OS,
+        hw.gpu_count,
+        hw.gpu_name.as_deref(),
+        hw.is_soc,
+    )?;
+    Some(PathBuf::from(format!("in-process:{:?}", runner.backend)))
 }
 
 /// Parse raw stdout bytes from a benchmark run into a vec of per-device outputs.
@@ -294,83 +188,52 @@ pub fn detect_benchmark_binary(hw: &HardwareSurvey, bin_dir: &Path) -> Option<Pa
 /// Expects a JSON array of [`BenchmarkOutput`].  Returns `None` on any parse
 /// failure or if the device list is empty.
 pub fn parse_benchmark_output(stdout: &[u8]) -> Option<Vec<BenchmarkOutput>> {
-    match serde_json::from_slice::<Vec<BenchmarkOutput>>(stdout) {
-        Ok(outputs) if !outputs.is_empty() => Some(outputs),
-        Ok(_) => {
-            tracing::debug!("benchmark returned empty device list");
-            None
-        }
-        Err(err) => {
-            if let Ok(val) = serde_json::from_slice::<serde_json::Value>(stdout) {
-                if let Some(msg) = val.get("error").and_then(|v| v.as_str()) {
-                    tracing::warn!("benchmark reported error: {msg}");
-                    return None;
-                }
-            }
-            tracing::warn!("failed to parse benchmark output: {err}");
-            None
-        }
-    }
+    mesh_llm_gpu_bench::parse_benchmark_output(stdout)
 }
 
-/// Run the benchmark binary synchronously and return per-device outputs.
-///
-/// Spawns the binary as a subprocess and polls for completion up to `timeout`.
-/// If the process exceeds the timeout, it is killed to avoid zombie processes.
-///
-/// Designed to be called inside `tokio::task::spawn_blocking` — never `async`.
+/// Run an in-process benchmark backend and return per-device outputs.
 pub fn run_benchmark(binary: &Path, timeout: Duration) -> Option<Vec<BenchmarkOutput>> {
-    use std::io::Read;
-
-    let mut child = match std::process::Command::new(binary)
-        .arg("--json")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!("failed to spawn {binary:?}: {e}");
-            return None;
-        }
-    };
-
-    let deadline = Instant::now() + timeout;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    tracing::warn!("benchmark timed out after {timeout:?}, killing subprocess");
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return None;
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Err(e) => {
-                tracing::error!("error waiting for benchmark: {e}");
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-    };
-
-    if !status.success() {
-        tracing::warn!("benchmark exited with {:?}", status);
+    let raw = binary.to_string_lossy();
+    let backend = if raw.contains("Metal") {
+        mesh_llm_gpu_bench::BenchmarkBackend::Metal
+    } else if raw.contains("Cuda") {
+        mesh_llm_gpu_bench::BenchmarkBackend::Cuda
+    } else if raw.contains("Hip") {
+        mesh_llm_gpu_bench::BenchmarkBackend::Hip
+    } else if raw.contains("Intel") {
+        mesh_llm_gpu_bench::BenchmarkBackend::Intel
+    } else {
+        tracing::warn!("unknown in-process benchmark runner {binary:?}");
         return None;
-    }
+    };
 
-    let mut stdout_bytes = Vec::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        let _ = pipe.read_to_end(&mut stdout_bytes);
-    }
-    parse_benchmark_output(&stdout_bytes)
+    mesh_llm_gpu_bench::run_benchmark(mesh_llm_gpu_bench::BenchmarkRunner { backend }, timeout)
+        .map_err(|err| tracing::warn!("benchmark failed: {err:#}"))
+        .ok()
+}
+
+fn run_backend_for_hardware(
+    hw: &HardwareSurvey,
+    timeout: Duration,
+) -> Result<Vec<BenchmarkOutput>> {
+    let runner = mesh_llm_gpu_bench::runner_for(
+        std::env::consts::OS,
+        hw.gpu_count,
+        hw.gpu_name.as_deref(),
+        hw.is_soc,
+    )
+    .with_context(|| {
+        format!(
+            "no supported benchmark backend found for detected GPU platform {:?}",
+            hw.gpu_name
+        )
+    })?;
+
+    mesh_llm_gpu_bench::run_benchmark(runner, timeout)
 }
 
 /// Load a cached fingerprint if hardware is unchanged, otherwise run the
-/// benchmark binary and persist the result.
+/// compiled benchmark backend and persist the result.
 ///
 /// Not `async` — intended for use inside `tokio::task::spawn_blocking`.
 pub fn run_or_load(
@@ -409,8 +272,10 @@ pub fn run_or_load(
 
     tracing::info!("Hardware changed or no cache — running memory bandwidth benchmark");
 
-    let binary = detect_benchmark_binary(hw, bin_dir)?;
-    let outputs = run_benchmark(&binary, timeout)?;
+    let _ = bin_dir;
+    let outputs = run_backend_for_hardware(hw, timeout)
+        .map_err(|err| tracing::warn!("benchmark failed: {err:#}"))
+        .ok()?;
 
     let (gpus, result) = build_benchmark_result(hw, &outputs);
 
@@ -445,15 +310,8 @@ fn run_and_save_to_path(
         bail!("no GPUs detected on this node");
     }
 
-    let binary = detect_benchmark_binary(hw, bin_dir).with_context(|| {
-        format!(
-            "no supported benchmark binary found for detected GPU platform {:?}",
-            hw.gpu_name
-        )
-    })?;
-
-    let outputs = run_benchmark(&binary, timeout)
-        .with_context(|| format!("benchmark run failed for {}", binary.display()))?;
+    let _ = bin_dir;
+    let outputs = run_backend_for_hardware(hw, timeout)?;
 
     let result = save_result_from_outputs(path, hw, &outputs)?;
     Ok(SavedBenchmark {
@@ -746,116 +604,73 @@ mod tests {
     }
 
     #[test]
-    fn test_benchmark_binary_name_for_windows() {
-        assert_eq!(
-            benchmark_binary_name_for("windows", "membench-fingerprint-cuda"),
-            "membench-fingerprint-cuda.exe"
-        );
-        assert_eq!(
-            benchmark_binary_name_for("linux", "membench-fingerprint-cuda"),
-            "membench-fingerprint-cuda"
-        );
-    }
-
-    #[test]
-    fn test_detect_benchmark_binary_windows_cuda_missing_is_soft_failure() {
+    fn test_runner_for_windows_cuda() {
         let hw = make_survey(1, vec![24_000_000_000], Some("NVIDIA RTX 4090"), false);
-        assert!(detect_benchmark_binary_for_with_exe_dir(
+        let runner = mesh_llm_gpu_bench::runner_for(
             "windows",
-            &hw,
-            Path::new("C:\\bench"),
-            None,
+            hw.gpu_count,
+            hw.gpu_name.as_deref(),
+            hw.is_soc,
         )
-        .is_none());
+        .expect("CUDA runner");
+        assert_eq!(runner.backend, mesh_llm_gpu_bench::BenchmarkBackend::Cuda);
     }
 
     #[test]
-    fn test_detect_benchmark_binary_windows_hip_missing_is_soft_failure() {
+    fn test_runner_for_windows_hip() {
         let hw = make_survey(
             1,
             vec![24_000_000_000],
             Some("AMD Radeon RX 7900 XTX"),
             false,
         );
-        assert!(detect_benchmark_binary_for_with_exe_dir(
+        let runner = mesh_llm_gpu_bench::runner_for(
             "windows",
-            &hw,
-            Path::new("C:\\bench"),
-            None,
+            hw.gpu_count,
+            hw.gpu_name.as_deref(),
+            hw.is_soc,
         )
-        .is_none());
+        .expect("HIP runner");
+        assert_eq!(runner.backend, mesh_llm_gpu_bench::BenchmarkBackend::Hip);
     }
 
     #[test]
-    fn test_detect_benchmark_binary_windows_intel_missing_is_soft_failure() {
+    fn test_runner_for_windows_intel() {
         let hw = make_survey(1, vec![16_000_000_000], Some("Intel Arc A770"), false);
-        assert!(detect_benchmark_binary_for_with_exe_dir(
+        let runner = mesh_llm_gpu_bench::runner_for(
             "windows",
-            &hw,
-            Path::new("C:\\bench"),
-            None,
+            hw.gpu_count,
+            hw.gpu_name.as_deref(),
+            hw.is_soc,
         )
-        .is_none());
+        .expect("Intel runner");
+        assert_eq!(runner.backend, mesh_llm_gpu_bench::BenchmarkBackend::Intel);
     }
 
     #[test]
-    fn test_detect_benchmark_binary_linux_cuda_finds_crate_release_helper() {
-        let root =
-            std::env::temp_dir().join(format!("mesh-llm-benchmark-lookup-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let bin_dir = root.join("llama.cpp/build/bin");
-        let exe_dir = root.join("target/release");
-        let crate_release = root.join("target/release");
-        std::fs::create_dir_all(&bin_dir).expect("create bin dir");
-        std::fs::create_dir_all(&exe_dir).expect("create exe dir");
-        std::fs::create_dir_all(&crate_release).expect("create crate release dir");
-
-        let helper = crate_release.join("membench-fingerprint-cuda");
-        std::fs::write(&helper, b"").expect("write helper");
-
+    fn test_runner_for_linux_cuda() {
         let hw = make_survey(1, vec![24_000_000_000], Some("NVIDIA RTX 4090"), false);
-        let result = detect_benchmark_binary_for_with_exe_dir(
+        let runner = mesh_llm_gpu_bench::runner_for(
             "linux",
-            &hw,
-            &bin_dir,
-            Some(exe_dir.as_path()),
-        );
-        let expected = helper.canonicalize().expect("canonical helper path");
-
-        let _ = std::fs::remove_dir_all(&root);
-
-        assert_eq!(result.as_deref(), Some(expected.as_path()));
+            hw.gpu_count,
+            hw.gpu_name.as_deref(),
+            hw.is_soc,
+        )
+        .expect("CUDA runner");
+        assert_eq!(runner.backend, mesh_llm_gpu_bench::BenchmarkBackend::Cuda);
     }
 
     #[test]
-    fn test_detect_benchmark_binary_macos_soc_finds_crate_release_helper() {
-        let root = std::env::temp_dir().join(format!(
-            "mesh-llm-benchmark-lookup-macos-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        let bin_dir = root.join("llama.cpp/build/bin");
-        let exe_dir = root.join("target/release");
-        let crate_release = root.join("target/release");
-        std::fs::create_dir_all(&bin_dir).expect("create bin dir");
-        std::fs::create_dir_all(&exe_dir).expect("create exe dir");
-        std::fs::create_dir_all(&crate_release).expect("create crate release dir");
-
-        let helper = crate_release.join("membench-fingerprint");
-        std::fs::write(&helper, b"").expect("write helper");
-
+    fn test_runner_for_macos_soc() {
         let hw = make_survey(1, vec![24_000_000_000], Some("Apple M4 Pro"), true);
-        let result = detect_benchmark_binary_for_with_exe_dir(
+        let runner = mesh_llm_gpu_bench::runner_for(
             "macos",
-            &hw,
-            &bin_dir,
-            Some(exe_dir.as_path()),
-        );
-        let expected = helper.canonicalize().expect("canonical helper path");
-
-        let _ = std::fs::remove_dir_all(&root);
-
-        assert_eq!(result.as_deref(), Some(expected.as_path()));
+            hw.gpu_count,
+            hw.gpu_name.as_deref(),
+            hw.is_soc,
+        )
+        .expect("Metal runner");
+        assert_eq!(runner.backend, mesh_llm_gpu_bench::BenchmarkBackend::Metal);
     }
 
     // 13. hardware_changed: same VRAM, different GPU name → true
@@ -929,11 +744,8 @@ mod tests {
         assert_eq!(loaded.gpus[0].p90_gbps, 1948.7);
     }
 
-    #[cfg(unix)]
     #[test]
-    fn test_run_and_save_rewrites_existing_cache() {
-        use std::os::unix::fs::PermissionsExt;
-
+    fn test_save_result_from_outputs_rewrites_existing_cache() {
         let root = std::env::temp_dir().join(format!(
             "mesh-llm-run-and-save-{}-{}",
             std::process::id(),
@@ -942,23 +754,8 @@ mod tests {
                 .expect("system time")
                 .as_nanos()
         ));
-        let bin_dir = root.join("bin");
         let path = root.join("benchmark-fingerprint.json");
-        std::fs::create_dir_all(&bin_dir).expect("create bin dir");
-
-        let binary_name = if cfg!(target_os = "macos") {
-            "membench-fingerprint"
-        } else {
-            "membench-fingerprint-cuda"
-        };
-        let binary = bin_dir.join(binary_name);
-        std::fs::write(
-            &binary,
-            "#!/bin/sh\nprintf '%s\n' '[{\"device\":\"Test GPU\",\"buffer_mb\":512,\"runs\":2,\"p50_gbps\":111.0,\"p90_gbps\":222.0,\"noise_pct\":0.1,\"runtime_s\":0.5}]'\n",
-        )
-        .expect("write fake benchmark");
-        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod fake benchmark");
+        std::fs::create_dir_all(&root).expect("create test dir");
 
         let old = make_fingerprint(
             vec![GpuBandwidth {
@@ -976,26 +773,43 @@ mod tests {
         let hw = HardwareSurvey {
             gpu_count: 1,
             gpu_vram: vec![64_000_000_000],
-            gpu_name: Some(if cfg!(target_os = "macos") {
-                "Apple M4 Pro".into()
-            } else {
-                "NVIDIA RTX 4090".into()
-            }),
-            is_soc: cfg!(target_os = "macos"),
+            gpu_name: Some("NVIDIA RTX 4090".into()),
+            is_soc: false,
             ..Default::default()
         };
 
-        let saved = run_and_save_to_path(&hw, &bin_dir, Duration::from_secs(2), &path)
-            .expect("forced benchmark should succeed");
+        let saved = save_result_from_outputs(
+            &path,
+            &hw,
+            &[BenchmarkOutput {
+                device: "Test GPU".into(),
+                buffer_mb: 512,
+                runs: 2,
+                p50_gbps: 111.0,
+                p90_gbps: 222.0,
+                compute_tflops_fp32: None,
+                compute_tflops_fp16: None,
+                noise_pct: 0.1,
+                runtime_s: 0.5,
+                rated_gbps: None,
+                rated_estimated: None,
+                efficiency_pct: None,
+                bus_width_bits: None,
+                mem_clock_mhz: None,
+                gcn_arch: None,
+                hbm: None,
+            }],
+        )
+        .expect("save should succeed");
         let loaded = load_fingerprint(&path).expect("fingerprint should exist");
         let _ = std::fs::remove_dir_all(&root);
 
-        assert_eq!(saved.result.mem_bandwidth_gbps, vec![222.0]);
+        assert_eq!(saved.mem_bandwidth_gbps, vec![222.0]);
         assert_eq!(loaded.gpus[0].p90_gbps, 222.0);
     }
 
     #[test]
-    fn test_run_and_save_missing_binary_fails_cleanly() {
+    fn test_run_and_save_backend_not_compiled_fails_cleanly() {
         let root = std::env::temp_dir().join(format!(
             "mesh-llm-run-and-save-missing-{}",
             std::process::id()
@@ -1007,20 +821,19 @@ mod tests {
         let hw = HardwareSurvey {
             gpu_count: 1,
             gpu_vram: vec![64_000_000_000],
-            gpu_name: Some(if cfg!(target_os = "macos") {
-                "Apple M4 Pro".into()
-            } else {
-                "NVIDIA RTX 4090".into()
-            }),
-            is_soc: cfg!(target_os = "macos"),
+            gpu_name: Some("NVIDIA RTX 4090".into()),
+            is_soc: false,
             ..Default::default()
         };
 
         let err = run_and_save_to_path(&hw, &bin_dir, Duration::from_secs(1), &path)
-            .expect_err("missing benchmark binary should fail");
+            .expect_err("uncompiled benchmark backend should fail");
         let _ = std::fs::remove_dir_all(&root);
 
-        assert!(err.to_string().contains("benchmark binary"));
+        assert!(
+            err.to_string().contains("not compiled")
+                || err.to_string().contains("benchmark backend")
+        );
     }
 
     // 15. Old cache format (hardware_key field) fails to parse → load_fingerprint returns None
@@ -1237,34 +1050,10 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
-    fn test_run_benchmark_kills_on_timeout() {
-        use std::os::unix::fs::PermissionsExt;
+    fn test_run_benchmark_rejects_unknown_in_process_runner() {
+        let result = run_benchmark(Path::new("not-a-runner"), Duration::from_secs(1));
 
-        let dir = std::env::temp_dir().join("mesh-llm-test-bm-timeout");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create test dir");
-
-        let script = dir.join("hang.sh");
-        std::fs::write(&script, "#!/bin/sh\nsleep 999\n").expect("write script");
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
-            .expect("set permissions");
-
-        let start = std::time::Instant::now();
-        let result = run_benchmark(&script, Duration::from_secs(1));
-        let elapsed = start.elapsed();
-
-        let _ = std::fs::remove_dir_all(&dir);
-
-        assert!(
-            result.is_none(),
-            "hanging benchmark should return None on timeout"
-        );
-        assert!(
-            elapsed < Duration::from_secs(5),
-            "should kill subprocess promptly, took {:?}",
-            elapsed
-        );
+        assert!(result.is_none(), "unknown benchmark runner should fail");
     }
 }

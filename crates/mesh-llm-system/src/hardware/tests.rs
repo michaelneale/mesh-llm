@@ -20,6 +20,19 @@ fn synthetic_gpu(index: usize, stable_id: Option<&str>) -> GpuFacts {
     }
 }
 
+fn synthetic_gpu_with_ids(
+    index: usize,
+    stable_id: Option<&str>,
+    pci_bdf: Option<&str>,
+    vendor_uuid: Option<&str>,
+) -> GpuFacts {
+    GpuFacts {
+        pci_bdf: pci_bdf.map(str::to_string),
+        vendor_uuid: vendor_uuid.map(str::to_string),
+        ..synthetic_gpu(index, stable_id)
+    }
+}
+
 #[test]
 fn test_parse_vulkaninfo_summary_devices() {
     let fixture = r#"
@@ -403,6 +416,35 @@ fn test_parse_nvidia_gpu_identity_ignores_not_available_placeholders() {
 }
 
 #[test]
+fn test_hydrate_prefers_uuid_over_placeholder_pci() {
+    let mut survey = HardwareSurvey {
+        is_soc: true,
+        gpu_vram: vec![64 * 1024 * 1024 * 1024],
+        gpu_reserved: vec![None],
+        gpu_count: 1,
+        gpu_name: Some("Jetson AGX Orin".into()),
+        ..Default::default()
+    };
+
+    hydrate_gpu_facts_with_identities(
+        &mut survey,
+        &[Metric::GpuFacts],
+        &[(
+            Some("00000000:00:00.0".to_string()),
+            Some("ddae9891-aaa8-5edd-bbf3-3a33c5adc75f".to_string()),
+        )],
+        vec!["Jetson AGX Orin".to_string()],
+        1,
+        false,
+    );
+
+    assert_eq!(
+        survey.gpus[0].stable_id.as_deref(),
+        Some("uuid:ddae9891-aaa8-5edd-bbf3-3a33c5adc75f")
+    );
+}
+
+#[test]
 fn test_backend_device_for_name_recognizes_jetson_soc_names() {
     assert_eq!(
         backend_device_for_name_for_platform("Jetson AGX Orin", 0, true, false),
@@ -469,6 +511,35 @@ fn pinned_gpu_runtime_resolver_no_match_lists_available_ids() {
     );
     assert!(err.to_string().contains("pci:0000:b3:00.0"));
     assert!(err.to_string().contains("pci:0000:65:00.0, uuid:GPU-def"));
+}
+
+#[test]
+fn pinned_gpu_runtime_resolver_matches_vendor_uuid_alias() {
+    let gpus = vec![synthetic_gpu_with_ids(
+        0,
+        Some("pci:0000:65:00.0"),
+        Some("0000:65:00.0"),
+        Some("GPU-def"),
+    )];
+
+    let resolved = resolve_pinned_gpu(Some("uuid:GPU-def"), &gpus).unwrap();
+
+    assert_eq!(resolved.index, 0);
+}
+
+#[test]
+fn pinned_gpu_runtime_resolver_accepts_single_pinnable_gpu_for_legacy_alias() {
+    let gpus = vec![synthetic_gpu_with_ids(
+        0,
+        Some("pci:00000000:00:00.0"),
+        Some("00000000:00:00.0"),
+        None,
+    )];
+
+    let resolved =
+        resolve_pinned_gpu(Some("uuid:ddae9891-aaa8-5edd-bbf3-3a33c5adc75f"), &gpus).unwrap();
+
+    assert_eq!(resolved.index, 0);
 }
 
 #[test]

@@ -1,8 +1,7 @@
 // membench-fingerprint.hip — Memory bandwidth fingerprint for AMD GPUs (ROCm/HIP)
-// Build:  hipcc -O3 -std=c++17 -o membench-fingerprint-hip membench-fingerprint.hip
-//         Requires ROCm installed (typically /opt/rocm). No static-link equivalent exists.
-//         Runtime dep: /opt/rocm/lib/libamdhip64.so
-// Run:    ./membench-fingerprint-hip [--json]
+// Compiled into mesh-llm-gpu-bench for ROCm/HIP-flavored mesh-llm builds.
+// Requires ROCm installed (typically /opt/rocm).
+// Runtime dep: /opt/rocm/lib/libamdhip64.so
 //
 // Cross-check rated bandwidth with:
 //   rocm-smi --showmeminfo vram          (CLI)
