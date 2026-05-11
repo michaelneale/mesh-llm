@@ -11,7 +11,7 @@ set -euo pipefail
 #   HF_TOKEN — injected as a secret by HF Jobs
 #
 # Volumes:
-#   /bucket  — writable storage bucket for script, source cache, and package workspace
+#   /bucket  — writable storage bucket for script and fallback source cache
 
 MESH_LLM_REF="${MESH_LLM_REF:-main}"
 SOURCE_REVISION="${SOURCE_REVISION:-main}"
@@ -35,26 +35,29 @@ echo "║  Build:  mesh-llm @ ${MESH_LLM_REF}"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo ""
 
-# Keep the model-scale cache, split scratch, and package output on the bucket
-# volume. Keep executable toolchains/build products on local ephemeral storage:
+# Keep executable toolchains/build products on local ephemeral storage:
 # HF bucket mounts can be unsuitable for dynamic loader/toolchain execution.
+# Package artifacts are also written locally, uploaded one at a time, and
+# removed immediately so the job never accumulates a full 400GB+ package.
 JOB_WORK_ROOT="${JOB_WORK_ROOT:-/bucket/job-work}"
 SAFE_TARGET_REPO="$(printf '%s' "$TARGET_REPO" | tr -c '[:alnum:]._-' '_')"
+LOCAL_WORK_DIR="${LOCAL_WORK_DIR:-/tmp/meshllm-layer-job-${SAFE_TARGET_REPO}-$$}"
 if [ -z "${JOB_WORK_DIR:-}" ]; then
     JOB_WORK_DIR="${JOB_WORK_ROOT}/${SAFE_TARGET_REPO}-$(date +%Y%m%d%H%M%S)-$$"
     CLEANUP_JOB_WORK_DIR="${CLEANUP_JOB_WORK_DIR:-true}"
 else
     CLEANUP_JOB_WORK_DIR="${CLEANUP_JOB_WORK_DIR:-false}"
 fi
-PACKAGE_DIR="${PACKAGE_DIR:-${JOB_WORK_DIR}/package}"
+PACKAGE_DIR="${PACKAGE_DIR:-${LOCAL_WORK_DIR}/package}"
 HF_HOME="${HF_HOME:-${JOB_WORK_DIR}/hf-home}"
 HF_HUB_CACHE="${HF_HUB_CACHE:-${HF_HOME}/hub}"
 HF_XET_CACHE="${HF_XET_CACHE:-${HF_HOME}/xet}"
-JOB_TMP_DIR="${JOB_TMP_DIR:-${JOB_WORK_DIR}/tmp}"
-LOCAL_WORK_DIR="${LOCAL_WORK_DIR:-/tmp/meshllm-layer-job-${SAFE_TARGET_REPO}-$$}"
+JOB_TMP_DIR="${JOB_TMP_DIR:-${LOCAL_WORK_DIR}/tmp}"
 BUILD_DIR="${BUILD_DIR:-${LOCAL_WORK_DIR}/build}"
 TOOL_DIR="${TOOL_DIR:-${LOCAL_WORK_DIR}/tools}"
 VENV_DIR="${VENV_DIR:-${LOCAL_WORK_DIR}/venv}"
+ARTIFACT_UPLOAD_SCRIPT="${ARTIFACT_UPLOAD_SCRIPT:-${LOCAL_WORK_DIR}/upload-package-artifact.py}"
+ARTIFACT_UPLOAD_HOOK="${ARTIFACT_UPLOAD_HOOK:-${LOCAL_WORK_DIR}/upload-package-artifact.sh}"
 CARGO_HOME="${CARGO_HOME:-${LOCAL_WORK_DIR}/cargo-home}"
 RUSTUP_HOME="${RUSTUP_HOME:-${LOCAL_WORK_DIR}/rustup-home}"
 CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${LOCAL_WORK_DIR}/cargo-target}"
@@ -64,7 +67,7 @@ BUILD_TMP_DIR="${BUILD_TMP_DIR:-${LOCAL_WORK_DIR}/tmp}"
 TMPDIR="$BUILD_TMP_DIR"
 TEMP="$BUILD_TMP_DIR"
 TMP="$BUILD_TMP_DIR"
-export JOB_WORK_DIR PACKAGE_DIR HF_HOME HF_HUB_CACHE HF_XET_CACHE
+export JOB_WORK_DIR PACKAGE_DIR HF_HOME HF_HUB_CACHE HF_XET_CACHE VENV_DIR ARTIFACT_UPLOAD_SCRIPT
 export TMPDIR TEMP TMP CARGO_HOME RUSTUP_HOME CARGO_TARGET_DIR XDG_CACHE_HOME PIP_CACHE_DIR
 
 cleanup_job_work_dir() {
@@ -146,10 +149,11 @@ estimate_bucket_workspace_bytes() {
     python3 - "$1" <<'PYTHON'
 import sys
 source = int(sys.argv[1])
-# Peak workspace is source cache + generated package + one current artifact's
-# transient sharded-slice scratch, plus fixed tool/cache headroom.
+# Source and package artifacts are not meant to accumulate in the bucket. This
+# estimate is retained only as a fallback-source-cache warning when /source is
+# unavailable.
 headroom = 32 * 1024 ** 3
-print((source * 9 + 3) // 4 + headroom)
+print(source + headroom)
 PYTHON
 }
 
@@ -216,6 +220,44 @@ echo "  ✓ Built: $SLICER"
 echo "  Root filesystem after build cleanup:"
 df -h / || true
 
+echo "  Preparing Hugging Face uploader..."
+python3 -m venv "$VENV_DIR" > /dev/null
+"$VENV_DIR/bin/pip" install -q huggingface_hub
+"$VENV_DIR/bin/python3" << 'PYTHON'
+from huggingface_hub import HfApi
+import os
+
+api = HfApi(token=os.environ["HF_TOKEN"])
+api.create_repo(os.environ["TARGET_REPO"], exist_ok=True)
+PYTHON
+cat > "$ARTIFACT_UPLOAD_SCRIPT" <<'PYTHON'
+from huggingface_hub import HfApi
+from pathlib import Path
+import os
+
+path = Path(os.environ["SKIPPY_PACKAGE_ARTIFACT_PATH"])
+relative = os.environ["SKIPPY_PACKAGE_ARTIFACT_RELATIVE_PATH"]
+target_repo = os.environ["TARGET_REPO"]
+
+api = HfApi(token=os.environ["HF_TOKEN"])
+api.upload_file(
+    repo_id=target_repo,
+    path_or_fileobj=str(path),
+    path_in_repo=relative,
+    repo_type="model",
+    commit_message=f"Add package artifact {relative}",
+)
+size = path.stat().st_size
+path.unlink()
+print(f"  Uploaded and removed {relative} ({size} bytes)")
+PYTHON
+cat > "$ARTIFACT_UPLOAD_HOOK" <<'BASH'
+#!/bin/bash
+set -euo pipefail
+"${VENV_DIR}/bin/python3" "${ARTIFACT_UPLOAD_SCRIPT}"
+BASH
+chmod +x "$ARTIFACT_UPLOAD_HOOK"
+
 # ─── Split ────────────────────────────────────────────────────────────────
 echo ""
 echo "=== [4/9] Splitting model ==="
@@ -228,7 +270,7 @@ echo "  Source ref: $SOURCE_REF"
 if [ -n "${SOURCE_TOTAL_BYTES:-}" ]; then
     echo "  Source bytes: $SOURCE_TOTAL_BYTES"
     ESTIMATED_BUCKET_BYTES="$(estimate_bucket_workspace_bytes "$SOURCE_TOTAL_BYTES")"
-    echo "  Estimated /bucket workspace needed: $(format_bytes "$ESTIMATED_BUCKET_BYTES")"
+    echo "  Estimated fallback /bucket cache needed: $(format_bytes "$ESTIMATED_BUCKET_BYTES")"
 fi
 MOUNTED_SOURCE_PATH="/source/${SOURCE_FILE}"
 if [ -f "$MOUNTED_SOURCE_PATH" ]; then
@@ -266,6 +308,7 @@ start_heartbeat "write-package"
 set +e
 time "$SLICER" write-package "$WRITE_PACKAGE_INPUT" \
     --out-dir "$PACKAGE_DIR" \
+    --after-artifact-command "$ARTIFACT_UPLOAD_HOOK" \
     "${WRITE_PACKAGE_IDENTITY_ARGS[@]}"
 WRITE_PACKAGE_STATUS=$?
 set -e
@@ -281,43 +324,58 @@ log_storage_snapshot "after write-package"
 SOURCE_PATH="$(python3 -c "import json, os; m=json.load(open(os.path.join(os.environ['PACKAGE_DIR'], 'model-package.json'))); print(m['source_model']['path'])")"
 echo "  Cached source: $SOURCE_PATH ($(du -h "$SOURCE_PATH" | cut -f1))"
 
-LAYER_COUNT=$(ls "$PACKAGE_DIR"/layers/ | wc -l)
-TOTAL_SIZE=$(du -sh "$PACKAGE_DIR" | cut -f1)
-echo "  ✓ Split into $LAYER_COUNT layers ($TOTAL_SIZE total)"
+LAYER_COUNT="$(python3 -c "import json, os; m=json.load(open(os.path.join(os.environ['PACKAGE_DIR'], 'model-package.json'))); print(m['layer_count'])")"
+TOTAL_SIZE="$(python3 -c "import json, os; m=json.load(open(os.path.join(os.environ['PACKAGE_DIR'], 'model-package.json'))); print(sum(int(a.get('artifact_bytes') or 0) for a in list(m['shared'].values()) + m.get('layers', []) + m.get('projectors', [])))")"
+TOTAL_SIZE_LABEL="$(format_bytes "$TOTAL_SIZE")"
+echo "  ✓ Split into $LAYER_COUNT layers; artifacts uploaded incrementally (${TOTAL_SIZE_LABEL} total)"
 
-# ─── Validate ─────────────────────────────────────────────────────────────
+# ─── Verify manifest ──────────────────────────────────────────────────────
 echo ""
-echo "=== [5/9] Validating package ==="
-time $SLICER validate-package "$SOURCE_PATH" "$PACKAGE_DIR"
-echo "  ✓ Validation passed — all tensors accounted for"
+echo "=== [5/9] Verifying package manifest ==="
+"$VENV_DIR/bin/python3" << 'PYTHON'
+import json
+import os
+from pathlib import Path
+
+manifest_path = Path(os.environ["PACKAGE_DIR"]) / "model-package.json"
+manifest = json.loads(manifest_path.read_text())
+required = [
+    manifest["shared"]["metadata"],
+    manifest["shared"]["embeddings"],
+    manifest["shared"]["output"],
+    *manifest.get("layers", []),
+    *manifest.get("projectors", []),
+]
+missing = [artifact for artifact in required if not artifact.get("path") or not artifact.get("sha256")]
+if missing:
+    raise SystemExit(f"manifest contains {len(missing)} artifacts without path/checksum")
+print(f"  ✓ Manifest records {len(required)} uploaded artifacts")
+PYTHON
 
 # ─── Publish ──────────────────────────────────────────────────────────────
 echo ""
 echo "=== [6/9] Publishing to HuggingFace ==="
-python3 -m venv "$VENV_DIR" > /dev/null
-"$VENV_DIR/bin/pip" install -q huggingface_hub
-
 "$VENV_DIR/bin/python3" << PYTHON
 from huggingface_hub import HfApi
 import os, json
+from pathlib import Path
 
 api = HfApi(token=os.environ['HF_TOKEN'])
 target_repo = os.environ['TARGET_REPO']
 source_repo = os.environ['SOURCE_REPO']
 model_id = os.environ.get('MODEL_ID', '')
+manifest_path = Path(os.environ['PACKAGE_DIR']) / 'model-package.json'
 
-# Create repo (idempotent)
-api.create_repo(target_repo, exist_ok=True)
-
-# Upload the entire package
-api.upload_folder(
+api.upload_file(
     repo_id=target_repo,
-    folder_path=os.environ['PACKAGE_DIR'],
-    commit_message=f'Layer package from {source_repo} ({model_id})',
+    path_or_fileobj=str(manifest_path),
+    path_in_repo='model-package.json',
+    repo_type='model',
+    commit_message=f'Add layer package manifest from {source_repo} ({model_id})',
 )
 
 # Print summary
-manifest = json.load(open(os.path.join(os.environ['PACKAGE_DIR'], 'model-package.json')))
+manifest = json.load(open(manifest_path))
 print(f'  ✓ Published: https://huggingface.co/{target_repo}')
 print(f'    Model:  {manifest["model_id"]}')
 print(f'    Layers: {manifest["layer_count"]}')
@@ -704,10 +762,11 @@ for label, path, contents, checksum in file_rows:
 readme += f"""
 ## Validation
 
-Generated by the Mesh LLM HF Jobs splitter from `mesh-llm` ref `{mesh_llm_ref}` and validated before upload:
+Generated by the Mesh LLM HF Jobs splitter from `mesh-llm` ref `{mesh_llm_ref}`.
+Each artifact is checksummed as it is written, uploaded to this repository, and removed from the job workspace before the next artifact is produced.
 
 ```bash
-skippy-model-package validate-package "{source_path}" "{package_dir}"
+skippy-model-package write-package "{source_path}" --out-dir "{package_dir}"
 ```
 
 ## Links
@@ -738,7 +797,7 @@ echo "=== [9/9] Done ==="
 echo ""
 echo "  Published:  https://huggingface.co/${TARGET_REPO}"
 echo "  Layers:     ${LAYER_COUNT}"
-echo "  Total size: ${TOTAL_SIZE}"
+echo "  Total size: ${TOTAL_SIZE_LABEL}"
 echo ""
 echo "  Use with mesh-llm:"
 echo "    mesh-llm serve --model ${TARGET_REPO} --split"
