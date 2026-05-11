@@ -1,5 +1,5 @@
 use axum::{
-    http::StatusCode,
+    http::{header, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -12,6 +12,7 @@ pub struct OpenAiError {
     message: String,
     error_type: String,
     code: Option<String>,
+    retry_after_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +42,7 @@ impl OpenAiError {
             message: message.into(),
             error_type: error_type.to_string(),
             code: Some(code.to_string()),
+            retry_after_secs: None,
         }
     }
 
@@ -133,6 +135,11 @@ impl OpenAiError {
 
     pub fn with_code(mut self, code: impl Into<String>) -> Self {
         self.code = Some(code.into());
+        self
+    }
+
+    pub fn with_retry_after_secs(mut self, retry_after_secs: u64) -> Self {
+        self.retry_after_secs = Some(retry_after_secs);
         self
     }
 
@@ -280,7 +287,16 @@ pub fn map_upstream_error_body(status_code: u16, body: &[u8]) -> Option<Vec<u8>>
 
 impl IntoResponse for OpenAiError {
     fn into_response(self) -> Response {
-        (self.status, Json(self.body())).into_response()
+        let retry_after_secs = self.retry_after_secs;
+        let mut response = (self.status, Json(self.body())).into_response();
+        if let Some(retry_after_secs) = retry_after_secs {
+            let header_value = HeaderValue::from_str(&retry_after_secs.to_string())
+                .expect("integer retry-after value should be a valid header");
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, header_value);
+        }
+        response
     }
 }
 

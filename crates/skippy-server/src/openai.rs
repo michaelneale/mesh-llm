@@ -4,7 +4,7 @@ use std::{
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     thread,
@@ -49,7 +49,7 @@ use skippy_runtime::{
 };
 use tokio::{
     net::TcpListener,
-    sync::{mpsc, Semaphore},
+    sync::{mpsc, OwnedSemaphorePermit, Semaphore, TryAcquireError},
     task,
 };
 
@@ -73,6 +73,8 @@ use self::{request::*, util::*};
 static OPENAI_GENERATION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 pub const CONTEXT_BUDGET_MAX_TOKENS: u32 = u32::MAX;
+const GENERATION_ADMISSION_TIMEOUT: Duration = Duration::from_secs(10);
+const GENERATION_RETRY_AFTER_SECS: u64 = 1;
 
 pub async fn serve_openai(args: ServeOpenAiArgs) -> Result<()> {
     let config = load_json::<StageConfig>(&args.config)
@@ -156,6 +158,8 @@ pub async fn serve_openai(args: ServeOpenAiArgs) -> Result<()> {
         speculative_window: 0,
         adaptive_speculative_window: false,
         generation_limit: Arc::new(Semaphore::new(args.generation_concurrency)),
+        generation_queue_depth: Arc::new(AtomicUsize::new(0)),
+        generation_queue_limit: args.generation_concurrency,
         hook_policy: None,
         kv,
     });
@@ -323,6 +327,8 @@ pub fn embedded_openai_backend(args: EmbeddedOpenAiArgs) -> Result<EmbeddedOpenA
         speculative_window: args.speculative_window,
         adaptive_speculative_window: args.adaptive_speculative_window,
         generation_limit: Arc::new(Semaphore::new(args.generation_concurrency)),
+        generation_queue_depth: Arc::new(AtomicUsize::new(0)),
+        generation_queue_limit: args.generation_concurrency,
         hook_policy: args.hook_policy,
         kv,
     });
@@ -347,8 +353,20 @@ struct StageOpenAiBackend {
     speculative_window: usize,
     adaptive_speculative_window: bool,
     generation_limit: Arc<Semaphore>,
+    generation_queue_depth: Arc<AtomicUsize>,
+    generation_queue_limit: usize,
     hook_policy: Option<Arc<dyn OpenAiHookPolicy>>,
     kv: Option<Arc<KvStageIntegration>>,
+}
+
+struct GenerationQueueReservation {
+    depth: Arc<AtomicUsize>,
+}
+
+impl Drop for GenerationQueueReservation {
+    fn drop(&mut self) {
+        self.depth.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -446,6 +464,28 @@ fn generation_lanes_busy_error() -> OpenAiError {
         OpenAiErrorKind::RateLimit,
         "all execution lanes are busy",
     )
+    .with_retry_after_secs(GENERATION_RETRY_AFTER_SECS)
+}
+
+fn generation_queue_full_error() -> OpenAiError {
+    OpenAiError::from_kind(
+        StatusCode::TOO_MANY_REQUESTS,
+        OpenAiErrorKind::RateLimit,
+        "generation queue is full; retry later",
+    )
+    .with_retry_after_secs(GENERATION_RETRY_AFTER_SECS)
+}
+
+fn generation_queue_timeout_error(timeout: Duration) -> OpenAiError {
+    OpenAiError::from_kind(
+        StatusCode::TOO_MANY_REQUESTS,
+        OpenAiErrorKind::RateLimit,
+        format!(
+            "timed out waiting for an execution lane after {} seconds",
+            timeout.as_secs()
+        ),
+    )
+    .with_retry_after_secs(GENERATION_RETRY_AFTER_SECS)
 }
 
 async fn openai_http_telemetry(
@@ -1422,6 +1462,47 @@ impl OpenAiBackend for StageOpenAiBackend {
 }
 
 impl StageOpenAiBackend {
+    async fn acquire_generation_permit(&self) -> OpenAiResult<OwnedSemaphorePermit> {
+        match self.generation_limit.clone().try_acquire_owned() {
+            Ok(permit) => return Ok(permit),
+            Err(TryAcquireError::Closed) => return Err(generation_lanes_busy_error()),
+            Err(TryAcquireError::NoPermits) => {}
+        }
+
+        let _queue_reservation = self
+            .reserve_generation_queue()
+            .ok_or_else(generation_queue_full_error)?;
+        tokio::time::timeout(
+            GENERATION_ADMISSION_TIMEOUT,
+            self.generation_limit.clone().acquire_owned(),
+        )
+        .await
+        .map_err(|_| generation_queue_timeout_error(GENERATION_ADMISSION_TIMEOUT))?
+        .map_err(|_| generation_lanes_busy_error())
+    }
+
+    fn reserve_generation_queue(&self) -> Option<GenerationQueueReservation> {
+        let mut current = self.generation_queue_depth.load(Ordering::Acquire);
+        loop {
+            if current >= self.generation_queue_limit {
+                return None;
+            }
+            match self.generation_queue_depth.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    return Some(GenerationQueueReservation {
+                        depth: self.generation_queue_depth.clone(),
+                    });
+                }
+                Err(next) => current = next,
+            }
+        }
+    }
+
     fn openai_attrs(&self, ids: &OpenAiGenerationIds) -> BTreeMap<String, Value> {
         let mut attrs = lifecycle_attrs(&self.config);
         attrs.insert(
@@ -2044,11 +2125,7 @@ impl StageOpenAiBackend {
         ids: OpenAiGenerationIds,
     ) -> OpenAiResult<GeneratedText> {
         let admit_timer = PhaseTimer::start();
-        let permit = self
-            .generation_limit
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| generation_lanes_busy_error())?;
+        let permit = self.acquire_generation_permit().await?;
         let mut admit_attrs = self.openai_attrs(&ids);
         admit_attrs.insert(
             "llama_stage.openai_phase".to_string(),
@@ -2088,11 +2165,7 @@ impl StageOpenAiBackend {
         ids: OpenAiGenerationIds,
     ) -> OpenAiResult<GenerationStream> {
         let admit_timer = PhaseTimer::start();
-        let permit = self
-            .generation_limit
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| generation_lanes_busy_error())?;
+        let permit = self.acquire_generation_permit().await?;
         let mut admit_attrs = self.openai_attrs(&ids);
         admit_attrs.insert(
             "llama_stage.openai_phase".to_string(),
