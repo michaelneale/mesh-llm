@@ -7,7 +7,9 @@ use std::collections::HashMap;
 
 use super::local::{runtime_model_required_bytes, SplitParticipant, SplitParticipantExclusion};
 
-const RUNTIME_NODE_HEADROOM_NUMERATOR: u64 = 1;
+// VRAM budget already accounts for OS/runtime reservations (e.g. Metal's
+// recommendedMaxWorkingSetSize on macOS).  No additional headroom deduction.
+const RUNTIME_NODE_HEADROOM_NUMERATOR: u64 = 0;
 const RUNTIME_NODE_HEADROOM_DENOMINATOR: u64 = 10;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -374,9 +376,9 @@ mod tests {
     }
 
     #[test]
-    fn default_runtime_headroom_is_per_node() {
-        assert_eq!(default_runtime_headroom_bytes(100), 10);
-        assert_eq!(default_runtime_headroom_bytes(101), 11);
+    fn default_runtime_headroom_is_zero() {
+        assert_eq!(default_runtime_headroom_bytes(100), 0);
+        assert_eq!(default_runtime_headroom_bytes(101), 0);
     }
 
     #[test]

@@ -299,7 +299,7 @@ fn rocm_unified_memory_usable_bytes(
     } else {
         gtt
     };
-    Some((unified_total as f64 * 0.75) as u64)
+    Some((unified_total as f64 * 0.90) as u64)
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -705,7 +705,7 @@ impl Collector for DefaultCollector {
                 if let Some((vram, per_gpu)) = nvidia_vram {
                     survey.gpu_vram = per_gpu;
                     let ram_offload = system_ram.saturating_sub(vram);
-                    survey.vram_bytes = vram + (ram_offload as f64 * 0.75) as u64;
+                    survey.vram_bytes = vram + (ram_offload as f64 * 0.90) as u64;
                 } else {
                     // Try AMD ROCm (mesh.rs:295-316)
                     let rocm_vram: Option<(Vec<u64>, bool)> = (|| {
@@ -757,7 +757,7 @@ impl Collector for DefaultCollector {
                             survey.vram_bytes = vram;
                         } else {
                             let ram_offload = system_ram.saturating_sub(vram);
-                            survey.vram_bytes = vram + (ram_offload as f64 * 0.75) as u64;
+                            survey.vram_bytes = vram + (ram_offload as f64 * 0.90) as u64;
                         }
                     } else {
                         let intel_gpus: Option<Vec<XpuSmiGpuInfo>> = (|| {
@@ -791,13 +791,13 @@ impl Collector for DefaultCollector {
                             survey.gpu_vram = per_gpu;
                             if total > 0 {
                                 let ram_offload = system_ram.saturating_sub(total);
-                                survey.vram_bytes = total + (ram_offload as f64 * 0.75) as u64;
+                                survey.vram_bytes = total + (ram_offload as f64 * 0.90) as u64;
                             } else if system_ram > 0 {
-                                survey.vram_bytes = (system_ram as f64 * 0.75) as u64;
+                                survey.vram_bytes = (system_ram as f64 * 0.90) as u64;
                             }
                         } else if system_ram > 0 {
                             // CPU-only (mesh.rs:320-322)
-                            survey.vram_bytes = (system_ram as f64 * 0.75) as u64;
+                            survey.vram_bytes = (system_ram as f64 * 0.90) as u64;
                         }
                     }
                 }
@@ -937,7 +937,7 @@ impl Collector for DefaultCollector {
                     if total > 0 {
                         survey.gpu_vram = per_gpu;
                         let ram_offload = system_ram.saturating_sub(total);
-                        survey.vram_bytes = total + (ram_offload as f64 * 0.75) as u64;
+                        survey.vram_bytes = total + (ram_offload as f64 * 0.90) as u64;
                     }
                 } else {
                     let per_gpu: Vec<u64> = windows_gpus
@@ -949,9 +949,9 @@ impl Collector for DefaultCollector {
                     if total > 0 {
                         survey.gpu_vram = per_gpu;
                         let ram_offload = system_ram.saturating_sub(total);
-                        survey.vram_bytes = total + (ram_offload as f64 * 0.75) as u64;
+                        survey.vram_bytes = total + (ram_offload as f64 * 0.90) as u64;
                     } else if system_ram > 0 {
-                        survey.vram_bytes = (system_ram as f64 * 0.75) as u64;
+                        survey.vram_bytes = (system_ram as f64 * 0.90) as u64;
                     }
                 }
             }
@@ -1009,7 +1009,7 @@ impl Collector for TegraCollector {
             })()
             .or_else(try_tegrastats_ram);
             if let Some(ram) = total_ram {
-                survey.vram_bytes = (ram as f64 * 0.75) as u64;
+                survey.vram_bytes = (ram as f64 * 0.90) as u64;
                 survey.gpu_vram = vec![ram];
             }
         }
@@ -1412,7 +1412,7 @@ pub fn merge_vulkan_devices_into_gpu_facts(
 
         let unified_memory = device.device_type.contains("INTEGRATED");
         let vram_bytes = if unified_memory {
-            (unified_memory_bytes as f64 * 0.75) as u64
+            (unified_memory_bytes as f64 * 0.90) as u64
         } else {
             0
         };
@@ -1695,7 +1695,7 @@ GPU[1]\t\t: Card series:\t\t\tAMD Instinct MI300X
 
         assert_eq!(
             rocm_unified_memory_usable_bytes(&vram, &gtt, system_ram),
-            Some(103_079_215_104)
+            Some(123_695_058_124)
         );
     }
 
