@@ -819,7 +819,10 @@ pub(crate) fn classify_runtime_error(msg: &str) -> u16 {
         404
     } else if msg.contains("already loaded") || msg.contains("multiple loaded instances") {
         409
-    } else if msg.contains("fit locally") || msg.contains("runtime load only supports") {
+    } else if msg.contains("fit locally")
+        || msg.contains("runtime load only supports")
+        || msg.contains("runtime capacity")
+    {
         422
     } else {
         400

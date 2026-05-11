@@ -517,6 +517,10 @@ fn test_classify_runtime_error_codes() {
         classify_runtime_error("runtime load only supports models that fit locally"),
         422
     );
+    assert_eq!(
+        classify_runtime_error("runtime capacity for model 'x' exceeds node pool"),
+        422
+    );
     assert_eq!(classify_runtime_error("bad request"), 400);
 }
 

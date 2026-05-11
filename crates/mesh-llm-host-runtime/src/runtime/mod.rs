@@ -1,3 +1,4 @@
+mod capacity;
 pub(crate) mod config_state;
 mod context_planning;
 mod discovery;
@@ -9,6 +10,9 @@ mod split_planning;
 mod survey;
 pub(crate) mod wakeable;
 
+use self::capacity::{
+    RuntimeCapacityLedger, RuntimeCapacityPool, RuntimeCapacityRequest, RuntimeCapacityReservation,
+};
 use self::discovery::{nostr_rediscovery, start_new_mesh};
 use self::interactive::InitialPromptMode;
 use self::local::{
@@ -75,6 +79,7 @@ struct DashboardContextUsageSource {
 struct RuntimeModelHandleEntry {
     model_name: String,
     handle: LocalRuntimeModelHandle,
+    capacity_reservation: RuntimeCapacityReservation,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -758,6 +763,47 @@ fn next_runtime_instance_id(next_sequence: &mut u64) -> String {
     instance_id
 }
 
+fn runtime_capacity_pool(pinned_gpu: Option<&StartupPinnedGpuTarget>) -> RuntimeCapacityPool {
+    pinned_gpu
+        .map(|gpu| RuntimeCapacityPool::PinnedGpu(gpu.stable_id.clone()))
+        .unwrap_or(RuntimeCapacityPool::Node)
+}
+
+fn runtime_capacity_request_for_model(
+    instance_id: &str,
+    model_name: &str,
+    pinned_gpu: Option<&StartupPinnedGpuTarget>,
+    capacity_bytes: u64,
+    model_bytes: u64,
+) -> RuntimeCapacityRequest {
+    RuntimeCapacityRequest {
+        instance_id: instance_id.to_string(),
+        model_name: model_name.to_string(),
+        pool: runtime_capacity_pool(pinned_gpu),
+        capacity_bytes,
+        required_bytes: runtime_model_required_bytes(model_bytes),
+    }
+}
+
+fn reserve_runtime_capacity_for_model(
+    ledger: &RuntimeCapacityLedger,
+    instance_id: &str,
+    model_name: &str,
+    pinned_gpu: Option<&StartupPinnedGpuTarget>,
+    capacity_bytes: u64,
+    model_bytes: u64,
+) -> Result<RuntimeCapacityReservation> {
+    ledger
+        .reserve(runtime_capacity_request_for_model(
+            instance_id,
+            model_name,
+            pinned_gpu,
+            capacity_bytes,
+            model_bytes,
+        ))
+        .map_err(Into::into)
+}
+
 async fn register_runtime_instance(
     registry: &RuntimeInstanceRegistry,
     node: &mesh::Node,
@@ -1025,6 +1071,7 @@ struct StartupLocalModelTask {
     mmproj_path: Option<PathBuf>,
     ctx_size: Option<u32>,
     pinned_gpu: Option<StartupPinnedGpuTarget>,
+    runtime_capacity_ledger: RuntimeCapacityLedger,
     cache_type_k: Option<String>,
     cache_type_v: Option<String>,
     n_batch: Option<u32>,
@@ -1062,6 +1109,7 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         mmproj_path,
         ctx_size,
         pinned_gpu,
+        runtime_capacity_ledger,
         cache_type_k,
         cache_type_v,
         n_batch,
@@ -1134,6 +1182,7 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         mmproj_override: mmproj_path.as_deref(),
         ctx_size_override: ctx_size,
         pinned_gpu: pinned_gpu.as_ref(),
+        capacity_budget_bytes: None,
         cache_type_k_override: cache_type_k.as_deref(),
         cache_type_v_override: cache_type_v.as_deref(),
         n_batch_override: n_batch,
@@ -1143,6 +1192,7 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         skippy_telemetry: skippy_telemetry.clone(),
     };
     let mut launch_started: Instant;
+    let mut capacity_reservation: Option<RuntimeCapacityReservation> = None;
     let (
         mut loaded_name,
         handle,
@@ -1271,13 +1321,50 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         StartupRuntimePlan::Local => {
             let startup_load_guard = startup_load_gate.lock().await;
             launch_started = Instant::now();
-            let start_result = start_runtime_local_model(make_start_spec(), &model_ref).await;
+            let reservation = match reserve_runtime_capacity_for_model(
+                &runtime_capacity_ledger,
+                &instance_id,
+                &model_name,
+                pinned_gpu.as_ref(),
+                local_capacity,
+                model_bytes,
+            ) {
+                Ok(reservation) => reservation,
+                Err(err) => {
+                    survey_telemetry.record_launch_failure(
+                        survey::SurveyModelSpec {
+                            model: &model_name,
+                            model_path: Some(&model_path),
+                            launch_kind,
+                            pinned_gpu: pinned_gpu.as_ref(),
+                            backend: None,
+                            context_length: ctx_size.map(u64::from),
+                        },
+                        launch_started.elapsed(),
+                        survey::classify_launch_failure(&err),
+                    );
+                    let _ = emit_event(OutputEvent::Error {
+                        message: format!("Failed to start model {model_name}: {err:#}"),
+                        context: Some(format!("model={model_name}")),
+                    });
+                    update_startup_target(&target_tx, &model_name, election::InferenceTarget::None);
+                    if let Some(cs) = console_state {
+                        cs.update(false, false).await;
+                    }
+                    return;
+                }
+            };
+            let mut start_spec = make_start_spec();
+            start_spec.capacity_budget_bytes = Some(reservation.capacity_budget_bytes());
+            let start_result = start_runtime_local_model(start_spec, &model_ref).await;
             drop(startup_load_guard);
             match start_result {
                 Ok((loaded_name, handle, death_rx)) => {
+                    capacity_reservation = Some(reservation);
                     (loaded_name, handle, death_rx, None, None, None)
                 }
                 Err(err) => {
+                    drop(reservation);
                     survey_telemetry.record_launch_failure(
                         survey::SurveyModelSpec {
                             model: &model_name,
@@ -1449,6 +1536,61 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                             .await;
                         }
                         let launch_started = Instant::now();
+                        let reservation = match reserve_runtime_capacity_for_model(
+                            &runtime_capacity_ledger,
+                            &instance_id,
+                            &old_loaded_name,
+                            pinned_gpu.as_ref(),
+                            local_capacity,
+                            model_bytes,
+                        ) {
+                            Ok(reservation) => reservation,
+                            Err(err) => {
+                                survey_telemetry.record_launch_failure(
+                                    survey::SurveyModelSpec {
+                                        model: &old_loaded_name,
+                                        model_path: Some(&model_path),
+                                        launch_kind: survey::SurveyLaunchKind::MoeFallback,
+                                        pinned_gpu: pinned_gpu.as_ref(),
+                                        backend: None,
+                                        context_length: ctx_size.map(u64::from),
+                                    },
+                                    launch_started.elapsed(),
+                                    survey::classify_launch_failure(&err),
+                                );
+                                let _ = emit_event(OutputEvent::Warning {
+                                    message: format!(
+                                        "Split runtime topology '{}' lost required stage peer(s); local fallback failed, withdrawing model '{}'",
+                                        event.topology_id, old_loaded_name
+                                    ),
+                                    context: Some(format!(
+                                        "reason={} generation={} missing_stage_nodes=[{}] error={err:#}",
+                                        event.reason, event.generation, missing_stage_nodes
+                                    )),
+                                });
+                                let _ = event.ack.send(SplitCoordinatorAck::Accepted);
+                                if unregister_runtime_instance(
+                                    &runtime_instance_registry,
+                                    &node,
+                                    &old_loaded_name,
+                                    &instance_id,
+                                )
+                                .await
+                                {
+                                    publish_runtime_llama_unavailable(
+                                        runtime_data_producer.as_ref(),
+                                        &old_loaded_name,
+                                        Some(&instance_id),
+                                    );
+                                }
+                                remove_dashboard_process(&dashboard_processes, &instance_id).await;
+                                if let Some(cs) = console_state {
+                                    cs.remove_local_process(&instance_id).await;
+                                    cs.update(false, false).await;
+                                }
+                                return;
+                            }
+                        };
                         match start_runtime_local_model(LocalRuntimeModelStartSpec {
                             node: &node,
                             model_path: &model_path,
@@ -1456,6 +1598,7 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                             mmproj_override: mmproj_path.as_deref(),
                             ctx_size_override: ctx_size,
                             pinned_gpu: pinned_gpu.as_ref(),
+                            capacity_budget_bytes: Some(reservation.capacity_budget_bytes()),
                             cache_type_k_override: cache_type_k.as_deref(),
                             cache_type_v_override: cache_type_v.as_deref(),
                             n_batch_override: n_batch,
@@ -1467,6 +1610,7 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                         .await
                         {
                             Ok((next_loaded_name, next_handle, next_death_rx)) => {
+                                capacity_reservation = Some(reservation);
                                 loaded_name = next_loaded_name;
                                 add_runtime_local_target(&target_tx, &loaded_name, next_handle.port);
                                 tunnel_mgr.set_http_port(api_port);
@@ -1541,6 +1685,7 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                                 continue;
                             }
                             Err(err) => {
+                                drop(reservation);
                                 survey_telemetry.record_launch_failure(
                                     survey::SurveyModelSpec {
                                         model: &old_loaded_name,
@@ -1692,6 +1837,7 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                 handle = Some(next.handle);
                 let _ = event.ack.send(SplitCoordinatorAck::Accepted);
                 old_handle.shutdown().await;
+                drop(capacity_reservation.take());
                 let _ = emit_event(OutputEvent::Info {
                     message: format!(
                         "Split runtime cut over model '{}' from :{} to :{}",
@@ -1718,6 +1864,7 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         survey_telemetry.record_unload(&survey_loaded_model);
     }
     let Some(handle) = handle.take() else {
+        drop(capacity_reservation.take());
         return;
     };
     let port = handle.port;
@@ -1758,6 +1905,7 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
     }
     remove_dashboard_context_usage(&dashboard_context_usage, &loaded_name, &handle).await;
     handle.shutdown().await;
+    drop(capacity_reservation.take());
     if let Some(cleanup) = split_cleanup.take() {
         stop_split_generation_cleanup(&node, cleanup, u64::MAX).await;
     }
@@ -4779,6 +4927,7 @@ async fn run_auto(
     let mut managed_models: HashMap<String, ManagedModelController> = HashMap::new();
     let runtime_instance_registry: RuntimeInstanceRegistry =
         Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let runtime_capacity_ledger = RuntimeCapacityLedger::default();
     let mut next_runtime_instance_sequence = 1_u64;
     let dashboard_processes = Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let dashboard_context_usage = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
@@ -5060,6 +5209,7 @@ async fn run_auto(
     let dashboard_processes_for_primary_task = dashboard_processes.clone();
     let dashboard_context_usage_for_primary_task = dashboard_context_usage.clone();
     let runtime_instance_registry_for_primary_task = runtime_instance_registry.clone();
+    let runtime_capacity_ledger_for_primary_task = runtime_capacity_ledger.clone();
     let primary_startup_load_gate = startup_load_gate.clone();
     let primary_task = tokio::spawn(Box::pin(startup_local_model_loop(StartupLocalModelTask {
         node: node2,
@@ -5073,6 +5223,7 @@ async fn run_auto(
         mmproj_path: primary_mmproj,
         ctx_size: primary_ctx_size,
         pinned_gpu: primary_pinned_gpu,
+        runtime_capacity_ledger: runtime_capacity_ledger_for_primary_task,
         cache_type_k: primary_cache_type_k,
         cache_type_v: primary_cache_type_v,
         n_batch: primary_n_batch,
@@ -5150,6 +5301,7 @@ async fn run_auto(
             let dashboard_processes_for_extra_task = dashboard_processes.clone();
             let dashboard_context_usage_for_extra_task = dashboard_context_usage.clone();
             let runtime_instance_registry_for_extra_task = runtime_instance_registry.clone();
+            let runtime_capacity_ledger_for_extra_task = runtime_capacity_ledger.clone();
             let extra_control_tx = control_tx.clone();
             let extra_survey_telemetry = survey_telemetry.clone();
             let extra_task =
@@ -5165,6 +5317,7 @@ async fn run_auto(
                     mmproj_path: extra_mmproj,
                     ctx_size: extra_ctx_size,
                     pinned_gpu: extra_pinned_gpu,
+                    runtime_capacity_ledger: runtime_capacity_ledger_for_extra_task,
                     cache_type_k: extra_cache_type_k,
                     cache_type_v: extra_cache_type_v,
                     n_batch: extra_n_batch,
@@ -5333,28 +5486,8 @@ async fn run_auto(
                                 .await
                                 .map(|model| models::remote_catalog_model_ref(&model))
                                 .unwrap_or_else(|| models::model_ref_for_path(&model_path));
-                            let already_loaded = managed_models.contains_key(&runtime_model_name)
-                                || runtime_models.contains_key(&runtime_model_name);
-                            anyhow::ensure!(
-                                !already_loaded,
-                                "model '{runtime_model_name}' is already loaded"
-                            );
-
-                            // Look up per-model overrides from TOML config by matching the
-                            // spec string against [[models]].model entries. Metadata-based
-                            // planning chooses direct-local defaults when no parallel
-                            // override matches.
-                            let model_overrides = config.models.iter().find(|m| m.model == spec);
-                            let parallel_override = model_overrides
-                                .and_then(|m| m.parallel)
-                                .or(config.gpu.parallel);
-
-                            let instance_id =
-                                next_runtime_instance_id(&mut next_runtime_instance_sequence);
                             let requested_model = spec.clone();
-                            add_serving_assignment(&node, &primary_model_name, &requested_model)
-                                .await;
-                            let runtime_model_bytes = {
+                            let model_bytes = {
                                 let p = model_path.clone();
                                 tokio::task::spawn_blocking(move || runtime_model_planning_bytes(&p))
                                     .await
@@ -5374,15 +5507,40 @@ async fn run_auto(
                                         fallback
                                     })
                             };
+
+                            // Look up per-model overrides from TOML config by matching the
+                            // spec string against [[models]].model entries. Metadata-based
+                            // planning chooses direct-local defaults when no parallel
+                            // override matches.
+                            let model_overrides = config.models.iter().find(|m| m.model == spec);
+                            let parallel_override = model_overrides
+                                .and_then(|m| m.parallel)
+                                .or(config.gpu.parallel);
+
+                            let instance_id =
+                                next_runtime_instance_id(&mut next_runtime_instance_sequence);
+                            let capacity_reservation = reserve_runtime_capacity_for_model(
+                                &runtime_capacity_ledger,
+                                &instance_id,
+                                &runtime_model_name,
+                                None,
+                                node.vram_bytes(),
+                                model_bytes,
+                            )?;
+                            add_serving_assignment(&node, &primary_model_name, &requested_model)
+                                .await;
                             let launch_started = Instant::now();
+                            let capacity_budget_bytes =
+                                capacity_reservation.capacity_budget_bytes();
                             let (loaded_name, handle, death_rx) = match start_runtime_local_model(
                                 LocalRuntimeModelStartSpec {
                                     node: &node,
                                     model_path: &model_path,
-                                    model_bytes: runtime_model_bytes,
+                                    model_bytes,
                                     mmproj_override: None,
                                     ctx_size_override: cli.ctx_size,
                                     pinned_gpu: None,
+                                    capacity_budget_bytes: Some(capacity_budget_bytes),
                                     cache_type_k_override: model_overrides
                                         .and_then(|m| m.cache_type_k.as_deref()),
                                     cache_type_v_override: model_overrides
@@ -5401,6 +5559,7 @@ async fn run_auto(
                             {
                                 Ok(result) => result,
                                 Err(err) => {
+                                    drop(capacity_reservation);
                                     remove_serving_assignment(&node, &requested_model).await;
                                     survey_telemetry.record_launch_failure(
                                         survey::SurveyModelSpec {
@@ -5496,6 +5655,7 @@ async fn run_auto(
                                 RuntimeModelHandleEntry {
                                     model_name: loaded_name.clone(),
                                     handle,
+                                    capacity_reservation,
                                 },
                             );
                             Ok(api::RuntimeLoadResponse {
@@ -5521,8 +5681,11 @@ async fn run_auto(
                                             unload.instance_id
                                         );
                                     };
-                                    let model = entry.model_name;
-                                    let handle = entry.handle;
+                                    let RuntimeModelHandleEntry {
+                                        model_name: model,
+                                        handle,
+                                        capacity_reservation,
+                                    } = entry;
                                     let port = handle.port;
                                     if let Some(survey_model) =
                                         runtime_survey_models.remove(&unload.instance_id)
@@ -5572,6 +5735,7 @@ async fn run_auto(
                                     )
                                     .await;
                                     handle.shutdown().await;
+                                    drop(capacity_reservation);
                                     remove_dashboard_process(
                                         &dashboard_processes,
                                         &unload.instance_id,
@@ -5648,7 +5812,11 @@ async fn run_auto(
                             .unwrap_or(false);
                         if matches {
                             if let Some(entry) = runtime_models.remove(&instance_id) {
-                                let handle = entry.handle;
+                                let RuntimeModelHandleEntry {
+                                    handle,
+                                    capacity_reservation,
+                                    ..
+                                } = entry;
                                 if let Some(survey_model) =
                                     runtime_survey_models.remove(&instance_id)
                                 {
@@ -5694,6 +5862,7 @@ async fn run_auto(
                                 )
                                 .await;
                                 handle.shutdown().await;
+                                drop(capacity_reservation);
                             }
                             remove_runtime_local_target(&target_tx, &model, port);
                             let _ = emit_event(OutputEvent::Warning {
@@ -5737,8 +5906,11 @@ async fn run_auto(
     }
 
     for (instance_id, entry) in runtime_models.drain() {
-        let name = entry.model_name;
-        let handle = entry.handle;
+        let RuntimeModelHandleEntry {
+            model_name: name,
+            handle,
+            capacity_reservation,
+        } = entry;
         if let Some(survey_model) = runtime_survey_models.remove(&instance_id) {
             survey_telemetry.record_unload(&survey_model);
         }
@@ -5768,6 +5940,7 @@ async fn run_auto(
         let stopped_payload =
             runtime_process_payload_with_status(&name, Some(&instance_id), &handle, "stopped");
         handle.shutdown().await;
+        drop(capacity_reservation);
         let _ = emit_event(OutputEvent::ModelUnloaded {
             model: name.clone(),
         });

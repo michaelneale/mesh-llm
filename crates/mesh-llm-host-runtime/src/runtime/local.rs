@@ -147,6 +147,7 @@ pub(super) struct LocalRuntimeModelStartSpec<'a> {
     pub(super) mmproj_override: Option<&'a Path>,
     pub(super) ctx_size_override: Option<u32>,
     pub(super) pinned_gpu: Option<&'a crate::runtime::StartupPinnedGpuTarget>,
+    pub(super) capacity_budget_bytes: Option<u64>,
     pub(super) cache_type_k_override: Option<&'a str>,
     pub(super) cache_type_v_override: Option<&'a str>,
     pub(super) n_batch_override: Option<u32>,
@@ -399,8 +400,8 @@ pub(super) async fn start_runtime_local_model(
         .map(|package| package.source_model_bytes)
         .unwrap_or_else(|| election::total_model_bytes(spec.model_path));
     let my_vram = spec
-        .pinned_gpu
-        .map(|gpu| gpu.vram_bytes)
+        .capacity_budget_bytes
+        .or_else(|| spec.pinned_gpu.map(|gpu| gpu.vram_bytes))
         .unwrap_or_else(|| spec.node.vram_bytes());
 
     // For split/layer-package models, compute the local share of model weights
