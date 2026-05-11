@@ -45,6 +45,17 @@ export type Peer = {
   latencySource?: LatencySource | null
   latencyAgeMs?: number | null
   latencyObserverId?: string | null
+  splitStages?: SplitStageAssignment[]
+}
+
+export type SplitStageAssignment = {
+  modelName: string
+  stageId: string
+  stageIndex: number
+  layerStart: number
+  layerEnd: number
+  layerCount: number
+  state: string
 }
 export type PeerSummary = { total: number; online: number; capacity: string }
 

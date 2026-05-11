@@ -36,6 +36,26 @@ function modelForName(models: ModelSummary[], modelName: string) {
   return models.find((model) => model.name === modelName)
 }
 
+function uniqueModelNames(...lists: Array<(string | undefined)[] | undefined>): string[] {
+  const seen = new Set<string>()
+  const names: string[] = []
+
+  for (const list of lists) {
+    for (const name of list ?? []) {
+      const trimmed = name?.trim()
+      if (!trimmed || seen.has(trimmed)) continue
+      seen.add(trimmed)
+      names.push(trimmed)
+    }
+  }
+
+  return names
+}
+
+function splitStageSummary(peer: Peer | undefined, modelName: string) {
+  return peer?.splitStages?.find((stage) => stage.modelName === modelName)
+}
+
 function runtimeBadgeLabel(status: string | undefined, loading: boolean, runtimeError: string | null) {
   if (loading && !status) return 'Loading'
   if (!status && runtimeError) return 'Unavailable'
@@ -283,6 +303,13 @@ function NodeDrawerContent({
   const nodeId = peer?.shortId ?? node.id
   const role = meshRoleLabel(peer, node)
   const statusSource = meshNodeStatusSource(peer, node)
+  const splitStages = peer?.splitStages ?? []
+  const modelRows = peer
+    ? uniqueModelNames(
+        peer.hostedModels,
+        splitStages.map((stage) => stage.modelName)
+      )
+    : []
 
   return (
     <div>
@@ -293,6 +320,7 @@ function NodeDrawerContent({
             <StatusBadge dot tone={meshStatusTone(statusSource)}>
               {meshStatusLabel(statusSource, { online: 'Online', degraded: 'Degraded' })}
             </StatusBadge>
+            {splitStages.length > 0 ? <StatusBadge tone="warn">Split</StatusBadge> : null}
           </>
         }
         onClose={onClose}
@@ -303,7 +331,7 @@ function NodeDrawerContent({
 
       <div className="pb-6 pt-3">
         <h3 className="sr-only">Node metadata</h3>
-        <div className="flex gap-2 px-[18px]">
+        <div className="flex flex-wrap gap-2 px-[18px]">
           <KV icon={drawerIcon(Activity)} label="Latency">
             {peer
               ? formatPeerLatencySummary({
@@ -321,7 +349,10 @@ function NodeDrawerContent({
             {peer ? `${peer.sharePct}%` : 'N/A'}
           </KV>
           <KV icon={drawerIcon(Cpu)} label="Models">
-            {peer?.hostedModels.length ?? 0}
+            {modelRows.length}
+          </KV>
+          <KV icon={drawerIcon(Network)} label="Split">
+            {splitStages.length > 0 ? `${splitStages.length} stage${splitStages.length === 1 ? '' : 's'}` : 'No'}
           </KV>
         </div>
 
@@ -330,24 +361,36 @@ function NodeDrawerContent({
             <h3 className="sr-only">Hosted models</h3>
             <SectionHead icon={drawerIcon(Cpu)}>Models</SectionHead>
             <div className="mx-[18px] overflow-hidden rounded-[var(--radius)] border border-border-soft bg-background">
-              <div className="grid grid-cols-[1.6fr_1fr_0.6fr] bg-panel-strong px-3 py-2 text-[length:var(--density-type-label)] font-medium uppercase tracking-[0.5px] text-fg-faint">
+              <div className="grid grid-cols-[1.3fr_1.4fr_0.6fr] bg-panel-strong px-3 py-2 text-[length:var(--density-type-label)] font-medium uppercase tracking-[0.5px] text-fg-faint">
                 <div>Model</div>
                 <div>Role</div>
                 <div>Mesh</div>
               </div>
 
-              {peer.hostedModels.map((modelName, index) => {
+              {modelRows.map((modelName, index) => {
                 const hostedModel = modelForName(models, modelName)
                 const hostedStatus = modelStatusBadge(hostedModel?.status)
+                const splitStage = splitStageSummary(peer, modelName)
                 return (
                   <div
-                    className="grid grid-cols-[1.6fr_1fr_0.6fr] items-center border-t border-border-soft px-3 py-[9px]"
+                    className="grid grid-cols-[1.3fr_1.4fr_0.6fr] items-center border-t border-border-soft px-3 py-[9px]"
                     key={modelName}
                   >
                     <span className="truncate font-mono text-[length:var(--density-type-control)]">{modelName}</span>
                     <div className="flex flex-wrap gap-1">
-                      {index === 0 ? <StatusBadge tone="good">Serving</StatusBadge> : null}
-                      <StatusBadge tone="accent">Hosted</StatusBadge>
+                      {index === 0 && peer.hostedModels.includes(modelName) ? (
+                        <StatusBadge tone="good">Serving</StatusBadge>
+                      ) : null}
+                      {peer.hostedModels.includes(modelName) ? <StatusBadge tone="accent">Hosted</StatusBadge> : null}
+                      {splitStage ? (
+                        <>
+                          <StatusBadge tone="warn">Split</StatusBadge>
+                          <StatusBadge tone="muted">Stage {splitStage.stageIndex}</StatusBadge>
+                          <StatusBadge tone="muted">
+                            {splitStage.layerCount} layer{splitStage.layerCount === 1 ? '' : 's'}
+                          </StatusBadge>
+                        </>
+                      ) : null}
                     </div>
                     <StatusBadge dot tone={hostedStatus.tone}>
                       {hostedStatus.label}

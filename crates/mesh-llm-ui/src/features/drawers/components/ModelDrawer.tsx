@@ -37,7 +37,14 @@ function modelSummaryContext(model: ModelSummary) {
 }
 
 function peersForModel(model: ModelSummary, peers: Peer[] = []) {
-  return peers.filter((peer) => peer.hostedModels.includes(model.name))
+  return peers.filter(
+    (peer) =>
+      peer.hostedModels.includes(model.name) || peer.splitStages?.some((stage) => stage.modelName === model.name)
+  )
+}
+
+function splitStageForModel(peer: Peer, modelName: string) {
+  return peer.splitStages?.find((stage) => stage.modelName === modelName)
 }
 
 export function ModelDrawer({ open, model, peers = [], onClose }: ModelDrawerProps) {
@@ -172,32 +179,37 @@ function ModelDrawerContent({
 
         <SectionHead icon={drawerIcon(Network)}>Active peers</SectionHead>
         <div className="mx-[18px] overflow-hidden rounded-[var(--radius)] border border-border-soft bg-background">
-          <div className="grid grid-cols-[1.5fr_0.7fr_0.7fr_0.6fr] bg-panel-strong px-[12px] py-[8px] text-[length:var(--density-type-label)] font-medium uppercase tracking-[0.5px] text-fg-faint">
+          <div className="grid grid-cols-[1.3fr_0.7fr_0.8fr_0.7fr_0.6fr] bg-panel-strong px-[12px] py-[8px] text-[length:var(--density-type-label)] font-medium uppercase tracking-[0.5px] text-fg-faint">
             <div>Node</div>
             <div>Latency</div>
+            <div>Stage</div>
+            <div>Layers</div>
             <div>VRAM</div>
-            <div>Share</div>
           </div>
 
           {activePeers.length ? (
-            activePeers.map((peer) => (
-              <div
-                className="grid grid-cols-[1.5fr_0.7fr_0.7fr_0.6fr] items-center border-t border-border-soft px-[12px] py-[10px] font-mono text-[length:var(--density-type-caption-lg)]"
-                key={peer.id}
-              >
-                <span>{peer.shortId ?? peer.hostname}</span>
-                <span className="text-fg-faint">
-                  {formatPeerLatencySummary({
-                    latencyMs: peer.latencyMs ?? null,
-                    source: peer.latencySource ?? LatencySource.UNSPECIFIED,
-                    ageMs: peer.latencyAgeMs ?? null,
-                    observerId: peer.latencyObserverId ?? null
-                  })}
-                </span>
-                <span>{modelSummarySize(model)}</span>
-                <StatusBadge tone="accent">100%</StatusBadge>
-              </div>
-            ))
+            activePeers.map((peer) => {
+              const splitStage = splitStageForModel(peer, model.name)
+              return (
+                <div
+                  className="grid grid-cols-[1.3fr_0.7fr_0.8fr_0.7fr_0.6fr] items-center border-t border-border-soft px-[12px] py-[10px] font-mono text-[length:var(--density-type-caption-lg)]"
+                  key={peer.id}
+                >
+                  <span>{peer.shortId ?? peer.hostname}</span>
+                  <span className="text-fg-faint">
+                    {formatPeerLatencySummary({
+                      latencyMs: peer.latencyMs ?? null,
+                      source: peer.latencySource ?? LatencySource.UNSPECIFIED,
+                      ageMs: peer.latencyAgeMs ?? null,
+                      observerId: peer.latencyObserverId ?? null
+                    })}
+                  </span>
+                  <span>{splitStage ? `Stage ${splitStage.stageIndex}` : '—'}</span>
+                  <span>{splitStage ? `${splitStage.layerCount}` : '—'}</span>
+                  <span>{modelSummarySize(model)}</span>
+                </div>
+              )
+            })
           ) : (
             <div className="border-t border-border-soft px-[12px] py-[12px] text-[length:var(--density-type-caption-lg)] text-fg-faint">
               No active peers for this model.

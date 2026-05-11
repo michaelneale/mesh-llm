@@ -331,4 +331,39 @@ describe('NodeDrawer runtime section', () => {
     expect(screen.getByText('Standby')).toBeInTheDocument()
     expect(screen.queryByText('Client')).not.toBeInTheDocument()
   })
+
+  it('shows split participation with stage number and layer count', () => {
+    vi.stubGlobal('fetch', vi.fn())
+
+    render(
+      <NodeDrawer
+        open
+        node={WORKER_NODE}
+        peer={{
+          ...WORKER_PEER,
+          hostedModels: ['Split-Model-Q4_K_M'],
+          splitStages: [
+            {
+              modelName: 'Split-Model-Q4_K_M',
+              stageId: 'stage-1',
+              stageIndex: 1,
+              layerStart: 18,
+              layerEnd: 36,
+              layerCount: 18,
+              state: 'ready'
+            }
+          ]
+        }}
+        models={[
+          { name: 'Split-Model-Q4_K_M', family: 'qwen', size: '20 GB', context: '32k', status: 'warm', tags: [] }
+        ]}
+        onClose={vi.fn()}
+      />
+    )
+
+    expect(screen.getAllByText('Split').length).toBeGreaterThan(0)
+    expect(screen.getByText('1 stage')).toBeInTheDocument()
+    expect(screen.getByText('Stage 1')).toBeInTheDocument()
+    expect(screen.getByText('18 layers')).toBeInTheDocument()
+  })
 })
