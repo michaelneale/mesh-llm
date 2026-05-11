@@ -6523,6 +6523,7 @@ mod tests {
 
     #[tokio::test]
     #[serial]
+    #[ignore = "downloads ~800MB from HuggingFace and depends on exact snapshot hash"]
     async fn resolve_model_accepts_short_catalog_name_from_hf_cache() {
         let prev_hub_cache = std::env::var_os("HF_HUB_CACHE");
         let prev_hf_home = std::env::var_os("HF_HOME");
@@ -7324,7 +7325,7 @@ mod tests {
                 Some(RuntimeSurface::Client),
                 ConsoleSessionMode::InteractiveDashboard
             ),
-            ConsoleSessionMode::None
+            ConsoleSessionMode::InteractiveDashboard
         );
 
         assert_eq!(

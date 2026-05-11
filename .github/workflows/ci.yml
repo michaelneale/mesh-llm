@@ -229,7 +229,10 @@ jobs:
         run: cargo build -p mesh-llm --bin mesh-llm
 
       - name: Unit tests
-        run: cargo test -p mesh-llm --lib
+        run: |
+          cargo test -p model-artifact --lib
+          cargo test -p mesh-llm-host-runtime --lib
+          cargo test -p mesh-llm --lib
 
       - name: Skippy smoke tests
         timeout-minutes: 45
@@ -613,7 +616,10 @@ jobs:
       - name: Build mesh-llm binary (debug)
         run: cargo build -p mesh-llm --bin mesh-llm
       - name: Unit tests
-        run: cargo test -p mesh-llm --lib
+        run: |
+          cargo test -p model-artifact --lib
+          cargo test -p mesh-llm-host-runtime --lib
+          cargo test -p mesh-llm --lib
       - name: CLI smoke test
         run: |
           target/debug/mesh-llm --version

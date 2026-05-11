@@ -1842,7 +1842,12 @@ fn gossip_frame_roundtrip_preserves_scanned_model_metadata() {
             capabilities: Default::default(),
             topology: None,
         }],
-        served_model_runtime: vec![],
+        served_model_runtime: vec![ModelRuntimeDescriptor {
+            model_name: "Qwen3-8B-Q4_K_M".to_string(),
+            identity_hash: None,
+            context_length: Some(32768),
+            ready: true,
+        }],
         owner_attestation: None,
         artifact_transfer_supported: false,
         stage_status_list_supported: false,
