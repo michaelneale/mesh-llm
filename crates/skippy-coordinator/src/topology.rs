@@ -443,7 +443,9 @@ mod tests {
             node_id: id.to_string(),
             detected_vram_bytes: metal_recommended_bytes,
             max_vram_bytes: Some(metal_recommended_bytes),
-            runtime_headroom_bytes: metal_recommended_bytes.div_ceil(10),
+            // Metal recommendedMaxWorkingSetSize is already the usable budget
+            // reported by the local runtime.
+            runtime_headroom_bytes: 0,
         }
     }
 
@@ -581,7 +583,7 @@ mod tests {
     }
 
     #[test]
-    fn qwen_coder_480b_m1_ultra_and_studio_metal_split_is_not_possible() {
+    fn qwen_coder_480b_studio_james_and_studio_mic_form_native_topology() {
         // Simulation: meshllm/Qwen3-Coder-480B-A35B-Instruct-UD-Q4_K_XL-layers
         // split across studio-james and studio-mic.
         //
@@ -594,11 +596,12 @@ mod tests {
         //   part of the fixture, but the planner must use Metal working set
         //   size, not total RAM.
         //
-        // Expected topology: none.
+        // Expected topology: possible, 262_144 context, 16 lanes.
         //
-        // Why: after applying 10% runtime headroom to each Metal budget, even
-        // the 65_536 context floor with one lane can place only 60 of the
-        // 62 model layers. The split must not launch.
+        // Why: this is a fixture-driven simulation. The model package metadata
+        // and each machine's Metal working-set budget are passed into the same
+        // planner used by runtime orchestration, and the planner reports
+        // whether a topology can be formed plus its context and lane count.
         assert_eq!(STUDIO_RAM_BYTES, 274_877_906_944);
 
         let planned = plan_topology(&qwen_coder_480b_input(vec![
@@ -610,15 +613,15 @@ mod tests {
             Err(_) => (false, None, None),
         };
 
-        assert!(!split_possible);
-        assert_eq!(context_length, None);
-        assert_eq!(parallel_lanes, None);
+        assert!(split_possible, "{planned:?}");
+        assert_eq!(context_length, Some(QWEN_CODER_480B_NATIVE_CONTEXT));
+        assert_eq!(parallel_lanes, Some(16));
 
+        let plan = planned.expect("studio-james and studio-mic should form a split topology");
+        assert_eq!(plan.stages.len(), 2);
         assert_eq!(
-            planned,
-            Err(TopologyPlanError::NoValidTopology {
-                minimum_context: 65_536
-            })
+            plan.stages.last().unwrap().layer_end,
+            QWEN_CODER_480B_LAYERS
         );
     }
 
