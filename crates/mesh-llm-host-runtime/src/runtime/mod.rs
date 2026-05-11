@@ -4286,15 +4286,12 @@ async fn run_auto(
             let rediscover_relays = nostr_relays(&cli.nostr_relay);
             let rediscover_relay_urls = cli.relay.clone();
             let rediscover_mesh_name = cli.mesh_name.clone();
-            tokio::spawn(async move {
-                nostr_rediscovery(
-                    rediscover_node,
-                    rediscover_relays,
-                    rediscover_relay_urls,
-                    rediscover_mesh_name,
-                )
-                .await;
-            });
+            tokio::spawn(Box::pin(nostr_rediscovery(
+                rediscover_node,
+                rediscover_relays,
+                rediscover_relay_urls,
+                rediscover_mesh_name,
+            )));
         }
     } else {
         // Originator — generate mesh_id
@@ -4324,15 +4321,12 @@ async fn run_auto(
             let rediscover_relays = nostr_relays(&cli.nostr_relay);
             let rediscover_relay_urls = cli.relay.clone();
             let rediscover_mesh_name = cli.mesh_name.clone();
-            tokio::spawn(async move {
-                nostr_rediscovery(
-                    rediscover_node,
-                    rediscover_relays,
-                    rediscover_relay_urls,
-                    rediscover_mesh_name,
-                )
-                .await;
-            });
+            tokio::spawn(Box::pin(nostr_rediscovery(
+                rediscover_node,
+                rediscover_relays,
+                rediscover_relay_urls,
+                rediscover_mesh_name,
+            )));
         }
     }
 
@@ -4641,18 +4635,15 @@ async fn run_auto(
     let proxy_rx = target_rx.clone();
     let proxy_affinity = affinity_router.clone();
     let api_control_tx = control_tx.clone();
-    let api_proxy_handle = tokio::spawn(async move {
-        api_proxy(
-            proxy_node,
-            api_port,
-            proxy_rx,
-            api_control_tx,
-            Some(api_listener),
-            cli.listen_all,
-            proxy_affinity,
-        )
-        .await;
-    });
+    let api_proxy_handle = tokio::spawn(Box::pin(api_proxy(
+        proxy_node,
+        api_port,
+        proxy_rx,
+        api_control_tx,
+        Some(api_listener),
+        cli.listen_all,
+        proxy_affinity,
+    )));
 
     // Console (optional)
     let mut console_server_handle = None;
@@ -4928,21 +4919,18 @@ async fn run_auto(
                 if let Some(ref cs) = console_state {
                     bridge_publication_state(cs.clone(), status_rx);
                 }
-                Some(tokio::spawn(async move {
-                    nostr::publish_loop(
-                        pub_node,
-                        nostr_keys,
-                        nostr::PublishLoopConfig {
-                            relays,
-                            name: pub_name,
-                            region: pub_region,
-                            max_clients: pub_max_clients,
-                            interval_secs: 60,
-                            status_tx: Some(status_tx),
-                        },
-                    )
-                    .await;
-                }))
+                Some(tokio::spawn(Box::pin(nostr::publish_loop(
+                    pub_node,
+                    nostr_keys,
+                    nostr::PublishLoopConfig {
+                        relays,
+                        name: pub_name,
+                        region: pub_region,
+                        max_clients: pub_max_clients,
+                        interval_secs: 60,
+                        status_tx: Some(status_tx),
+                    },
+                ))))
             }
             Err(e) => {
                 let _ = emit_event(OutputEvent::Warning {
@@ -5503,21 +5491,18 @@ async fn run_passive(
                 let pub_max_clients = cli.max_clients;
                 let (status_tx, status_rx) = tokio::sync::watch::channel(None);
                 passive_publication_rx = Some(status_rx);
-                tokio::spawn(async move {
-                    nostr::publish_loop(
-                        pub_node,
-                        nostr_keys,
-                        nostr::PublishLoopConfig {
-                            relays,
-                            name: pub_name,
-                            region: pub_region,
-                            max_clients: pub_max_clients,
-                            interval_secs: 60,
-                            status_tx: Some(status_tx),
-                        },
-                    )
-                    .await;
-                });
+                tokio::spawn(Box::pin(nostr::publish_loop(
+                    pub_node,
+                    nostr_keys,
+                    nostr::PublishLoopConfig {
+                        relays,
+                        name: pub_name,
+                        region: pub_region,
+                        max_clients: pub_max_clients,
+                        interval_secs: 60,
+                        status_tx: Some(status_tx),
+                    },
+                )));
             }
             Err(e) => {
                 let _ = emit_event(OutputEvent::Warning {
@@ -5731,9 +5716,9 @@ async fn run_passive(
                 tracing::info!("Connection from {addr}");
                 let node = node.clone();
                 let affinity = affinity_router.clone();
-                tokio::spawn(crate::network::proxy::handle_mesh_request(
+                tokio::spawn(Box::pin(crate::network::proxy::handle_mesh_request(
                     node, tcp_stream, true, affinity,
-                ));
+                )));
             }
             Some(model_name) = promote_rx.recv() => {
                 return Ok(Some(model_name));

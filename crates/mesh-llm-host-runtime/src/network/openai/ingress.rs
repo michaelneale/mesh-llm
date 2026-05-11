@@ -460,7 +460,7 @@ pub(crate) async fn bootstrap_proxy(
                 let _ = tcp_stream.set_nodelay(true);
                 let node = node.clone();
                 let affinity = affinity.clone();
-                tokio::spawn(proxy::handle_mesh_request(node, tcp_stream, true, affinity));
+                tokio::spawn(Box::pin(proxy::handle_mesh_request(node, tcp_stream, true, affinity)));
             }
             resp_tx = stop_rx.recv() => {
                 if let Some(tx) = resp_tx {
