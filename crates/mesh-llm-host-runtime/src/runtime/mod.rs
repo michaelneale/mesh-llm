@@ -1199,31 +1199,46 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                         }
                     }
                     Err(err) => {
-                        survey_telemetry.record_launch_failure(
-                            survey::SurveyModelSpec {
-                                model: &model_name,
-                                model_path: Some(&model_path),
-                                launch_kind,
-                                pinned_gpu: pinned_gpu.as_ref(),
-                                backend: None,
-                                context_length: ctx_size.map(u64::from),
-                            },
-                            launch_started.elapsed(),
-                            survey::classify_launch_failure(&err),
-                        );
-                        let _ = emit_event(OutputEvent::Error {
-                            message: format!("Failed to start model {model_name}: {err:#}"),
-                            context: Some(format!("model={model_name}")),
-                        });
-                        update_startup_target(
-                            &target_tx,
-                            &model_name,
-                            election::InferenceTarget::None,
-                        );
-                        if let Some(cs) = console_state.as_ref() {
-                            cs.update(false, false).await;
+                        let err_msg = format!("{err:#}");
+                        let is_participant_shortage = err_msg
+                            .contains("at least two participating nodes")
+                            || err_msg.contains("at least two stage participants");
+                        if is_participant_shortage {
+                            // Transient: not enough peers yet — log as info and
+                            // fall through to the retry select so we try again
+                            // when a peer joins or the standby interval elapses.
+                            let _ = emit_event(OutputEvent::Info {
+                                message: format!("Split waiting for peers: {err_msg}"),
+                                context: Some(format!("model={model_name}")),
+                            });
+                        } else {
+                            // Fatal split failure — give up.
+                            survey_telemetry.record_launch_failure(
+                                survey::SurveyModelSpec {
+                                    model: &model_name,
+                                    model_path: Some(&model_path),
+                                    launch_kind,
+                                    pinned_gpu: pinned_gpu.as_ref(),
+                                    backend: None,
+                                    context_length: ctx_size.map(u64::from),
+                                },
+                                launch_started.elapsed(),
+                                survey::classify_launch_failure(&err),
+                            );
+                            let _ = emit_event(OutputEvent::Error {
+                                message: format!("Failed to start model {model_name}: {err:#}"),
+                                context: Some(format!("model={model_name}")),
+                            });
+                            update_startup_target(
+                                &target_tx,
+                                &model_name,
+                                election::InferenceTarget::None,
+                            );
+                            if let Some(cs) = console_state.as_ref() {
+                                cs.update(false, false).await;
+                            }
+                            return;
                         }
-                        return;
                     }
                 }
 

@@ -5331,11 +5331,18 @@ impl StageOpenAiBackend {
 }
 
 fn ensure_requested_model(advertised_model_id: &str, requested: &str) -> OpenAiResult<()> {
-    if requested == advertised_model_id {
+    if requested == advertised_model_id
+        || strip_default_revision(requested) == strip_default_revision(advertised_model_id)
+    {
         Ok(())
     } else {
         Err(OpenAiError::model_not_found(requested))
     }
+}
+
+/// Strip `@main` so `org/repo@main:Q4` and `org/repo:Q4` compare equal.
+fn strip_default_revision(id: &str) -> String {
+    id.replacen("@main", "", 1)
 }
 
 fn apply_chat_hook_outcome(request: &mut ChatCompletionRequest, outcome: &ChatHookOutcome) {

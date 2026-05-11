@@ -2391,6 +2391,17 @@ pub async fn handle_mesh_request(
     };
     let effective_model = routed_model.or(request.model_name.clone());
 
+    // Rewrite the body `model` field to the internal model name so that
+    // downstream skippy-server (which does an exact match) accepts it.
+    // This covers both `model="auto"` (router picks the internal name)
+    // and public-alias requests that weren't caught by
+    // `rewrite_public_model_alias` above.
+    if let Some(ref name) = effective_model {
+        if request.model_name.as_deref() != Some(name) {
+            rewrite_model_field(&mut request, name);
+        }
+    }
+
     // Enable mesh hooks for auto-routed requests. When the smart router
     // picks the model, hooks allow the local model to consult peers during
     // inference (e.g. caption images via a vision peer, get a second opinion
