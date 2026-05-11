@@ -83,6 +83,20 @@ export interface PeerInfo {
   gpus?: GpuInfo[]
 }
 
+export interface RuntimeStageInfo {
+  model_id: string
+  node_id?: string
+  stage_id: string
+  stage_index: number
+  layer_start: number
+  layer_end: number
+  state: string
+}
+
+export interface RuntimeStatusInfo {
+  stages?: RuntimeStageInfo[]
+}
+
 export type MeshPublicationState = 'private' | 'public' | 'publish_failed'
 
 export interface StatusPayload {
@@ -95,6 +109,7 @@ export interface StatusPayload {
   my_vram_gb: number
   api_port?: number
   gpus: GpuInfo[]
+  runtime?: RuntimeStatusInfo
   serving_models: ServingModelEntry[]
   hostname?: string
   my_hostname?: string

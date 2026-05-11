@@ -421,6 +421,73 @@ describe('adaptStatusToDashboard', () => {
     expect(peer!.latencyObserverId).toBe('observer-node-id')
   })
 
+  it('maps split stage assignments onto participating nodes', () => {
+    const dashboard = adaptStatusToDashboard({
+      ...PUBLIC_STATUS_PAYLOAD,
+      runtime: {
+        stages: [
+          {
+            model_id: 'Split-Model-Q4_K_M',
+            node_id: '16ce0bb4deabcdef',
+            stage_id: 'stage-0',
+            stage_index: 0,
+            layer_start: 0,
+            layer_end: 18,
+            state: 'ready'
+          },
+          {
+            model_id: 'Split-Model-Q4_K_M',
+            node_id: 'remote-stage-node-full-id',
+            stage_id: 'stage-1',
+            stage_index: 1,
+            layer_start: 18,
+            layer_end: 36,
+            state: 'ready'
+          }
+        ]
+      },
+      peers: [
+        {
+          id: 'remote-stage',
+          role: 'Worker',
+          state: 'serving',
+          models: [],
+          serving_models: [],
+          hosted_models: [],
+          vram_gb: 24,
+          hostname: 'remote-stage'
+        }
+      ]
+    })
+
+    expect(dashboard.peers.find((peer) => peer.id === '16ce0bb4de')).toEqual(
+      expect.objectContaining({
+        hostedModels: expect.arrayContaining(['Split-Model-Q4_K_M']),
+        splitStages: [
+          expect.objectContaining({
+            modelName: 'Split-Model-Q4_K_M',
+            stageIndex: 0,
+            layerStart: 0,
+            layerEnd: 18,
+            layerCount: 18
+          })
+        ]
+      })
+    )
+    expect(dashboard.peers.find((peer) => peer.id === 'remote-stage')).toEqual(
+      expect.objectContaining({
+        hostedModels: ['Split-Model-Q4_K_M'],
+        splitStages: [
+          expect.objectContaining({
+            modelName: 'Split-Model-Q4_K_M',
+            stageIndex: 1,
+            layerCount: 18
+          })
+        ]
+      })
+    )
+  })
+
   it('defaults self peer latency fields to null', () => {
     const dashboard = adaptStatusToDashboard(PUBLIC_STATUS_PAYLOAD)
 

@@ -1,5 +1,5 @@
 import { DASHBOARD_HARNESS } from '@/features/app-tabs/data'
-import type { StatusPayload, PeerInfo, GpuInfo, ServingModelEntry } from '@/lib/api/types'
+import type { StatusPayload, PeerInfo, GpuInfo, ServingModelEntry, RuntimeStageInfo } from '@/lib/api/types'
 import { isPublicMesh } from '@/lib/api/mesh-visibility'
 import type {
   DashboardHarnessData,
@@ -9,7 +9,8 @@ import type {
   PeerSummary,
   StatusMetric,
   MeshNode,
-  ModelSummary
+  ModelSummary,
+  SplitStageAssignment
 } from '@/features/app-tabs/types'
 
 const DASHBOARD_HERO_ACTIONS: HeroAction[] = DASHBOARD_HARNESS.hero.actions
@@ -89,6 +90,39 @@ function normalizeModelList(models: (string | undefined)[]): string[] {
   return normalized
 }
 
+function idsReferToSameNode(left: string | undefined, right: string | undefined): boolean {
+  const a = left?.trim()
+  const b = right?.trim()
+  if (!a || !b) return false
+  return a === b || a.startsWith(b) || b.startsWith(a)
+}
+
+function stageLayerCount(stage: RuntimeStageInfo): number {
+  return Math.max(0, stage.layer_end - stage.layer_start)
+}
+
+function splitStagesForNode(stages: RuntimeStageInfo[], nodeId: string): SplitStageAssignment[] {
+  return stages
+    .filter((stage) => idsReferToSameNode(stage.node_id, nodeId))
+    .map((stage) => ({
+      modelName: stage.model_id,
+      stageId: stage.stage_id,
+      stageIndex: stage.stage_index,
+      layerStart: stage.layer_start,
+      layerEnd: stage.layer_end,
+      layerCount: stageLayerCount(stage),
+      state: stage.state
+    }))
+    .sort(
+      (a, b) =>
+        a.modelName.localeCompare(b.modelName) || a.stageIndex - b.stageIndex || a.stageId.localeCompare(b.stageId)
+    )
+}
+
+function appendSplitModels(models: string[], splitStages: SplitStageAssignment[]): string[] {
+  return normalizeModelList([...models, ...splitStages.map((stage) => stage.modelName)])
+}
+
 function resolveHostedModels(peer: PeerInfo): string[] {
   const modelLists = [peer.serving_models, peer.hosted_models, peer.models]
 
@@ -145,16 +179,17 @@ function resolveInflightRequests(payload: StatusPayload): number {
   return finiteMetric(payload.inflight_requests)
 }
 
-function adaptPeer(peer: PeerInfo, fallbackIndex: number): Peer {
+function adaptPeer(peer: PeerInfo, fallbackIndex: number, runtimeStages: RuntimeStageInfo[] = []): Peer {
   const id = resolvePeerId(peer, fallbackIndex)
   const nodeState = resolvePeerNodeState(peer)
+  const splitStages = splitStagesForNode(runtimeStages, id)
 
   return {
     id,
     hostname: peer.hostname ?? id,
     region: peer.region ?? '',
     status: mapNodeState(resolvePeerState(peer)),
-    hostedModels: resolveHostedModels(peer),
+    hostedModels: appendSplitModels(resolveHostedModels(peer), splitStages),
     sharePct: normalizeSharePct(peer.share_pct),
     latencyMs: peer.latency_ms ?? peer.rtt_ms ?? null,
     latencySource: peer.latency_source ?? null,
@@ -168,22 +203,24 @@ function adaptPeer(peer: PeerInfo, fallbackIndex: number): Peer {
     nodeState,
     toksPerSec: peer.tok_per_sec,
     hardwareLabel: peer.hardware_label,
-    owner: resolveOwner(peer.owner)
+    owner: resolveOwner(peer.owner),
+    splitStages
   }
 }
 
-function adaptSelfPeer(payload: StatusPayload): Peer {
+function adaptSelfPeer(payload: StatusPayload, runtimeStages: RuntimeStageInfo[] = []): Peer {
   const servingModels = normalizeModelList([
     ...payload.serving_models.map(servingModelName),
     payload.node_state === 'serving' ? payload.model_name : undefined
   ])
+  const splitStages = splitStagesForNode(runtimeStages, payload.node_id)
 
   return {
     id: payload.node_id,
     hostname: payload.hostname ?? payload.my_hostname ?? 'localhost',
     region: payload.region ?? '',
     status: mapNodeState(payload.node_state),
-    hostedModels: servingModels,
+    hostedModels: appendSplitModels(servingModels, splitStages),
     sharePct: 0,
     latencyMs: 0,
     latencySource: null,
@@ -195,7 +232,8 @@ function adaptSelfPeer(payload: StatusPayload): Peer {
     nodeState: payload.node_state,
     version: payload.version,
     vramGB: payload.my_vram_gb,
-    toksPerSec: payload.tok_per_sec
+    toksPerSec: payload.tok_per_sec,
+    splitStages
   }
 }
 
@@ -300,8 +338,9 @@ function adaptMeshNodeSeeds(payload: StatusPayload): MeshNode[] {
 }
 
 export function adaptStatusToDashboard(payload: StatusPayload, models: ModelSummary[] = []): DashboardHarnessData {
-  const selfPeer = adaptSelfPeer(payload)
-  const remotePeers = payload.peers.map(adaptPeer)
+  const runtimeStages = payload.runtime?.stages ?? []
+  const selfPeer = adaptSelfPeer(payload, runtimeStages)
+  const remotePeers = payload.peers.map((peer, index) => adaptPeer(peer, index, runtimeStages))
   const allPeers = normalizePeerShares([selfPeer, ...remotePeers])
   return {
     ...DASHBOARD_HARNESS,

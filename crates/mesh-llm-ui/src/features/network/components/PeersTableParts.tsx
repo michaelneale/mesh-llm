@@ -157,11 +157,17 @@ type PeerRowProps = {
 export function PeerRow({ peer, active, isLast, onSelect, onHoverPeerIdChange }: PeerRowProps) {
   const firstModel = peer.hostedModels[0] ?? null
   const extraModelCount = peer.hostedModels.length - 1
+  const splitStageCount = peer.splitStages?.length ?? 0
   const hostedModelsTooltip =
-    peer.hostedModels.length > 0 ? (
+    peer.hostedModels.length > 0 || splitStageCount > 0 ? (
       <div className="flex flex-col gap-0.5">
         {peer.hostedModels.map((model) => (
           <span key={model.name}>{model.name}</span>
+        ))}
+        {peer.splitStages?.map((stage) => (
+          <span key={`${stage.modelName}:${stage.stageId}`}>
+            Stage {stage.stageIndex} · {stage.layerCount} layers
+          </span>
         ))}
       </div>
     ) : undefined
@@ -210,9 +216,21 @@ export function PeerRow({ peer, active, isLast, onSelect, onHoverPeerIdChange }:
                       +{extraModelCount} more
                     </span>
                   )}
+                  {splitStageCount > 0 && (
+                    <StatusBadge size="caption" tone="warn">
+                      Split
+                    </StatusBadge>
+                  )}
                 </>
               ) : (
-                <span className="font-mono text-[length:var(--density-type-caption)] text-fg-dim">—</span>
+                <>
+                  <span className="font-mono text-[length:var(--density-type-caption)] text-fg-dim">—</span>
+                  {splitStageCount > 0 && (
+                    <StatusBadge size="caption" tone="warn">
+                      Split
+                    </StatusBadge>
+                  )}
+                </>
               )}
             </div>
           </PeerValueTooltip>
@@ -256,9 +274,21 @@ export function PeerRow({ peer, active, isLast, onSelect, onHoverPeerIdChange }:
                     +{extraModelCount} more
                   </span>
                 )}
+                {splitStageCount > 0 && (
+                  <StatusBadge size="caption" tone="warn">
+                    Split
+                  </StatusBadge>
+                )}
               </>
             ) : (
-              <span className="font-mono text-[length:var(--density-type-caption)] text-fg-dim">—</span>
+              <>
+                <span className="font-mono text-[length:var(--density-type-caption)] text-fg-dim">—</span>
+                {splitStageCount > 0 && (
+                  <StatusBadge size="caption" tone="warn">
+                    Split
+                  </StatusBadge>
+                )}
+              </>
             )}
           </div>
         </PeerValueTooltip>
