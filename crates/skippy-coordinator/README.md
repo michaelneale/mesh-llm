@@ -122,6 +122,96 @@ sequenceDiagram
 
 If quorum is not reached, the coordinator must not load the split.
 
+## Topology Planning
+
+`skippy-coordinator` also owns the pure split-topology planner. The planner
+does not inspect machines directly; the host runtime passes in the model shape
+and each node's usable memory budget. Runtime-specific concerns such as
+`--max-vram` and local headroom are applied before or while building those
+inputs, then the coordinator planner makes a deterministic stage plan.
+
+The planner inputs are:
+
+- native GGUF context length
+- model layer count
+- model weight bytes
+- KV bytes per token for the selected KV cache type
+- minimum node count
+- available nodes, each with detected VRAM, optional max VRAM, and runtime
+  headroom
+- optional explicit context or parallel-lane overrides
+
+The planner output is:
+
+- selected context length
+- selected parallel lanes
+- ordered stage list, with one contiguous layer range per selected node
+
+Planning priority is deliberately ordered for decode speed:
+
+1. Choose the highest valid context length, never exceeding the model's native
+   GGUF context length.
+2. Within that context length, choose the fewest nodes that can run the full
+   model.
+3. Within that node count, choose the highest parallel lane count that fits.
+4. If several node sets produce the same shape, choose the set with the best
+   remaining VRAM margin.
+
+This means extra nodes are not added just to increase lanes once a smaller node
+set can already run the chosen context. More nodes add split boundaries and
+network hops, which can reduce decode speed, so the planner treats fewer nodes
+as more important than additional parallel lanes.
+
+```mermaid
+flowchart TD
+    Input["Model metadata and node VRAM budgets"]
+    Context["Try context candidates from native down to half native"]
+    Nodes["Try node counts from minimum upward"]
+    Lanes["Try parallel lanes from 16 down to 1"]
+    Fit{"Can all layers fit?"}
+    Plan["Return first valid plan"]
+    Reject["Reject topology"]
+
+    Input --> Context
+    Context --> Nodes
+    Nodes --> Lanes
+    Lanes --> Fit
+    Fit -- "yes" --> Plan
+    Fit -- "no" --> Lanes
+    Context -- "below half native" --> Reject
+```
+
+The planner refuses bad topologies. A split does not launch when the layers
+cannot be distributed over the selected nodes, or when the highest feasible
+context would fall below half of the model's native GGUF context length.
+Explicit context overrides are also rejected if they exceed the native context
+or fall below that half-native floor.
+
+Memory fitting is approximate and intentionally conservative. For each
+candidate shape, the planner estimates per-layer memory as:
+
+```text
+bytes_per_layer =
+    ceil(model_weight_bytes / layer_count)
+    + ceil(kv_bytes_per_token / layer_count) * context_length * parallel_lanes
+```
+
+Each selected node must fit at least one layer, and the selected nodes together
+must fit all layers. Layer ranges are contiguous, but they do not have to be
+evenly sized; smaller nodes can receive fewer layers so they do not force the
+whole topology down to a smaller context.
+
+The Qwen 480B simulations in `src/topology.rs` document representative
+outcomes:
+
+- `4 x 70 GiB`: rejected because the model cannot fit above half-native
+  context.
+- `4 x 82 GiB`: `4` stages, `131_072` context, `1` lane.
+- `5 x 80 GiB`: `5` stages, native `262_144` context, `2` lanes.
+- `10 x 80 GiB`: still `5` stages, native `262_144` context, `2` lanes,
+  because five nodes are enough and fewer nodes wins before more lanes.
+- capped or lower-VRAM nodes receive fewer layers than larger peers.
+
 ## Load Fencing
 
 Stages validate fenced loads against the accepted claim. A `LoadStage` is
@@ -345,4 +435,3 @@ needs a fencing token for split ownership:
 That is enough to prevent old coordinators from continuing to mutate a split
 after a newer coordinator has taken ownership, without turning every stage into
 a consensus node.
-
