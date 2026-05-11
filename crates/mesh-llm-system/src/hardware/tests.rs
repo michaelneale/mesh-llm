@@ -627,6 +627,28 @@ fn test_hardware_survey_default() {
     assert!(s.gpus.is_empty());
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn test_cpu_only_runtime_budget_uses_system_ram_when_vram_requested() {
+    let mut survey = HardwareSurvey::default();
+
+    apply_cpu_only_runtime_budget(&mut survey, &[Metric::VramBytes], 16_000_000_000);
+
+    assert_eq!(survey.vram_bytes, 12_000_000_000);
+    assert!(survey.gpu_vram.is_empty());
+    assert!(survey.gpus.is_empty());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn test_cpu_only_runtime_budget_respects_requested_metrics() {
+    let mut survey = HardwareSurvey::default();
+
+    apply_cpu_only_runtime_budget(&mut survey, &[Metric::GpuName], 16_000_000_000);
+
+    assert_eq!(survey.vram_bytes, 0);
+}
+
 #[test]
 fn test_query_gpu_name_only() {
     let result = query(&[Metric::GpuName]);

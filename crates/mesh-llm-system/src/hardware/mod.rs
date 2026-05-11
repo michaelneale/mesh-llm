@@ -180,6 +180,13 @@ fn read_system_ram_bytes() -> u64 {
     .unwrap_or(0)
 }
 
+#[cfg(target_os = "linux")]
+fn apply_cpu_only_runtime_budget(survey: &mut HardwareSurvey, metrics: &[Metric], system_ram: u64) {
+    if metrics.contains(&Metric::VramBytes) && system_ram > 0 {
+        survey.vram_bytes = (system_ram as f64 * 0.75) as u64;
+    }
+}
+
 #[cfg(all(target_os = "linux", any(not(feature = "skippy-devices"), test)))]
 fn try_tegrastats_ram() -> Option<u64> {
     use std::io::BufRead;
@@ -266,9 +273,13 @@ fn apply_skippy_backend_devices_to_survey(survey: &mut HardwareSurvey, metrics: 
     }
 
     let Ok(gpus) = skippy_devices::gpu_facts() else {
+        #[cfg(target_os = "linux")]
+        apply_cpu_only_runtime_budget(survey, metrics, read_system_ram_bytes());
         return true;
     };
     if gpus.is_empty() {
+        #[cfg(target_os = "linux")]
+        apply_cpu_only_runtime_budget(survey, metrics, read_system_ram_bytes());
         return true;
     }
 
