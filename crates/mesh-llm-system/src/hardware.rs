@@ -199,30 +199,40 @@ pub fn parse_macos_cpu_brand(output: &str) -> Option<String> {
 }
 
 #[cfg(any(target_os = "macos", test))]
-pub fn parse_iogpu_wired_limit_mb(output: &str) -> Option<u64> {
-    output.lines().find_map(|line| {
-        let (key, value) = line.split_once(':')?;
-        if key.trim() != "iogpu.wired_limit_mb" {
-            return None;
-        }
-        value.trim().parse::<u64>().ok()
-    })
+fn macos_metal_gpu_budget(metal_recommended_bytes: Option<u64>) -> Option<(u64, Option<u64>)> {
+    metal_recommended_bytes
+        .filter(|bytes| *bytes > 0)
+        .map(|bytes| (bytes, None))
 }
 
-#[cfg(any(target_os = "macos", test))]
-fn derive_macos_gpu_budget(total_bytes: u64, iogpu_output: Option<&str>) -> (u64, Option<u64>) {
-    let total_mib = total_bytes / (1024 * 1024);
-    let wired_limit_mib = iogpu_output
-        .and_then(parse_iogpu_wired_limit_mb)
-        .filter(|wired_limit_mib| *wired_limit_mib > 0)
-        .map(|wired_limit_mib| wired_limit_mib.min(total_mib));
+#[cfg(target_os = "macos")]
+fn query_metal_recommended_working_set_bytes() -> Option<u64> {
+    use std::ffi::{c_char, c_void, CStr};
 
-    let reserved_bytes = wired_limit_mib
-        .map(|wired_limit_mib| total_bytes.saturating_sub(wired_limit_mib * 1024 * 1024))
-        .unwrap_or_else(|| total_bytes / 4);
-    let usable_bytes = total_bytes.saturating_sub(reserved_bytes);
+    #[link(name = "Metal", kind = "framework")]
+    extern "C" {
+        fn MTLCreateSystemDefaultDevice() -> *mut c_void;
+    }
 
-    (usable_bytes, Some(reserved_bytes))
+    #[link(name = "objc")]
+    extern "C" {
+        fn sel_registerName(name: *const c_char) -> *mut c_void;
+        fn objc_msgSend(receiver: *mut c_void, selector: *mut c_void, ...) -> usize;
+    }
+
+    unsafe {
+        let device = MTLCreateSystemDefaultDevice();
+        if device.is_null() {
+            return None;
+        }
+        let selector = CStr::from_bytes_with_nul_unchecked(b"recommendedMaxWorkingSetSize\0");
+        let selector = sel_registerName(selector.as_ptr());
+        if selector.is_null() {
+            return None;
+        }
+        let bytes = objc_msgSend(device, selector) as u64;
+        (bytes > 0).then_some(bytes)
+    }
 }
 
 /// Parse `rocm-smi --showproductname` output → GPU names from "Card series:" lines.
@@ -614,26 +624,12 @@ impl Collector for DefaultCollector {
                 survey.is_soc = true;
             }
             if metrics.contains(&Metric::VramBytes) {
-                let out = std::process::Command::new("sysctl")
-                    .args(["-n", "hw.memsize"])
-                    .output()
-                    .ok();
-                if let Some(out) = out {
-                    if let Ok(s) = String::from_utf8(out.stdout) {
-                        if let Ok(bytes) = s.trim().parse::<u64>() {
-                            let iogpu_output = std::process::Command::new("sysctl")
-                                .arg("iogpu")
-                                .output()
-                                .ok()
-                                .filter(|out| out.status.success())
-                                .and_then(|out| String::from_utf8(out.stdout).ok());
-                            let (usable_bytes, reserved_bytes) =
-                                derive_macos_gpu_budget(bytes, iogpu_output.as_deref());
-                            survey.vram_bytes = usable_bytes;
-                            survey.gpu_vram = vec![bytes];
-                            survey.gpu_reserved = vec![reserved_bytes];
-                        }
-                    }
+                if let Some((vram_bytes, reserved_bytes)) =
+                    macos_metal_gpu_budget(query_metal_recommended_working_set_bytes())
+                {
+                    survey.vram_bytes = vram_bytes;
+                    survey.gpu_vram = vec![vram_bytes];
+                    survey.gpu_reserved = vec![reserved_bytes];
                 }
             }
             if metrics.contains(&Metric::GpuName) {
@@ -1646,37 +1642,19 @@ GPU2:
     }
 
     #[test]
-    fn test_parse_iogpu_wired_limit_mb() {
-        let fixture = "\
-iogpu.wired_lwm_mb: 0
-iogpu.dynamic_lwm: 1
-iogpu.wired_limit_mb: 36864
-iogpu.debug_flags: 0";
-        assert_eq!(parse_iogpu_wired_limit_mb(fixture), Some(36_864));
+    fn test_macos_gpu_budget_uses_metal_working_set_as_vram() {
+        let metal_bytes = 107_u64 * 1024 * 1024 * 1024;
+
+        assert_eq!(
+            macos_metal_gpu_budget(Some(metal_bytes)),
+            Some((metal_bytes, None))
+        );
     }
 
     #[test]
-    fn test_derive_macos_gpu_budget_uses_wired_limit_when_present() {
-        let total_bytes = 51_539_607_552_u64;
-        let iogpu = "\
-iogpu.wired_lwm_mb: 0
-iogpu.wired_limit_mb: 36864";
-        let (usable, reserved) = derive_macos_gpu_budget(total_bytes, Some(iogpu));
-
-        assert_eq!(usable, 36_864_u64 * 1024 * 1024);
-        assert_eq!(reserved, Some(total_bytes - usable));
-    }
-
-    #[test]
-    fn test_derive_macos_gpu_budget_falls_back_to_25_percent_reserved_when_wired_limit_zero() {
-        let total_bytes = 51_539_607_552_u64;
-        let iogpu = "\
-iogpu.wired_lwm_mb: 0
-iogpu.wired_limit_mb: 0";
-        let (usable, reserved) = derive_macos_gpu_budget(total_bytes, Some(iogpu));
-
-        assert_eq!(reserved, Some(total_bytes / 4));
-        assert_eq!(usable, total_bytes - (total_bytes / 4));
+    fn test_macos_gpu_budget_is_unavailable_without_metal_working_set() {
+        assert_eq!(macos_metal_gpu_budget(Some(0)), None);
+        assert_eq!(macos_metal_gpu_budget(None), None);
     }
 
     #[test]
