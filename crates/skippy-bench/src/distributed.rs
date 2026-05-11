@@ -1620,10 +1620,11 @@ fn run_remote_prompt_case(
         state.decode_step = i32::try_from(decode_step).context("decode step exceeds i32")?;
         state.current_token = current;
         state.source_stage_index = -1;
+        let decode_pos = i32::try_from(prefill_token_count + decode_step)
+            .context("decode position exceeds i32")?;
         let message = StageWireMessage {
             kind: WireMessageKind::DecodeEmbd,
-            pos_start: i32::try_from(prefill_token_count + decode_step)
-                .context("decode position exceeds i32")?,
+            pos_start: decode_pos,
             token_count: 1,
             state,
             request_id,
@@ -1631,6 +1632,7 @@ fn run_remote_prompt_case(
             sampling: None,
             chat_sampling_metadata: None,
             tokens: vec![current],
+            positions: vec![decode_pos],
             activation: Vec::new(),
             raw_bytes: Vec::new(),
         };
@@ -1735,17 +1737,21 @@ fn send_prefill_chunk(
         i32::try_from(chunk.prefill_token_count).context("prompt token count exceeds i32")?;
     state.current_token = *chunk.tokens.last().context("prefill chunk is empty")?;
     state.source_stage_index = -1;
+    let pos_start = i32::try_from(chunk.pos_start).context("prefill chunk position exceeds i32")?;
+    let token_count =
+        i32::try_from(chunk.tokens.len()).context("prefill token count exceeds i32")?;
+    let positions: Vec<i32> = (pos_start..pos_start + token_count).collect();
     let message = StageWireMessage {
         kind: WireMessageKind::PrefillEmbd,
-        pos_start: i32::try_from(chunk.pos_start).context("prefill chunk position exceeds i32")?,
-        token_count: i32::try_from(chunk.tokens.len())
-            .context("prefill token count exceeds i32")?,
+        pos_start,
+        token_count,
         state,
         request_id: chunk.request_id,
         session_id: chunk.session_id,
         sampling: None,
         chat_sampling_metadata: None,
         tokens: chunk.tokens.to_vec(),
+        positions,
         activation: Vec::new(),
         raw_bytes: Vec::new(),
     };

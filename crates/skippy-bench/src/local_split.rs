@@ -382,6 +382,7 @@ fn run_binary_split(args: BinarySplitConfig) -> Result<BinarySplitResult> {
         sampling: None,
         chat_sampling_metadata: None,
         tokens: vec![token_id],
+        positions: vec![0],
         activation,
         raw_bytes: Vec::new(),
     };
@@ -579,6 +580,7 @@ fn run_binary_chain(args: LocalSplitChainBinaryArgs) -> Result<BinaryChainResult
         sampling: None,
         chat_sampling_metadata: None,
         tokens: vec![token_id],
+        positions: vec![0],
         activation,
         raw_bytes: Vec::new(),
     };

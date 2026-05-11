@@ -3353,9 +3353,12 @@ mod tests {
         .to_string();
 
         assert!(error.contains("aggregate split capacity"));
-        assert!(error.contains("requires 5.3GB"));
+        // Validation uses raw model weight (4.8GB) without the old 10%
+        // headroom that was removed to avoid double-counting the topology
+        // planner's own VRAM budget.
+        assert!(error.contains("requires 4.8GB"));
         assert!(error.contains("has 4.0GB"));
-        assert!(error.contains("short by 1.3GB"));
+        assert!(error.contains("short by 0.8GB"));
         assert!(error.contains("participants ["));
         assert!(error.contains(&format!("{}:2.0GB", make_id(1).fmt_short())));
         assert!(error.contains(&format!("{}:2.0GB", make_id(2).fmt_short())));
@@ -3363,9 +3366,13 @@ mod tests {
 
     #[test]
     fn split_topology_planner_rejects_stage_that_exceeds_participant_capacity() {
+        // Node 2 has 150 bytes but the planner assigns it at least 2 layers
+        // (200 bytes), which exceeds its capacity.  The previous version of
+        // this test used 200 bytes for node 2 which passes now that the old
+        // 10% headroom is no longer applied on top of the planner budget.
         let participants = vec![
             SplitParticipant::new(make_id(1), 900, None),
-            SplitParticipant::new(make_id(2), 200, None),
+            SplitParticipant::new(make_id(2), 150, None),
         ];
         let package = skippy::SkippyPackageIdentity {
             source_model_bytes: 1_000,
@@ -3443,7 +3450,9 @@ mod tests {
         .expect_err("aggregate split capacity should be enforced")
         .to_string();
 
-        assert!(error.contains("short by 1.3GB"));
+        // Raw model weight (4.8GB) minus aggregate VRAM (4.0GB) = 0.8GB
+        // shortfall, without the old 10% headroom.
+        assert!(error.contains("short by 0.8GB"));
         assert!(error.contains("excluded ["));
         assert!(error.contains(&format!(
             "{}:missing_model_interest",
