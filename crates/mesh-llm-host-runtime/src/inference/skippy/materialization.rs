@@ -20,6 +20,8 @@ use crate::cli::terminal_progress::{start_spinner, SpinnerHandle};
 
 use super::StageLoadRequest;
 
+mod cache_resolution;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum StagePackageRef {
     LocalPackage(PathBuf),
@@ -786,10 +788,11 @@ pub(crate) fn resolve_hf_package_to_local(
     include_output: bool,
 ) -> Result<String> {
     let parsed = StagePackageRef::parse(package_ref)?;
-    let (repo, revision) = match &parsed {
+    let (repo, revision, floating_revision) = match &parsed {
         StagePackageRef::HuggingFacePackage { repo, revision } => (
             repo.clone(),
             revision.clone().unwrap_or_else(|| "main".to_string()),
+            revision.is_none(),
         ),
         StagePackageRef::LocalPackage(path) => {
             return resolve_local_package_files(
@@ -819,7 +822,7 @@ pub(crate) fn resolve_hf_package_to_local(
         .join("snapshots")
         .join(&revision_cache_path);
     if direct_snapshot_dir.join("model-package.json").is_file() {
-        if let Some(local_ref) = verify_cached_hf_package_files(
+        if let Some(local_ref) = cache_resolution::resolve_cached_hf_package_snapshot(
             &direct_snapshot_dir,
             layer_start,
             layer_end,
@@ -839,7 +842,7 @@ pub(crate) fn resolve_hf_package_to_local(
             .join("snapshots")
             .join(commit_hash_path);
         if snapshot_dir.join("model-package.json").is_file() {
-            if let Some(local_ref) = verify_cached_hf_package_files(
+            if let Some(local_ref) = cache_resolution::resolve_cached_hf_package_snapshot(
                 &snapshot_dir,
                 layer_start,
                 layer_end,
@@ -847,6 +850,30 @@ pub(crate) fn resolve_hf_package_to_local(
                 include_output,
             )? {
                 return Ok(local_ref);
+            }
+        }
+    }
+    if floating_revision {
+        for snapshot_dir in cache_resolution::cached_package_snapshots(&cache_dir, &repo_folder)? {
+            if snapshot_dir == direct_snapshot_dir {
+                continue;
+            }
+            match cache_resolution::resolve_cached_hf_package_snapshot(
+                &snapshot_dir,
+                layer_start,
+                layer_end,
+                include_embeddings,
+                include_output,
+            ) {
+                Ok(Some(local_ref)) => return Ok(local_ref),
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::debug!(
+                        package_dir = %snapshot_dir.display(),
+                        error = %error,
+                        "cached HF layer package snapshot is not usable for this request"
+                    );
+                }
             }
         }
     }
@@ -1833,6 +1860,46 @@ mod tests {
         restore_env("HF_HOME", prev_hf_home);
         restore_env("HF_HUB_CACHE", prev_hf_cache);
         restore_env("HUGGINGFACE_HUB_CACHE", prev_huggingface_cache);
+    }
+
+    #[test]
+    #[serial]
+    fn floating_hf_package_resolution_prefers_cached_snapshot_with_layers() {
+        let prev_hf_home = std::env::var_os("HF_HOME");
+        let prev_hf_cache = std::env::var_os("HF_HUB_CACHE");
+        let prev_huggingface_cache = std::env::var_os("HUGGINGFACE_HUB_CACHE");
+        let prev_xdg_cache = std::env::var_os("XDG_CACHE_HOME");
+
+        let temp = tempfile::tempdir().unwrap();
+        std::env::set_var("HF_HOME", temp.path().join("hf"));
+        std::env::set_var("XDG_CACHE_HOME", temp.path().join("mesh-cache"));
+        std::env::remove_var("HF_HUB_CACHE");
+        std::env::remove_var("HUGGINGFACE_HUB_CACHE");
+
+        let repo_cache = temp
+            .path()
+            .join("hf")
+            .join("hub")
+            .join("models--owner--repo");
+        let refs_dir = repo_cache.join("refs");
+        fs::create_dir_all(&refs_dir).unwrap();
+        fs::write(refs_dir.join("main"), "bad-main").unwrap();
+
+        let bad_snapshot = repo_cache.join("snapshots").join("bad-main");
+        write_cached_package_snapshot(&bad_snapshot, sha256_hex(b"layer"));
+        fs::remove_dir_all(bad_snapshot.join("layers")).unwrap();
+
+        let complete_snapshot = repo_cache.join("snapshots").join("complete-package");
+        write_cached_package_snapshot(&complete_snapshot, sha256_hex(b"layer"));
+
+        let resolved = resolve_hf_package_to_local("hf://owner/repo", 0, 0, false, false).unwrap();
+
+        assert_eq!(PathBuf::from(resolved), complete_snapshot);
+
+        restore_env("HF_HOME", prev_hf_home);
+        restore_env("HF_HUB_CACHE", prev_hf_cache);
+        restore_env("HUGGINGFACE_HUB_CACHE", prev_huggingface_cache);
+        restore_env("XDG_CACHE_HOME", prev_xdg_cache);
     }
 
     #[test]
