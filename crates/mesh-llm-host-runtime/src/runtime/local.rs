@@ -3656,7 +3656,7 @@ mod tests {
             ],
         );
 
-        let error = match load_split_runtime_generation(SplitGenerationLoadSpec {
+        let error = match Box::pin(load_split_runtime_generation(SplitGenerationLoadSpec {
             node: &node,
             model_ref: "Qwen",
             model_path: Path::new("/models/qwen.gguf"),
@@ -3671,7 +3671,7 @@ mod tests {
             n_batch_override: None,
             n_ubatch_override: None,
             flash_attention_override: FlashAttentionType::Auto,
-        })
+        }))
         .await
         {
             Ok(_) => panic!("candidate split generation load unexpectedly succeeded"),
