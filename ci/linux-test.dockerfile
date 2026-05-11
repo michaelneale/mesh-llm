@@ -25,7 +25,9 @@ COPY crates/mesh-llm-ui/ crates/mesh-llm-ui/
 COPY crates/mesh-llm-identity/ crates/mesh-llm-identity/
 COPY crates/mesh-llm-protocol/ crates/mesh-llm-protocol/
 COPY crates/mesh-llm-routing/ crates/mesh-llm-routing/
+COPY crates/mesh-llm-system/ crates/mesh-llm-system/
 COPY crates/mesh-llm-types/ crates/mesh-llm-types/
+COPY crates/mesh-llm-host-runtime/ crates/mesh-llm-host-runtime/
 COPY crates/mesh-llm/ crates/mesh-llm/
 COPY crates/mesh-llm-plugin/ crates/mesh-llm-plugin/
 COPY crates/mesh-client/ crates/mesh-client/
@@ -36,6 +38,23 @@ COPY crates/mesh-llm-test-harness/ crates/mesh-llm-test-harness/
 COPY crates/model-ref/ crates/model-ref/
 COPY crates/model-artifact/ crates/model-artifact/
 COPY crates/model-hf/ crates/model-hf/
+COPY crates/model-package/ crates/model-package/
+COPY crates/model-resolver/ crates/model-resolver/
+COPY crates/skippy-protocol/ crates/skippy-protocol/
+COPY crates/skippy-coordinator/ crates/skippy-coordinator/
+COPY crates/skippy-topology/ crates/skippy-topology/
+COPY crates/skippy-cache/ crates/skippy-cache/
+COPY crates/skippy-metrics/ crates/skippy-metrics/
+COPY crates/openai-frontend/ crates/openai-frontend/
+COPY crates/skippy-ffi/ crates/skippy-ffi/
+COPY crates/skippy-runtime/ crates/skippy-runtime/
+COPY crates/skippy-server/ crates/skippy-server/
+COPY crates/metrics-server/ crates/metrics-server/
+COPY crates/skippy-model-package/ crates/skippy-model-package/
+COPY crates/skippy-correctness/ crates/skippy-correctness/
+COPY crates/llama-spec-bench/ crates/llama-spec-bench/
+COPY crates/skippy-bench/ crates/skippy-bench/
+COPY crates/skippy-prompt/ crates/skippy-prompt/
 COPY tools/xtask/ tools/xtask/
 RUN cargo build --release -p mesh-llm
 RUN cargo test -p mesh-llm

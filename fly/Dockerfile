@@ -57,6 +57,7 @@ COPY crates/skippy-runtime/ crates/skippy-runtime/
 COPY crates/skippy-server/ crates/skippy-server/
 COPY crates/metrics-server/ crates/metrics-server/
 COPY crates/skippy-model-package/ crates/skippy-model-package/
+COPY crates/skippy-coordinator/ crates/skippy-coordinator/
 COPY crates/skippy-correctness/ crates/skippy-correctness/
 COPY crates/llama-spec-bench/ crates/llama-spec-bench/
 COPY crates/skippy-bench/ crates/skippy-bench/
