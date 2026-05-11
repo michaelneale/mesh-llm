@@ -231,6 +231,11 @@ metrics-server-build: _lld-cargo-config
 metrics-server-build: _lld-cargo-config
     @cargo build -p metrics-server
 
+# Build the binaries copied into the Skippy WAN Docker lab image.
+[linux]
+skippy-wan-lab-build-bins:
+    cargo build --release --locked -p skippy-server -p metrics-server -p skippy-model-package
+
 # Generate a reproducible benchmark corpus for skippy bench tooling.
 bench-corpus tier="smoke" *ARGS:
     scripts/generate-bench-corpus.py "{{ tier }}" {{ ARGS }}
