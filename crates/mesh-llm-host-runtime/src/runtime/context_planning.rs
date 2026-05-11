@@ -3,8 +3,6 @@ use crate::models::gguf::{GgufCompactMeta, GgufKvCacheQuant};
 const DEFAULT_CONTEXT_LENGTH: u32 = 4096;
 const DEFAULT_PARALLEL_SLOTS: usize = 4;
 const MIN_AUTO_CONTEXT_LENGTH: u32 = 512;
-const LONG_CONTEXT_LENGTH: u32 = 65_536;
-const LONG_CONTEXT_TARGET_PARALLEL_SLOTS: usize = 2;
 const MAX_AUTO_PARALLEL_SLOTS: usize = 16;
 const KV_CACHE_BUDGET_NUMERATOR: u64 = 85;
 const KV_CACHE_BUDGET_DENOMINATOR: u64 = 100;
@@ -34,17 +32,13 @@ pub(super) struct RuntimeResourcePlanInput<'a> {
 
 /// Plan context length and parallel slots.
 ///
-/// Strategy: co-plan context and concurrency using the provided KV quant
-/// (default Q8_0). Explicit overrides always win. Auto planning keeps long
-/// context models at a smaller concurrency target than short-context models so
-/// a huge native window does not consume the whole KV budget and collapse
-/// serving to a single lane.
+/// Strategy: maximise context up to the model's native context length using
+/// the provided KV quant (default Q8_0).  No negotiation — the quant is
+/// decided upstream (Q8_0 default, or user override via CLI flags).
 pub(super) fn plan_runtime_resources(input: RuntimeResourcePlanInput<'_>) -> RuntimeResourcePlan {
-    let context_length = match (input.ctx_size_override, input.parallel_override) {
-        (Some(context_length), _) => context_length,
-        (None, Some(slots)) => planned_context_length(&input, slots),
-        (None, None) => planned_context_length(&input, target_auto_parallel_slots(&input)),
-    };
+    let context_length = input
+        .ctx_size_override
+        .unwrap_or_else(|| planned_context_length(&input));
     let slots = input
         .parallel_override
         .unwrap_or_else(|| planned_parallel_slots(&input, context_length));
@@ -55,18 +49,7 @@ pub(super) fn plan_runtime_resources(input: RuntimeResourcePlanInput<'_>) -> Run
     }
 }
 
-fn target_auto_parallel_slots(input: &RuntimeResourcePlanInput<'_>) -> usize {
-    if input
-        .metadata
-        .is_some_and(|metadata| metadata.context_length >= LONG_CONTEXT_LENGTH)
-    {
-        LONG_CONTEXT_TARGET_PARALLEL_SLOTS
-    } else {
-        DEFAULT_PARALLEL_SLOTS
-    }
-}
-
-fn planned_context_length(input: &RuntimeResourcePlanInput<'_>, slots: usize) -> u32 {
+fn planned_context_length(input: &RuntimeResourcePlanInput<'_>) -> u32 {
     let Some(metadata) = input.metadata else {
         return DEFAULT_CONTEXT_LENGTH;
     };
@@ -87,10 +70,7 @@ fn planned_context_length(input: &RuntimeResourcePlanInput<'_>, slots: usize) ->
     if kv_bytes_per_token == 0 {
         return native_context;
     }
-    let Some(kv_bytes_for_slots) = kv_bytes_per_token.checked_mul(slots.max(1) as u64) else {
-        return MIN_AUTO_CONTEXT_LENGTH.min(native_context);
-    };
-    let max_affordable_context = kv_budget / kv_bytes_for_slots;
+    let max_affordable_context = kv_budget / kv_bytes_per_token;
     if max_affordable_context == 0 {
         return MIN_AUTO_CONTEXT_LENGTH.min(native_context);
     }
@@ -332,55 +312,6 @@ mod tests {
             split.context_length >= 65_536,
             "480B split on 206+103 GB with q8_0 should get at least 64K, got {}K",
             split.context_length / 1024
-        );
-        assert!(
-            split.slots >= 2,
-            "long-context split should keep at least two lanes when affordable, got {}",
-            split.slots
-        );
-    }
-
-    #[test]
-    fn long_context_auto_preserves_concurrency_when_affordable() {
-        let metadata = gqa_metadata(131_072);
-        let plan = plan_runtime_resources(RuntimeResourcePlanInput {
-            ctx_size_override: None,
-            parallel_override: None,
-            model_bytes: 5_000_000_000,
-            vram_bytes: 16_500_000_000,
-            metadata: Some(&metadata),
-            kv_cache_quant: GgufKvCacheQuant::Q8_0,
-            local_layer_fraction: None,
-        });
-
-        assert_eq!(
-            plan.context_length, 65_536,
-            "auto planning should trade down from max single-lane context for concurrency"
-        );
-        assert_eq!(
-            plan.slots, 2,
-            "long-context auto planning should keep a second lane when affordable"
-        );
-    }
-
-    #[test]
-    fn short_context_auto_targets_more_slots() {
-        let metadata = gqa_metadata(16_384);
-        let plan = plan_runtime_resources(RuntimeResourcePlanInput {
-            ctx_size_override: None,
-            parallel_override: None,
-            model_bytes: 5_000_000_000,
-            vram_bytes: 16_500_000_000,
-            metadata: Some(&metadata),
-            kv_cache_quant: GgufKvCacheQuant::Q8_0,
-            local_layer_fraction: None,
-        });
-
-        assert_eq!(plan.context_length, 16_384);
-        assert!(
-            plan.slots >= 4,
-            "shorter-context models should prefer at least four lanes when affordable, got {}",
-            plan.slots
         );
     }
 
