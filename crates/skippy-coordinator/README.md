@@ -165,7 +165,7 @@ as more important than additional parallel lanes.
 ```mermaid
 flowchart TD
     Input["Model metadata and node VRAM budgets"]
-    Context["Try context candidates from native down to half native"]
+    Context["Try context candidates from native down to 64k"]
     Nodes["Try node counts from minimum upward"]
     Lanes["Try parallel lanes from 16 down to 1"]
     Fit{"Can all layers fit?"}
@@ -178,14 +178,15 @@ flowchart TD
     Lanes --> Fit
     Fit -- "yes" --> Plan
     Fit -- "no" --> Lanes
-    Context -- "below half native" --> Reject
+    Context -- "below 64k floor" --> Reject
 ```
 
 The planner refuses bad topologies. A split does not launch when the layers
 cannot be distributed over the selected nodes, or when the highest feasible
-context would fall below half of the model's native GGUF context length.
+context would fall below the shared 64k context floor. For models with native
+context below 64k, the floor is capped at the model's native context length.
 Explicit context overrides are also rejected if they exceed the native context
-or fall below that half-native floor.
+or fall below that shared floor.
 
 Memory fitting is approximate and intentionally conservative. For each
 candidate shape, the planner estimates per-layer memory as:
@@ -204,9 +205,9 @@ whole topology down to a smaller context.
 The Qwen 480B simulations in `src/topology.rs` document representative
 outcomes:
 
-- `4 x 70 GiB`: rejected because the model cannot fit above half-native
-  context.
-- `4 x 82 GiB`: `4` stages, `131_072` context, `1` lane.
+- `4 x 70 GiB`: rejected because the model cannot fit above the 64k context
+  floor.
+- `4 x 80 GiB`: `4` stages, `65_536` context, `1` lane.
 - `5 x 80 GiB`: `5` stages, native `262_144` context, `2` lanes.
 - `10 x 80 GiB`: still `5` stages, native `262_144` context, `2` lanes,
   because five nodes are enough and fewer nodes wins before more lanes.

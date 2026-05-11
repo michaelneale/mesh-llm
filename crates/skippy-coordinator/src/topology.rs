@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 
 const MAX_AUTO_PARALLEL_LANES: usize = 16;
+const MINIMUM_AUTO_CONTEXT_LENGTH: u32 = 65_536;
 const CONTEXT_STEPS: &[u32] = &[512, 1024, 2048, 4096, 8192, 16_384, 32_768, 65_536, 131_072];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -166,7 +167,7 @@ fn parallel_lane_candidates(
 }
 
 fn minimum_valid_context(native_context: u32) -> u32 {
-    native_context.div_ceil(2).max(1)
+    native_context.min(MINIMUM_AUTO_CONTEXT_LENGTH).max(1)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -497,15 +498,37 @@ mod tests {
     }
 
     #[test]
-    fn rejects_below_half_native_context() {
+    fn rejects_below_minimum_context_floor() {
         let err = plan_topology(&input(vec![node("tiny-a", 8), node("tiny-b", 8)]))
-            .expect_err("context below half native should be rejected");
+            .expect_err("context below the 64k floor should be rejected");
 
         assert_eq!(
             err,
             TopologyPlanError::NoValidTopology {
-                minimum_context: 32_768
+                minimum_context: 65_536
             }
+        );
+    }
+
+    #[test]
+    fn minimum_context_floor_caps_at_native_context() {
+        assert_eq!(minimum_valid_context(16_384), 16_384);
+        assert_eq!(minimum_valid_context(65_536), 65_536);
+        assert_eq!(minimum_valid_context(262_144), 65_536);
+    }
+
+    #[test]
+    fn rejects_context_override_below_minimum_floor() {
+        let mut request = input(vec![node("a", 80), node("b", 80)]);
+        request.native_context_length = 262_144;
+        request.context_length_override = Some(32_768);
+
+        assert_eq!(
+            plan_topology(&request),
+            Err(TopologyPlanError::ContextBelowMinimum {
+                requested: 32_768,
+                minimum: 65_536,
+            })
         );
     }
 
@@ -524,38 +547,38 @@ mod tests {
     }
 
     #[test]
-    fn qwen_coder_480b_rejects_when_layers_cannot_fit_above_half_context() {
+    fn qwen_coder_480b_rejects_when_layers_cannot_fit_above_context_floor() {
         // Simulation: 4 x 70 GiB nodes.
         //
         // Expected topology: none.
         //
-        // Why: the planner may degrade context only to half native
-        // (131_072). At this machine size the full 62-layer package plus
-        // half-context KV cannot be distributed, so launching would silently
-        // produce an under-resourced split.
+        // Why: the planner may degrade context only to the shared 64k floor
+        // (65_536). At this machine size the full 62-layer package plus
+        // 64k KV cannot be distributed, so launching would silently produce
+        // an under-resourced split.
         let err = plan_topology(&qwen_coder_480b_input(qwen_nodes(4, 70)))
-            .expect_err("four 70 GiB nodes cannot hold this layer package above half context");
+            .expect_err("four 70 GiB nodes cannot hold this layer package above the context floor");
 
         assert_eq!(
             err,
             TopologyPlanError::NoValidTopology {
-                minimum_context: 131_072
+                minimum_context: 65_536
             }
         );
     }
 
     #[test]
-    fn qwen_coder_480b_uses_half_context_when_native_context_does_not_fit() {
-        // Simulation: 4 x 82 GiB nodes.
+    fn qwen_coder_480b_uses_context_floor_when_larger_contexts_do_not_fit() {
+        // Simulation: 4 x 80 GiB nodes.
         //
-        // Expected topology: 4 stages, 131_072 context, 1 lane.
+        // Expected topology: 4 stages, 65_536 context, 1 lane.
         //
-        // Why: native 262_144 context does not fit across these nodes, but
-        // exactly half native does. The planner protects context first, so it
-        // keeps the highest valid context and accepts single-lane serving.
-        let plan = plan_topology(&qwen_coder_480b_input(qwen_nodes(4, 82))).unwrap();
+        // Why: native 262_144 and 131_072 contexts do not fit across these
+        // nodes, but the shared 64k floor does. The planner protects context
+        // first, then accepts single-lane serving at the lowest valid floor.
+        let plan = plan_topology(&qwen_coder_480b_input(qwen_nodes(4, 80))).unwrap();
 
-        assert_eq!(plan.context_length, 131_072);
+        assert_eq!(plan.context_length, 65_536);
         assert_eq!(plan.parallel_lanes, 1);
         assert_eq!(plan.stages.len(), 4);
         assert_eq!(plan.stages.first().unwrap().layer_start, 0);
