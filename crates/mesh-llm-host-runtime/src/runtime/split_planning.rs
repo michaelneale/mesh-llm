@@ -1,7 +1,7 @@
 use crate::inference::skippy;
 use anyhow::{Context, Result};
 use skippy_coordinator::topology::{
-    plan_topology, TopologyNode, TopologyPlanningInput, TopologyStagePlan,
+    minimum_valid_context, plan_topology, TopologyNode, TopologyPlanningInput, TopologyStagePlan,
 };
 use std::collections::HashMap;
 
@@ -136,7 +136,7 @@ pub(super) fn plan_runtime_slice_topology_with_resources(
         .copied()
         .map(|participant| (participant.node_id.to_string(), participant))
         .collect::<HashMap<_, _>>();
-    let plan = plan_split_topology(SplitTopologyPlanInput {
+    let plan_input = SplitTopologyPlanInput {
         native_context_length: resources.native_context_length,
         layer_count: package.layer_count,
         model_weight_bytes: package.source_model_bytes,
@@ -153,7 +153,29 @@ pub(super) fn plan_runtime_slice_topology_with_resources(
                 runtime_headroom_bytes: default_runtime_headroom_bytes(participant.vram_bytes),
             })
             .collect(),
-    })?;
+    };
+    let plan = match plan_split_topology(plan_input) {
+        Ok(plan) => plan,
+        Err(err) => {
+            let reason = split_topology_failure_reason(
+                model_ref,
+                package,
+                participants,
+                excluded,
+                resources,
+            );
+            tracing::warn!(
+                topology_id,
+                model_ref,
+                error = %err,
+                reason = %reason,
+                participants = ?split_participant_labels(participants),
+                excluded = ?split_participant_exclusion_labels(excluded),
+                "failed to plan resource-aware split runtime topology"
+            );
+            return Err(err.context(reason));
+        }
+    };
 
     let mut stages = plan
         .stages
@@ -187,6 +209,112 @@ pub(super) fn plan_runtime_slice_topology_with_resources(
         context_length: plan.context_length,
         slots: plan.parallel_lanes,
     })
+}
+
+fn split_topology_failure_reason(
+    model_ref: &str,
+    package: &skippy::SkippyPackageIdentity,
+    participants: &[SplitParticipant],
+    excluded: &[SplitParticipantExclusion],
+    resources: SplitTopologyResourceInputs,
+) -> String {
+    let minimum_context = minimum_valid_context(resources.native_context_length);
+    let evaluated_context = resources.ctx_size_override.unwrap_or(minimum_context);
+    let evaluated_lanes = resources.parallel_override.unwrap_or(1).max(1);
+    let weight_per_layer = package
+        .source_model_bytes
+        .div_ceil(u64::from(package.layer_count.max(1)));
+    let kv_per_layer = resources
+        .kv_bytes_per_token
+        .div_ceil(u64::from(package.layer_count.max(1)));
+    let bytes_per_layer = split_candidate_bytes_per_layer(
+        weight_per_layer,
+        kv_per_layer,
+        evaluated_context,
+        evaluated_lanes,
+    );
+    let total_usable_vram = participants
+        .iter()
+        .map(|participant| {
+            participant
+                .vram_bytes
+                .saturating_sub(default_runtime_headroom_bytes(participant.vram_bytes))
+        })
+        .sum::<u64>();
+    let max_placeable_layers = participants
+        .iter()
+        .map(|participant| {
+            max_layers_for_participant(
+                participant.vram_bytes,
+                default_runtime_headroom_bytes(participant.vram_bytes),
+                bytes_per_layer,
+            )
+        })
+        .sum::<u64>();
+    let estimated_total_bytes = bytes_per_layer.saturating_mul(u64::from(package.layer_count));
+
+    format!(
+        "unable to plan split topology for {model_ref}: native_context={}, minimum_context={}, evaluated_context={}, evaluated_lanes={}, layer_count={}, estimated_bytes_per_layer={}, estimated_total_bytes={}, total_usable_vram={}, max_placeable_layers_at_evaluated_shape={}/{}; participants [{}]; excluded [{}]",
+        resources.native_context_length,
+        minimum_context,
+        evaluated_context,
+        evaluated_lanes,
+        package.layer_count,
+        format_gb(bytes_per_layer),
+        format_gb(estimated_total_bytes),
+        format_gb(total_usable_vram),
+        max_placeable_layers,
+        package.layer_count,
+        split_topology_fit_labels(participants, bytes_per_layer).join(", "),
+        split_participant_exclusion_labels(excluded).join(", ")
+    )
+}
+
+fn split_candidate_bytes_per_layer(
+    weight_per_layer: u64,
+    kv_per_layer: u64,
+    context_length: u32,
+    parallel_lanes: usize,
+) -> u64 {
+    let kv_bytes = u128::from(kv_per_layer)
+        .saturating_mul(u128::from(context_length))
+        .saturating_mul(parallel_lanes as u128);
+    let total = u128::from(weight_per_layer).saturating_add(kv_bytes);
+    total.min(u128::from(u64::MAX)) as u64
+}
+
+fn max_layers_for_participant(
+    vram_bytes: u64,
+    runtime_headroom_bytes: u64,
+    bytes_per_layer: u64,
+) -> u64 {
+    if bytes_per_layer == 0 {
+        return 0;
+    }
+    vram_bytes.saturating_sub(runtime_headroom_bytes) / bytes_per_layer
+}
+
+fn split_topology_fit_labels(
+    participants: &[SplitParticipant],
+    bytes_per_layer: u64,
+) -> Vec<String> {
+    participants
+        .iter()
+        .map(|participant| {
+            let headroom = default_runtime_headroom_bytes(participant.vram_bytes);
+            let usable = participant.vram_bytes.saturating_sub(headroom);
+            let max_layers =
+                max_layers_for_participant(participant.vram_bytes, headroom, bytes_per_layer);
+            format!(
+                "{}:budget={} headroom={} usable={} max_layers={}",
+                participant.node_id.fmt_short(),
+                format_gb(participant.vram_bytes),
+                format_gb(headroom),
+                format_gb(usable),
+                max_layers
+            )
+        })
+        .collect()
 }
 
 pub(super) fn split_participant_labels(participants: &[SplitParticipant]) -> Vec<String> {
@@ -466,5 +594,36 @@ mod tests {
         assert!(message.contains("participants ["));
         assert!(message.contains("excluded ["));
         assert!(message.contains("missing_vram"));
+    }
+
+    #[test]
+    fn topology_failure_reason_reports_floor_fit_capacity() {
+        let participants = vec![participant(1, 8_000_000_000), participant(2, 8_000_000_000)];
+        let excluded = vec![SplitParticipantExclusion {
+            node_id: make_id(3),
+            reason: SplitParticipantExclusionReason::MissingModelSource,
+        }];
+
+        let reason = split_topology_failure_reason(
+            "model-a",
+            &package(4, 40_000_000_000),
+            &participants,
+            &excluded,
+            SplitTopologyResourceInputs {
+                native_context_length: 131_072,
+                kv_bytes_per_token: 1024,
+                ctx_size_override: None,
+                parallel_override: None,
+            },
+        );
+
+        assert!(reason.contains("model-a"));
+        assert!(reason.contains("minimum_context=65536"));
+        assert!(reason.contains("evaluated_context=65536"));
+        assert!(reason.contains("evaluated_lanes=1"));
+        assert!(reason.contains("max_placeable_layers_at_evaluated_shape=0/4"));
+        assert!(reason.contains("participants ["));
+        assert!(reason.contains("max_layers=0"));
+        assert!(reason.contains("missing_model_source"));
     }
 }

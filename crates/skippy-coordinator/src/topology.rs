@@ -166,7 +166,7 @@ fn parallel_lane_candidates(
     Ok((1..=MAX_AUTO_PARALLEL_LANES).rev().collect())
 }
 
-fn minimum_valid_context(native_context: u32) -> u32 {
+pub fn minimum_valid_context(native_context: u32) -> u32 {
     native_context.min(MINIMUM_AUTO_CONTEXT_LENGTH).max(1)
 }
 
