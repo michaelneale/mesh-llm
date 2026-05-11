@@ -1,5 +1,3 @@
-const GB: u64 = 1024 * 1024 * 1024;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum KvCacheType {
     F16,
@@ -24,25 +22,18 @@ pub(crate) struct KvCachePolicy {
 }
 
 impl KvCachePolicy {
-    pub(crate) const MEDIUM_TIER_MIN_BYTES: u64 = 5 * GB;
-    pub(crate) const LARGE_TIER_MIN_BYTES: u64 = 50 * GB;
-
-    pub(crate) fn for_model_size(model_bytes: u64) -> Self {
-        if model_bytes >= Self::LARGE_TIER_MIN_BYTES {
-            Self {
-                k_type: KvCacheType::Q4_0,
-                v_type: KvCacheType::Q4_0,
-            }
-        } else if model_bytes >= Self::MEDIUM_TIER_MIN_BYTES {
-            Self {
-                k_type: KvCacheType::Q8_0,
-                v_type: KvCacheType::Q4_0,
-            }
-        } else {
-            Self {
-                k_type: KvCacheType::F16,
-                v_type: KvCacheType::F16,
-            }
+    /// Default KV cache policy: Q8_0 for both K and V.
+    ///
+    /// Q8_0 gives ~2× compression over f16 with <5% speed cost across all
+    /// context lengths.  This is the universal default regardless of model
+    /// size — benchmarks show no meaningful quality degradation.
+    ///
+    /// Users can override via `--cache-type-k` / `--cache-type-v` if they
+    /// want f16 (maximum precision) or q4_0 (maximum compression).
+    pub(crate) fn default() -> Self {
+        Self {
+            k_type: KvCacheType::Q8_0,
+            v_type: KvCacheType::Q8_0,
         }
     }
 
@@ -54,16 +45,9 @@ impl KvCachePolicy {
         self.v_type.as_config_value()
     }
 
-    pub(crate) fn label(self, model_bytes: u64) -> String {
-        let tier = if model_bytes >= Self::LARGE_TIER_MIN_BYTES {
-            "model >= 50GB"
-        } else if model_bytes >= Self::MEDIUM_TIER_MIN_BYTES {
-            "model 5-50GB"
-        } else {
-            "model < 5GB"
-        };
+    pub(crate) fn label(self) -> String {
         format!(
-            "{} K + {} V ({tier})",
+            "{} K + {} V",
             self.cache_type_k().to_ascii_uppercase(),
             self.cache_type_v().to_ascii_uppercase()
         )
@@ -75,27 +59,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn kv_cache_policy_matches_legacy_llama_server_tiers() {
-        assert_eq!(
-            KvCachePolicy::for_model_size(KvCachePolicy::MEDIUM_TIER_MIN_BYTES - 1),
-            KvCachePolicy {
-                k_type: KvCacheType::F16,
-                v_type: KvCacheType::F16,
-            }
-        );
-        assert_eq!(
-            KvCachePolicy::for_model_size(KvCachePolicy::MEDIUM_TIER_MIN_BYTES),
-            KvCachePolicy {
-                k_type: KvCacheType::Q8_0,
-                v_type: KvCacheType::Q4_0,
-            }
-        );
-        assert_eq!(
-            KvCachePolicy::for_model_size(KvCachePolicy::LARGE_TIER_MIN_BYTES),
-            KvCachePolicy {
-                k_type: KvCacheType::Q4_0,
-                v_type: KvCacheType::Q4_0,
-            }
-        );
+    fn default_kv_cache_is_q8_0() {
+        let policy = KvCachePolicy::default();
+        assert_eq!(policy.k_type, KvCacheType::Q8_0);
+        assert_eq!(policy.v_type, KvCacheType::Q8_0);
+        assert_eq!(policy.cache_type_k(), "q8_0");
+        assert_eq!(policy.cache_type_v(), "q8_0");
     }
 }

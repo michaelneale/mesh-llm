@@ -223,7 +223,7 @@ mod tests {
             lane_count: 2,
             n_batch: None,
             n_ubatch: None,
-            kv_cache: KvCachePolicy::for_model_size(100),
+            kv_cache: KvCachePolicy::default(),
             flash_attn_type: FlashAttentionType::Auto,
             projector_path: Some("/models/mmproj.gguf".to_string()),
         };

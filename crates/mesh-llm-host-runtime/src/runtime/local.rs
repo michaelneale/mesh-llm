@@ -414,7 +414,7 @@ pub(super) async fn start_runtime_local_model(
         format_gb(my_vram)
     );
 
-    let kv_cache = skippy::KvCachePolicy::for_model_size(total_model_bytes);
+    let kv_cache = skippy::KvCachePolicy::default();
     let effective_cache_type_k = spec
         .cache_type_k_override
         .unwrap_or(kv_cache.cache_type_k());
@@ -446,8 +446,6 @@ pub(super) async fn start_runtime_local_model(
         .ok()
         .flatten()
     };
-    let kv_quant_user_locked =
-        spec.cache_type_k_override.is_some() || spec.cache_type_v_override.is_some();
     let plan = plan_runtime_resources(RuntimeResourcePlanInput {
         ctx_size_override: spec.ctx_size_override,
         parallel_override: spec.parallel_override,
@@ -455,7 +453,6 @@ pub(super) async fn start_runtime_local_model(
         vram_bytes: my_vram,
         metadata: compact_meta.as_ref(),
         kv_cache_quant,
-        kv_quant_user_locked,
         local_layer_fraction,
     });
 
@@ -574,7 +571,50 @@ pub(super) async fn start_runtime_split_model(
         });
     }
 
-    let ctx_size = spec.ctx_size_override.unwrap_or(4096);
+    // ── Context planning for splits ──────────────────────────────────
+    // The solo path runs plan_runtime_resources before reaching here.
+    // The split path historically hardcoded 4096 — we now run the same
+    // planner with split-aware inputs so that local-layer-fraction
+    // budgeting produces a useful context window.
+    let local_layer_fraction = if package.layer_count > 0 {
+        let my_layers = stage0.layer_end.saturating_sub(stage0.layer_start);
+        Some(f64::from(my_layers) / f64::from(package.layer_count))
+    } else {
+        None
+    };
+    let compact_meta = {
+        let pkg = package.clone();
+        tokio::task::spawn_blocking(move || scan_layer_package_metadata(&pkg))
+            .await
+            .ok()
+            .flatten()
+    };
+    let total_model_bytes = package.source_model_bytes;
+    let local_model_bytes = if let Some(frac) = local_layer_fraction {
+        (total_model_bytes as f64 * frac) as u64
+    } else {
+        total_model_bytes
+    };
+    let kv_cache_quant =
+        if spec.cache_type_k_override.is_some() || spec.cache_type_v_override.is_some() {
+            let k = spec.cache_type_k_override.unwrap_or("q8_0");
+            let v = spec.cache_type_v_override.unwrap_or("q8_0");
+            models::gguf::GgufKvCacheQuant::from_llama_args(k, v)
+                .unwrap_or(models::gguf::GgufKvCacheQuant::Q8_0)
+        } else {
+            models::gguf::GgufKvCacheQuant::Q8_0
+        };
+    let my_vram = spec.node.vram_bytes();
+    let plan = plan_runtime_resources(RuntimeResourcePlanInput {
+        ctx_size_override: spec.ctx_size_override,
+        parallel_override: spec.parallel_override,
+        model_bytes: local_model_bytes,
+        vram_bytes: my_vram,
+        metadata: compact_meta.as_ref(),
+        kv_cache_quant,
+        local_layer_fraction,
+    });
+    let ctx_size = plan.context_length;
     let projector_path = spec
         .mmproj_override
         .map(Path::to_path_buf)
@@ -854,7 +894,7 @@ async fn load_split_runtime_generation_inner(
 
     let mut ready_by_stage: HashMap<String, skippy::StageStatusSnapshot> = HashMap::new();
     let mut downstream: Option<skippy::StagePeerDescriptor> = None;
-    let kv_cache = skippy::KvCachePolicy::for_model_size(spec.package.source_model_bytes);
+    let kv_cache = skippy::KvCachePolicy::default();
     let family_policy = skippy::family_policy_for_model_path(spec.model_path, Some(spec.model_ref));
     let effective_cache_type_k = spec
         .cache_type_k_override
@@ -866,11 +906,7 @@ async fn load_split_runtime_generation_inner(
         .to_string();
     let resolved_flash_attn_type =
         effective_flash_attention(spec.flash_attention_override, &effective_cache_type_v);
-    tracing::info!(
-        model = spec.model_ref,
-        "KV cache: {}",
-        kv_cache.label(spec.package.source_model_bytes)
-    );
+    tracing::info!(model = spec.model_ref, "KV cache: {}", kv_cache.label());
 
     // Use LayerPackage mode when we have an hf:// distributable package ref,
     // otherwise fall back to RuntimeSlice (requires full GGUF on each node).
@@ -2422,41 +2458,22 @@ async fn start_runtime_skippy_model(
 )> {
     let port = alloc_local_port().await?;
     let context_length = plan.context_length;
-    let model_bytes = election::total_model_bytes(spec.model_path);
-    let kv_cache = skippy::KvCachePolicy::for_model_size(model_bytes);
-    let (effective_cache_type_k, effective_cache_type_v) =
-        if let Some(negotiated) = plan.negotiated_kv_quant {
-            (
-                spec.cache_type_k_override
-                    .unwrap_or(negotiated.k.as_llama_arg()),
-                spec.cache_type_v_override
-                    .unwrap_or(negotiated.v.as_llama_arg()),
-            )
-        } else {
-            (
-                spec.cache_type_k_override
-                    .unwrap_or(kv_cache.cache_type_k()),
-                spec.cache_type_v_override
-                    .unwrap_or(kv_cache.cache_type_v()),
-            )
-        };
+    let kv_cache = skippy::KvCachePolicy::default();
+    let effective_cache_type_k = spec
+        .cache_type_k_override
+        .unwrap_or(kv_cache.cache_type_k());
+    let effective_cache_type_v = spec
+        .cache_type_v_override
+        .unwrap_or(kv_cache.cache_type_v());
     let resolved_flash_attn_type =
         effective_flash_attention(spec.flash_attention_override, effective_cache_type_v);
-    if plan.negotiated_kv_quant.is_some() {
-        tracing::info!(
-            model = model_name,
-            "KV cache: {} K + {} V (negotiated for {}K context)",
-            effective_cache_type_k.to_ascii_uppercase(),
-            effective_cache_type_v.to_ascii_uppercase(),
-            context_length / 1024,
-        );
-    } else {
-        tracing::info!(
-            model = model_name,
-            "KV cache: {}",
-            kv_cache.label(model_bytes)
-        );
-    }
+    tracing::info!(
+        model = model_name,
+        "KV cache: {} K + {} V, {}K context",
+        effective_cache_type_k.to_ascii_uppercase(),
+        effective_cache_type_v.to_ascii_uppercase(),
+        context_length / 1024,
+    );
     let projector_path = spec
         .mmproj_override
         .map(Path::to_path_buf)
@@ -2516,46 +2533,24 @@ async fn start_runtime_layer_package_model(
     tokio::sync::oneshot::Receiver<()>,
 )> {
     let context_length = plan.context_length;
-    let kv_cache = skippy::KvCachePolicy::for_model_size(package.source_model_bytes);
-    // If the planner negotiated a more aggressive KV quant to reach the target
-    // context, use that instead of the default policy (unless the user overrode).
-    let (effective_cache_type_k, effective_cache_type_v) =
-        if let Some(negotiated) = plan.negotiated_kv_quant {
-            (
-                spec.cache_type_k_override
-                    .unwrap_or(negotiated.k.as_llama_arg())
-                    .to_string(),
-                spec.cache_type_v_override
-                    .unwrap_or(negotiated.v.as_llama_arg())
-                    .to_string(),
-            )
-        } else {
-            (
-                spec.cache_type_k_override
-                    .unwrap_or(kv_cache.cache_type_k())
-                    .to_string(),
-                spec.cache_type_v_override
-                    .unwrap_or(kv_cache.cache_type_v())
-                    .to_string(),
-            )
-        };
+    let kv_cache = skippy::KvCachePolicy::default();
+    let effective_cache_type_k = spec
+        .cache_type_k_override
+        .unwrap_or(kv_cache.cache_type_k())
+        .to_string();
+    let effective_cache_type_v = spec
+        .cache_type_v_override
+        .unwrap_or(kv_cache.cache_type_v())
+        .to_string();
     let resolved_flash_attn_type =
         effective_flash_attention(spec.flash_attention_override, &effective_cache_type_v);
-    if plan.negotiated_kv_quant.is_some() {
-        tracing::info!(
-            model = model_name,
-            "KV cache: {} K + {} V (negotiated for {}K context)",
-            effective_cache_type_k.to_ascii_uppercase(),
-            effective_cache_type_v.to_ascii_uppercase(),
-            context_length / 1024,
-        );
-    } else {
-        tracing::info!(
-            model = model_name,
-            "KV cache: {}",
-            kv_cache.label(package.source_model_bytes)
-        );
-    }
+    tracing::info!(
+        model = model_name,
+        "KV cache: {} K + {} V, {}K context",
+        effective_cache_type_k.to_ascii_uppercase(),
+        effective_cache_type_v.to_ascii_uppercase(),
+        context_length / 1024,
+    );
     let projector_path = spec
         .mmproj_override
         .map(|path| path.to_string_lossy().to_string())
