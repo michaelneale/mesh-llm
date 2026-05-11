@@ -1,9 +1,12 @@
 use super::context_planning::{
     plan_runtime_resources, RuntimeResourcePlan, RuntimeResourcePlanInput,
 };
+#[cfg(test)]
+use super::split_planning::{format_aggregate_split_capacity_error, validate_split_capacity};
 use super::split_planning::{
-    default_runtime_headroom_bytes, plan_split_topology, SplitTopologyPlanInput,
-    SplitTopologyPlanNode,
+    format_gb, plan_runtime_slice_topology_with_resources, split_participant_exclusion_labels,
+    split_participant_labels, split_participants_for_stages, split_stage_plan_labels,
+    RuntimeSliceStagePlan, SplitTopologyResourceInputs,
 };
 use crate::api;
 use crate::inference::{election, skippy};
@@ -22,7 +25,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const SPLIT_PARTICIPANT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const SPLIT_PARTICIPANT_STABLE_FOR: Duration = Duration::from_secs(2);
-const SPLIT_DEFAULT_MIN_PARTICIPANTS: usize = 2;
+pub(super) const SPLIT_DEFAULT_MIN_PARTICIPANTS: usize = 2;
 const SPLIT_INITIAL_SHUTDOWN_GENERATION: u64 = 1;
 const SPLIT_COORDINATOR_LEASE_SECS: u64 = 4 * 60 * 60;
 const RUNTIME_MODEL_FIT_HEADROOM_NUMERATOR: u64 = 11;
@@ -664,19 +667,23 @@ pub(super) async fn start_runtime_split_model(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct SplitParticipant {
-    node_id: iroh::EndpointId,
-    vram_bytes: u64,
+pub(super) struct SplitParticipant {
+    pub(super) node_id: iroh::EndpointId,
+    pub(super) vram_bytes: u64,
     first_joined_mesh_ts: Option<u64>,
-    cached_slice_bytes: u64,
-    missing_artifact_bytes: u64,
-    rtt_ms: Option<u32>,
-    artifact_transfer_supported: bool,
+    pub(super) cached_slice_bytes: u64,
+    pub(super) missing_artifact_bytes: u64,
+    pub(super) rtt_ms: Option<u32>,
+    pub(super) artifact_transfer_supported: bool,
     availability_score: u32,
 }
 
 impl SplitParticipant {
-    fn new(node_id: iroh::EndpointId, vram_bytes: u64, first_joined_mesh_ts: Option<u64>) -> Self {
+    pub(super) fn new(
+        node_id: iroh::EndpointId,
+        vram_bytes: u64,
+        first_joined_mesh_ts: Option<u64>,
+    ) -> Self {
         Self {
             node_id,
             vram_bytes,
@@ -762,60 +769,13 @@ struct SplitParticipantSnapshot {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct SplitParticipantExclusion {
-    node_id: iroh::EndpointId,
-    reason: SplitParticipantExclusionReason,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct SplitCapacityReadinessReport {
-    required_bytes: u64,
-    available_bytes: u64,
-    missing_bytes: u64,
-    participants: Vec<SplitParticipant>,
-    excluded: Vec<SplitParticipantExclusion>,
-}
-
-impl SplitCapacityReadinessReport {
-    fn new(
-        required_bytes: u64,
-        available_bytes: u64,
-        participants: &[SplitParticipant],
-        excluded: &[SplitParticipantExclusion],
-    ) -> Self {
-        Self {
-            required_bytes,
-            available_bytes,
-            missing_bytes: required_bytes.saturating_sub(available_bytes),
-            participants: participants.to_vec(),
-            excluded: excluded.to_vec(),
-        }
-    }
-
-    fn error_message(&self, model_ref: &str) -> String {
-        let mut message = format!(
-            "aggregate split capacity for {model_ref} requires {}, mesh has {} across {} participant(s), short by {}",
-            format_gb(self.required_bytes),
-            format_gb(self.available_bytes),
-            self.participants.len(),
-            format_gb(self.missing_bytes)
-        );
-        if !self.participants.is_empty() {
-            message.push_str("; participants [");
-            message.push_str(&split_participant_labels(&self.participants).join(", "));
-            message.push(']');
-        }
-        if !self.excluded.is_empty() {
-            message.push_str("; excluded [");
-            message.push_str(&split_participant_exclusion_labels(&self.excluded).join(", "));
-            message.push(']');
-        }
-        message
-    }
+pub(super) struct SplitParticipantExclusion {
+    pub(super) node_id: iroh::EndpointId,
+    pub(super) reason: SplitParticipantExclusionReason,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SplitParticipantExclusionReason {
+pub(super) enum SplitParticipantExclusionReason {
     Client,
     MissingVram,
     MissingModelInterest,
@@ -823,7 +783,7 @@ enum SplitParticipantExclusionReason {
 }
 
 impl SplitParticipantExclusionReason {
-    const fn as_str(self) -> &'static str {
+    pub(super) const fn as_str(self) -> &'static str {
         match self {
             Self::Client => "client",
             Self::MissingVram => "missing_vram",
@@ -1187,16 +1147,6 @@ fn stage_load_model_path(load_mode: LoadMode, package_ref: &str, model_path: &Pa
             model_path.to_string_lossy().to_string()
         }
     }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct RuntimeSliceStagePlan {
-    stage_id: String,
-    stage_index: u32,
-    node_id: iroh::EndpointId,
-    layer_start: u32,
-    layer_end: u32,
-    parameter_bytes: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2160,55 +2110,10 @@ fn split_topology_hash(stages: &[RuntimeSliceStagePlan]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn split_participant_labels(participants: &[SplitParticipant]) -> Vec<String> {
-    participants
-        .iter()
-        .map(|participant| {
-            format!(
-                "{}:{} cached={} missing={} rtt={}ms transfer={}",
-                participant.node_id.fmt_short(),
-                format_gb(participant.vram_bytes),
-                format_gb(participant.cached_slice_bytes),
-                format_gb(participant.missing_artifact_bytes),
-                participant.rtt_ms.unwrap_or_default(),
-                participant.artifact_transfer_supported
-            )
-        })
-        .collect()
-}
-
 fn split_node_labels(nodes: &[iroh::EndpointId]) -> Vec<String> {
     nodes
         .iter()
         .map(|node| node.fmt_short().to_string())
-        .collect()
-}
-
-fn split_participants_for_stages(
-    participants: &[SplitParticipant],
-    stages: &[RuntimeSliceStagePlan],
-) -> Vec<SplitParticipant> {
-    let participant_by_node = participants
-        .iter()
-        .copied()
-        .map(|participant| (participant.node_id, participant))
-        .collect::<HashMap<_, _>>();
-    stages
-        .iter()
-        .filter_map(|stage| participant_by_node.get(&stage.node_id).copied())
-        .collect()
-}
-
-fn split_participant_exclusion_labels(excluded: &[SplitParticipantExclusion]) -> Vec<String> {
-    excluded
-        .iter()
-        .map(|exclusion| {
-            format!(
-                "{}:{}",
-                exclusion.node_id.fmt_short(),
-                exclusion.reason.as_str()
-            )
-        })
         .collect()
 }
 
@@ -2220,96 +2125,6 @@ fn plan_runtime_slice_topology(
     participants: &[SplitParticipant],
 ) -> Result<Vec<RuntimeSliceStagePlan>> {
     plan_runtime_slice_topology_with_exclusions(topology_id, model_ref, package, participants, &[])
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct SplitTopologyResourceInputs {
-    native_context_length: u32,
-    kv_bytes_per_token: u64,
-    ctx_size_override: Option<u32>,
-    parallel_override: Option<usize>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct PlannedRuntimeSliceTopology {
-    stages: Vec<RuntimeSliceStagePlan>,
-    context_length: u32,
-    slots: usize,
-}
-
-fn plan_runtime_slice_topology_with_resources(
-    topology_id: &str,
-    model_ref: &str,
-    package: &skippy::SkippyPackageIdentity,
-    participants: &[SplitParticipant],
-    excluded: &[SplitParticipantExclusion],
-    resources: SplitTopologyResourceInputs,
-) -> Result<PlannedRuntimeSliceTopology> {
-    tracing::info!(
-        topology_id,
-        model_ref,
-        participants = ?split_participant_labels(participants),
-        layer_count = package.layer_count,
-        native_context_length = resources.native_context_length,
-        "planning resource-aware split runtime topology"
-    );
-
-    let participant_by_id = participants
-        .iter()
-        .copied()
-        .map(|participant| (participant.node_id.to_string(), participant))
-        .collect::<HashMap<_, _>>();
-    let plan = plan_split_topology(SplitTopologyPlanInput {
-        native_context_length: resources.native_context_length,
-        layer_count: package.layer_count,
-        model_weight_bytes: package.source_model_bytes,
-        kv_bytes_per_token: resources.kv_bytes_per_token,
-        context_length_override: resources.ctx_size_override,
-        parallel_lanes_override: resources.parallel_override,
-        minimum_nodes: SPLIT_DEFAULT_MIN_PARTICIPANTS,
-        nodes: participants
-            .iter()
-            .map(|participant| SplitTopologyPlanNode {
-                node_id: participant.node_id.to_string(),
-                detected_vram_bytes: participant.vram_bytes,
-                max_vram_bytes: Some(participant.vram_bytes),
-                runtime_headroom_bytes: default_runtime_headroom_bytes(participant.vram_bytes),
-            })
-            .collect(),
-    })?;
-
-    let mut stages = plan
-        .stages
-        .into_iter()
-        .map(|stage| {
-            let participant = participant_by_id.get(&stage.node_id).ok_or_else(|| {
-                anyhow::anyhow!("topology planner returned unknown node {}", stage.node_id)
-            })?;
-            Ok(RuntimeSliceStagePlan {
-                stage_id: stage.stage_id,
-                stage_index: stage.stage_index,
-                node_id: participant.node_id,
-                layer_start: stage.layer_start,
-                layer_end: stage.layer_end,
-                parameter_bytes: stage.parameter_bytes,
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    stages.sort_by_key(|stage| stage.stage_index);
-    validate_split_capacity(model_ref, package, participants, &stages, excluded)?;
-    tracing::info!(
-        topology_id,
-        model_ref,
-        context_length = plan.context_length,
-        slots = plan.parallel_lanes,
-        stages = ?split_stage_plan_labels(&stages),
-        "planned resource-aware split runtime topology"
-    );
-    Ok(PlannedRuntimeSliceTopology {
-        stages,
-        context_length: plan.context_length,
-        slots: plan.parallel_lanes,
-    })
 }
 
 #[cfg(test)]
@@ -2367,82 +2182,6 @@ fn plan_runtime_slice_topology_with_exclusions(
         "planned split runtime topology"
     );
     Ok(stages)
-}
-
-fn validate_split_capacity(
-    model_ref: &str,
-    package: &skippy::SkippyPackageIdentity,
-    participants: &[SplitParticipant],
-    stages: &[RuntimeSliceStagePlan],
-    excluded: &[SplitParticipantExclusion],
-) -> Result<()> {
-    let total_vram_bytes = participants
-        .iter()
-        .map(|participant| participant.vram_bytes)
-        .sum::<u64>();
-    let required_total_bytes = runtime_model_required_bytes(package.source_model_bytes);
-    anyhow::ensure!(
-        total_vram_bytes >= required_total_bytes,
-        "{}",
-        format_aggregate_split_capacity_error(
-            model_ref,
-            required_total_bytes,
-            total_vram_bytes,
-            participants,
-            excluded
-        )
-    );
-
-    let vram_by_node = participants
-        .iter()
-        .map(|participant| (participant.node_id, participant.vram_bytes))
-        .collect::<HashMap<_, _>>();
-    for stage in stages {
-        let node_vram = vram_by_node
-            .get(&stage.node_id)
-            .copied()
-            .unwrap_or_default();
-        let required_stage_bytes = runtime_model_required_bytes(stage.parameter_bytes);
-        anyhow::ensure!(
-            node_vram >= required_stage_bytes,
-            "{} assigned to {} for {model_ref} requires {}, which exceeds node capacity {}",
-            stage.stage_id,
-            stage.node_id.fmt_short(),
-            format_gb(required_stage_bytes),
-            format_gb(node_vram)
-        );
-    }
-    Ok(())
-}
-
-fn format_aggregate_split_capacity_error(
-    model_ref: &str,
-    required_bytes: u64,
-    available_bytes: u64,
-    participants: &[SplitParticipant],
-    excluded: &[SplitParticipantExclusion],
-) -> String {
-    SplitCapacityReadinessReport::new(required_bytes, available_bytes, participants, excluded)
-        .error_message(model_ref)
-}
-
-fn format_gb(bytes: u64) -> String {
-    format!("{:.1}GB", bytes as f64 / 1e9)
-}
-
-fn split_stage_plan_labels(stages: &[RuntimeSliceStagePlan]) -> Vec<String> {
-    stages
-        .iter()
-        .map(|stage| {
-            format!(
-                "{}:{}:{}..{}",
-                stage.stage_id,
-                stage.node_id.fmt_short(),
-                stage.layer_start,
-                stage.layer_end
-            )
-        })
-        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
