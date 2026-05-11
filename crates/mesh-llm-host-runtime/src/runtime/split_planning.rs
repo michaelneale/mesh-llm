@@ -5,7 +5,7 @@ use skippy_coordinator::topology::{
 };
 use std::collections::HashMap;
 
-use super::local::{runtime_model_required_bytes, SplitParticipant, SplitParticipantExclusion};
+use super::local::{SplitParticipant, SplitParticipantExclusion};
 
 // VRAM budget already accounts for OS/runtime reservations (e.g. Metal's
 // recommendedMaxWorkingSetSize on macOS).  No additional headroom deduction.
@@ -360,7 +360,9 @@ pub(super) fn validate_split_capacity(
         .iter()
         .map(|participant| participant.vram_bytes)
         .sum::<u64>();
-    let required_total_bytes = runtime_model_required_bytes(package.source_model_bytes);
+    // Use raw model weight for aggregate split check — the topology planner
+    // already performed detailed per-node budgeting with KV and headroom.
+    let required_total_bytes = package.source_model_bytes;
     anyhow::ensure!(
         total_vram_bytes >= required_total_bytes,
         "{}",
@@ -382,13 +384,15 @@ pub(super) fn validate_split_capacity(
             .get(&stage.node_id)
             .copied()
             .unwrap_or_default();
-        let required_stage_bytes = runtime_model_required_bytes(stage.parameter_bytes);
+        // The topology planner already budgets VRAM including KV cache and
+        // headroom.  Do not re-apply the solo-load 10% headroom here — it
+        // double-counts and rejects topologies the planner approved.
         anyhow::ensure!(
-            node_vram >= required_stage_bytes,
+            node_vram >= stage.parameter_bytes,
             "{} assigned to {} for {model_ref} requires {}, which exceeds node capacity {}",
             stage.stage_id,
             stage.node_id.fmt_short(),
-            format_gb(required_stage_bytes),
+            format_gb(stage.parameter_bytes),
             format_gb(node_vram)
         );
     }

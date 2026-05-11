@@ -22,18 +22,31 @@ pub(crate) struct KvCachePolicy {
 }
 
 impl KvCachePolicy {
-    /// Default KV cache policy: Q8_0 for both K and V.
+    const LARGE_MODEL_MIN_BYTES: u64 = 50 * 1024 * 1024 * 1024;
+
+    /// Default KV cache policy, tiered by model size.
     ///
-    /// Q8_0 gives ~2× compression over f16 with <5% speed cost across all
-    /// context lengths.  This is the universal default regardless of model
-    /// size — benchmarks show no meaningful quality degradation.
+    /// Models >= 50 GB use Q4_0 K + Q4_0 V to keep KV cache small enough
+    /// that unified-memory machines don't thrash.  On a 480B MoE split
+    /// across two Apple Silicon nodes the difference between Q8_0 and Q4_0
+    /// is the difference between swap-thrashing at 1 tok/s and running at
+    /// 20+ tok/s.
     ///
-    /// Users can override via `--cache-type-k` / `--cache-type-v` if they
-    /// want f16 (maximum precision) or q4_0 (maximum compression).
-    pub(crate) fn default() -> Self {
-        Self {
-            k_type: KvCacheType::Q8_0,
-            v_type: KvCacheType::Q8_0,
+    /// Smaller models use Q8_0 K + Q8_0 V which gives ~2× compression over
+    /// f16 with negligible quality loss.
+    ///
+    /// Users can override via `--cache-type-k` / `--cache-type-v`.
+    pub(crate) fn for_model_size(model_bytes: u64) -> Self {
+        if model_bytes >= Self::LARGE_MODEL_MIN_BYTES {
+            Self {
+                k_type: KvCacheType::Q4_0,
+                v_type: KvCacheType::Q4_0,
+            }
+        } else {
+            Self {
+                k_type: KvCacheType::Q8_0,
+                v_type: KvCacheType::Q8_0,
+            }
         }
     }
 
@@ -59,11 +72,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_kv_cache_is_q8_0() {
-        let policy = KvCachePolicy::default();
+    fn small_model_uses_q8_0() {
+        let policy = KvCachePolicy::for_model_size(10 * 1024 * 1024 * 1024);
         assert_eq!(policy.k_type, KvCacheType::Q8_0);
         assert_eq!(policy.v_type, KvCacheType::Q8_0);
-        assert_eq!(policy.cache_type_k(), "q8_0");
-        assert_eq!(policy.cache_type_v(), "q8_0");
+    }
+
+    #[test]
+    fn large_model_uses_q4_0() {
+        let policy = KvCachePolicy::for_model_size(50 * 1024 * 1024 * 1024);
+        assert_eq!(policy.k_type, KvCacheType::Q4_0);
+        assert_eq!(policy.v_type, KvCacheType::Q4_0);
     }
 }

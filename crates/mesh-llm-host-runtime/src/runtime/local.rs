@@ -142,6 +142,7 @@ pub(super) struct ManagedModelController {
 pub(super) struct LocalRuntimeModelStartSpec<'a> {
     pub(super) node: &'a mesh::Node,
     pub(super) model_path: &'a Path,
+    pub(super) model_bytes: u64,
     pub(super) mmproj_override: Option<&'a Path>,
     pub(super) ctx_size_override: Option<u32>,
     pub(super) pinned_gpu: Option<&'a crate::runtime::StartupPinnedGpuTarget>,
@@ -419,7 +420,7 @@ pub(super) async fn start_runtime_local_model(
         format_gb(my_vram)
     );
 
-    let kv_cache = skippy::KvCachePolicy::default();
+    let kv_cache = skippy::KvCachePolicy::for_model_size(total_model_bytes);
     let effective_cache_type_k = spec
         .cache_type_k_override
         .unwrap_or(kv_cache.cache_type_k());
@@ -563,14 +564,28 @@ pub(super) async fn start_runtime_split_model(
             .flatten()
     }
     .context("split topology planning requires GGUF metadata")?;
+    let split_kv_policy = skippy::KvCachePolicy::for_model_size(package.source_model_bytes);
     let kv_cache_quant =
         if spec.cache_type_k_override.is_some() || spec.cache_type_v_override.is_some() {
-            let k = spec.cache_type_k_override.unwrap_or("q8_0");
-            let v = spec.cache_type_v_override.unwrap_or("q8_0");
-            models::gguf::GgufKvCacheQuant::from_llama_args(k, v)
-                .unwrap_or(models::gguf::GgufKvCacheQuant::Q8_0)
+            let k = spec
+                .cache_type_k_override
+                .unwrap_or(split_kv_policy.cache_type_k());
+            let v = spec
+                .cache_type_v_override
+                .unwrap_or(split_kv_policy.cache_type_v());
+            models::gguf::GgufKvCacheQuant::from_llama_args(k, v).unwrap_or(
+                models::gguf::GgufKvCacheQuant::from_llama_args(
+                    split_kv_policy.cache_type_k(),
+                    split_kv_policy.cache_type_v(),
+                )
+                .unwrap_or(models::gguf::GgufKvCacheQuant::Q8_0),
+            )
         } else {
-            models::gguf::GgufKvCacheQuant::Q8_0
+            models::gguf::GgufKvCacheQuant::from_llama_args(
+                split_kv_policy.cache_type_k(),
+                split_kv_policy.cache_type_v(),
+            )
+            .unwrap_or(models::gguf::GgufKvCacheQuant::Q8_0)
         };
     let kv_bytes_per_token = kv_cache_quant
         .kv_cache_bytes_per_token(&compact_meta)
@@ -881,7 +896,7 @@ async fn load_split_runtime_generation_inner(
 
     let mut ready_by_stage: HashMap<String, skippy::StageStatusSnapshot> = HashMap::new();
     let mut downstream: Option<skippy::StagePeerDescriptor> = None;
-    let kv_cache = skippy::KvCachePolicy::default();
+    let kv_cache = skippy::KvCachePolicy::for_model_size(spec.package.source_model_bytes);
     let family_policy = skippy::family_policy_for_model_path(spec.model_path, Some(spec.model_ref));
     let effective_cache_type_k = spec
         .cache_type_k_override
@@ -2531,7 +2546,7 @@ async fn start_runtime_skippy_model(
 )> {
     let port = alloc_local_port().await?;
     let context_length = plan.context_length;
-    let kv_cache = skippy::KvCachePolicy::default();
+    let kv_cache = skippy::KvCachePolicy::for_model_size(spec.model_bytes);
     let effective_cache_type_k = spec
         .cache_type_k_override
         .unwrap_or(kv_cache.cache_type_k());
@@ -2606,7 +2621,7 @@ async fn start_runtime_layer_package_model(
     tokio::sync::oneshot::Receiver<()>,
 )> {
     let context_length = plan.context_length;
-    let kv_cache = skippy::KvCachePolicy::default();
+    let kv_cache = skippy::KvCachePolicy::for_model_size(package.source_model_bytes);
     let effective_cache_type_k = spec
         .cache_type_k_override
         .unwrap_or(kv_cache.cache_type_k())

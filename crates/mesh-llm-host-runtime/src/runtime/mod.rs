@@ -1128,6 +1128,7 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
     let make_start_spec = || LocalRuntimeModelStartSpec {
         node: &node,
         model_path: &model_path,
+        model_bytes,
         mmproj_override: mmproj_path.as_deref(),
         ctx_size_override: ctx_size,
         pinned_gpu: pinned_gpu.as_ref(),
@@ -1433,6 +1434,7 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                         match start_runtime_local_model(LocalRuntimeModelStartSpec {
                             node: &node,
                             model_path: &model_path,
+                            model_bytes,
                             mmproj_override: mmproj_path.as_deref(),
                             ctx_size_override: ctx_size,
                             pinned_gpu: pinned_gpu.as_ref(),
@@ -5064,11 +5066,19 @@ async fn run_auto(
                             let requested_model = spec.clone();
                             add_serving_assignment(&node, &primary_model_name, &requested_model)
                                 .await;
+                            let runtime_model_bytes = {
+                                let p = model_path.clone();
+                                tokio::task::spawn_blocking(move || runtime_model_planning_bytes(&p))
+                                    .await
+                                    .unwrap_or(Ok(0))
+                                    .unwrap_or(0)
+                            };
                             let launch_started = Instant::now();
                             let (loaded_name, handle, death_rx) = match start_runtime_local_model(
                                 LocalRuntimeModelStartSpec {
                                     node: &node,
                                     model_path: &model_path,
+                                    model_bytes: runtime_model_bytes,
                                     mmproj_override: None,
                                     ctx_size_override: cli.ctx_size,
                                     pinned_gpu: None,

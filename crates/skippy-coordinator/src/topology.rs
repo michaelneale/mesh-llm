@@ -391,6 +391,9 @@ mod tests {
     const QWEN_CODER_480B_LAYERS: u32 = 62;
     const QWEN_CODER_480B_WEIGHT_BYTES: u64 = 315_680_000_000;
     const QWEN_CODER_480B_Q8_KV_BYTES_PER_TOKEN: u64 = 128 * 1024;
+    /// Q4_0 KV — the runtime default for models >= 50 GB to avoid memory
+    /// thrashing on unified-memory machines.
+    const QWEN_CODER_480B_Q4_KV_BYTES_PER_TOKEN: u64 = 64 * 1024;
     const LOCAL_M1_ULTRA_METAL_BYTES: u64 = 115_448_725_504;
     const STUDIO_METAL_BYTES: u64 = 239_143_780_352;
     const STUDIO_RAM_BYTES: u64 = 274_877_906_944;
