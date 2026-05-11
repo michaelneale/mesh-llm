@@ -340,7 +340,7 @@ impl GgufKvCacheQuant {
     }
 
     /// Returns `true` if `self` uses more aggressive (smaller) quantisation
-    /// than `other`.  Used by the context planner to walk the quant ladder.
+    /// than `other`.
     pub const fn is_more_aggressive_than(self, other: Self) -> bool {
         Self::aggressiveness(self) > Self::aggressiveness(other)
     }

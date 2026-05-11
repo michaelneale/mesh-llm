@@ -3707,16 +3707,6 @@ impl Node {
         self.vram_bytes
     }
 
-    /// Sum of all peers' advertised VRAM (excludes this node).
-    pub fn total_peer_vram_bytes(&self) -> u64 {
-        // Use try_lock to avoid blocking the async runtime on a planning path.
-        // If the lock is contended, return 0 (caller treats this node as solo).
-        self.state
-            .try_lock()
-            .map(|state| state.peers.values().map(|p| p.vram_bytes).sum())
-            .unwrap_or(0)
-    }
-
     pub async fn peers(&self) -> Vec<PeerInfo> {
         self.state.lock().await.peers.values().cloned().collect()
     }

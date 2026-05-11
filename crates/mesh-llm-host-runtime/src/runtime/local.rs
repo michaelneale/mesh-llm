@@ -393,18 +393,11 @@ pub(super) async fn start_runtime_local_model(
     // At planning time the exact layer assignment is not yet known, so we
     // estimate the local fraction from the VRAM ratio: this node's VRAM
     // divided by total mesh VRAM (local + peers).
-    let (local_model_bytes, local_layer_fraction) = if layer_package.is_some() {
-        let total_mesh_vram = my_vram.saturating_add(spec.node.total_peer_vram_bytes());
-        let fraction = if total_mesh_vram > 0 {
-            (my_vram as f64 / total_mesh_vram as f64).clamp(0.0, 1.0)
-        } else {
-            1.0
-        };
-        let local_bytes = (total_model_bytes as f64 * fraction) as u64;
-        (local_bytes, Some(fraction))
-    } else {
-        (total_model_bytes, None)
-    };
+    // This is the local (solo) load path — the entire model is loaded on
+    // this node.  Fractional scaling only applies in the split path
+    // (start_runtime_split_model).
+    let local_model_bytes = total_model_bytes;
+    let local_layer_fraction: Option<f64> = None;
 
     let required_bytes = runtime_model_required_bytes(local_model_bytes);
     anyhow::ensure!(
@@ -425,7 +418,7 @@ pub(super) async fn start_runtime_local_model(
         effective_cache_type_k,
         effective_cache_type_v,
     )
-    .unwrap_or_else(models::gguf::GgufKvCacheQuant::f16);
+    .unwrap_or(models::gguf::GgufKvCacheQuant::Q8_0);
 
     // For layer packages, try to read GGUF metadata from the shared metadata
     // file inside the package.  This carries the model's native context length,
