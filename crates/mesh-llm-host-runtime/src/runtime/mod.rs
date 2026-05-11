@@ -7311,7 +7311,7 @@ mod tests {
     }
 
     #[test]
-    fn initial_pretty_session_mode_allows_dashboard_only_for_serve_surface() {
+    fn initial_pretty_session_mode_allows_dashboard_for_explicit_surface() {
         assert_eq!(
             initial_console_session_mode_for_surface(
                 Some(RuntimeSurface::Serve),
