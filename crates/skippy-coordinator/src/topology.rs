@@ -74,10 +74,10 @@ pub fn plan_topology(input: &TopologyPlanningInput) -> Result<TopologyPlan, Topo
     let lane_candidates = parallel_lane_candidates(input.parallel_lanes_override)?;
     let nodes = usable_nodes(&input.nodes);
 
+    let minimum_nodes = input.minimum_nodes.max(1);
     for context_length in context_candidates {
-        for parallel_lanes in lane_candidates.iter().copied() {
-            let minimum_nodes = input.minimum_nodes.max(1);
-            for node_count in minimum_nodes..=nodes.len().min(input.layer_count as usize) {
+        for node_count in minimum_nodes..=nodes.len().min(input.layer_count as usize) {
+            for parallel_lanes in lane_candidates.iter().copied() {
                 let mut best_for_count: Option<CandidatePlan> = None;
                 for subset in node_subsets(&nodes, node_count) {
                     if let Some(candidate) =
@@ -443,7 +443,7 @@ mod tests {
     }
 
     #[test]
-    fn uses_minimum_nodes_for_same_context_and_lanes() {
+    fn prefers_fewest_nodes_before_more_lanes() {
         let plan = plan_topology(&input(vec![
             node("a", 80),
             node("b", 80),
@@ -455,13 +455,15 @@ mod tests {
         .unwrap();
 
         assert_eq!(plan.context_length, 65_536);
-        assert_eq!(plan.parallel_lanes, 16);
-        assert_eq!(plan.stages.len(), 2);
+        assert_eq!(plan.stages.len(), 1);
+        assert_eq!(plan.parallel_lanes, 9);
     }
 
     #[test]
     fn assigns_fewer_layers_to_lower_vram_node() {
-        let plan = plan_topology(&input(vec![node("small", 16), node("large", 48)])).unwrap();
+        let mut request = input(vec![node("small", 16), node("large", 48)]);
+        request.minimum_nodes = 2;
+        let plan = plan_topology(&request).unwrap();
 
         assert_eq!(plan.context_length, 65_536);
         let small = plan
@@ -482,7 +484,9 @@ mod tests {
         let mut capped = node("capped", 80);
         capped.max_vram_bytes = Some(24 * GIB);
         capped.runtime_headroom_bytes = 8 * GIB;
-        let plan = plan_topology(&input(vec![capped, node("peer", 48)])).unwrap();
+        let mut request = input(vec![capped, node("peer", 48)]);
+        request.minimum_nodes = 2;
+        let plan = plan_topology(&request).unwrap();
 
         let capped_stage = plan
             .stages
@@ -578,37 +582,38 @@ mod tests {
     }
 
     #[test]
-    fn qwen_coder_480b_uses_extra_nodes_only_when_they_increase_lanes() {
+    fn qwen_coder_480b_prefers_fewest_nodes_then_maximizes_lanes() {
         // Simulation: 10 x 80 GiB nodes.
         //
-        // Expected topology: 9 stages, native 262_144 context, 12 lanes.
+        // Expected topology: 5 stages, native 262_144 context, 2 lanes.
         //
-        // Why: context is already at native, so the planner maximizes lanes
-        // next. Twelve lanes require nine of these nodes; the tenth node does
-        // not improve context or lanes and is therefore omitted for speed.
+        // Why: the planner prefers fewest nodes before more lanes. Five nodes
+        // is the minimum that can hold the full layer package at native
+        // context. Within that node count the planner then maximizes lanes,
+        // finding that two lanes fit but three do not.
         let plan = plan_topology(&qwen_coder_480b_input(qwen_nodes(10, 80))).unwrap();
 
         assert_eq!(plan.context_length, QWEN_CODER_480B_NATIVE_CONTEXT);
-        assert_eq!(plan.parallel_lanes, 12);
-        assert_eq!(plan.stages.len(), 9);
+        assert_eq!(plan.parallel_lanes, 2);
+        assert_eq!(plan.stages.len(), 5);
     }
 
     #[test]
-    fn qwen_coder_480b_does_not_use_extra_nodes_for_the_same_shape() {
+    fn qwen_coder_480b_excludes_bystander_nodes() {
         // Simulation: 7 x 80 GiB nodes plus 3 x 1 GiB bystanders.
         //
-        // Expected topology: 7 stages, native 262_144 context, 8 lanes.
+        // Expected topology: 5 stages, native 262_144 context, 2 lanes.
         //
-        // Why: the small bystander nodes cannot carry even one useful layer
-        // at the chosen context/lane shape. The planner keeps them out rather
-        // than adding split boundaries that would reduce decode speed.
+        // Why: the planner prefers fewest nodes first. Five 80 GiB nodes
+        // achieve native context. Bystander nodes (1 GiB) cannot carry even
+        // one layer at this shape and are excluded entirely.
         let mut nodes = qwen_nodes(7, 80);
         nodes.extend((7..10).map(|index| qwen_node(index, 1)));
         let plan = plan_topology(&qwen_coder_480b_input(nodes)).unwrap();
 
         assert_eq!(plan.context_length, QWEN_CODER_480B_NATIVE_CONTEXT);
-        assert_eq!(plan.parallel_lanes, 8);
-        assert_eq!(plan.stages.len(), 7);
+        assert_eq!(plan.parallel_lanes, 2);
+        assert_eq!(plan.stages.len(), 5);
         assert!(plan
             .stages
             .iter()
