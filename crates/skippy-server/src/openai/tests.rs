@@ -1130,6 +1130,41 @@ fn model_matching_is_exact_for_mesh_style_ids() {
 }
 
 #[test]
+fn model_matching_normalizes_default_revision() {
+    // Advertised with @main, requested without (public display form)
+    ensure_requested_model(
+        "unsloth/Qwen3-32B-GGUF@main:UD-Q4_K_XL",
+        "unsloth/Qwen3-32B-GGUF:UD-Q4_K_XL",
+    )
+    .unwrap();
+
+    // Advertised without, requested with @main
+    ensure_requested_model(
+        "unsloth/Qwen3-32B-GGUF:UD-Q4_K_XL",
+        "unsloth/Qwen3-32B-GGUF@main:UD-Q4_K_XL",
+    )
+    .unwrap();
+
+    // Both with @main — exact match still works
+    ensure_requested_model(
+        "unsloth/Qwen3-32B-GGUF@main:UD-Q4_K_XL",
+        "unsloth/Qwen3-32B-GGUF@main:UD-Q4_K_XL",
+    )
+    .unwrap();
+
+    // Bare repo@main without selector
+    ensure_requested_model("org/repo@main", "org/repo").unwrap();
+
+    // Different quants still rejected
+    let error = ensure_requested_model(
+        "unsloth/Qwen3-32B-GGUF@main:UD-Q4_K_XL",
+        "unsloth/Qwen3-32B-GGUF:Q5_K_M",
+    )
+    .unwrap_err();
+    assert_eq!(error.body().error.code.as_deref(), Some("model_not_found"));
+}
+
+#[test]
 fn rejects_requests_that_exceed_context_window() {
     ensure_context_capacity(4, 4, 8).unwrap();
 
