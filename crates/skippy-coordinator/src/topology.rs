@@ -391,6 +391,9 @@ mod tests {
     const QWEN_CODER_480B_LAYERS: u32 = 62;
     const QWEN_CODER_480B_WEIGHT_BYTES: u64 = 315_680_000_000;
     const QWEN_CODER_480B_Q8_KV_BYTES_PER_TOKEN: u64 = 128 * 1024;
+    const LOCAL_M1_ULTRA_METAL_BYTES: u64 = 115_448_725_504;
+    const STUDIO_METAL_BYTES: u64 = 239_143_780_352;
+    const STUDIO_RAM_BYTES: u64 = 274_877_906_944;
 
     fn node(id: &str, gib: u64) -> TopologyNode {
         TopologyNode {
@@ -433,6 +436,15 @@ mod tests {
 
     fn qwen_nodes(count: usize, gib: u64) -> Vec<TopologyNode> {
         (0..count).map(|index| qwen_node(index, gib)).collect()
+    }
+
+    fn metal_node(id: &str, metal_recommended_bytes: u64) -> TopologyNode {
+        TopologyNode {
+            node_id: id.to_string(),
+            detected_vram_bytes: metal_recommended_bytes,
+            max_vram_bytes: Some(metal_recommended_bytes),
+            runtime_headroom_bytes: metal_recommended_bytes.div_ceil(10),
+        }
     }
 
     #[test]
@@ -565,6 +577,48 @@ mod tests {
             TopologyPlanError::NoValidTopology {
                 minimum_context: 65_536
             }
+        );
+    }
+
+    #[test]
+    fn qwen_coder_480b_m1_ultra_and_studio_metal_split_is_not_possible() {
+        // Simulation: meshllm/Qwen3-Coder-480B-A35B-Instruct-UD-Q4_K_XL-layers
+        // split across studio-james and studio-mic.
+        //
+        // studio-james:
+        //   Metal recommendedMaxWorkingSetSize = 115_448_725_504 bytes.
+        //
+        // studio-mic:
+        //   Metal recommendedMaxWorkingSetSize = 239_143_780_352 bytes.
+        //   RAM = 274_877_906_944 bytes. RAM is documented here because it is
+        //   part of the fixture, but the planner must use Metal working set
+        //   size, not total RAM.
+        //
+        // Expected topology: none.
+        //
+        // Why: after applying 10% runtime headroom to each Metal budget, even
+        // the 65_536 context floor with one lane can place only 60 of the
+        // 62 model layers. The split must not launch.
+        assert_eq!(STUDIO_RAM_BYTES, 274_877_906_944);
+
+        let planned = plan_topology(&qwen_coder_480b_input(vec![
+            metal_node("studio-james", LOCAL_M1_ULTRA_METAL_BYTES),
+            metal_node("studio-mic", STUDIO_METAL_BYTES),
+        ]));
+        let (split_possible, context_length, parallel_lanes) = match &planned {
+            Ok(plan) => (true, Some(plan.context_length), Some(plan.parallel_lanes)),
+            Err(_) => (false, None, None),
+        };
+
+        assert!(!split_possible);
+        assert_eq!(context_length, None);
+        assert_eq!(parallel_lanes, None);
+
+        assert_eq!(
+            planned,
+            Err(TopologyPlanError::NoValidTopology {
+                minimum_context: 65_536
+            })
         );
     }
 
