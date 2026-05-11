@@ -132,6 +132,14 @@ When to split a file.
 - Split a file when it contains multiple separable responsibilities, when navigation becomes difficult, or when tests naturally cluster by concern.
 - Do not split purely to reduce line count if the code still represents one coherent object or subsystem.
 
+1k LoC refactoring rule.
+
+- When touching a source file that is already over 1,000 lines, first check whether the change adds or exposes a separable responsibility.
+- If it does, split that responsibility into a semantically named module as part of the change, and keep the new file under 1,000 lines.
+- If a full split is too risky for the current task, make the smallest useful extraction and call out the remaining oversized file in the final summary.
+- Add or move tests so the extracted module owns tests for the behavior it now owns.
+- Do not create generic buckets just to reduce line count; split by domain responsibility and keep ownership obvious.
+
 Naming rule.
 
 - File and module names should describe responsibility, not implementation detail.
