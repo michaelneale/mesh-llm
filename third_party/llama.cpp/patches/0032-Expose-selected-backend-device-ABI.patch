@@ -5,8 +5,8 @@ Subject: [PATCH 32/80] Expose selected backend device ABI
 
 ---
  include/skippy.h |  5 +++++
- src/skippy.cpp   | 45 +++++++++++++++++++++++++++++++++++++++++++++
- 2 files changed, 50 insertions(+)
+ src/skippy.cpp   | 47 +++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 52 insertions(+)
 
 diff --git a/include/skippy.h b/include/skippy.h
 index 4f1c8805..2f8f8466 100644
@@ -70,10 +70,11 @@ index 4b4bf8eb..26209b45 100644
  struct skippy_filter_scope {
      explicit skippy_filter_scope(const skippy_runtime_config * config) {
          if (config != nullptr && config->filter_tensors_on_load) {
-@@ -1211,6 +1246,11 @@ enum skippy_status skippy_model_open(
+@@ -1211,6 +1246,12 @@ enum skippy_status skippy_model_open(
      }
- 
+
      llama_backend_init();
++    ggml_backend_load_all();
 +    std::vector<ggml_backend_dev_t> selected_devices;
 +    enum skippy_status device_status = skippy_apply_selected_backend_device(config, params, selected_devices, out_error);
 +    if (device_status != SKIPPY_STATUS_OK) {
@@ -82,10 +83,11 @@ index 4b4bf8eb..26209b45 100644
      skippy_filter_scope filter_scope(config);
      llama_model * model = llama_model_load_from_file(path, params);
      if (model == nullptr) {
-@@ -1262,6 +1302,11 @@ enum skippy_status skippy_model_open_from_parts(
+@@ -1262,6 +1302,12 @@ enum skippy_status skippy_model_open_from_parts(
      }
- 
+
      llama_backend_init();
++    ggml_backend_load_all();
 +    std::vector<ggml_backend_dev_t> selected_devices;
 +    enum skippy_status device_status = skippy_apply_selected_backend_device(config, params, selected_devices, out_error);
 +    if (device_status != SKIPPY_STATUS_OK) {
