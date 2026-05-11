@@ -73,6 +73,25 @@ It then verifies the package manifest, layer count, activation width, artifact
 presence, and artifact byte sizes from the host cache. If anything is missing,
 the lab exits before any containers start.
 
+## Interactive Prompt
+
+With the lab running in one terminal, attach a `skippy-prompt binary` REPL to
+stage0 from another terminal:
+
+```bash
+docker/skippy-wan-lab/prompt.sh
+```
+
+Extra REPL flags are passed through to `skippy-prompt binary`, for example:
+
+```bash
+docker/skippy-wan-lab/prompt.sh --max-new-tokens 64 --no-think
+```
+
+The prompt helper does not start containers or download the model. It attaches
+to the existing `stage0` container and uses the same env files and read-only
+host HF cache mount as `up.sh`.
+
 The OpenAI-compatible endpoint is:
 
 ```bash
