@@ -417,7 +417,7 @@ test-all: _lld-cargo-config
         echo "No server on port 3131 — starting UI dev server with public mesh..."
 
         # Start dev server in background, capture PID tree for cleanup
-        MESH_UI_API_ORIGIN="https://meshllm.cloud" VITE_API_URL="https://meshllm.cloud" bash -c 'cd "{{ ui_dir }}" && pnpm run dev -- --host 0.0.0.0 --port 5173' &
+        MESH_UI_API_ORIGIN="https://meshllm.cloud" VITE_API_URL="https://meshllm.cloud" bash -c 'cd "{{ ui_dir }}" && pnpm exec vite --host 0.0.0.0 --port 5173' &
         DEV_PID=$!
 
         # Wait for dev server to be ready (up to 30s)

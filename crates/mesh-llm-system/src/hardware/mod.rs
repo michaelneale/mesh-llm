@@ -273,9 +273,7 @@ fn apply_skippy_backend_devices_to_survey(survey: &mut HardwareSurvey, metrics: 
     }
 
     let Ok(gpus) = skippy_devices::gpu_facts() else {
-        #[cfg(target_os = "linux")]
-        apply_cpu_only_runtime_budget(survey, metrics, read_system_ram_bytes());
-        return true;
+        return false;
     };
     if gpus.is_empty() {
         #[cfg(target_os = "linux")]

@@ -243,6 +243,10 @@ pub(crate) struct Cli {
     #[arg(long, value_enum, default_value_t = LogFormat::Pretty)]
     pub(crate) log_format: LogFormat,
 
+    /// Enable mesh runtime debug output; set MESH_LLM_DEBUG_NATIVE_VERBOSE=1 for verbose llama.cpp native logs.
+    #[arg(long)]
+    pub(crate) debug: bool,
+
     /// Show all options (including advanced/niche ones).
     #[arg(long, hide = true)]
     pub(crate) help_advanced: bool,

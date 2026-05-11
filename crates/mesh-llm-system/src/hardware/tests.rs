@@ -649,6 +649,41 @@ fn test_cpu_only_runtime_budget_respects_requested_metrics() {
     assert_eq!(survey.vram_bytes, 0);
 }
 
+#[cfg(all(target_os = "linux", feature = "skippy-devices"))]
+#[test]
+fn test_skippy_backend_error_falls_through_to_legacy_collectors() {
+    skippy_devices::set_test_gpu_facts_result(Err(anyhow::anyhow!("boom")));
+
+    let mut survey = HardwareSurvey::default();
+    let handled = apply_skippy_backend_devices_to_survey(
+        &mut survey,
+        &[Metric::GpuName, Metric::GpuCount, Metric::VramBytes],
+    );
+
+    skippy_devices::clear_test_gpu_facts_result();
+
+    assert!(!handled);
+    assert_eq!(survey.gpu_name, None);
+    assert_eq!(survey.gpu_count, 0);
+    assert_eq!(survey.vram_bytes, 0);
+}
+
+#[cfg(all(target_os = "linux", feature = "skippy-devices"))]
+#[test]
+fn test_skippy_backend_empty_result_uses_cpu_only_budget() {
+    skippy_devices::set_test_gpu_facts_result(Ok(vec![]));
+
+    let mut survey = HardwareSurvey::default();
+    let handled = apply_skippy_backend_devices_to_survey(&mut survey, &[Metric::VramBytes]);
+
+    skippy_devices::clear_test_gpu_facts_result();
+
+    assert!(handled);
+    assert!(survey.gpu_vram.is_empty());
+    assert!(survey.gpus.is_empty());
+    assert!(survey.vram_bytes > 0);
+}
+
 #[test]
 fn test_query_gpu_name_only() {
     let result = query(&[Metric::GpuName]);

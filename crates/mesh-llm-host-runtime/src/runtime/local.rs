@@ -9,6 +9,7 @@ use super::split_planning::{
     RuntimeSliceStagePlan, SplitTopologyResourceInputs,
 };
 use crate::api;
+use crate::cli::output::{emit_event, OutputEvent};
 use crate::inference::{election, skippy};
 use crate::mesh::{self, NodeRole};
 use crate::models;
@@ -1065,6 +1066,11 @@ async fn load_split_runtime_generation_inner(
     );
     let slots = spec.slots;
     let node_for_hook = spec.node.clone();
+    let model_ref = spec.model_ref.to_string();
+    let _ = emit_event(OutputEvent::ModelLoading {
+        model: model_ref.clone(),
+        source: None,
+    });
     let handle = tokio::task::spawn_blocking(move || {
         skippy::SkippyModelHandle::load_stage0_config(
             config,
@@ -1076,6 +1082,10 @@ async fn load_split_runtime_generation_inner(
     })
     .await
     .context("join load skippy stage0 config task")??;
+    let _ = emit_event(OutputEvent::ModelLoaded {
+        model: model_ref,
+        bytes: None,
+    });
     let http = handle.start_http(alloc_local_port().await?);
     let (death_tx, death_rx) = tokio::sync::oneshot::channel();
 
@@ -2590,10 +2600,18 @@ async fn start_runtime_skippy_model(
             vram_bytes: Some(gpu.vram_bytes),
         });
     }
+    let _ = emit_event(OutputEvent::ModelLoading {
+        model: model_name.clone(),
+        source: None,
+    });
     let skippy_model = skippy::SkippyModelHandle::load_with_hooks(
         options,
         Some(skippy::MeshAutoHookPolicy::new(spec.node.clone())),
     )?;
+    let _ = emit_event(OutputEvent::ModelLoaded {
+        model: model_name.clone(),
+        bytes: None,
+    });
     let http = skippy_model.start_http(port);
     let (death_tx, death_rx) = tokio::sync::oneshot::channel();
 
@@ -2692,6 +2710,11 @@ async fn start_runtime_layer_package_model(
     };
     let slots = plan.slots;
     let node_for_hook = spec.node.clone();
+    let model_ref = model_name.clone();
+    let _ = emit_event(OutputEvent::ModelLoading {
+        model: model_ref.clone(),
+        source: None,
+    });
     let handle = tokio::task::spawn_blocking(move || {
         skippy::SkippyModelHandle::load_stage0_config(
             config,
@@ -2703,6 +2726,10 @@ async fn start_runtime_layer_package_model(
     })
     .await
     .context("join load skippy layer package task")??;
+    let _ = emit_event(OutputEvent::ModelLoaded {
+        model: model_ref,
+        bytes: None,
+    });
     let http = handle.start_http(alloc_local_port().await?);
     let (death_tx, death_rx) = tokio::sync::oneshot::channel();
 

@@ -18,7 +18,7 @@ Keep these details current when changing `OutputEvent` or dashboard state:
 - `model_download_progress` is emitted during catalog preparation when the interactive TUI is active and drives the model-progress panel.
 - `ready` may include `pi_command` and `goose_command`; these are operational hints shown after startup.
 - Some variants are schema/dashboard-supported before all of them have production emitters. Mark that explicitly rather than leaving stale source-search notes.
-- Embedded skippy/llama.cpp native logs are process-global and are redirected before model load into `<runtime-root>/<pid>/logs/skippy-native.log`; do not stream those native logs through `OutputEvent` or the TUI.
+- Embedded skippy/llama.cpp native logs are process-global and are redirected before model load into `<runtime-root>/<pid>/logs/skippy-native.log`; filtered aggregated model-loading summaries may also be emitted through `OutputEvent`/JSONL, but raw native logs should not be streamed through the TUI.
 
 ## Events
 

@@ -1,8 +1,10 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 pub use mesh_llm_gpu_bench::BenchmarkOutput;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::hardware::HardwareSurvey;
 
@@ -42,6 +44,116 @@ pub struct SavedBenchmark {
 }
 
 pub const BENCHMARK_TIMEOUT: Duration = Duration::from_secs(25);
+
+const BENCHMARK_CHILD_ENV: &str = "MESH_LLM_BENCHMARK_CHILD";
+
+fn benchmark_backend_name(backend: mesh_llm_gpu_bench::BenchmarkBackend) -> &'static str {
+    match backend {
+        mesh_llm_gpu_bench::BenchmarkBackend::Metal => "metal",
+        mesh_llm_gpu_bench::BenchmarkBackend::Cuda => "cuda",
+        mesh_llm_gpu_bench::BenchmarkBackend::Hip => "hip",
+        mesh_llm_gpu_bench::BenchmarkBackend::Intel => "intel",
+    }
+}
+
+fn parse_benchmark_backend(name: &str) -> Option<mesh_llm_gpu_bench::BenchmarkBackend> {
+    if name.eq_ignore_ascii_case("metal") {
+        Some(mesh_llm_gpu_bench::BenchmarkBackend::Metal)
+    } else if name.eq_ignore_ascii_case("cuda") {
+        Some(mesh_llm_gpu_bench::BenchmarkBackend::Cuda)
+    } else if name.eq_ignore_ascii_case("hip") {
+        Some(mesh_llm_gpu_bench::BenchmarkBackend::Hip)
+    } else if name.eq_ignore_ascii_case("intel") {
+        Some(mesh_llm_gpu_bench::BenchmarkBackend::Intel)
+    } else {
+        None
+    }
+}
+
+fn benchmark_marker_name(backend: mesh_llm_gpu_bench::BenchmarkBackend) -> String {
+    format!("mesh-llm-benchmark-{}", benchmark_backend_name(backend))
+}
+
+fn parse_benchmark_backend_from_path(
+    binary: &Path,
+) -> Option<mesh_llm_gpu_bench::BenchmarkBackend> {
+    let raw = binary.file_name()?.to_string_lossy();
+    if let Some(name) = raw.strip_prefix("mesh-llm-benchmark-") {
+        return parse_benchmark_backend(name);
+    }
+
+    let raw = binary.to_string_lossy();
+    if let Some(name) = raw.strip_prefix("in-process:") {
+        return parse_benchmark_backend(name);
+    }
+
+    None
+}
+
+fn benchmark_child_path(bin_dir: &Path) -> PathBuf {
+    if let Some(path) = std::env::var_os(BENCHMARK_CHILD_ENV) {
+        return PathBuf::from(path);
+    }
+
+    let mesh_binary = if cfg!(windows) {
+        "mesh-llm.exe"
+    } else {
+        "mesh-llm"
+    };
+    bin_dir.join(mesh_binary)
+}
+
+fn run_benchmark_subprocess(binary: &Path, timeout: Duration) -> Result<Vec<BenchmarkOutput>> {
+    let backend = parse_benchmark_backend_from_path(binary)
+        .with_context(|| format!("unknown benchmark runner marker {}", binary.display()))?;
+    let backend_name = benchmark_backend_name(backend);
+    let child_path = benchmark_child_path(binary.parent().unwrap_or_else(|| Path::new(".")));
+
+    let mut child = Command::new(&child_path)
+        .args(["benchmark", "run-gpu", "--backend", backend_name])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("failed to start benchmark child {}", child_path.display()))?;
+
+    let started = Instant::now();
+    while child.try_wait()?.is_none() {
+        if started.elapsed() >= timeout {
+            let _ = child.kill();
+            let output = child.wait_with_output()?;
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if stderr.is_empty() {
+                bail!("benchmark timed out after {:.1}s", timeout.as_secs_f64());
+            }
+            bail!(
+                "benchmark timed out after {:.1}s: {stderr}",
+                timeout.as_secs_f64()
+            );
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            bail!("benchmark child exited with status {}", output.status);
+        }
+        bail!("benchmark child failed: {stderr}");
+    }
+
+    parse_benchmark_output(&output.stdout)
+        .ok_or_else(|| anyhow!("benchmark child returned invalid output"))
+}
+
+pub fn run_backend_by_name(backend: &str) -> Result<Vec<BenchmarkOutput>> {
+    let backend = parse_benchmark_backend(backend)
+        .with_context(|| format!("unsupported benchmark backend {backend}"))?;
+    mesh_llm_gpu_bench::run_benchmark(
+        mesh_llm_gpu_bench::BenchmarkRunner { backend },
+        BENCHMARK_TIMEOUT,
+    )
+}
 
 /// Normalize `HardwareSurvey.gpu_name` into a per-GPU list of names.
 /// - Splits on ',' and trims whitespace for robustness.
@@ -173,14 +285,13 @@ pub fn try_save_fingerprint(path: &Path, fp: &BenchmarkFingerprint) -> Result<()
 
 /// Determine whether this hardware maps to a benchmark backend.
 pub fn detect_benchmark_binary(hw: &HardwareSurvey, bin_dir: &Path) -> Option<PathBuf> {
-    let _ = bin_dir;
     let runner = mesh_llm_gpu_bench::runner_for(
         std::env::consts::OS,
         hw.gpu_count,
         hw.gpu_name.as_deref(),
         hw.is_soc,
     )?;
-    Some(PathBuf::from(format!("in-process:{:?}", runner.backend)))
+    Some(bin_dir.join(benchmark_marker_name(runner.backend)))
 }
 
 /// Parse raw stdout bytes from a benchmark run into a vec of per-device outputs.
@@ -193,43 +304,24 @@ pub fn parse_benchmark_output(stdout: &[u8]) -> Option<Vec<BenchmarkOutput>> {
 
 /// Run an in-process benchmark backend and return per-device outputs.
 pub fn run_benchmark(binary: &Path, timeout: Duration) -> Option<Vec<BenchmarkOutput>> {
-    let raw = binary.to_string_lossy();
-    let backend = if raw.contains("Metal") {
-        mesh_llm_gpu_bench::BenchmarkBackend::Metal
-    } else if raw.contains("Cuda") {
-        mesh_llm_gpu_bench::BenchmarkBackend::Cuda
-    } else if raw.contains("Hip") {
-        mesh_llm_gpu_bench::BenchmarkBackend::Hip
-    } else if raw.contains("Intel") {
-        mesh_llm_gpu_bench::BenchmarkBackend::Intel
-    } else {
-        tracing::warn!("unknown in-process benchmark runner {binary:?}");
-        return None;
-    };
-
-    mesh_llm_gpu_bench::run_benchmark(mesh_llm_gpu_bench::BenchmarkRunner { backend }, timeout)
+    run_benchmark_subprocess(binary, timeout)
         .map_err(|err| tracing::warn!("benchmark failed: {err:#}"))
         .ok()
 }
 
 fn run_backend_for_hardware(
     hw: &HardwareSurvey,
+    bin_dir: &Path,
     timeout: Duration,
 ) -> Result<Vec<BenchmarkOutput>> {
-    let runner = mesh_llm_gpu_bench::runner_for(
-        std::env::consts::OS,
-        hw.gpu_count,
-        hw.gpu_name.as_deref(),
-        hw.is_soc,
-    )
-    .with_context(|| {
+    let runner = detect_benchmark_binary(hw, bin_dir).with_context(|| {
         format!(
             "no supported benchmark backend found for detected GPU platform {:?}",
             hw.gpu_name
         )
     })?;
 
-    mesh_llm_gpu_bench::run_benchmark(runner, timeout)
+    run_benchmark_subprocess(&runner, timeout)
 }
 
 /// Load a cached fingerprint if hardware is unchanged, otherwise run the
@@ -272,8 +364,7 @@ pub fn run_or_load(
 
     tracing::info!("Hardware changed or no cache — running memory bandwidth benchmark");
 
-    let _ = bin_dir;
-    let outputs = run_backend_for_hardware(hw, timeout)
+    let outputs = run_backend_for_hardware(hw, bin_dir, timeout)
         .map_err(|err| tracing::warn!("benchmark failed: {err:#}"))
         .ok()?;
 
@@ -310,8 +401,7 @@ fn run_and_save_to_path(
         bail!("no GPUs detected on this node");
     }
 
-    let _ = bin_dir;
-    let outputs = run_backend_for_hardware(hw, timeout)?;
+    let outputs = run_backend_for_hardware(hw, bin_dir, timeout)?;
 
     let result = save_result_from_outputs(path, hw, &outputs)?;
     Ok(SavedBenchmark {
@@ -389,6 +479,10 @@ fn build_benchmark_result(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     fn make_survey(
         gpu_count: u8,
@@ -432,6 +526,32 @@ mod tests {
             gcn_arch: None,
             hbm: None,
         }
+    }
+
+    fn with_benchmark_child_override<T>(path: &Path, f: impl FnOnce() -> T) -> T {
+        std::env::set_var(BENCHMARK_CHILD_ENV, path);
+        let result = f();
+        std::env::remove_var(BENCHMARK_CHILD_ENV);
+        result
+    }
+
+    #[cfg(unix)]
+    fn write_test_child(root: &Path, name: &str, body: &str) -> PathBuf {
+        let path = root.join(name);
+        let script = format!("#!/bin/sh\nset -eu\n{body}\n");
+        std::fs::write(&path, script).expect("write test child");
+        let mut perms = std::fs::metadata(&path).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&path, perms).expect("chmod test child");
+        path
+    }
+
+    #[cfg(windows)]
+    fn write_test_child(root: &Path, name: &str, body: &str) -> PathBuf {
+        let path = root.join(name);
+        let script = format!("@echo off\r\n{body}\r\n");
+        std::fs::write(&path, script).expect("write test child");
+        path
     }
 
     fn make_hw_with_gpus() -> HardwareSurvey {
@@ -642,9 +762,8 @@ mod tests {
             hw.gpu_count,
             hw.gpu_name.as_deref(),
             hw.is_soc,
-        )
-        .expect("Intel runner");
-        assert_eq!(runner.backend, mesh_llm_gpu_bench::BenchmarkBackend::Intel);
+        );
+        assert!(runner.is_none(), "Intel runner should be de-advertised");
     }
 
     #[test]
@@ -809,6 +928,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_run_and_save_backend_not_compiled_fails_cleanly() {
         let root = std::env::temp_dir().join(format!(
             "mesh-llm-run-and-save-missing-{}",
@@ -818,6 +938,19 @@ mod tests {
         let path = root.join("benchmark-fingerprint.json");
         std::fs::create_dir_all(&bin_dir).expect("create bin dir");
 
+        #[cfg(unix)]
+        let child = write_test_child(
+            &root,
+            "mesh-llm-child",
+            "echo 'CUDA benchmark backend was not compiled into this mesh-llm binary' >&2\nexit 1",
+        );
+        #[cfg(windows)]
+        let child = write_test_child(
+            &root,
+            "mesh-llm-child.cmd",
+            "echo CUDA benchmark backend was not compiled into this mesh-llm binary 1>&2\r\nexit /b 1",
+        );
+
         let hw = HardwareSurvey {
             gpu_count: 1,
             gpu_vram: vec![64_000_000_000],
@@ -826,13 +959,47 @@ mod tests {
             ..Default::default()
         };
 
-        let err = run_and_save_to_path(&hw, &bin_dir, Duration::from_secs(1), &path)
-            .expect_err("uncompiled benchmark backend should fail");
+        let err = with_benchmark_child_override(&child, || {
+            run_and_save_to_path(&hw, &bin_dir, Duration::from_secs(1), &path)
+                .expect_err("uncompiled benchmark backend should fail")
+        });
         let _ = std::fs::remove_dir_all(&root);
 
         assert!(
             err.to_string().contains("not compiled")
                 || err.to_string().contains("benchmark backend")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_run_benchmark_times_out_child_process() {
+        let root = std::env::temp_dir().join(format!(
+            "mesh-llm-benchmark-timeout-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("create timeout dir");
+        #[cfg(unix)]
+        let child = write_test_child(&root, "mesh-llm-child", "sleep 5");
+        #[cfg(windows)]
+        let child = write_test_child(&root, "mesh-llm-child.cmd", "timeout /t 5 >NUL");
+        let marker = root.join("mesh-llm-benchmark-cuda");
+
+        let started = Instant::now();
+        let result = with_benchmark_child_override(&child, || {
+            run_benchmark(&marker, Duration::from_millis(100))
+        });
+        let elapsed = started.elapsed();
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(result.is_none(), "timed out benchmark should fail");
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "timeout should be bounded"
         );
     }
 

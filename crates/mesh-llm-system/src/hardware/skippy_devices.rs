@@ -1,6 +1,33 @@
 use super::GpuFacts;
 
+#[cfg(test)]
+use std::sync::{Mutex, OnceLock};
+
+#[cfg(test)]
+static TEST_GPU_FACTS_RESULT: OnceLock<Mutex<Option<anyhow::Result<Vec<GpuFacts>, String>>>> =
+    OnceLock::new();
+
+#[cfg(test)]
+fn test_gpu_facts_result() -> &'static Mutex<Option<anyhow::Result<Vec<GpuFacts>, String>>> {
+    TEST_GPU_FACTS_RESULT.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(test)]
+pub(super) fn set_test_gpu_facts_result(result: anyhow::Result<Vec<GpuFacts>>) {
+    *test_gpu_facts_result().lock().unwrap() = Some(result.map_err(|err| err.to_string()));
+}
+
+#[cfg(test)]
+pub(super) fn clear_test_gpu_facts_result() {
+    *test_gpu_facts_result().lock().unwrap() = None;
+}
+
 pub fn gpu_facts() -> anyhow::Result<Vec<GpuFacts>> {
+    #[cfg(test)]
+    if let Some(result) = test_gpu_facts_result().lock().unwrap().take() {
+        return result.map_err(anyhow::Error::msg);
+    }
+
     let mut accelerator_index = 0usize;
     let mut facts = Vec::new();
 

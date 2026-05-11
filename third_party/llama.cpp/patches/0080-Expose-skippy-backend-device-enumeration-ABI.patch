@@ -7,8 +7,8 @@ Subject: [PATCH 80/80] Expose skippy backend device enumeration ABI
  include/skippy.h         | 81 ++------------------------------
  include/skippy/common.h  | 92 +++++++++++++++++++++++++++++++++++++
  include/skippy/devices.h | 49 ++++++++++++++++++++
- src/skippy.cpp           | 99 +++++++++++++++++++++++++++++++++++++++-
- 4 files changed, 242 insertions(+), 79 deletions(-)
+ src/skippy.cpp           | 101 ++++++++++++++++++++++++++++++++++++++++-
+ 4 files changed, 244 insertions(+), 79 deletions(-)
  create mode 100644 include/skippy/common.h
  create mode 100644 include/skippy/devices.h
 
@@ -291,13 +291,14 @@ diff --git a/src/skippy.cpp b/src/skippy.cpp
 index 083d59ac..7585abe1 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
-@@ -1,4 +1,5 @@
+@@ -1,4 +1,6 @@
  #include "skippy.h"
 +#include "skippy/devices.h"
  #include "skippy-signals.h"
  
++#include <mutex>
  #include "gguf.h"
-@@ -169,6 +170,40 @@ static enum skippy_status skippy_success(skippy_error ** out_error) {
+@@ -169,6 +171,40 @@ static enum skippy_status skippy_success(skippy_error ** out_error) {
      return SKIPPY_STATUS_OK;
  }
  
@@ -348,7 +349,7 @@ index 083d59ac..7585abe1 100644
  }
  
  const char * skippy_status_string(enum skippy_status status) {
-@@ -1749,6 +1785,67 @@ void skippy_error_free(struct skippy_error * error) {
+@@ -1749,6 +1786,72 @@ void skippy_error_free(struct skippy_error * error) {
      delete error;
  }
  
@@ -359,14 +360,19 @@ index 083d59ac..7585abe1 100644
 +}
 +
 +static void skippy_load_backends_for_device_query() {
-+    ggml_log_callback previous_callback = nullptr;
-+    void * previous_user_data = nullptr;
-+    llama_log_get(&previous_callback, &previous_user_data);
++    static std::once_flag once;
++    std::call_once(once, []() {
++        ggml_log_callback previous_callback = nullptr;
++        void * previous_user_data = nullptr;
++        llama_log_get(&previous_callback, &previous_user_data);
 +
-+    llama_log_set(skippy_silent_log_callback, nullptr);
-+    llama_backend_init();
-+    ggml_backend_load_all();
-+    llama_log_set(previous_callback, previous_user_data);
++        llama_log_set(skippy_silent_log_callback, nullptr);
++        llama_backend_init();
++        if (!ggml_backend_reg_count()) {
++            ggml_backend_load_all();
++        }
++        llama_log_set(previous_callback, previous_user_data);
++    });
 +}
 +
 +enum skippy_status skippy_backend_device_count(
@@ -418,4 +424,3 @@ index 083d59ac..7585abe1 100644
          const struct skippy_runtime_config * config,
 -- 
 2.50.1 (Apple Git-155)
-

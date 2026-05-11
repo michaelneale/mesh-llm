@@ -48,10 +48,10 @@ pub fn runner_for(
         }
 
         if gpu_upper.contains("INTEL") || gpu_upper.contains("ARC") {
-            tracing::info!("Intel Arc benchmark is unvalidated; results may be inaccurate");
-            return Some(BenchmarkRunner {
-                backend: BenchmarkBackend::Intel,
-            });
+            tracing::info!(
+                "Intel GPU benchmark is not supported in standard mesh-llm builds; skipping"
+            );
+            return None;
         }
 
         if os == "linux" && is_soc {
