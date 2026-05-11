@@ -1,0 +1,14 @@
+---
+layout: docs-base.njk
+---
+<main class="docs-shell">
+  {% include "docs-sidebar.njk" %}
+  <article class="doc">
+    <div class="crumb"><a href="/docs/">Docs</a> / {{ title }}</div>
+    {{ content | safe }}
+  </article>
+  <aside class="docs-toc" aria-label="On this page">
+    <h2>☰ On this page</h2>
+    <a href="#{{ title | slugify }}">{{ title }}</a>
+  </aside>
+</main>

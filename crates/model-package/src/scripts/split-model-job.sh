@@ -502,6 +502,70 @@ print(f"    Variant: {variant_name}")
 print(f"    Package: {target_repo} ({layer_count} layers)")
 PYTHON
 
+# ─── Refresh Dataset Viewer artifacts ─────────────────────────────────────
+echo ""
+echo "=== [7b/9] Refreshing meshllm/catalog Dataset Viewer ==="
+/tmp/venv/bin/python3 << 'PYTHON'
+from huggingface_hub import HfApi
+from pathlib import Path
+import os
+import shutil
+import subprocess
+import tempfile
+
+api = HfApi(token=os.environ['HF_TOKEN'])
+catalog_repo = "meshllm/catalog"
+create_pr = os.environ.get('CATALOG_CREATE_PR', 'false').lower() == 'true'
+mesh_llm_ref = os.environ.get("MESH_LLM_REF", "main")
+
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp)
+    entries_dir = root / "entries"
+    entries_dir.mkdir(parents=True)
+
+    files = api.list_repo_files(repo_id=catalog_repo, repo_type="dataset")
+    entry_files = sorted(
+        path for path in files if path.startswith("entries/") and path.endswith(".json")
+    )
+    for path in entry_files:
+        downloaded = api.hf_hub_download(
+            repo_id=catalog_repo,
+            repo_type="dataset",
+            filename=path,
+        )
+        destination = root / path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(downloaded, destination)
+
+    script = Path("scripts/generate-hf-catalog-viewer.py")
+    if not script.exists():
+        raise SystemExit(f"missing {script}; set MESH_LLM_REF to a ref containing it")
+
+    output_dir = root / "viewer"
+    subprocess.run(
+        [
+            "python3",
+            str(script),
+            "--entries-dir",
+            str(entries_dir),
+            "--output-dir",
+            str(output_dir),
+        ],
+        check=True,
+    )
+
+    for filename in ["catalog_rows.jsonl", "README.md"]:
+        api.upload_file(
+            repo_id=catalog_repo,
+            path_or_fileobj=str(output_dir / filename),
+            path_in_repo=filename,
+            repo_type="dataset",
+            commit_message=f"Refresh Dataset Viewer catalog rows ({mesh_llm_ref})",
+            create_pr=create_pr,
+        )
+        print(f"  ✓ Uploaded {catalog_repo}/{filename}")
+PYTHON
+
 # ─── Model Card ────────────────────────────────────────────────────────────
 echo ""
 echo "=== [8/9] Uploading model card ==="

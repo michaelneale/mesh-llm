@@ -13,6 +13,7 @@ This directory holds project documentation that is not owned by a single Rust cr
 | [SKIPPY_RUNTIME_README.md](SKIPPY_RUNTIME_README.md) | Imported standalone skippy runtime README for background context |
 | [CLI.md](CLI.md) | CLI reference |
 | [CI_GUIDANCE.md](CI_GUIDANCE.md) | CI workflow responsibilities and path filtering guidance |
+| [WEBSITE_PLAN.md](WEBSITE_PLAN.md) | Public website plan for meshllm.cloud, including landing page, Catalog, docs IA, and terminology |
 | [specs/layer-package-repos.md](specs/layer-package-repos.md) | Layer package repository layout, manifest, publishing, and validation spec |
 
 ## Topic Areas

@@ -1,0 +1,815 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Testing - Mesh LLM</title>
+  <meta name="description" content="Mesh serves large local models across multiple machines through one OpenAI-compatible endpoint.">
+  <link rel="icon" href="/mesh-llm-logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body class="docs-body">
+  <nav class="nav">
+  <div class="shell nav-inner">
+    <a class="brand" href="/" aria-label="Mesh LLM home"><span class="brand-lockup">
+  <svg class="brand-mark" width="32" height="32" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+    <path d="M32 8c-12.8 0-23 8.2-23 18.4 0 3.1.9 5.9 2.6 8.4l.2.3c2.6-2.5 6.9-4 11.8-4h16.8c4.9 0 9.2 1.5 11.8 4l.2-.3c1.7-2.5 2.6-5.3 2.6-8.4C55 16.2 44.8 8 32 8Z"/>
+    <path d="M11.9 35.8c1.6 2.2 3.6 4.1 6 5.6 2.6 1.6 5.4 2.4 8.3 2.4h11.6c2.9 0 5.8-.8 8.3-2.4 2.4-1.5 4.4-3.4 6-5.6-2.3-2.1-6.4-3.4-10.8-3.4H22.7c-4.4 0-8.5 1.3-10.8 3.4Z"/>
+    <path d="M17.5 38.8c1.3 0 2.3 1 2.3 2.3v8.4c0 1.8-.7 3.2-1.3 4.5-.6 1.2-1.1 2.1-1.1 3.3 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-2 .7-3.4 1.4-4.8.6-1.1 1-2 1-3v-8.4c0-1.3 1-2.3 2.3-2.3Z"/>
+    <path d="M24.5 39.2c1.3 0 2.4 1.1 2.4 2.4v10.8c0 2.2-.8 3.9-1.6 5.4-.8 1.5-1.5 2.8-1.5 4.7 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-2.7 1-4.5 1.9-6.2.7-1.4 1.3-2.5 1.3-3.9V41.6c0-1.3 1.1-2.4 2.4-2.4Z"/>
+    <path d="M32 38.2c1.7 0 3 1.3 3 3v17.6c0 2.1-.7 3.8-1.5 5.2-.5.8-1.5 1.1-2.3.6-.8-.5-1.1-1.5-.6-2.3.6-1 1.1-2 1.1-3.5V41.2c0-1.7 1.3-3 3-3Z"/>
+    <path d="M39.5 39.2c1.3 0 2.4 1.1 2.4 2.4v10.8c0 1.4.6 2.5 1.3 3.9.9 1.7 1.9 3.5 1.9 6.2 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-1.9-.7-3.2-1.5-4.7-.8-1.5-1.6-3.2-1.6-5.4V41.6c0-1.3 1.1-2.4 2.4-2.4Z"/>
+    <path d="M46.5 38.8c1.3 0 2.3 1 2.3 2.3v8.4c0 1 .4 1.9 1 3 .7 1.4 1.4 2.8 1.4 4.8 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-1.2-.5-2.2-1.1-3.3-.6-1.3-1.3-2.7-1.3-4.5v-8.4c0-1.3 1-2.3 2.3-2.3Z"/>
+  </svg>
+  <span class="brand-text"><span>mesh</span>-llm</span>
+</span>
+</a>
+    <div class="nav-links">
+      <a href="/catalog/">Catalog</a>
+      <a href="/docs/">Docs</a>
+      <a href="https://public.meshllm.cloud">Public Mesh</a>
+      <a href="https://github.com/Mesh-LLM/mesh-llm">GitHub</a>
+      <a class="button primary" href="/#install">Install</a>
+    </div>
+  </div>
+</nav>
+
+  <main class="docs-shell">
+  <aside class="docs-sidebar" aria-label="Documentation navigation">
+  <div class="docs-sidebar-inner">
+    <div class="docs-search docs-sidebar-search" aria-label="Search">Search... <span>⌘K</span></div>
+
+      <section class="docs-nav-group">
+        <h2>Get started</h2>
+
+          <a href="/docs/pages/quickstart/">Quickstart</a>
+
+          <a href="/docs/pages/installing-mesh/">Installing Mesh</a>
+
+          <a href="/docs/pages/updating-mesh/">Updating Mesh</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Install</h2>
+
+          <a href="/docs/pages/installing-mesh/#macos">macOS</a>
+
+          <a href="/docs/pages/installing-mesh/#linux">Linux</a>
+
+          <a href="/docs/pages/installing-mesh/#windows">Windows</a>
+
+          <a href="/docs/pages/hardware-support/">Hardware support</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Running models</h2>
+
+          <a href="/docs/pages/quickstart/#serve-a-model">Run your first model</a>
+
+          <a href="/docs/pages/running-large-models/">Running large models</a>
+
+          <a href="/docs/pages/contributing-layer-packages/">Layer packages</a>
+
+          <a href="/catalog/">Catalog</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Capabilities</h2>
+
+          <a href="/docs/pages/openai-compatible-api/">OpenAI-compatible API</a>
+
+          <a href="/docs/pages/openai-compatible-api/#streaming">Streaming</a>
+
+          <a href="/docs/pages/openai-compatible-api/#tool-calling">Tool calling</a>
+
+          <a href="/docs/pages/openai-compatible-api/#structured-outputs">Structured outputs</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Catalog</h2>
+
+          <a href="/catalog/">Browse Catalog</a>
+
+          <a href="/docs/pages/contributing-layer-packages/">Contributing layer packages</a>
+
+          <a href="/docs/pages/certifying-model-families/">Certifying model families</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Meshes</h2>
+
+          <a href="/docs/pages/public-mesh/">Join the public mesh</a>
+
+          <a href="/docs/pages/private-meshes/">Private meshes</a>
+
+          <a href="/docs/pages/publish-mesh/">Publish mesh</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Integrations</h2>
+
+          <a href="/docs/pages/agents/">Integrations overview</a>
+
+          <a href="/docs/pages/agents/">Agent setup</a>
+
+          <a href="/docs/pages/exo-comparison/">exo comparison</a>
+
+          <a href="/docs/pages/plugins/">Plugins</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>API reference</h2>
+
+          <a href="/docs/pages/api-reference/">API reference</a>
+
+          <a href="/docs/pages/openai-compatible-api/">OpenAI-compatible API</a>
+
+          <a href="/docs/pages/CLI/">CLI reference</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Help</h2>
+
+          <a href="/docs/pages/faq/">FAQ</a>
+
+          <a href="/docs/pages/troubleshooting/">Troubleshooting</a>
+
+          <a href="/docs/pages/testing/" aria-current="page">Testing playbook</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Contributing</h2>
+
+          <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/CONTRIBUTING.md">Contributing guide</a>
+
+          <a href="/docs/pages/testing/" aria-current="page">Testing playbook</a>
+
+          <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/ROADMAP.md">Roadmap</a>
+
+      </section>
+
+  </div>
+</aside>
+
+<details class="docs-mobile-nav">
+  <summary>Navigation</summary>
+  <div class="docs-mobile-nav-panel">
+
+      <section class="docs-nav-group">
+        <h2>Get started</h2>
+
+          <a href="/docs/pages/quickstart/">Quickstart</a>
+
+          <a href="/docs/pages/installing-mesh/">Installing Mesh</a>
+
+          <a href="/docs/pages/updating-mesh/">Updating Mesh</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Install</h2>
+
+          <a href="/docs/pages/installing-mesh/#macos">macOS</a>
+
+          <a href="/docs/pages/installing-mesh/#linux">Linux</a>
+
+          <a href="/docs/pages/installing-mesh/#windows">Windows</a>
+
+          <a href="/docs/pages/hardware-support/">Hardware support</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Running models</h2>
+
+          <a href="/docs/pages/quickstart/#serve-a-model">Run your first model</a>
+
+          <a href="/docs/pages/running-large-models/">Running large models</a>
+
+          <a href="/docs/pages/contributing-layer-packages/">Layer packages</a>
+
+          <a href="/catalog/">Catalog</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Capabilities</h2>
+
+          <a href="/docs/pages/openai-compatible-api/">OpenAI-compatible API</a>
+
+          <a href="/docs/pages/openai-compatible-api/#streaming">Streaming</a>
+
+          <a href="/docs/pages/openai-compatible-api/#tool-calling">Tool calling</a>
+
+          <a href="/docs/pages/openai-compatible-api/#structured-outputs">Structured outputs</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Catalog</h2>
+
+          <a href="/catalog/">Browse Catalog</a>
+
+          <a href="/docs/pages/contributing-layer-packages/">Contributing layer packages</a>
+
+          <a href="/docs/pages/certifying-model-families/">Certifying model families</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Meshes</h2>
+
+          <a href="/docs/pages/public-mesh/">Join the public mesh</a>
+
+          <a href="/docs/pages/private-meshes/">Private meshes</a>
+
+          <a href="/docs/pages/publish-mesh/">Publish mesh</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Integrations</h2>
+
+          <a href="/docs/pages/agents/">Integrations overview</a>
+
+          <a href="/docs/pages/agents/">Agent setup</a>
+
+          <a href="/docs/pages/exo-comparison/">exo comparison</a>
+
+          <a href="/docs/pages/plugins/">Plugins</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>API reference</h2>
+
+          <a href="/docs/pages/api-reference/">API reference</a>
+
+          <a href="/docs/pages/openai-compatible-api/">OpenAI-compatible API</a>
+
+          <a href="/docs/pages/CLI/">CLI reference</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Help</h2>
+
+          <a href="/docs/pages/faq/">FAQ</a>
+
+          <a href="/docs/pages/troubleshooting/">Troubleshooting</a>
+
+          <a href="/docs/pages/testing/" aria-current="page">Testing playbook</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Contributing</h2>
+
+          <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/CONTRIBUTING.md">Contributing guide</a>
+
+          <a href="/docs/pages/testing/" aria-current="page">Testing playbook</a>
+
+          <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/ROADMAP.md">Roadmap</a>
+
+      </section>
+
+  </div>
+</details>
+
+  <article class="doc">
+    <div class="crumb"><a href="/docs/">Docs</a> / Testing</div>
+    <h1 id="testing-mesh-llm" tabindex="-1">Testing mesh-llm</h1>
+<h2 id="local-inspection" tabindex="-1">Local inspection</h2>
+<h3 id="0-inspect-local-gpus" tabindex="-1">0. Inspect local GPUs</h3>
+<pre><code class="language-bash">mesh-llm gpus
+mesh-llm gpus --json | jq .
+mesh-llm gpu benchmark --json | jq .
+</code></pre>
+<ul>
+<li>Prints local GPU entries with stable IDs, backend devices, VRAM, unified-memory status, and cached bandwidth when a fingerprint is available</li>
+<li><code>--json</code> emits machine-readable inventory and benchmark payloads suitable for automation</li>
+</ul>
+<h3 id="0a-startup-config-smoke" tabindex="-1">0a. Startup config smoke</h3>
+<p>Create <code>~/.mesh-llm/config.toml</code>:</p>
+<pre><code class="language-toml">version = 1
+
+[gpu]
+assignment = &quot;auto&quot;
+
+[[models]]
+model = &quot;Qwen2.5-3B&quot;
+
+[[models]]
+model = &quot;/absolute/path/to/qwen2.5-vl.gguf&quot;
+mmproj = &quot;/absolute/path/to/mmproj.gguf&quot;
+ctx_size = 8192
+</code></pre>
+<p>Then start:</p>
+<pre><code class="language-bash">mesh-llm serve
+</code></pre>
+<ul>
+<li>Both configured startup models should be considered for launch</li>
+<li>If <code>[[models]]</code> is empty, <code>mesh-llm serve</code> should print a <code>⚠️</code> warning, show help, and exit cleanly</li>
+<li>Explicit <code>--model</code> or <code>--gguf</code> should ignore configured <code>[[models]]</code></li>
+<li>Explicit <code>--ctx-size</code> should override configured <code>ctx_size</code></li>
+</ul>
+<h3 id="0b-pinned-startup-smoke" tabindex="-1">0b. Pinned startup smoke</h3>
+<p>First inspect the valid local IDs:</p>
+<pre><code class="language-bash">mesh-llm gpus
+mesh-llm gpus --json | jq .
+</code></pre>
+<p>Then create <code>~/.mesh-llm/config.toml</code> with a real pinnable stable ID from that output (for example <code>pci:*</code>, <code>uuid:*</code>, or <code>metal:*</code>, not fallback IDs like <code>index:*</code> or backend-device names):</p>
+<pre><code class="language-toml">version = 1
+
+[gpu]
+assignment = &quot;pinned&quot;
+
+[[models]]
+model = &quot;Qwen2.5-3B&quot;
+gpu_id = &quot;pci:0000:65:00.0&quot;
+</code></pre>
+<p>Start the node:</p>
+<pre><code class="language-bash">mesh-llm serve
+</code></pre>
+<ul>
+<li>Startup should succeed only when <code>gpu_id</code> matches a valid local pinnable stable ID from <code>mesh-llm gpus</code></li>
+<li>If the pinned ID is missing, ambiguous, unsupported, or stale, startup should fail closed before local launch</li>
+<li>Explicit <code>mesh-llm serve --model ...</code> should still bypass configured <code>[[models]]</code> and therefore bypass config-owned pinned IDs</li>
+<li>Do not use GPU indexes, <code>index:*</code>, or backend-device names like <code>CUDA0</code> / <code>HIP0</code> / <code>MTL0</code> as <code>gpu_id</code></li>
+</ul>
+<h3 id="0c-terminal-dashboard-smoke" tabindex="-1">0c. Terminal dashboard smoke</h3>
+<p>The pretty dashboard uses raw mode, the alternate screen, and mouse capture when both stdin and stderr are interactive TTYs and <code>TERM</code> supports a real terminal. It should fall back to line-oriented pretty output when stdin is not a TTY, stderr is not a TTY, or <code>TERM</code> is empty / <code>dumb</code>.</p>
+<p>Run these manual checks after changes to <code>runtime/interactive.rs</code> or <code>cli/output/mod.rs</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Shell</th>
+<th>Setup</th>
+<th>Expected result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Plain terminal</td>
+<td><code>mesh-llm serve --model Qwen2.5-3B</code></td>
+<td>Dashboard renders, resizes cleanly, <code>h</code>/<code>i</code>/<code>q</code> work, and exit restores the prompt.</td>
+</tr>
+<tr>
+<td>Piped stdin</td>
+<td>`true</td>
+<td>mesh-llm serve --model Qwen2.5-3B`</td>
+</tr>
+<tr>
+<td>Unsupported terminal</td>
+<td><code>TERM=dumb mesh-llm serve --model Qwen2.5-3B</code></td>
+<td>Dashboard is disabled and pretty output uses fallback lines.</td>
+</tr>
+<tr>
+<td>tmux, mouse off</td>
+<td><code>tmux new 'mesh-llm serve --model Qwen2.5-3B'</code></td>
+<td>Dashboard renders and exits cleanly; keyboard navigation works.</td>
+</tr>
+<tr>
+<td>tmux, mouse on</td>
+<td>Inside tmux: <code>set -g mouse on</code>, then run mesh-llm</td>
+<td>Wheel events page the dashboard instead of disappearing into tmux history.</td>
+</tr>
+<tr>
+<td>GNU screen default</td>
+<td><code>screen mesh-llm serve --model Qwen2.5-3B</code></td>
+<td>If the alternate screen is unavailable, fallback behavior or clean restoration is acceptable.</td>
+</tr>
+<tr>
+<td>GNU screen altscreen</td>
+<td>In <code>~/.screenrc</code>: <code>altscreen on</code>, then run mesh-llm</td>
+<td>Dashboard enters/leaves the alternate screen cleanly.</td>
+</tr>
+</tbody>
+</table>
+<p>For terminal restoration QA:</p>
+<ul>
+<li>Resize during startup, after llama-server readiness, and while the dashboard has focus on different panels.</li>
+<li>Detach and reattach tmux/screen while the dashboard is active.</li>
+<li>Click dashboard panels and use the mouse wheel in terminal, tmux, and screen.</li>
+<li>Press <code>q</code> and <code>Ctrl+C</code>; the cursor should be visible and the shell prompt should not remain in raw mode.</li>
+<li>A <code>SIGKILL</code> (<code>kill -9</code>) cannot run in-process cleanup. If a terminal is left corrupted after a hard kill, recover with <code>reset</code> or by closing the terminal pane.</li>
+</ul>
+<h2 id="single-model-permutations" tabindex="-1">Single-model permutations</h2>
+<h3 id="1-solo-single-node" tabindex="-1">1. Solo (single node)</h3>
+<pre><code class="language-bash">mesh-llm serve --model Qwen2.5-3B --console
+</code></pre>
+<ul>
+<li>API on <code>:9337</code>, console on <code>:3131</code></li>
+<li>Console: <code>host=true, peers=0</code></li>
+<li>llama-server has 1 RPC entry (self)</li>
+</ul>
+<h3 id="1a-headless-mode-api-only-no-embedded-ui" tabindex="-1">1a. Headless mode (API-only, no embedded UI)</h3>
+<pre><code class="language-bash">mesh-llm serve --model Qwen2.5-3B --headless --console 3131
+</code></pre>
+<ul>
+<li>API on <code>:9337</code>, management API on <code>:3131</code></li>
+<li><code>GET /api/status</code> returns 200 with normal JSON</li>
+<li><code>GET /</code> returns 404 (web console routes are disabled)</li>
+<li><code>GET /dashboard</code>, <code>GET /chat</code>, and <code>/assets/*</code> also return 404</li>
+<li>The management API (<code>/api/*</code>) remains fully accessible</li>
+</ul>
+<p>This mode is intended for headless server deployments where the embedded web UI is not needed.</p>
+<h3 id="2-two-gpu-nodes-model-fits-on-host" tabindex="-1">2. Two GPU nodes, model fits on host</h3>
+<pre><code class="language-bash"># node A (more VRAM, becomes host)
+mesh-llm serve --model Qwen2.5-32B --bind-port 7842
+# node B (joins)
+mesh-llm serve --model Qwen2.5-32B --join &lt;TOKEN&gt;
+</code></pre>
+<ul>
+<li>Both nodes run solo (no split) — each is its own host</li>
+<li>API works from both nodes on <code>:9337</code></li>
+</ul>
+<h3 id="3-two-gpu-nodes-forced-split" tabindex="-1">3. Two GPU nodes, forced split</h3>
+<pre><code class="language-bash"># host with --split
+mesh-llm serve --model Qwen2.5-32B --bind-port 7842 --split
+# worker joins
+mesh-llm serve --model Qwen2.5-32B --join &lt;TOKEN&gt;
+</code></pre>
+<ul>
+<li><code>--split</code> forces tensor split even when model fits on host</li>
+<li>llama-server has 2 RPC entries</li>
+<li>Tensor split proportional to VRAM (e.g. <code>0.67,0.33</code>)</li>
+<li>Draft model auto-detected and used</li>
+</ul>
+<h3 id="4-two-gpu-nodes-model-too-big-for-one" tabindex="-1">4. Two GPU nodes, model too big for one</h3>
+<p>When the model exceeds host VRAM, split happens automatically without <code>--split</code>.</p>
+<h3 id="5-lite-client-no-gpu" tabindex="-1">5. Lite client (no GPU)</h3>
+<pre><code class="language-bash">mesh-llm client --join &lt;TOKEN&gt; --port 9555
+</code></pre>
+<ul>
+<li>Uses ephemeral key (unique identity, works on same machine as GPU node)</li>
+<li><code>/v1/models</code> lists all served models from gossip</li>
+<li>API tunneled to correct host per model via QUIC</li>
+<li>VRAM total excludes client</li>
+</ul>
+<h2 id="multi-model-permutations" tabindex="-1">Multi-model permutations</h2>
+<h3 id="6-two-nodes-different-models" tabindex="-1">6. Two nodes, different models</h3>
+<pre><code class="language-bash"># node A: seeds mesh with two models, serves 3B
+mesh-llm serve --model Qwen2.5-3B --model GLM-4.7-Flash --console
+# node B: joins, auto-assigned to GLM (needed, on disk)
+mesh-llm serve --join &lt;TOKEN&gt;
+</code></pre>
+<ul>
+<li><code>/v1/models</code> on either node lists both models</li>
+<li>Requesting GLM from node A routes via QUIC to node B</li>
+<li>Requesting 3B from node B routes via QUIC to node A</li>
+<li>Both run solo (no tensor split)</li>
+<li>Console shows both models warm with node counts</li>
+</ul>
+<p>Compatibility result:</p>
+<ul>
+<li>Verified on 2026-04-02 with the current <code>codex/model-identity-design</code> branch on node 1 and the latest GitHub release <code>v0.54.0</code> on node 2.</li>
+<li>Node 1 served <code>Llama-3.2-1B-Instruct-Q4_K_M</code>; node 2 served <code>Qwen3-4B-Q4_K_M</code>.</li>
+<li><code>/api/models</code> and <code>/v1/models</code> agreed on the same warm model list from both nodes.</li>
+<li>Chat from node 1 to node 2's model succeeded, and chat from node 2 to node 1's model succeeded.</li>
+</ul>
+<h3 id="7-auto-assignment" tabindex="-1">7. Auto-assignment</h3>
+<pre><code class="language-bash"># seeder declares two models
+mesh-llm serve --model Qwen2.5-3B --model GLM-4.7-Flash
+# joiner with no --model
+mesh-llm serve --join &lt;TOKEN&gt;
+</code></pre>
+<ul>
+<li>Joiner scans the Hugging Face cache and picks an unserved model already on disk</li>
+<li>Log: &quot;Selected to serve GLM-4.7-Flash (needed by mesh, already on disk)&quot;</li>
+</ul>
+<h3 id="8-lite-client-with-multi-model" tabindex="-1">8. Lite client with multi-model</h3>
+<pre><code class="language-bash"># GPU nodes running as above
+mesh-llm client --join &lt;TOKEN&gt; --port 9555
+</code></pre>
+<ul>
+<li>Client sees all models via gossip (ephemeral key = unique identity)</li>
+<li><code>/v1/models</code> lists all served models</li>
+<li>Routes to correct host per model</li>
+<li>Streaming works through cross-model QUIC tunnel</li>
+</ul>
+<h3 id="9-unload-a-model" tabindex="-1">9. Unload a model</h3>
+<pre><code class="language-bash">mesh-llm unload GLM-4.7-Flash-Q4_K_M
+</code></pre>
+<ul>
+<li>Node serving that model exits cleanly</li>
+<li>Other nodes unaffected</li>
+<li>Model goes cold in console</li>
+</ul>
+<h3 id="9a-local-runtime-load-unload-and-local-status-view" tabindex="-1">9a. Local runtime load/unload and local status view</h3>
+<pre><code class="language-bash"># Running node
+mesh-llm serve --model Qwen2.5-0.5B-Instruct-Q4_K_M --console
+
+# Operator surface
+mesh-llm load Llama-3.2-1B-Instruct-Q4_K_M
+mesh-llm status
+mesh-llm unload Llama-3.2-1B-Instruct-Q4_K_M
+
+# REST surface
+curl localhost:3131/api/runtime
+curl localhost:3131/api/runtime/processes
+curl -X POST localhost:3131/api/runtime/models \
+  -H 'Content-Type: application/json' \
+  -d '{&quot;model&quot;:&quot;Llama-3.2-1B-Instruct-Q4_K_M&quot;}'
+curl -X DELETE localhost:3131/api/runtime/models/Llama-3.2-1B-Instruct-Q4_K_M
+</code></pre>
+<ul>
+<li><code>mesh-llm status</code> shows the local models currently backed by running inference processes, including PID when present</li>
+<li><code>GET /api/runtime</code> and <code>GET /api/runtime/processes</code> agree with the CLI output</li>
+<li>Loading a small local model adds it to <code>/v1/models</code> without restarting the node</li>
+<li>Unloading any local model removes it cleanly without terminating the mesh-llm process</li>
+</ul>
+<h3 id="10-console-model-picker" tabindex="-1">10. Console model picker</h3>
+<ul>
+<li>Dropdown appears when &gt;1 warm model</li>
+<li>Switching models highlights the serving node in topology view</li>
+<li>Chat routes to selected model via API proxy</li>
+</ul>
+<h3 id="11-console-live-state-and-wakeable-capacity" tabindex="-1">11. Console live-state and wakeable capacity</h3>
+<pre><code class="language-bash">cd crates/mesh-llm-ui/
+npm run test:run
+npm run typecheck
+just build
+</code></pre>
+<ul>
+<li>Live badges show only <code>Client</code>, <code>Standby</code>, <code>Loading</code>, and <code>Serving</code></li>
+<li>Wakeable capacity renders in a separate section from topology peers and live nodes</li>
+<li>Wakeable entries do not appear in the topology peer list</li>
+<li>Validation uses <code>npm run test:run</code>, <code>npm run typecheck</code>, and <code>just build</code></li>
+</ul>
+<h2 id="mesh-identity" tabindex="-1">Mesh Identity</h2>
+<h3 id="16-mesh-id-generation-originator" tabindex="-1">16. Mesh ID generation (originator)</h3>
+<pre><code class="language-bash"># With --mesh-name (deterministic ID)
+mesh-llm serve --model Qwen2.5-3B --mesh-name &quot;test-mesh&quot;
+</code></pre>
+<ul>
+<li>Log: <code>📌 Mesh ID: &lt;hex&gt;</code></li>
+<li><code>~/.mesh-llm/last-mesh</code> contains the same hex</li>
+<li>Restart with same <code>--mesh-name</code> → same mesh ID (deterministic)</li>
+<li>Different <code>--mesh-name</code> → different mesh ID</li>
+</ul>
+<h3 id="17-mesh-id-propagation-joiner" tabindex="-1">17. Mesh ID propagation (joiner)</h3>
+<pre><code class="language-bash"># Originator
+mesh-llm serve --model Qwen2.5-3B --mesh-name &quot;test-mesh&quot;
+# Joiner
+mesh-llm serve --model Qwen2.5-3B --join &lt;TOKEN&gt;
+</code></pre>
+<ul>
+<li>Joiner log: <code>📌 Mesh ID: &lt;same hex as originator&gt;</code></li>
+<li>Joiner's <code>~/.mesh-llm/last-mesh</code> matches originator's mesh ID</li>
+<li>Mesh ID arrives via gossip (worker nodes) or routing table (passive clients)</li>
+</ul>
+<h3 id="18-sticky-mesh-preference" tabindex="-1">18. Sticky mesh preference</h3>
+<ul>
+<li>Join a mesh → <code>~/.mesh-llm/last-mesh</code> saved</li>
+<li>On next <code>--auto</code>, <code>score_mesh()</code> adds +500 for meshes with matching <code>mesh_id</code></li>
+<li>If that mesh is dead (not on Nostr), scoring proceeds normally without bonus</li>
+</ul>
+<h2 id="bootstrap-proxy" tabindex="-1">Bootstrap Proxy</h2>
+<h3 id="19-instant-api-during-gpu-bootstrap" tabindex="-1">19. Instant API during GPU bootstrap</h3>
+<pre><code class="language-bash"># Originator (already running)
+mesh-llm serve --model Qwen2.5-3B --port 8090
+# Joiner
+mesh-llm serve --model Qwen2.5-3B --join &lt;TOKEN&gt; --port 8091
+</code></pre>
+<ul>
+<li>Joiner log: <code>⚡ API ready (bootstrap): http://localhost:8091</code></li>
+<li>BEFORE <code>rpc-server</code> or <code>llama-server</code> starts on joiner:
+<ul>
+<li><code>curl localhost:8091/v1/models</code> → lists mesh models</li>
+<li><code>curl localhost:8091/v1/chat/completions</code> → inference via tunnel to originator</li>
+</ul>
+</li>
+<li>Log: <code>⚡ Bootstrap proxy handing off to full API proxy</code></li>
+<li>After handoff, API continues working (now served locally or via election)</li>
+</ul>
+<h3 id="20-bootstrap-proxy-not-started-for-originator" tabindex="-1">20. Bootstrap proxy not started for originator</h3>
+<pre><code class="language-bash">mesh-llm serve --model Qwen2.5-3B
+</code></pre>
+<ul>
+<li>No <code>⚡ API ready (bootstrap)</code> message (only joiners get bootstrap proxy)</li>
+<li>API port opens only after election resolves</li>
+</ul>
+<h2 id="no-arg-behavior-management-api" tabindex="-1">No-Arg Behavior &amp; Management API</h2>
+<h3 id="21-no-arg-help" tabindex="-1">21. No-arg help</h3>
+<pre><code class="language-bash">mesh-llm
+</code></pre>
+<ul>
+<li>Prints the same usage/help text as <code>mesh-llm --help</code></li>
+<li>No ports are bound</li>
+<li><code>curl localhost:3131/api/status</code> fails to connect</li>
+</ul>
+<h3 id="22-join-via-console" tabindex="-1">22. Join via console</h3>
+<pre><code class="language-bash">mesh-llm client --auto
+# In browser: http://localhost:3131 → Discover → Join
+# Or via API:
+curl -X POST localhost:3131/api/join -H 'Content-Type: application/json' -d '{&quot;token&quot;:&quot;...&quot;}'
+</code></pre>
+<ul>
+<li><code>/api/join</code> triggers full flow: connect → gossip → assign model → download → serve</li>
+<li>Console updates: status, peers, model name all reflect new state</li>
+<li>Inference port starts working after model loads</li>
+</ul>
+<h3 id="23-management-api-while-serving" tabindex="-1">23. Management API while serving</h3>
+<pre><code class="language-bash">mesh-llm serve --auto
+# After serving:
+curl localhost:3131/api/status   # JSON: node, peers, routing, mesh_id, mesh_name
+curl localhost:3131/api/events   # SSE stream
+curl 'localhost:3131/api/search?q=qwen&amp;catalog=true&amp;artifact=gguf&amp;limit=5' # JSON search results
+curl -X POST localhost:3131/api/model-interests \
+  -H 'Content-Type: application/json' \
+  -d '{&quot;model_ref&quot;:&quot;Qwen3-Coder-Next-Q4_K_M&quot;,&quot;source&quot;:&quot;ui&quot;}'
+curl localhost:3131/api/model-interests
+curl localhost:3131/api/model-targets
+curl localhost:3131/api/discover # Nostr meshes (current mesh marked by mesh_id)
+</code></pre>
+<ul>
+<li><code>/api/status</code> includes <code>mesh_id</code> and <code>mesh_name</code></li>
+<li>SSE events push every 2s and on topology changes</li>
+<li><code>/api/search</code> returns 200 JSON with canonical model refs for matching results</li>
+<li><code>/api/model-interests</code> stores and returns local explicit-interest entries keyed by canonical model refs</li>
+<li><code>/api/model-targets</code> returns ranked targets with explicit-interest counts, request counts, serving-node counts, and <code>wanted</code> for targets not currently served</li>
+<li>Discover results can be matched to current mesh by <code>mesh_id</code></li>
+</ul>
+<h3 id="24-http-proxy-single-request-connection-contract" tabindex="-1">24. HTTP proxy single-request connection contract</h3>
+<ul>
+<li>Send a routed inference request, then pipeline or reuse the same TCP
+connection for a second request.</li>
+<li>Verify only the first request reaches the selected upstream.</li>
+<li>Verify the proxy closes the routed connection after the first response.</li>
+<li>Verify the upstream-observed request includes <code>Connection: close</code>.</li>
+</ul>
+<h2 id="resilience" tabindex="-1">Resilience</h2>
+<h3 id="11-dead-peer-cleanup" tabindex="-1">11. Dead peer cleanup</h3>
+<ul>
+<li>Kill a node with <code>kill -9</code></li>
+<li>Cleanup happens in ~41s via the reconnect-gossip-probe mechanism:
+<ol>
+<li>QUIC detects connection drop (~5-30s depending on idle timeout and relay state)</li>
+<li>Reconnect attempt with 10s gossip probe timeout</li>
+<li>Gossip probe fails → <code>remove_peer</code> called immediately</li>
+</ol>
+</li>
+<li>Heartbeat also detects dead peers (60s interval, 2 consecutive failures) as a fallback</li>
+<li>On-use detection: tunnel failure → immediate death broadcast via stream 0x06</li>
+<li>Dead model goes cold, peer removed from list, death broadcast to mesh</li>
+<li>Dead peer won't be re-added by gossip (dead_peers set)</li>
+<li>Console updates automatically</li>
+</ul>
+<h3 id="12-node-rejoin" tabindex="-1">12. Node rejoin</h3>
+<ul>
+<li>Kill a node, restart it with <code>--join &lt;token&gt;</code></li>
+<li>Rejoin loop (60s) reconnects to bootstrap if connection drops</li>
+<li>Inbound reconnection clears dead_peers entry</li>
+<li>Model goes warm again, cross-model routing resumes</li>
+</ul>
+<h3 id="13-gossip-stability" tabindex="-1">13. Gossip stability</h3>
+<ul>
+<li>Regossip after becoming host should NOT cause restart loops</li>
+<li>Log should show &quot;still host, no restart needed&quot; on re-check</li>
+<li>llama-server starts exactly once per election (not 5-9 times)</li>
+<li>Heartbeat gossip doesn't re-discover dead peers (discover_peers=false)</li>
+</ul>
+<h2 id="control-plane-protocol-protobuf-v1" tabindex="-1">Control-Plane Protocol (Protobuf v1)</h2>
+<p>The control plane uses QUIC ALPN <code>mesh-llm/1</code> with the <code>meshllm.node.v1</code> protobuf schema. Scoped control-plane streams use 4-byte LE framing followed by protobuf bytes. Skippy control/artifact streams are advertised through gossip subprotocol features and run through mesh <code>STREAM_SUBPROTOCOL</code> (0x0d); activation transport stays on <code>skippy-stage/1</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Stream</th>
+<th>Type</th>
+<th>Format</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0x01</td>
+<td>GOSSIP</td>
+<td>protobuf <code>GossipFrame</code></td>
+</tr>
+<tr>
+<td>0x03</td>
+<td>TUNNEL_MAP</td>
+<td>protobuf <code>TunnelMap</code></td>
+</tr>
+<tr>
+<td>0x05</td>
+<td>ROUTE_REQUEST</td>
+<td>protobuf <code>RouteTableRequest</code> / <code>RouteTable</code></td>
+</tr>
+<tr>
+<td>0x06</td>
+<td>PEER_DOWN</td>
+<td>protobuf <code>PeerDown</code></td>
+</tr>
+<tr>
+<td>0x07</td>
+<td>PEER_LEAVING</td>
+<td>protobuf <code>PeerLeaving</code></td>
+</tr>
+<tr>
+<td>0x0b</td>
+<td>CONFIG_SUBSCRIBE</td>
+<td>protobuf <code>ConfigSubscribe</code> / <code>ConfigSnapshotResponse</code></td>
+</tr>
+<tr>
+<td>0x0c</td>
+<td>CONFIG_PUSH</td>
+<td>protobuf <code>ConfigPush</code> / <code>ConfigPushResponse</code></td>
+</tr>
+<tr>
+<td>0x0d</td>
+<td>STREAM_SUBPROTOCOL</td>
+<td>protobuf <code>MeshSubprotocolOpen</code>, then subprotocol-owned bytes</td>
+</tr>
+</tbody>
+</table>
+<p>Raw TCP relay streams (0x02 RPC, 0x04 HTTP) are unchanged.</p>
+<h3 id="verifying-protobuf-gossip-in-logs" tabindex="-1">Verifying protobuf gossip in logs</h3>
+<p>After two nodes connect, look for log lines indicating gossip was exchanged:</p>
+<pre><code>DEBUG mesh: gossip received from &lt;peer_id&gt;
+DEBUG mesh: admitted peer &lt;peer_id&gt;
+</code></pre>
+<p>Absence of JSON-related log lines for streams 0x01/0x03/0x05/0x06/0x07 confirms the protobuf path is active.</p>
+<h3 id="verifying-skippy-peer-artifact-transfer" tabindex="-1">Verifying Skippy peer artifact transfer</h3>
+<p>For a layer-package split where the coordinator already has the HF package
+cached and a worker does not:</p>
+<ul>
+<li>Current/current mesh: the worker may use mesh <code>STREAM_SUBPROTOCOL</code> (0x0d)
+to open <code>skippy-stage/1</code>, then Skippy artifact-transfer stream 0x03, to
+fetch only its assigned package files before the normal HF fallback path.</li>
+<li>Rolling-update compatibility: nodes should still accept the legacy
+<code>skippy-stage/1</code> artifact-transfer stream from an already-running pre-update
+peer, but new outbound artifact transfer should use <code>STREAM_SUBPROTOCOL</code>.</li>
+<li>Current/released mixed mesh: a released coordinator without
+advertised <code>skippy-stage/1</code> <code>artifact-transfer</code> support must not be dialed
+for artifact transfer; the worker must fall back to local/HF package
+resolution.</li>
+<li>Opt-out: with <code>MESH_LLM_ARTIFACT_TRANSFER=off</code>, the node must advertise
+no <code>artifact-transfer</code> feature and reject inbound artifact transfer requests.</li>
+<li>Privacy check: gossip/status output must not include local package inventory,
+cache roots, or artifact file lists; only subprotocol feature support is
+advertised.</li>
+<li>Integrity check: corrupt or same-sized cached artifacts must be refetched or
+rejected by SHA-256 verification before stage load.</li>
+</ul>
+<h2 id="single-machine-testing-with-ephemeral-keys" tabindex="-1">Single-machine testing with ephemeral keys</h2>
+<p>Set <code>MESH_LLM_EPHEMERAL_KEY=1</code> to give a second process a unique identity on the same machine.
+Without this, both processes share <code>~/.mesh-llm/key</code> and appear as the same node.</p>
+<h3 id="14-forced-split-on-one-machine" tabindex="-1">14. Forced split on one machine</h3>
+<pre><code class="language-bash"># Terminal 1: host with --split
+mesh-llm serve --model Qwen2.5-3B --port 9337 --split --console
+
+# Terminal 2: worker with ephemeral key
+MESH_LLM_EPHEMERAL_KEY=1 mesh-llm serve --model Qwen2.5-3B --join &lt;TOKEN&gt; --port 9338 --split --max-vram 1
+</code></pre>
+<ul>
+<li>Host starts solo, then re-elects with split when worker joins</li>
+<li>Worker becomes rpc-server, proxies API to host</li>
+<li>Tensor split proportional to VRAM (e.g. <code>0.98,0.02</code>)</li>
+<li>Kill worker → host detects via heartbeat (~60s), reverts to solo mode</li>
+</ul>
+<h3 id="15-passive-client-on-one-machine" tabindex="-1">15. Passive client on one machine</h3>
+<pre><code class="language-bash"># Terminal 1: host
+mesh-llm serve --model Qwen2.5-3B --port 9337
+
+# Terminal 2: client (the client surface uses an ephemeral key automatically)
+mesh-llm client --join &lt;TOKEN&gt; --port 9338
+</code></pre>
+<ul>
+<li>Client connects without gossip (no peer list entry on host)</li>
+<li><code>/v1/models</code> returns models from routing table</li>
+<li>Inference routes through QUIC tunnel to host</li>
+<li>Host does NOT see client in its peer list (zero per-client state)</li>
+</ul>
+<h2 id="deploy-to-remote-node" tabindex="-1">Deploy to remote node</h2>
+<pre><code class="language-bash">just bundle
+# scp, then on remote:
+codesign -s - ~/mesh-bundle/mesh-llm ~/mesh-bundle/rpc-server ~/mesh-bundle/llama-server
+xattr -cr ~/mesh-bundle/mesh-llm ~/mesh-bundle/rpc-server ~/mesh-bundle/llama-server
+</code></pre>
+<p>Must codesign + xattr after every scp or macOS kills the binary (exit 137).</p>
+<h2 id="cleanup" tabindex="-1">Cleanup</h2>
+<pre><code class="language-bash">pkill -f mesh-llm; pkill -f rpc-server; pkill -f llama-server
+</code></pre>
+<p>Prefer <code>mesh-llm stop</code> for tracked local instances. If the runtime is wedged,
+kill any remaining mesh-llm process and then verify no stale backend process is
+still bound to the test ports.</p>
+
+  </article>
+  <aside class="docs-toc" aria-label="On this page">
+    <h2>☰ On this page</h2>
+    <a href="#testing">Testing</a>
+  </aside>
+</main>
+
+</body>
+</html>

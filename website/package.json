@@ -1,0 +1,14 @@
+{
+  "name": "mesh-llm-website",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "eleventy",
+    "dev": "eleventy --serve --watch --incremental --port=8765",
+    "clean": "find ../docs/docs/pages -type f -name 'index.html' -delete"
+  },
+  "devDependencies": {
+    "@11ty/eleventy": "^3.1.2",
+    "markdown-it-anchor": "^9.2.0"
+  }
+}

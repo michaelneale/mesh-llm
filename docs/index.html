@@ -1,412 +1,390 @@
 <!doctype html>
 <html lang="en">
 <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>mesh-llm — Decentralised LLM Inference</title>
-    <meta name="description" content="Turn spare capacity into an auto-configured p2p inference cloud. Serve many models, access your private models from anywhere, or share compute with others, let your agents collaborate p2p.">
-    <style>
-        :root { --bg:#0a0a0a; --bg2:#0d0d0d; --border:#1a1a1a; --text:#d0d0d0; --text2:#888; --text3:#555; --green:#4c4; --green-dim:#2a5a2a; --green-bg:#0a1a0a; --blue:#6cf; --blue-dim:#1a3a5c; --orange:#c84; --orange-dim:#5a4a2a; }
-        * { box-sizing:border-box; margin:0; padding:0; }
-        html { scroll-behavior:smooth; }
-        body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--bg); color:var(--text); line-height:1.7; -webkit-font-smoothing:antialiased; }
-        a { color:var(--blue); text-decoration:none; } a:hover { text-decoration:underline; }
-        code,.mono { font-family:"SF Mono","Fira Code",monospace; }
-        nav { position:fixed; top:0; left:0; right:0; z-index:100; background:rgba(10,10,10,0.85); backdrop-filter:blur(12px); border-bottom:1px solid var(--border); padding:0.7rem 2rem; display:flex; align-items:center; gap:1rem; }
-        nav .logo { display:flex; align-items:center; }
-        nav .logo img { height:30px; width:auto; display:block; }
-        nav .links { margin-left:auto; display:flex; gap:1.5rem; font-size:0.8rem; } nav .links a { color:var(--text2); } nav .links a:hover { color:#fff; text-decoration:none; }
-        section { max-width:860px; margin:0 auto; padding:4rem 2rem; }
-        .hero { min-height:85vh; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding-top:5rem; }
-        .hero-badge { display:inline-flex; align-items:center; gap:0.4rem; font-size:0.7rem; color:var(--green); background:var(--green-bg); border:1px solid var(--green-dim); border-radius:20px; padding:0.25rem 0.8rem; margin-bottom:1.5rem; }
-        .hero-badge .dot { width:5px; height:5px; border-radius:50%; background:var(--green); }
-        .hero h1 { font-size:clamp(2.2rem,5vw,3.2rem); font-weight:700; letter-spacing:-0.03em; line-height:1.15; color:#fff; max-width:660px; margin-bottom:1rem; }
-        .hero p { font-size:1.05rem; color:var(--text2); max-width:540px; margin-bottom:2rem; }
-        .hero-ctas { display:flex; gap:0.8rem; flex-wrap:wrap; justify-content:center; }
-        .btn { display:inline-flex; align-items:center; gap:0.4rem; padding:0.6rem 1.4rem; border-radius:8px; font-size:0.85rem; font-weight:500; cursor:pointer; border:none; transition:all 0.15s; }
-        .btn-primary { background:#fff; color:#000; } .btn-primary:hover { background:#e0e0e0; text-decoration:none; }
-        .btn-secondary { background:transparent; color:var(--text); border:1px solid #333; } .btn-secondary:hover { border-color:#666; text-decoration:none; }
-        .mesh-demo { margin:2.5rem auto 0; max-width:580px; width:100%; }
-        .mesh-demo svg { width:100%; height:auto; display:block; }
-        .tags { display:flex; gap:0.5rem; flex-wrap:wrap; justify-content:center; margin-top:2rem; font-size:0.7rem; }
-        .tag { padding:0.2rem 0.6rem; border-radius:4px; color:var(--text3); border:1px solid var(--border); }
-        .section-tag { font-size:0.65rem; text-transform:uppercase; letter-spacing:0.1em; color:var(--green); margin-bottom:0.5rem; }
-        h2 { font-size:1.7rem; font-weight:700; color:#fff; letter-spacing:-0.02em; margin-bottom:0.5rem; }
-        .section-lead { color:var(--text2); font-size:0.95rem; margin-bottom:2rem; max-width:540px; }
-        .steps { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:1.5rem; }
-        .step { background:var(--bg2); border:1px solid var(--border); border-radius:10px; padding:1.3rem; }
-        .step-num { font-size:0.65rem; font-weight:700; color:var(--green); background:var(--green-bg); border:1px solid var(--green-dim); width:22px; height:22px; border-radius:50%; display:flex; align-items:center; justify-content:center; margin-bottom:0.7rem; }
-        .step h3 { font-size:0.9rem; color:#fff; margin-bottom:0.3rem; }
-        .step p { font-size:0.78rem; color:var(--text2); line-height:1.6; }
-        .code-block { background:var(--bg2); border:1px solid var(--border); border-radius:8px; padding:1rem 1.3rem; overflow-x:auto; font-size:0.8rem; line-height:1.8; margin:1.5rem 0; }
-        .code-block .comment { color:var(--text3); } .code-block .cmd { color:var(--green); } .code-block .flag { color:var(--blue); } .code-block .val { color:var(--orange); }
-        .features { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:1rem; }
-        .feature { background:var(--bg2); border:1px solid var(--border); border-radius:10px; padding:1.2rem; }
-        .feature h3 { font-size:0.85rem; color:#fff; margin-bottom:0.25rem; }
-        .feature p { font-size:0.76rem; color:var(--text2); line-height:1.55; }
-        .feature-icon { font-size:1.1rem; margin-bottom:0.5rem; }
-        .cta-section { text-align:center; border-top:1px solid var(--border); padding-top:3rem; }
-        .cta-section p { color:var(--text2); margin-bottom:1.5rem; }
-        .cta-buttons { display:flex; gap:0.8rem; justify-content:center; flex-wrap:wrap; }
-        footer { text-align:center; padding:2rem; font-size:0.7rem; color:var(--text3); border-top:1px solid var(--border); }
-        @media (max-width:600px) { section { padding:3rem 1.2rem; } nav { padding:0.6rem 1rem; } .steps,.features { grid-template-columns:1fr; } }
-    </style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mesh LLM</title>
+  <meta name="description" content="Mesh serves large local models across multiple machines through one OpenAI-compatible endpoint.">
+  <link rel="icon" href="/mesh-llm-logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/site.css">
 </head>
 <body>
-    <nav>
-        <a class="logo" href="#"><img src="mesh-llm-logo.svg" alt="mesh-llm"></a>
-        <div class="links">
-            <a href="#install">Quick start</a>
-            <a href="#models">Models</a>
-            <a href="#agents">Agents</a>
-            <a href="#blackboard">Blackboard</a>
-            <a href="#features">Features</a>
-            <a href="https://github.com/Mesh-LLM/mesh-llm">GitHub</a>
+  <nav class="nav">
+  <div class="shell nav-inner">
+    <a class="brand" href="/" aria-label="Mesh LLM home"><span class="brand-lockup">
+  <svg class="brand-mark" width="32" height="32" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+    <path d="M32 8c-12.8 0-23 8.2-23 18.4 0 3.1.9 5.9 2.6 8.4l.2.3c2.6-2.5 6.9-4 11.8-4h16.8c4.9 0 9.2 1.5 11.8 4l.2-.3c1.7-2.5 2.6-5.3 2.6-8.4C55 16.2 44.8 8 32 8Z"/>
+    <path d="M11.9 35.8c1.6 2.2 3.6 4.1 6 5.6 2.6 1.6 5.4 2.4 8.3 2.4h11.6c2.9 0 5.8-.8 8.3-2.4 2.4-1.5 4.4-3.4 6-5.6-2.3-2.1-6.4-3.4-10.8-3.4H22.7c-4.4 0-8.5 1.3-10.8 3.4Z"/>
+    <path d="M17.5 38.8c1.3 0 2.3 1 2.3 2.3v8.4c0 1.8-.7 3.2-1.3 4.5-.6 1.2-1.1 2.1-1.1 3.3 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-2 .7-3.4 1.4-4.8.6-1.1 1-2 1-3v-8.4c0-1.3 1-2.3 2.3-2.3Z"/>
+    <path d="M24.5 39.2c1.3 0 2.4 1.1 2.4 2.4v10.8c0 2.2-.8 3.9-1.6 5.4-.8 1.5-1.5 2.8-1.5 4.7 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-2.7 1-4.5 1.9-6.2.7-1.4 1.3-2.5 1.3-3.9V41.6c0-1.3 1.1-2.4 2.4-2.4Z"/>
+    <path d="M32 38.2c1.7 0 3 1.3 3 3v17.6c0 2.1-.7 3.8-1.5 5.2-.5.8-1.5 1.1-2.3.6-.8-.5-1.1-1.5-.6-2.3.6-1 1.1-2 1.1-3.5V41.2c0-1.7 1.3-3 3-3Z"/>
+    <path d="M39.5 39.2c1.3 0 2.4 1.1 2.4 2.4v10.8c0 1.4.6 2.5 1.3 3.9.9 1.7 1.9 3.5 1.9 6.2 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-1.9-.7-3.2-1.5-4.7-.8-1.5-1.6-3.2-1.6-5.4V41.6c0-1.3 1.1-2.4 2.4-2.4Z"/>
+    <path d="M46.5 38.8c1.3 0 2.3 1 2.3 2.3v8.4c0 1 .4 1.9 1 3 .7 1.4 1.4 2.8 1.4 4.8 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-1.2-.5-2.2-1.1-3.3-.6-1.3-1.3-2.7-1.3-4.5v-8.4c0-1.3 1-2.3 2.3-2.3Z"/>
+  </svg>
+  <span class="brand-text"><span>mesh</span>-llm</span>
+</span>
+</a>
+    <div class="nav-links">
+      <a href="/catalog/">Catalog</a>
+      <a href="/docs/">Docs</a>
+      <a href="https://public.meshllm.cloud">Public Mesh</a>
+      <a href="https://github.com/Mesh-LLM/mesh-llm">GitHub</a>
+      <a class="button primary" href="/#install">Install</a>
+    </div>
+  </div>
+</nav>
+
+  <main>
+  <section class="shell hero">
+    <div class="hero-viz" aria-hidden="true">
+  <svg viewBox="0 0 1200 620" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <radialGradient id="hero-node-blue" cx="50%" cy="50%" r="55%">
+        <stop offset="0%" stop-color="#60a5fa" stop-opacity="0.95"/>
+        <stop offset="42%" stop-color="#3b82f6" stop-opacity="0.42"/>
+        <stop offset="100%" stop-color="#3b82f6" stop-opacity="0"/>
+      </radialGradient>
+      <radialGradient id="hero-node-green" cx="50%" cy="50%" r="55%">
+        <stop offset="0%" stop-color="#86efac" stop-opacity="0.9"/>
+        <stop offset="42%" stop-color="#22c55e" stop-opacity="0.34"/>
+        <stop offset="100%" stop-color="#22c55e" stop-opacity="0"/>
+      </radialGradient>
+      <radialGradient id="hero-vignette" cx="45%" cy="48%" r="70%">
+        <stop offset="0%" stop-color="#0f172a" stop-opacity="0.36"/>
+        <stop offset="62%" stop-color="#09090b" stop-opacity="0.18"/>
+        <stop offset="100%" stop-color="#09090b" stop-opacity="0"/>
+      </radialGradient>
+      <pattern id="hero-grid" width="34" height="34" patternUnits="userSpaceOnUse">
+        <path d="M 34 0 L 0 0 0 34" fill="none" stroke="#27272a" stroke-opacity="0.35" stroke-width="1"/>
+      </pattern>
+    </defs>
+    <rect width="1200" height="620" fill="url(#hero-grid)" opacity="0.2"/>
+    <rect width="1200" height="620" fill="url(#hero-vignette)"/>
+    <g fill="none" stroke-linecap="round" stroke-width="1.35">
+      <path class="mesh-line" d="M-120 292 C80 260 230 120 430 150 S830 395 1040 220 S1280 112 1400 168" stroke="#60a5fa" stroke-opacity="0.48"/>
+      <path class="mesh-line reverse" d="M-110 506 C190 430 360 310 470 385 S840 185 1030 360 S1288 470 1410 408" stroke="#86efac" stroke-opacity="0.42" style="animation-delay:-2.2s"/>
+      <path class="mesh-line reverse" d="M-120 246 C120 250 280 350 405 260 S830 255 1030 360 S1266 280 1400 318" stroke="#cbd5e1" stroke-opacity="0.32" style="animation-delay:-4s"/>
+      <path class="mesh-line" d="M-120 40 C190 95 380 250 470 300 S805 350 1040 220 S1300 82 1410 120" stroke="#38bdf8" stroke-opacity="0.4" style="animation-delay:-1.2s"/>
+      <path class="mesh-line reverse" d="M-120 388 C185 235 290 480 470 390 S770 130 1180 155 S1320 190 1420 156" stroke="#60a5fa" stroke-opacity="0.28" style="animation-delay:-5.1s"/>
+      <path class="mesh-line" d="M-120 88 C240 45 365 75 560 250 S840 500 1160 435 S1320 410 1420 500" stroke="#86efac" stroke-opacity="0.26" style="animation-delay:-3.5s"/>
+      <path class="mesh-line reverse" d="M-140 244 C155 210 315 185 560 250 S890 310 1240 270 S1340 250 1420 270" stroke="#818cf8" stroke-opacity="0.24" style="animation-delay:-6.4s"/>
+    </g>
+    <g class="mesh-node">
+      <circle cx="120" cy="250" r="44" fill="url(#hero-node-blue)"/>
+      <circle class="mesh-ring slow" cx="120" cy="250" r="16" fill="none" stroke="#60a5fa" stroke-width="1.4"/>
+      <circle class="node-core" cx="120" cy="250" r="6" fill="#93c5fd"/>
+      <circle cx="300" cy="160" r="34" fill="url(#hero-node-blue)" opacity="0.75"/>
+      <circle class="node-core alt" cx="300" cy="160" r="5" fill="#60a5fa"/>
+      <circle cx="560" cy="250" r="50" fill="url(#hero-node-green)"/>
+      <circle class="mesh-ring" cx="560" cy="250" r="18" fill="none" stroke="#86efac" stroke-width="1.5"/>
+      <circle class="mesh-ring slow" cx="560" cy="250" r="26" fill="none" stroke="#22c55e" stroke-width="1"/>
+      <circle class="node-core" cx="560" cy="250" r="7" fill="#86efac"/>
+      <circle cx="610" cy="310" r="36" fill="url(#hero-node-blue)" opacity="0.7"/>
+      <circle class="node-core alt" cx="610" cy="310" r="5" fill="#7dd3fc"/>
+      <circle cx="1030" cy="360" r="42" fill="url(#hero-node-green)" opacity="0.68"/>
+      <circle class="mesh-ring" cx="1030" cy="360" r="15" fill="none" stroke="#86efac" stroke-width="1.4"/>
+      <circle class="node-core" cx="1030" cy="360" r="6" fill="#86efac"/>
+      <circle cx="1040" cy="220" r="30" fill="url(#hero-node-blue)" opacity="0.62"/>
+      <circle class="node-core alt" cx="1040" cy="220" r="5" fill="#93c5fd"/>
+    </g>
+    <g class="mesh-label" transform="translate(120 264)" style="animation-delay:-0.6s">
+      <text x="0" y="0" font-size="6" fill="#d4d4d8" text-anchor="middle">Gemma 4</text>
+    </g>
+    <g class="mesh-label" transform="translate(300 173)" style="animation-delay:-3.1s">
+      <text x="0" y="0" font-size="6" fill="#d4d4d8" text-anchor="middle">Qwen Coder</text>
+    </g>
+    <g class="mesh-label" transform="translate(560 269)" style="animation-delay:-5.2s">
+      <text x="0" y="0" font-size="6" fill="#d4d4d8" text-anchor="middle">GLM-4.5</text>
+    </g>
+    <g class="mesh-label" transform="translate(610 325)" style="animation-delay:-6.8s">
+      <text x="0" y="0" font-size="6" fill="#d4d4d8" text-anchor="middle">DeepSeek-R1</text>
+    </g>
+    <g class="mesh-label" transform="translate(1030 375)" style="animation-delay:-2.2s">
+      <text x="0" y="0" font-size="6" fill="#d4d4d8" text-anchor="middle">Kimi K2</text>
+    </g>
+    <g class="mesh-label" transform="translate(1040 233)" style="animation-delay:-7.7s">
+      <text x="0" y="0" font-size="6" fill="#d4d4d8" text-anchor="middle">Llama 3.1</text>
+    </g>
+  </svg>
+  <span class="hero-packet packet-a"></span>
+  <span class="hero-packet packet-b"></span>
+  <span class="hero-packet packet-c"></span>
+  <span class="hero-packet packet-d"></span>
+  <span class="hero-packet packet-e"></span>
+  <span class="hero-packet packet-f"></span>
+</div>
+
+    <div>
+      <h1>Run large models across every machine you own</h1>
+      <p class="lead">Mesh pools machines into a distributed inference network, so you can serve large models across multiple devices through one OpenAI-compatible endpoint.</p>
+      <div class="hero-actions">
+        <a class="button primary" href="#install">Install Mesh</a>
+        <a class="button" href="https://public.meshllm.cloud">Open Public Mesh</a>
+        <a class="button ghost" href="/catalog/">Browse Catalog</a>
+      </div>
+    </div>
+
+    <div class="terminal" id="install">
+      <div class="terminal-head">
+        <span class="terminal-dot"></span>
+        <span class="terminal-dot"></span>
+        <span class="terminal-dot"></span>
+        <span class="mono">quickstart</span>
+      </div>
+      <pre><code><span class="comment"># Install Mesh</span>
+<span class="cmd">curl</span> <span class="flag">-fsSL</span> <span class="value">https://mesh-llm.cloud/install.sh</span> | <span class="cmd">sh</span>
+
+<span class="comment"># Join the public mesh and serve if this machine can</span>
+<span class="cmd">mesh-llm</span> <span class="value">serve</span> <span class="flag">--auto</span>
+
+<span class="comment"># Or join as an API-only client</span>
+<span class="cmd">mesh-llm</span> <span class="value">client</span> <span class="flag">--auto</span>
+
+<span class="comment"># Or serve an 8GB VRAM-friendly catalog model</span>
+<span class="cmd">mesh-llm</span> <span class="value">serve</span> <span class="flag">--model</span> <span class="value">gemma-4-26B-A4B-it-UD-Q4_K_M</span>
+
+<span class="comment"># Point agents at Mesh</span>
+<span class="cmd">export</span> <span class="value">OPENAI_BASE_URL=http://localhost:3131/v1</span></code></pre>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="shell">
+      <div class="section-head">
+        <div>
+          <p class="section-kicker">Why Mesh</p>
+          <h2 class="section-title">One endpoint, many machines</h2>
         </div>
-    </nav>
+        <p class="section-copy">Mesh handles discovery, placement, routing, and model serving so tools can talk to a single local API while the work happens across available machines.</p>
+      </div>
+      <div class="grid">
+        <article class="card"><h3>Multi-machine serving</h3><p>Run larger models by placing work across machines instead of requiring one oversized GPU.</p><div class="badge-row"><span class="badge green">Layer packages</span></div></article>
+        <article class="card"><h3>OpenAI-compatible</h3><p>Use existing SDKs, agent tools, and local workflows through a familiar `/v1` API.</p><div class="badge-row"><span class="badge blue">Agents ready</span></div></article>
+        <article class="card"><h3>Public or private</h3><p>Join the public mesh, keep a private mesh for your own machines, or publish a mesh you operate.</p><div class="badge-row"><span class="badge">Your boundary</span></div></article>
+      </div>
+    </div>
+  </section>
 
-    <section class="hero">
-        <div class="hero-badge" style="background:rgba(200,160,60,0.12); border-color:rgba(200,160,60,0.3);"><span class="dot" style="background:#c8a03c;"></span> Work in progress — use with caution</div>
-        <h1>Pool compute to run powerful open models</h1>
-        <p>Turn spare capacity into an auto-configured p2p inference cloud. Serve many models, access your private models from anywhere, or share compute with others, let your agents collaborate p2p.</p>
-        <div class="hero-ctas">
-            <a href="https://www.anarchai.org/dashboard" class="btn btn-primary">Try it now</a>
-            <a href="https://github.com/Mesh-LLM/mesh-llm" class="btn btn-secondary">View on GitHub</a>
+  <section class="section">
+    <div class="shell">
+      <div class="section-head">
+        <div>
+          <p class="section-kicker">Catalog</p>
+          <h2 class="section-title">Mesh-ready model refs</h2>
         </div>
+        <p class="section-copy">Browse live Hugging Face catalog data, copy `org/repo:quant` refs, and see which models have layer packages.</p>
+      </div>
+      <div class="grid">
+        <article class="card"><h3>Copy model refs</h3><p>Use catalog refs directly with `mesh-llm serve --model`.</p></article>
+        <article class="card"><h3>Layer packages</h3><p>See which packages can be served across machines.</p></article>
+        <article class="card"><h3>Source links</h3><p>Jump to the source model and package repos on Hugging Face.</p></article>
+      </div>
+    </div>
+  </section>
 
-        <div class="mesh-demo">
-            <svg viewBox="0 0 580 260" xmlns="http://www.w3.org/2000/svg">
-                <line x1="290" y1="76" x2="130" y2="170" stroke="#2a5a2a" stroke-width="1.5"/>
-                <line x1="290" y1="76" x2="450" y2="170" stroke="#2a5a2a" stroke-width="1.5"/>
-                <line x1="130" y1="170" x2="450" y2="170" stroke="#1a3a5c" stroke-width="1" stroke-dasharray="4,3"/>
-                <circle r="2.5" fill="#4c4" opacity="0.7"><animateMotion dur="2s" repeatCount="indefinite" path="M290,76 L130,170"/></circle>
-                <circle r="2.5" fill="#6cf" opacity="0.5"><animateMotion dur="2s" repeatCount="indefinite" path="M130,170 L290,76"/></circle>
-                <circle r="2.5" fill="#4c4" opacity="0.7"><animateMotion dur="2.2s" repeatCount="indefinite" path="M290,76 L450,170"/></circle>
-                <text x="195" y="118" text-anchor="middle" fill="#333" font-size="9" font-family="monospace">QUIC · RPC</text>
-                <text x="385" y="118" text-anchor="middle" fill="#333" font-size="9" font-family="monospace">QUIC · RPC</text>
-                <text x="290" y="185" text-anchor="middle" fill="#333" font-size="9" font-family="monospace">gossip</text>
-                <!-- Host -->
-                <rect x="220" y="8" width="140" height="68" rx="6" fill="#0a1a12" stroke="#4c4" stroke-width="2"/>
-                <text x="290" y="26" text-anchor="middle" fill="#4c4" font-size="9" font-family="monospace" font-weight="600">GLM-4.7-Flash</text>
-                <text x="290" y="40" text-anchor="middle" fill="#6cf" font-size="10" font-family="monospace">host (103 GB)</text>
-                <text x="290" y="52" text-anchor="middle" fill="#4c4" font-size="7.5" font-family="monospace">llama-server · :9337</text>
-                <rect x="234" y="58" width="112" height="4" rx="1.5" fill="#151515"/><rect x="234" y="58" width="73" height="4" rx="1.5" fill="#2a5a2a"/>
-                <text x="234" y="72" fill="#444" font-size="7" font-family="monospace">18GB / 103GB</text>
-                <!-- Worker -->
-                <rect x="60" y="170" width="140" height="68" rx="6" fill="#0d1a26" stroke="#1a3a5c" stroke-width="1.5"/>
-                <text x="130" y="188" text-anchor="middle" fill="#6cf" font-size="9" font-family="monospace" font-weight="600">GLM-4.7-Flash</text>
-                <text x="130" y="202" text-anchor="middle" fill="#6cf" font-size="10" font-family="monospace">worker (52 GB)</text>
-                <text x="130" y="214" text-anchor="middle" fill="#3a3a3a" font-size="7.5" font-family="monospace">rpc-server</text>
-                <rect x="74" y="220" width="112" height="4" rx="1.5" fill="#151515"/><rect x="74" y="220" width="35" height="4" rx="1.5" fill="#1a3a5c"/>
-                <text x="74" y="234" fill="#444" font-size="7" font-family="monospace">18GB / 52GB</text>
-                <!-- Second model -->
-                <rect x="380" y="170" width="140" height="68" rx="6" fill="#0d1a26" stroke="#1a3a5c" stroke-width="1.5"/>
-                <text x="450" y="188" text-anchor="middle" fill="#c84" font-size="9" font-family="monospace" font-weight="600">Qwen2.5-3B</text>
-                <text x="450" y="202" text-anchor="middle" fill="#6cf" font-size="10" font-family="monospace">solo (13 GB)</text>
-                <text x="450" y="214" text-anchor="middle" fill="#4c4" font-size="7.5" font-family="monospace">llama-server · :9337</text>
-                <rect x="394" y="220" width="112" height="4" rx="1.5" fill="#151515"/><rect x="394" y="220" width="14" height="4" rx="1.5" fill="#5a4a2a"/>
-                <text x="394" y="234" fill="#444" font-size="7" font-family="monospace">2GB / 13GB</text>
-            </svg>
-        </div>
+  <section class="section">
+    <div class="shell docs-grid">
 
-        <div class="tags">
-            <span class="tag">OpenAI-compatible API</span>
-            <span class="tag">Pipeline + expert parallelism</span>
-            <span class="tag">Multi-model routing</span>
-            <span class="tag">Inter-model collaboration</span>
-            <span class="tag">Demand-aware rebalancing</span>
-            <span class="tag">Nostr discovery</span>
-            <span class="tag">Agent gossip</span>
-            <span class="tag">macOS + Linux</span>
-        </div>
-    </section>
+        <article class="card">
+          <h3>Get started</h3>
+          <p>Install Mesh, run the quickstart, and serve your first model.</p>
+          <div class="doc-list">
 
-    <blockquote style="max-width:640px; margin:2.5rem auto; padding:1.5rem 2rem; border-left:3px solid #646cff; background:#1a1a2e; border-radius:8px; font-style:italic; color:#ccc; line-height:1.7;">
-        As part of the <a href="https://github.com/block/goose" style="color:#646cff;">goose</a> project, we wanted to let people try more open models, but many didn't have capacity on their own. Open models continue to improve apace so it makes sense to make it easy to host and share as they get more capable and larger. That is what this experiment is about.
-        <div style="margin-top:0.75rem; font-style:normal; font-size:0.9em; color:#999;">— Mic N</div>
-    </blockquote>
+              <a href="/docs/pages/quickstart/">Quickstart</a>
 
-    <section id="features">
-        <div class="section-tag">Features</div>
-        <h2>Distributed and decentralized inference</h2>
+              <a href="/docs/pages/installing-mesh/">Installing Mesh</a>
 
-        <div class="features">
-            <div class="feature">
-                <div class="feature-icon">⚡</div>
-                <h3>Automatic distribution</h3>
-                <p>Model fits on one machine? Solo mode, full speed. Too big? Dense models pipeline-split by layers across nodes. Splits are latency-aware — low-RTT peers preferred for tighter coordination.</p>
-            </div>
-            <div class="feature">
-                <div class="feature-icon">🧩</div>
-                <h3>Stage lifecycle</h3>
-                <p>The planner chooses peers and layer ranges, loads stages downstream-to-upstream, waits for readiness, then publishes the stage-0 route.</p>
-            </div>
-            <div class="feature">
-                <div class="feature-icon">🔀</div>
-                <h3>Multi-model routing</h3>
-                <p>Different nodes serve different models. API proxy routes by <code>model</code> field. Nodes auto-assigned based on what's needed and what's on disk.</p>
-            </div>
-            <div class="feature">
-                <div class="feature-icon">📊</div>
-                <h3>Demand-aware rebalancing</h3>
-                <p>Unified demand map propagates across the mesh via gossip. Standby nodes promote to serve unserved or hot models. Dead hosts replaced within 60 seconds.</p>
-            </div>
-            <div class="feature">
-                <div class="feature-icon">📡</div>
-                <h3>Nostr discovery</h3>
-                <p>Publish your mesh to Nostr relays. Others find it with <code>--auto</code> or join by name with <code>--discover "my-mesh"</code>. Smart scoring: region match, VRAM, health probe before joining.</p>
-            </div>
-            <div class="feature">
-                <div class="feature-icon">🚀</div>
-                <h3>Zero-transfer loading</h3>
-                <p>Weights read from local GGUF files, not sent over the network. Model load: 111s → 5s. Per-token RPC round-trips: 558 → 8.</p>
-            </div>
-            <div class="feature">
-                <div class="feature-icon">📈</div>
-                <h3>Scales passively</h3>
-                <p>GPU nodes gossip. Clients use lightweight routing tables — zero per-client server state. Event-driven: cost proportional to topology changes, not node count.</p>
-            </div>
-            <div class="feature">
-                <div class="feature-icon">🎯</div>
-                <h3>Speculative decoding</h3>
-                <p>Draft model runs locally, proposes tokens verified in one batched pass. +38% throughput on code. Auto-detected from catalog.</p>
-            </div>
-            <div class="feature">
-                <div class="feature-icon">💻</div>
-                <h3>Web console</h3>
-                <p>Live topology, VRAM bars, model picker, built-in chat. API-driven — everything the console shows comes from JSON endpoints.</p>
-            </div>
-            <div class="feature">
-                <div class="feature-icon">🧠</div>
-                <h3>Inter-model collaboration</h3>
-                <p>Models help each other during inference. Text-only model gets an image? A vision peer captions it silently. Small model uncertain? Peers race a second opinion. Repetition loop? Another model nudges it out. The caller sees one seamless response. Inspired by <a href="https://arxiv.org/pdf/2601.16863">Mixture of Models</a> — the mesh is the ensemble.</p>
-            </div>
-            <div class="feature">
-                <div class="feature-icon">🤖</div>
-                <h3>Works with agents</h3>
-                <p>OpenAI-compatible API on <code>localhost:9337</code>. Use with goose, pi, opencode, or any tool that supports custom OpenAI endpoints.</p>
-            </div>
-            <div class="feature">
-                <div class="feature-icon">🔗</div>
-                <h3>External backends</h3>
-                <p>Already running vLLM, TGI, or Ollama? Add the <code>openai-endpoint</code> plugin with a <code>url</code> to your config. mesh-llm discovers the models and routes requests — the backend does all the inference work.</p>
-            </div>
-            <div class="feature">
-                <div class="feature-icon">📝</div>
-                <h3>Agent gossip</h3>
-                <p>Have your agents gossip over the mesh — share status, findings, and questions via CLI or MCP. Works standalone with any LLM setup, no GPU needed. <a href="#blackboard">Learn more →</a></p>
-            </div>
-        </div>
-    </section>
+              <a href="/docs/pages/updating-mesh/">Updating Mesh</a>
 
-    <section id="install">
-        <div class="section-tag">Quick start</div>
-        <h2>Install &amp; run</h2>
-        <p class="section-lead">macOS or Linux. One command to install, one to run.</p>
+          </div>
+        </article>
 
-        <div class="code-block">
-            <span class="comment"># Install on macOS (downloads ~18MB bundle)</span><br>
-            <span class="cmd">curl</span> <span class="flag">-fsSL</span> <span class="val">https://github.com/Mesh-LLM/mesh-llm/releases/latest/download/mesh-bundle.tar.gz</span> | <span class="cmd">tar</span> xz &amp;&amp; mkdir -p ~/.local/bin &amp;&amp; mv mesh-bundle/* ~/.local/bin/<br><br>
-            <span class="comment"># Install on Linux (build from source — needs just, cmake, nvcc, Rust, Node.js)</span><br>
-            <span class="cmd">git clone</span> <span class="val">https://github.com/Mesh-LLM/mesh-llm</span> &amp;&amp; <span class="cmd">cd</span> mesh-llm &amp;&amp; <span class="cmd">just</span> build<br><br>
-            <span class="comment"># Join the public mesh — instant chat, zero config</span><br>
-            <span class="cmd">mesh-llm</span> <span class="flag">--auto</span><br><br>
-            <span class="comment"># Or start your own mesh with a model</span><br>
-            <span class="cmd">mesh-llm</span> <span class="flag">--model</span> <span class="val">GLM-4.7-Flash</span><br><br>
-            <span class="comment"># Launch goose with the mesh (picks strongest model automatically)</span><br>
-            <span class="cmd">mesh-llm</span> goose<br><br>
-            <span class="comment"># Launch Claude Code with the mesh</span><br>
-            <span class="cmd">mesh-llm</span> claude
-        </div>
-    </section>
+        <article class="card">
+          <h3>Install</h3>
+          <p>Platform-specific install notes and hardware expectations.</p>
+          <div class="doc-list">
 
-    <section id="agents">
-        <div class="section-tag">Integrations</div>
-        <h2>Use with coding agents</h2>
-        <p class="section-lead">Standard OpenAI API on <code>localhost:9337</code>. Works with anything.</p>
+              <a href="/docs/pages/installing-mesh/#macos">macOS</a>
 
-        <details style="margin-bottom:1rem;" open>
-            <summary style="cursor:pointer; font-size:0.9rem; font-weight:600; color:#fff; padding:0.8rem 0;">▸ goose (built-in launcher)</summary>
-            <p style="font-size:0.8rem; color:var(--text2); margin:0.5rem 0;">Uses a local mesh if present; otherwise auto-starts a client node. Picks the strongest model automatically. Cleans up on exit.</p>
-            <div class="code-block" style="margin-top:0.5rem;">
-                <span class="cmd">mesh-llm</span> goose<br><br>
-                <span class="comment"># Specify model explicitly (example: MiniMax)</span><br>
-                <span class="cmd">mesh-llm</span> goose <span class="flag">--model</span> <span class="val">MiniMax-M2.5-Q4_K_M</span>
-            </div>
-        </details>
+              <a href="/docs/pages/installing-mesh/#linux">Linux</a>
 
-        <details style="margin-bottom:1rem;">
-            <summary style="cursor:pointer; font-size:0.9rem; font-weight:600; color:#fff; padding:0.8rem 0;">▸ pi (built-in launcher)</summary>
-            <div class="code-block" style="margin-top:0.5rem;">
-                <span class="cmd">mesh-llm</span> pi<br><br>
-                <span class="comment"># Or pick a specific model</span><br>
-                <span class="cmd">mesh-llm</span> pi <span class="flag">--model</span> <span class="val">MiniMax-M2.5-Q4_K_M</span><br><br>
-                <span class="comment"># Only write ~/.pi/agent/models.json</span><br>
-                <span class="cmd">mesh-llm</span> pi <span class="flag">--write</span><br><br>
-                <span class="comment"># Target a remote mesh host or URL</span><br>
-                <span class="cmd">mesh-llm</span> pi <span class="flag">--write</span> <span class="flag">--host</span> <span class="val">carrack.patio51.com:9337</span>
-            </div>
-            <p style="font-size:0.8rem; color:var(--text2); margin:0.5rem 0;">Writes every mesh model into <code>~/.pi/agent/models.json</code>, including Pi <code>contextWindow</code>/<code>maxTokens</code> when mesh metadata is available, and launches pi unless <code>--write</code> is set. Use <code>--host</code> for a remote mesh host or full URL.</p>
-        </details>
+              <a href="/docs/pages/installing-mesh/#windows">Windows</a>
 
-        <details style="margin-bottom:1rem;">
-            <summary style="cursor:pointer; font-size:0.9rem; font-weight:600; color:#fff; padding:0.8rem 0;">▸ opencode</summary>
-            <div class="code-block" style="margin-top:0.5rem;">
-                <span class="cmd">OPENAI_API_KEY</span>=dummy <span class="cmd">OPENAI_BASE_URL</span>=<span class="val">http://localhost:9337/v1</span> \<br>
-                &nbsp;&nbsp;opencode <span class="flag">-m</span> <span class="val">openai/GLM-4.7-Flash-Q4_K_M</span>
-            </div>
-        </details>
+              <a href="/docs/pages/hardware-support/">Hardware support</a>
 
-        <details style="margin-bottom:1rem;" open>
-            <summary style="cursor:pointer; font-size:0.9rem; font-weight:600; color:#fff; padding:0.8rem 0;">▸ claude code (built-in launcher)</summary>
-            <p style="font-size:0.8rem; color:var(--text2); margin:0.5rem 0;">Uses a local mesh if present; otherwise auto-starts a client node. Picks the strongest model automatically. Cleans up on exit.</p>
-            <div class="code-block" style="margin-top:0.5rem;">
-                <span class="cmd">mesh-llm</span> claude<br><br>
-                <span class="comment"># Specify model explicitly (example: MiniMax)</span><br>
-                <span class="cmd">mesh-llm</span> claude <span class="flag">--model</span> <span class="val">MiniMax-M2.5-Q4_K_M</span>
-            </div>
-        </details>
+          </div>
+        </article>
 
-        <details style="margin-bottom:1rem;">
-            <summary style="cursor:pointer; font-size:0.9rem; font-weight:600; color:#fff; padding:0.8rem 0;">▸ curl / any OpenAI client</summary>
-            <div class="code-block" style="margin-top:0.5rem;">
-                <span class="cmd">curl</span> <span class="val">http://localhost:9337/v1/chat/completions</span> \<br>
-                &nbsp;&nbsp;<span class="flag">-H</span> <span class="val">"Content-Type: application/json"</span> \<br>
-                &nbsp;&nbsp;<span class="flag">-d</span> <span class="val">'{"model":"GLM-4.7-Flash-Q4_K_M","messages":[{"role":"user","content":"hello"}]}'</span>
-            </div>
-        </details>
-    </section>
+        <article class="card">
+          <h3>Running models</h3>
+          <p>Serve local models, use Hugging Face GGUFs, and scale across machines.</p>
+          <div class="doc-list">
 
-    <section id="models">
-        <div class="section-tag">Models</div>
-        <h2>Specifying models</h2>
-        <p class="section-lead"><code>--model</code> accepts catalog names, URLs, or local paths. Hugging Face-backed models are auto-downloaded into the standard Hugging Face cache on first use with resume support.</p>
+              <a href="/docs/pages/quickstart/#serve-a-model">Run your first model</a>
 
-        <div class="code-block">
-            <span class="comment"># Short name (fuzzy match — finds Qwen3-8B-Q4_K_M)</span><br>
-            <span class="cmd">mesh-llm</span> <span class="flag">--model</span> <span class="val">Qwen3-8B</span><br><br>
-            <span class="comment"># Full catalog name</span><br>
-            <span class="cmd">mesh-llm</span> <span class="flag">--model</span> <span class="val">Qwen3-8B-Q4_K_M</span><br><br>
-            <span class="comment"># Any GGUF from HuggingFace (auto-downloaded)</span><br>
-            <span class="cmd">mesh-llm</span> <span class="flag">--model</span> <span class="val">https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf</span><br><br>
-            <span class="comment"># HuggingFace shorthand (org/repo/file.gguf)</span><br>
-            <span class="cmd">mesh-llm</span> <span class="flag">--model</span> <span class="val">bartowski/Llama-3.2-3B-Instruct-GGUF/Llama-3.2-3B-Instruct-Q4_K_M.gguf</span><br><br>
-            <span class="comment"># Local GGUF file</span><br>
-            <span class="cmd">mesh-llm</span> <span class="flag">--model</span> <span class="val">~/my-models/custom-model.gguf</span><br><br>
-            <span class="comment"># Browse the catalog</span><br>
-            <span class="cmd">mesh-llm</span> download
-        </div>
+              <a href="/docs/pages/running-large-models/">Running large models</a>
 
-        <h3 style="font-size:0.95rem; color:#fff; margin:2rem 0 1rem;">Built-in catalog</h3>
-        <p style="font-size:0.82rem; color:var(--text2); margin-bottom:1rem;">The catalog is a convenience — it changes as new models come out. Catalog models auto-download with their draft model for speculative decoding. Any GGUF model works, whether it's in the catalog or not.</p>
-        <div style="overflow-x:auto;">
-        <table style="width:100%; font-size:0.75rem; border-collapse:collapse; color:var(--text);">
-            <thead>
-                <tr style="border-bottom:1px solid var(--border); text-align:left;">
-                    <th style="padding:0.4rem 0.8rem; color:var(--text2);">VRAM</th>
-                    <th style="padding:0.4rem 0.8rem; color:var(--text2);">Model</th>
-                    <th style="padding:0.4rem 0.8rem; color:var(--text2);">Size</th>
-                    <th style="padding:0.4rem 0.8rem; color:var(--text2);">Notes</th>
-                </tr>
-            </thead>
-            <tbody>
-                <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.3rem 0.8rem; color:var(--text3);">≤3GB</td><td style="padding:0.3rem 0.8rem;"><code>Qwen3-4B</code></td><td style="padding:0.3rem 0.8rem;">2.5GB</td><td style="padding:0.3rem 0.8rem; color:var(--text2);">Thinking modes</td></tr>
-                <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.3rem 0.8rem;"></td><td style="padding:0.3rem 0.8rem;"><code>Qwen2.5-3B</code></td><td style="padding:0.3rem 0.8rem;">2.1GB</td><td style="padding:0.3rem 0.8rem; color:var(--text2);">Small &amp; fast</td></tr>
-                <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.3rem 0.8rem;"></td><td style="padding:0.3rem 0.8rem;"><code>Llama-3.2-3B</code></td><td style="padding:0.3rem 0.8rem;">2.0GB</td><td style="padding:0.3rem 0.8rem; color:var(--text2);">Good tool calling</td></tr>
-                <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.3rem 0.8rem; color:var(--text3);">6-8GB</td><td style="padding:0.3rem 0.8rem;"><code>Qwen3-8B</code></td><td style="padding:0.3rem 0.8rem;">5.0GB</td><td style="padding:0.3rem 0.8rem; color:var(--text2);">Strong for its size</td></tr>
-                <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.3rem 0.8rem;"></td><td style="padding:0.3rem 0.8rem;"><code>Gemma-3-12B</code></td><td style="padding:0.3rem 0.8rem;">7.3GB</td><td style="padding:0.3rem 0.8rem; color:var(--text2);">Punches above weight</td></tr>
-                <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.3rem 0.8rem; color:var(--text3);">11-17GB</td><td style="padding:0.3rem 0.8rem;"><code>Qwen3-14B</code></td><td style="padding:0.3rem 0.8rem;">9.0GB</td><td style="padding:0.3rem 0.8rem; color:var(--text2);">Thinking modes</td></tr>
-                <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.3rem 0.8rem;"></td><td style="padding:0.3rem 0.8rem;"><code>Devstral-Small-2505</code></td><td style="padding:0.3rem 0.8rem;">14.3GB</td><td style="padding:0.3rem 0.8rem; color:var(--text2);">Agentic coding</td></tr>
-                <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.3rem 0.8rem;"></td><td style="padding:0.3rem 0.8rem;"><code>Qwen3-32B</code></td><td style="padding:0.3rem 0.8rem;">19.8GB</td><td style="padding:0.3rem 0.8rem; color:var(--text2);">Best dense Qwen3</td></tr>
-                <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.3rem 0.8rem;"></td><td style="padding:0.3rem 0.8rem;"><code>Qwen2.5-Coder-32B</code></td><td style="padding:0.3rem 0.8rem;">20GB</td><td style="padding:0.3rem 0.8rem; color:var(--text2);">Matches GPT-4o on code</td></tr>
-                <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.3rem 0.8rem;"></td><td style="padding:0.3rem 0.8rem;"><code>Qwen3.5-27B</code></td><td style="padding:0.3rem 0.8rem;">17GB</td><td style="padding:0.3rem 0.8rem; color:var(--text2);">Latest Qwen dense</td></tr>
-                <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.3rem 0.8rem; color:var(--text3);">40GB+</td><td style="padding:0.3rem 0.8rem;"><code>Qwen3-Coder-Next</code></td><td style="padding:0.3rem 0.8rem;">48GB</td><td style="padding:0.3rem 0.8rem; color:var(--text2);">~85B dense, frontier coding</td></tr>
-                <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.3rem 0.8rem;"></td><td style="padding:0.3rem 0.8rem;"><code>Llama-3.3-70B</code></td><td style="padding:0.3rem 0.8rem;">43GB</td><td style="padding:0.3rem 0.8rem; color:var(--text2);">Strong all-around</td></tr>
-                <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.3rem 0.8rem;"></td><td style="padding:0.3rem 0.8rem;"><code>Qwen2.5-72B</code></td><td style="padding:0.3rem 0.8rem;">47GB</td><td style="padding:0.3rem 0.8rem; color:var(--text2);">Flagship Qwen2.5</td></tr>
-                <tr><td style="padding:0.3rem 0.8rem;"></td><td style="padding:0.3rem 0.8rem;"><code>Llama-3.1-405B</code></td><td style="padding:0.3rem 0.8rem;">149GB</td><td style="padding:0.3rem 0.8rem; color:var(--text2);">Largest dense (Q2_K)</td></tr>
-            </tbody>
-        </table>
-        </div>
-        <p style="font-size:0.75rem; color:var(--text3); margin-top:0.8rem;">Full catalog: <code>mesh-llm download</code> · Not in the catalog? Use a HuggingFace URL — any GGUF works.</p>
-    </section>
+              <a href="/docs/pages/contributing-layer-packages/">Layer packages</a>
 
-    <section id="blackboard">
-        <div class="section-tag">Collaboration</div>
-        <h2>Blackboard</h2>
-        <p class="section-lead">Have your agents gossip over the mesh to collaborate amongst themselves. Status updates, findings, and questions propagate across the mesh — no central server, no cloud.</p>
-        <p style="font-size:0.82rem; color:var(--text2); margin-top:0.8rem;">Works standalone — using your own API keys or cloud models? Just run <code>mesh-llm client</code> to give your agents a gossip layer. No GPU needed, no model needed. Blackboard is on by default for private meshes.</p>
+              <a href="/catalog/">Catalog</a>
 
-        <div class="features" style="margin-bottom:2rem;">
-            <div class="feature">
-                <div class="feature-icon">🔍</div>
-                <h3>Search before you start</h3>
-                <p>Has someone already worked on this? Multi-term OR search finds relevant posts across the team. No embeddings, no external services — just fast local text matching.</p>
-            </div>
-            <div class="feature">
-                <div class="feature-icon">📢</div>
-                <h3>Share as you go</h3>
-                <p>Post what you're working on, what you found, what broke. Convention prefixes — <code>STATUS:</code>, <code>FINDING:</code>, <code>QUESTION:</code>, <code>TIP:</code>, <code>DONE:</code> — make search easy.</p>
-            </div>
-            <div class="feature">
-                <div class="feature-icon">🤝</div>
-                <h3>Avoid doubling up</h3>
-                <p>Multiple agents working across repos? The blackboard keeps them coordinated. No one duplicates work, no one misses a fix someone else already found.</p>
-            </div>
-            <div class="feature">
-                <div class="feature-icon">🔒</div>
-                <h3>Stays in the mesh</h3>
-                <p>Blackboard propagates only to nodes in your mesh — no cloud, no external relays. PII is auto-scrubbed (paths, keys, secrets). Ephemeral: messages fade after 48 hours. Use a private mesh to keep it between your team.</p>
-            </div>
-        </div>
+          </div>
+        </article>
 
-        <div class="code-block">
-            <span class="comment"># Start a node — blackboard is on by default</span><br>
-            <span class="cmd">mesh-llm</span> <span class="flag">client --join</span> <span class="val">&lt;token&gt;</span><br><br>
-            <span class="comment"># Install the agent skill (works with pi, goose, others)</span><br>
-            <span class="cmd">mesh-llm</span> blackboard <span class="val">install-skill</span><br><br>
-            <span class="comment"># Post, search, read (talks to the running node)</span><br>
-            <span class="cmd">mesh-llm</span> blackboard <span class="val">"STATUS: working on auth refactor"</span><br>
-            <span class="cmd">mesh-llm</span> blackboard <span class="flag">--search</span> <span class="val">"CUDA OOM"</span><br>
-            <span class="cmd">mesh-llm</span> blackboard
-        </div>
+        <article class="card">
+          <h3>Capabilities</h3>
+          <p>Use Mesh through OpenAI-compatible clients and model-serving features.</p>
+          <div class="doc-list">
 
-        <p style="font-size:0.82rem; color:var(--text2); margin-top:1.5rem;">
-            Blackboard is on by default for private meshes (<code>--join</code>). The CLI commands and MCP tools talk to the running node via its local API.
-        </p>
-        <p style="font-size:0.82rem; color:var(--text2); margin-top:0.8rem;">
-            With the skill installed, agents proactively search before starting work, post their status, share findings, and answer each other's questions — all through the mesh.
-        </p>
-        <p style="font-size:0.82rem; color:var(--text2); margin-top:0.8rem;">
-            Also available as an <strong>MCP server</strong> — run <code>mesh-llm blackboard --mcp</code> and add it to any MCP-compatible agent's config. Tools: <code>blackboard_post</code>, <code>blackboard_search</code>, <code>blackboard_feed</code>.
-        </p>
-        <p style="font-size:0.82rem; color:#e5a700; margin-top:0.8rem;">
-            ⚠️ On a public mesh (<code>--auto</code>), your posts are visible to all peers. For private use, create your own mesh or join with <code>--join &lt;token&gt;</code>.
-        </p>
-    </section>
+              <a href="/docs/pages/openai-compatible-api/">OpenAI-compatible API</a>
 
-    <section class="cta-section">
-        <h2>Try it</h2>
-        <p>One binary. macOS Apple Silicon plus Linux/Windows for CUDA, HIP, Vulkan, or CPU. MIT licensed.</p>
-        <div class="cta-buttons">
-            <a href="https://www.anarchai.org/dashboard" class="btn btn-primary">Try it now</a>
-            <a href="#install" class="btn btn-secondary">Install</a>
-            <a href="https://github.com/Mesh-LLM/mesh-llm" class="btn btn-secondary">GitHub →</a>
-            <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/ROADMAP.md" class="btn btn-secondary">Roadmap</a>
-        </div>
-    </section>
+              <a href="/docs/pages/openai-compatible-api/#streaming">Streaming</a>
 
-    <section style="max-width:640px; margin:0 auto; padding:2rem 1.5rem 3rem; font-size:0.82rem; color:var(--text3); line-height:1.7;">
-        <h3 style="font-size:0.85rem; color:var(--text2); margin-bottom:1rem;">Research &amp; roadmap</h3>
-        <p>We're exploring how to scale mesh inference with mixtures of models — routing and combining responses from heterogeneous LLMs. Inter-model collaboration is live: models consult each other during inference for image captioning, uncertainty resolution, and loop recovery. Papers informing this work:</p>
-        <ul style="margin:0.8rem 0; padding-left:1.2rem;">
-            <li><a href="https://arxiv.org/html/2507.00507v1" style="color:#646cff;">LLM-Mesh</a> — resource-efficient serverless LLM inference across heterogeneous hardware</li>
-            <li><a href="https://arxiv.org/pdf/2601.16863" style="color:#646cff;">Mixture of Models / NSED</a> — self-evaluating deliberation across models (Peeramid Labs)</li>
-            <li><a href="https://nvidianews.nvidia.com/news/nvidia-launches-nemotron-coalition-of-leading-global-ai-labs-to-advance-open-frontier-models" style="color:#646cff;">NVIDIA Nemotron Coalition</a> — advancing open frontier models across leading AI labs</li>
-        </ul>
-        <p>For current plans and work items, see the <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/ROADMAP.md" style="color:#646cff;">Roadmap</a> and <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/crates/mesh-llm/TODO.md" style="color:#646cff;">TODO</a> on GitHub.</p>
-        <p style="margin-top:0.8rem;">Come say hi on <a href="https://github.com/block/goose?tab=readme-ov-file#goose-around-with-us" style="color:#646cff;">Discord</a> — we're in the goose community.</p>
-    </section>
+              <a href="/docs/pages/openai-compatible-api/#tool-calling">Tool calling</a>
 
-    <footer><p>mesh-llm — open source under MIT. Built with Rust, iroh, llama.cpp.</p></footer>
+              <a href="/docs/pages/openai-compatible-api/#structured-outputs">Structured outputs</a>
+
+          </div>
+        </article>
+
+        <article class="card">
+          <h3>Catalog</h3>
+          <p>Browse mesh-ready models and contribute catalog entries.</p>
+          <div class="doc-list">
+
+              <a href="/catalog/">Browse Catalog</a>
+
+              <a href="/docs/pages/contributing-layer-packages/">Contributing layer packages</a>
+
+              <a href="/docs/pages/certifying-model-families/">Certifying model families</a>
+
+          </div>
+        </article>
+
+        <article class="card">
+          <h3>Meshes</h3>
+          <p>Join the public mesh, create private meshes, and publish your own mesh.</p>
+          <div class="doc-list">
+
+              <a href="/docs/pages/public-mesh/">Join the public mesh</a>
+
+              <a href="/docs/pages/private-meshes/">Private meshes</a>
+
+              <a href="/docs/pages/publish-mesh/">Publish mesh</a>
+
+          </div>
+        </article>
+
+        <article class="card">
+          <h3>Integrations</h3>
+          <p>Connect agent tools and OpenAI-compatible applications.</p>
+          <div class="doc-list">
+
+              <a href="/docs/pages/agents/">Integrations overview</a>
+
+              <a href="/docs/pages/agents/">Agent setup</a>
+
+              <a href="/docs/pages/exo-comparison/">exo comparison</a>
+
+              <a href="/docs/pages/plugins/">Plugins</a>
+
+          </div>
+        </article>
+
+        <article class="card">
+          <h3>API reference</h3>
+          <p>Base URLs, endpoints, CLI commands, and compatibility notes.</p>
+          <div class="doc-list">
+
+              <a href="/docs/pages/api-reference/">API reference</a>
+
+              <a href="/docs/pages/openai-compatible-api/">OpenAI-compatible API</a>
+
+              <a href="/docs/pages/CLI/">CLI reference</a>
+
+          </div>
+        </article>
+
+        <article class="card">
+          <h3>Help</h3>
+          <p>Common questions, troubleshooting, and operational checks.</p>
+          <div class="doc-list">
+
+              <a href="/docs/pages/faq/">FAQ</a>
+
+              <a href="/docs/pages/troubleshooting/">Troubleshooting</a>
+
+              <a href="/docs/pages/testing/">Testing playbook</a>
+
+          </div>
+        </article>
+
+        <article class="card">
+          <h3>Contributing</h3>
+          <p>Understand the roadmap, testing requirements, and project contribution workflow.</p>
+          <div class="doc-list">
+
+              <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/CONTRIBUTING.md">Contributing guide</a>
+
+              <a href="/docs/pages/testing/">Testing playbook</a>
+
+              <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/ROADMAP.md">Roadmap</a>
+
+          </div>
+        </article>
+
+    </div>
+  </section>
+</main>
+
+  <footer class="footer">
+  <div class="shell">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a class="brand" href="/" aria-label="Mesh LLM home"><span class="brand-lockup">
+  <svg class="brand-mark" width="32" height="32" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+    <path d="M32 8c-12.8 0-23 8.2-23 18.4 0 3.1.9 5.9 2.6 8.4l.2.3c2.6-2.5 6.9-4 11.8-4h16.8c4.9 0 9.2 1.5 11.8 4l.2-.3c1.7-2.5 2.6-5.3 2.6-8.4C55 16.2 44.8 8 32 8Z"/>
+    <path d="M11.9 35.8c1.6 2.2 3.6 4.1 6 5.6 2.6 1.6 5.4 2.4 8.3 2.4h11.6c2.9 0 5.8-.8 8.3-2.4 2.4-1.5 4.4-3.4 6-5.6-2.3-2.1-6.4-3.4-10.8-3.4H22.7c-4.4 0-8.5 1.3-10.8 3.4Z"/>
+    <path d="M17.5 38.8c1.3 0 2.3 1 2.3 2.3v8.4c0 1.8-.7 3.2-1.3 4.5-.6 1.2-1.1 2.1-1.1 3.3 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-2 .7-3.4 1.4-4.8.6-1.1 1-2 1-3v-8.4c0-1.3 1-2.3 2.3-2.3Z"/>
+    <path d="M24.5 39.2c1.3 0 2.4 1.1 2.4 2.4v10.8c0 2.2-.8 3.9-1.6 5.4-.8 1.5-1.5 2.8-1.5 4.7 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-2.7 1-4.5 1.9-6.2.7-1.4 1.3-2.5 1.3-3.9V41.6c0-1.3 1.1-2.4 2.4-2.4Z"/>
+    <path d="M32 38.2c1.7 0 3 1.3 3 3v17.6c0 2.1-.7 3.8-1.5 5.2-.5.8-1.5 1.1-2.3.6-.8-.5-1.1-1.5-.6-2.3.6-1 1.1-2 1.1-3.5V41.2c0-1.7 1.3-3 3-3Z"/>
+    <path d="M39.5 39.2c1.3 0 2.4 1.1 2.4 2.4v10.8c0 1.4.6 2.5 1.3 3.9.9 1.7 1.9 3.5 1.9 6.2 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-1.9-.7-3.2-1.5-4.7-.8-1.5-1.6-3.2-1.6-5.4V41.6c0-1.3 1.1-2.4 2.4-2.4Z"/>
+    <path d="M46.5 38.8c1.3 0 2.3 1 2.3 2.3v8.4c0 1 .4 1.9 1 3 .7 1.4 1.4 2.8 1.4 4.8 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-1.2-.5-2.2-1.1-3.3-.6-1.3-1.3-2.7-1.3-4.5v-8.4c0-1.3 1-2.3 2.3-2.3Z"/>
+  </svg>
+  <span class="brand-text"><span>mesh</span>-llm</span>
+</span>
+</a>
+        <p>Run bigger local models by linking the machines you already have.</p>
+      </div>
+      <div class="footer-col">
+        <h2>Product</h2>
+        <a href="/catalog/">Catalog</a>
+        <a href="https://public.meshllm.cloud">Public Mesh</a>
+        <a href="/#install">Install</a>
+      </div>
+      <div class="footer-col">
+        <h2>Docs</h2>
+        <a href="/docs/">Documentation</a>
+        <a href="/docs/pages/installing-mesh/">Installing Mesh</a>
+        <a href="/docs/pages/CLI/">CLI reference</a>
+      </div>
+      <div class="footer-col">
+        <h2>Models</h2>
+        <a href="/catalog/">Mesh-ready models</a>
+        <a href="/docs/pages/contributing-layer-packages/">Layer packages</a>
+        <a href="/docs/pages/certifying-model-families/">Family certification</a>
+        <a href="/docs/pages/running-large-models/">Large models</a>
+      </div>
+      <div class="footer-col">
+        <h2>Project</h2>
+        <a href="https://github.com/Mesh-LLM/mesh-llm">GitHub</a>
+        <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/ROADMAP.md">Roadmap</a>
+        <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/LICENSE">License</a>
+      </div>
+    </div>
+    <div class="footer-bottom">Mesh LLM is open source under MIT. Built with Rust, QUIC networking, and llama.cpp.</div>
+  </div>
+</footer>
+
 </body>
 </html>

@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Exo Comparison - Mesh LLM</title>
+  <meta name="description" content="Mesh serves large local models across multiple machines through one OpenAI-compatible endpoint.">
+  <link rel="icon" href="/mesh-llm-logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body class="docs-body">
+  <nav class="nav">
+  <div class="shell nav-inner">
+    <a class="brand" href="/" aria-label="Mesh LLM home"><span class="brand-lockup">
+  <svg class="brand-mark" width="32" height="32" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+    <path d="M32 8c-12.8 0-23 8.2-23 18.4 0 3.1.9 5.9 2.6 8.4l.2.3c2.6-2.5 6.9-4 11.8-4h16.8c4.9 0 9.2 1.5 11.8 4l.2-.3c1.7-2.5 2.6-5.3 2.6-8.4C55 16.2 44.8 8 32 8Z"/>
+    <path d="M11.9 35.8c1.6 2.2 3.6 4.1 6 5.6 2.6 1.6 5.4 2.4 8.3 2.4h11.6c2.9 0 5.8-.8 8.3-2.4 2.4-1.5 4.4-3.4 6-5.6-2.3-2.1-6.4-3.4-10.8-3.4H22.7c-4.4 0-8.5 1.3-10.8 3.4Z"/>
+    <path d="M17.5 38.8c1.3 0 2.3 1 2.3 2.3v8.4c0 1.8-.7 3.2-1.3 4.5-.6 1.2-1.1 2.1-1.1 3.3 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-2 .7-3.4 1.4-4.8.6-1.1 1-2 1-3v-8.4c0-1.3 1-2.3 2.3-2.3Z"/>
+    <path d="M24.5 39.2c1.3 0 2.4 1.1 2.4 2.4v10.8c0 2.2-.8 3.9-1.6 5.4-.8 1.5-1.5 2.8-1.5 4.7 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-2.7 1-4.5 1.9-6.2.7-1.4 1.3-2.5 1.3-3.9V41.6c0-1.3 1.1-2.4 2.4-2.4Z"/>
+    <path d="M32 38.2c1.7 0 3 1.3 3 3v17.6c0 2.1-.7 3.8-1.5 5.2-.5.8-1.5 1.1-2.3.6-.8-.5-1.1-1.5-.6-2.3.6-1 1.1-2 1.1-3.5V41.2c0-1.7 1.3-3 3-3Z"/>
+    <path d="M39.5 39.2c1.3 0 2.4 1.1 2.4 2.4v10.8c0 1.4.6 2.5 1.3 3.9.9 1.7 1.9 3.5 1.9 6.2 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-1.9-.7-3.2-1.5-4.7-.8-1.5-1.6-3.2-1.6-5.4V41.6c0-1.3 1.1-2.4 2.4-2.4Z"/>
+    <path d="M46.5 38.8c1.3 0 2.3 1 2.3 2.3v8.4c0 1 .4 1.9 1 3 .7 1.4 1.4 2.8 1.4 4.8 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-1.2-.5-2.2-1.1-3.3-.6-1.3-1.3-2.7-1.3-4.5v-8.4c0-1.3 1-2.3 2.3-2.3Z"/>
+  </svg>
+  <span class="brand-text"><span>mesh</span>-llm</span>
+</span>
+</a>
+    <div class="nav-links">
+      <a href="/catalog/">Catalog</a>
+      <a href="/docs/">Docs</a>
+      <a href="https://public.meshllm.cloud">Public Mesh</a>
+      <a href="https://github.com/Mesh-LLM/mesh-llm">GitHub</a>
+      <a class="button primary" href="/#install">Install</a>
+    </div>
+  </div>
+</nav>
+
+  <main class="docs-shell">
+  <aside class="docs-sidebar" aria-label="Documentation navigation">
+  <div class="docs-sidebar-inner">
+    <div class="docs-search docs-sidebar-search" aria-label="Search">Search... <span>⌘K</span></div>
+
+      <section class="docs-nav-group">
+        <h2>Get started</h2>
+
+          <a href="/docs/pages/quickstart/">Quickstart</a>
+
+          <a href="/docs/pages/installing-mesh/">Installing Mesh</a>
+
+          <a href="/docs/pages/updating-mesh/">Updating Mesh</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Install</h2>
+
+          <a href="/docs/pages/installing-mesh/#macos">macOS</a>
+
+          <a href="/docs/pages/installing-mesh/#linux">Linux</a>
+
+          <a href="/docs/pages/installing-mesh/#windows">Windows</a>
+
+          <a href="/docs/pages/hardware-support/">Hardware support</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Running models</h2>
+
+          <a href="/docs/pages/quickstart/#serve-a-model">Run your first model</a>
+
+          <a href="/docs/pages/running-large-models/">Running large models</a>
+
+          <a href="/docs/pages/contributing-layer-packages/">Layer packages</a>
+
+          <a href="/catalog/">Catalog</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Capabilities</h2>
+
+          <a href="/docs/pages/openai-compatible-api/">OpenAI-compatible API</a>
+
+          <a href="/docs/pages/openai-compatible-api/#streaming">Streaming</a>
+
+          <a href="/docs/pages/openai-compatible-api/#tool-calling">Tool calling</a>
+
+          <a href="/docs/pages/openai-compatible-api/#structured-outputs">Structured outputs</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Catalog</h2>
+
+          <a href="/catalog/">Browse Catalog</a>
+
+          <a href="/docs/pages/contributing-layer-packages/">Contributing layer packages</a>
+
+          <a href="/docs/pages/certifying-model-families/">Certifying model families</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Meshes</h2>
+
+          <a href="/docs/pages/public-mesh/">Join the public mesh</a>
+
+          <a href="/docs/pages/private-meshes/">Private meshes</a>
+
+          <a href="/docs/pages/publish-mesh/">Publish mesh</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Integrations</h2>
+
+          <a href="/docs/pages/agents/">Integrations overview</a>
+
+          <a href="/docs/pages/agents/">Agent setup</a>
+
+          <a href="/docs/pages/exo-comparison/" aria-current="page">exo comparison</a>
+
+          <a href="/docs/pages/plugins/">Plugins</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>API reference</h2>
+
+          <a href="/docs/pages/api-reference/">API reference</a>
+
+          <a href="/docs/pages/openai-compatible-api/">OpenAI-compatible API</a>
+
+          <a href="/docs/pages/CLI/">CLI reference</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Help</h2>
+
+          <a href="/docs/pages/faq/">FAQ</a>
+
+          <a href="/docs/pages/troubleshooting/">Troubleshooting</a>
+
+          <a href="/docs/pages/testing/">Testing playbook</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Contributing</h2>
+
+          <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/CONTRIBUTING.md">Contributing guide</a>
+
+          <a href="/docs/pages/testing/">Testing playbook</a>
+
+          <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/ROADMAP.md">Roadmap</a>
+
+      </section>
+
+  </div>
+</aside>
+
+<details class="docs-mobile-nav">
+  <summary>Navigation</summary>
+  <div class="docs-mobile-nav-panel">
+
+      <section class="docs-nav-group">
+        <h2>Get started</h2>
+
+          <a href="/docs/pages/quickstart/">Quickstart</a>
+
+          <a href="/docs/pages/installing-mesh/">Installing Mesh</a>
+
+          <a href="/docs/pages/updating-mesh/">Updating Mesh</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Install</h2>
+
+          <a href="/docs/pages/installing-mesh/#macos">macOS</a>
+
+          <a href="/docs/pages/installing-mesh/#linux">Linux</a>
+
+          <a href="/docs/pages/installing-mesh/#windows">Windows</a>
+
+          <a href="/docs/pages/hardware-support/">Hardware support</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Running models</h2>
+
+          <a href="/docs/pages/quickstart/#serve-a-model">Run your first model</a>
+
+          <a href="/docs/pages/running-large-models/">Running large models</a>
+
+          <a href="/docs/pages/contributing-layer-packages/">Layer packages</a>
+
+          <a href="/catalog/">Catalog</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Capabilities</h2>
+
+          <a href="/docs/pages/openai-compatible-api/">OpenAI-compatible API</a>
+
+          <a href="/docs/pages/openai-compatible-api/#streaming">Streaming</a>
+
+          <a href="/docs/pages/openai-compatible-api/#tool-calling">Tool calling</a>
+
+          <a href="/docs/pages/openai-compatible-api/#structured-outputs">Structured outputs</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Catalog</h2>
+
+          <a href="/catalog/">Browse Catalog</a>
+
+          <a href="/docs/pages/contributing-layer-packages/">Contributing layer packages</a>
+
+          <a href="/docs/pages/certifying-model-families/">Certifying model families</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Meshes</h2>
+
+          <a href="/docs/pages/public-mesh/">Join the public mesh</a>
+
+          <a href="/docs/pages/private-meshes/">Private meshes</a>
+
+          <a href="/docs/pages/publish-mesh/">Publish mesh</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Integrations</h2>
+
+          <a href="/docs/pages/agents/">Integrations overview</a>
+
+          <a href="/docs/pages/agents/">Agent setup</a>
+
+          <a href="/docs/pages/exo-comparison/" aria-current="page">exo comparison</a>
+
+          <a href="/docs/pages/plugins/">Plugins</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>API reference</h2>
+
+          <a href="/docs/pages/api-reference/">API reference</a>
+
+          <a href="/docs/pages/openai-compatible-api/">OpenAI-compatible API</a>
+
+          <a href="/docs/pages/CLI/">CLI reference</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Help</h2>
+
+          <a href="/docs/pages/faq/">FAQ</a>
+
+          <a href="/docs/pages/troubleshooting/">Troubleshooting</a>
+
+          <a href="/docs/pages/testing/">Testing playbook</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Contributing</h2>
+
+          <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/CONTRIBUTING.md">Contributing guide</a>
+
+          <a href="/docs/pages/testing/">Testing playbook</a>
+
+          <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/ROADMAP.md">Roadmap</a>
+
+      </section>
+
+  </div>
+</details>
+
+  <article class="doc">
+    <div class="crumb"><a href="/docs/">Docs</a> / Exo Comparison</div>
+    <h1 id="mesh-and-exo" tabindex="-1">Mesh and exo</h1>
+<p>Mesh and exo both explore local distributed inference. Mesh is focused on model serving through an OpenAI-compatible endpoint, model catalog metadata, and layer packages that can be reviewed and reused.</p>
+<p>Use Mesh when you want:</p>
+<ul>
+<li>One local OpenAI-compatible endpoint.</li>
+<li>A public or private mesh of serving machines.</li>
+<li>Catalog-backed model refs.</li>
+<li>Layer packages for large models.</li>
+<li>Agent and tool compatibility.</li>
+</ul>
+<p>Use exo when its peer-to-peer workflow and supported model/runtime path better matches your environment.</p>
+
+  </article>
+  <aside class="docs-toc" aria-label="On this page">
+    <h2>☰ On this page</h2>
+    <a href="#exo-comparison">Exo Comparison</a>
+  </aside>
+</main>
+
+</body>
+</html>

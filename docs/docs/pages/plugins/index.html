@@ -1,0 +1,915 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Plugins - Mesh LLM</title>
+  <meta name="description" content="Mesh serves large local models across multiple machines through one OpenAI-compatible endpoint.">
+  <link rel="icon" href="/mesh-llm-logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body class="docs-body">
+  <nav class="nav">
+  <div class="shell nav-inner">
+    <a class="brand" href="/" aria-label="Mesh LLM home"><span class="brand-lockup">
+  <svg class="brand-mark" width="32" height="32" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+    <path d="M32 8c-12.8 0-23 8.2-23 18.4 0 3.1.9 5.9 2.6 8.4l.2.3c2.6-2.5 6.9-4 11.8-4h16.8c4.9 0 9.2 1.5 11.8 4l.2-.3c1.7-2.5 2.6-5.3 2.6-8.4C55 16.2 44.8 8 32 8Z"/>
+    <path d="M11.9 35.8c1.6 2.2 3.6 4.1 6 5.6 2.6 1.6 5.4 2.4 8.3 2.4h11.6c2.9 0 5.8-.8 8.3-2.4 2.4-1.5 4.4-3.4 6-5.6-2.3-2.1-6.4-3.4-10.8-3.4H22.7c-4.4 0-8.5 1.3-10.8 3.4Z"/>
+    <path d="M17.5 38.8c1.3 0 2.3 1 2.3 2.3v8.4c0 1.8-.7 3.2-1.3 4.5-.6 1.2-1.1 2.1-1.1 3.3 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-2 .7-3.4 1.4-4.8.6-1.1 1-2 1-3v-8.4c0-1.3 1-2.3 2.3-2.3Z"/>
+    <path d="M24.5 39.2c1.3 0 2.4 1.1 2.4 2.4v10.8c0 2.2-.8 3.9-1.6 5.4-.8 1.5-1.5 2.8-1.5 4.7 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-2.7 1-4.5 1.9-6.2.7-1.4 1.3-2.5 1.3-3.9V41.6c0-1.3 1.1-2.4 2.4-2.4Z"/>
+    <path d="M32 38.2c1.7 0 3 1.3 3 3v17.6c0 2.1-.7 3.8-1.5 5.2-.5.8-1.5 1.1-2.3.6-.8-.5-1.1-1.5-.6-2.3.6-1 1.1-2 1.1-3.5V41.2c0-1.7 1.3-3 3-3Z"/>
+    <path d="M39.5 39.2c1.3 0 2.4 1.1 2.4 2.4v10.8c0 1.4.6 2.5 1.3 3.9.9 1.7 1.9 3.5 1.9 6.2 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-1.9-.7-3.2-1.5-4.7-.8-1.5-1.6-3.2-1.6-5.4V41.6c0-1.3 1.1-2.4 2.4-2.4Z"/>
+    <path d="M46.5 38.8c1.3 0 2.3 1 2.3 2.3v8.4c0 1 .4 1.9 1 3 .7 1.4 1.4 2.8 1.4 4.8 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-1.2-.5-2.2-1.1-3.3-.6-1.3-1.3-2.7-1.3-4.5v-8.4c0-1.3 1-2.3 2.3-2.3Z"/>
+  </svg>
+  <span class="brand-text"><span>mesh</span>-llm</span>
+</span>
+</a>
+    <div class="nav-links">
+      <a href="/catalog/">Catalog</a>
+      <a href="/docs/">Docs</a>
+      <a href="https://public.meshllm.cloud">Public Mesh</a>
+      <a href="https://github.com/Mesh-LLM/mesh-llm">GitHub</a>
+      <a class="button primary" href="/#install">Install</a>
+    </div>
+  </div>
+</nav>
+
+  <main class="docs-shell">
+  <aside class="docs-sidebar" aria-label="Documentation navigation">
+  <div class="docs-sidebar-inner">
+    <div class="docs-search docs-sidebar-search" aria-label="Search">Search... <span>⌘K</span></div>
+
+      <section class="docs-nav-group">
+        <h2>Get started</h2>
+
+          <a href="/docs/pages/quickstart/">Quickstart</a>
+
+          <a href="/docs/pages/installing-mesh/">Installing Mesh</a>
+
+          <a href="/docs/pages/updating-mesh/">Updating Mesh</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Install</h2>
+
+          <a href="/docs/pages/installing-mesh/#macos">macOS</a>
+
+          <a href="/docs/pages/installing-mesh/#linux">Linux</a>
+
+          <a href="/docs/pages/installing-mesh/#windows">Windows</a>
+
+          <a href="/docs/pages/hardware-support/">Hardware support</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Running models</h2>
+
+          <a href="/docs/pages/quickstart/#serve-a-model">Run your first model</a>
+
+          <a href="/docs/pages/running-large-models/">Running large models</a>
+
+          <a href="/docs/pages/contributing-layer-packages/">Layer packages</a>
+
+          <a href="/catalog/">Catalog</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Capabilities</h2>
+
+          <a href="/docs/pages/openai-compatible-api/">OpenAI-compatible API</a>
+
+          <a href="/docs/pages/openai-compatible-api/#streaming">Streaming</a>
+
+          <a href="/docs/pages/openai-compatible-api/#tool-calling">Tool calling</a>
+
+          <a href="/docs/pages/openai-compatible-api/#structured-outputs">Structured outputs</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Catalog</h2>
+
+          <a href="/catalog/">Browse Catalog</a>
+
+          <a href="/docs/pages/contributing-layer-packages/">Contributing layer packages</a>
+
+          <a href="/docs/pages/certifying-model-families/">Certifying model families</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Meshes</h2>
+
+          <a href="/docs/pages/public-mesh/">Join the public mesh</a>
+
+          <a href="/docs/pages/private-meshes/">Private meshes</a>
+
+          <a href="/docs/pages/publish-mesh/">Publish mesh</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Integrations</h2>
+
+          <a href="/docs/pages/agents/">Integrations overview</a>
+
+          <a href="/docs/pages/agents/">Agent setup</a>
+
+          <a href="/docs/pages/exo-comparison/">exo comparison</a>
+
+          <a href="/docs/pages/plugins/" aria-current="page">Plugins</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>API reference</h2>
+
+          <a href="/docs/pages/api-reference/">API reference</a>
+
+          <a href="/docs/pages/openai-compatible-api/">OpenAI-compatible API</a>
+
+          <a href="/docs/pages/CLI/">CLI reference</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Help</h2>
+
+          <a href="/docs/pages/faq/">FAQ</a>
+
+          <a href="/docs/pages/troubleshooting/">Troubleshooting</a>
+
+          <a href="/docs/pages/testing/">Testing playbook</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Contributing</h2>
+
+          <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/CONTRIBUTING.md">Contributing guide</a>
+
+          <a href="/docs/pages/testing/">Testing playbook</a>
+
+          <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/ROADMAP.md">Roadmap</a>
+
+      </section>
+
+  </div>
+</aside>
+
+<details class="docs-mobile-nav">
+  <summary>Navigation</summary>
+  <div class="docs-mobile-nav-panel">
+
+      <section class="docs-nav-group">
+        <h2>Get started</h2>
+
+          <a href="/docs/pages/quickstart/">Quickstart</a>
+
+          <a href="/docs/pages/installing-mesh/">Installing Mesh</a>
+
+          <a href="/docs/pages/updating-mesh/">Updating Mesh</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Install</h2>
+
+          <a href="/docs/pages/installing-mesh/#macos">macOS</a>
+
+          <a href="/docs/pages/installing-mesh/#linux">Linux</a>
+
+          <a href="/docs/pages/installing-mesh/#windows">Windows</a>
+
+          <a href="/docs/pages/hardware-support/">Hardware support</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Running models</h2>
+
+          <a href="/docs/pages/quickstart/#serve-a-model">Run your first model</a>
+
+          <a href="/docs/pages/running-large-models/">Running large models</a>
+
+          <a href="/docs/pages/contributing-layer-packages/">Layer packages</a>
+
+          <a href="/catalog/">Catalog</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Capabilities</h2>
+
+          <a href="/docs/pages/openai-compatible-api/">OpenAI-compatible API</a>
+
+          <a href="/docs/pages/openai-compatible-api/#streaming">Streaming</a>
+
+          <a href="/docs/pages/openai-compatible-api/#tool-calling">Tool calling</a>
+
+          <a href="/docs/pages/openai-compatible-api/#structured-outputs">Structured outputs</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Catalog</h2>
+
+          <a href="/catalog/">Browse Catalog</a>
+
+          <a href="/docs/pages/contributing-layer-packages/">Contributing layer packages</a>
+
+          <a href="/docs/pages/certifying-model-families/">Certifying model families</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Meshes</h2>
+
+          <a href="/docs/pages/public-mesh/">Join the public mesh</a>
+
+          <a href="/docs/pages/private-meshes/">Private meshes</a>
+
+          <a href="/docs/pages/publish-mesh/">Publish mesh</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Integrations</h2>
+
+          <a href="/docs/pages/agents/">Integrations overview</a>
+
+          <a href="/docs/pages/agents/">Agent setup</a>
+
+          <a href="/docs/pages/exo-comparison/">exo comparison</a>
+
+          <a href="/docs/pages/plugins/" aria-current="page">Plugins</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>API reference</h2>
+
+          <a href="/docs/pages/api-reference/">API reference</a>
+
+          <a href="/docs/pages/openai-compatible-api/">OpenAI-compatible API</a>
+
+          <a href="/docs/pages/CLI/">CLI reference</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Help</h2>
+
+          <a href="/docs/pages/faq/">FAQ</a>
+
+          <a href="/docs/pages/troubleshooting/">Troubleshooting</a>
+
+          <a href="/docs/pages/testing/">Testing playbook</a>
+
+      </section>
+
+      <section class="docs-nav-group">
+        <h2>Contributing</h2>
+
+          <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/CONTRIBUTING.md">Contributing guide</a>
+
+          <a href="/docs/pages/testing/">Testing playbook</a>
+
+          <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/ROADMAP.md">Roadmap</a>
+
+      </section>
+
+  </div>
+</details>
+
+  <article class="doc">
+    <div class="crumb"><a href="/docs/">Docs</a> / Plugins</div>
+    <h1 id="plugins" tabindex="-1">Plugins</h1>
+<p>This document defines the <code>mesh-llm</code> plugin architecture.</p>
+<p>It describes the target architecture, not just the code as it exists today.</p>
+<p>As implementation lands, this document should be updated to match the intended end state and the concrete protocol and runtime decisions that have been made.</p>
+<p>Plugin-specific documentation:</p>
+<ul>
+<li><a href="telemetry.md">Telemetry</a> - built-in OTLP metrics-only runtime and routing telemetry</li>
+</ul>
+<p>The main goals are:</p>
+<ul>
+<li>keep <code>mesh-llm</code> decoupled from specific plugins</li>
+<li>let bundled plugins be auto-registered without special-casing product behavior</li>
+<li>make MCP and HTTP first-class host projections</li>
+<li>support large request and response bodies without blocking control traffic</li>
+<li>keep plugin author boilerplate low</li>
+</ul>
+<h2 id="design-summary" tabindex="-1">Design Summary</h2>
+<p>A plugin is a local service process launched by <code>mesh-llm</code>.</p>
+<p>The system has three core pieces:</p>
+<ul>
+<li>one long-lived control connection per plugin process</li>
+<li>zero or more short-lived negotiated streams for large or streaming data</li>
+<li>one declarative plugin manifest that the host <code>stapler</code> projects into MCP, HTTP, and optional promoted product APIs</li>
+</ul>
+<p><code>mesh-llm</code> remains the owner of:</p>
+<ul>
+<li>plugin lifecycle</li>
+<li>local IPC</li>
+<li>stapling manifest-declared services onto host-facing protocols</li>
+<li>HTTP serving</li>
+<li>MCP serving</li>
+<li>capability routing</li>
+<li>mesh participation and peer-to-peer transport</li>
+</ul>
+<p>A plugin owns:</p>
+<ul>
+<li>its own feature logic</li>
+<li>local state</li>
+<li>operation handlers</li>
+<li>resource handlers</li>
+<li>prompt handlers</li>
+<li>plugin-specific mesh channel semantics</li>
+</ul>
+<p>Plugins do not need to implement raw MCP or raw HTTP servers.</p>
+<p>The <code>stapler</code> is the host projection layer that turns plugin manifests into exposed MCP and HTTP surfaces.</p>
+<h2 id="high-level-model" tabindex="-1">High-Level Model</h2>
+<p>The plugin system is projection-oriented at the DSL level and service-oriented at the runtime level.</p>
+<p>Plugin authors think in terms of the host surfaces they contribute to:</p>
+<ul>
+<li><code>mcp</code></li>
+<li><code>http</code></li>
+<li><code>inference</code></li>
+<li><code>provides</code></li>
+</ul>
+<p>The host runtime still executes native service invocations internally, but the author-facing DSL is organized by the surface the plugin contributes to.</p>
+<p>This means:</p>
+<ul>
+<li>local MCP tools, resources, prompts, and completions live under <code>mcp</code></li>
+<li>attached external MCP servers also live under <code>mcp</code></li>
+<li>local HTTP routes live under <code>http</code></li>
+<li>attached or plugin-hosted inference backends live under <code>inference</code></li>
+<li>stable product capabilities live under <code>provides</code></li>
+</ul>
+<p>There is no separate top-level <code>services</code> section in the preferred DSL.</p>
+<h2 id="core-principles" tabindex="-1">Core Principles</h2>
+<h3 id="1-bundled-plugins-are-allowed" tabindex="-1">1. Bundled Plugins Are Allowed</h3>
+<p>Plugins shipped in this source tree may be auto-registered by the host.</p>
+<p>That is acceptable coupling.</p>
+<p>What is not acceptable is embedding one plugin's runtime behavior directly into core mesh logic. Core mesh transport and state should stay generic.</p>
+<h3 id="2-one-control-connection-many-data-streams" tabindex="-1">2. One Control Connection, Many Data Streams</h3>
+<p>Each plugin process has one long-lived control connection.</p>
+<p>Use the control connection for:</p>
+<ul>
+<li>initialize / health / shutdown</li>
+<li>manifest registration</li>
+<li>small RPC-style requests</li>
+<li>mesh event delivery</li>
+<li>stream negotiation</li>
+<li>cancellation</li>
+</ul>
+<p>Do not use the control connection for large uploads, downloads, or long-lived streaming responses.</p>
+<p>For large or streaming payloads, the host and plugin negotiate a short-lived side stream.</p>
+<h3 id="3-mcp-is-a-host-projection" tabindex="-1">3. MCP Is A Host Projection</h3>
+<p><code>mesh-llm</code> is the MCP server.</p>
+<p>Plugins do not need to implement MCP JSON-RPC directly. They declare MCP-facing services in the manifest, and the host <code>stapler</code> exposes them over MCP.</p>
+<h3 id="4-http-is-a-host-projection" tabindex="-1">4. HTTP Is A Host Projection</h3>
+<p><code>mesh-llm</code> owns the HTTP server.</p>
+<p>Plugins may declare HTTP bindings, but they do not need to run an HTTP server themselves. The host <code>stapler</code> maps HTTP requests onto plugin operations and resources.</p>
+<h3 id="5-capabilities-are-stable-product-contracts" tabindex="-1">5. Capabilities Are Stable Product Contracts</h3>
+<p>When <code>mesh-llm</code> wants a stable product API such as <code>/api/objects</code>, core should depend on a named capability like <code>object-store.v1</code>, not on a specific plugin ID like <code>blobstore</code>.</p>
+<h2 id="architecture" tabindex="-1">Architecture</h2>
+<h3 id="control-session" tabindex="-1">Control Session</h3>
+<p>There is one long-lived control session between host and plugin.</p>
+<p>The control session is used for:</p>
+<ul>
+<li>plugin startup and manifest exchange</li>
+<li>health checks</li>
+<li>native service invocation requests and responses</li>
+<li>plugin-to-host notifications</li>
+<li>host-to-plugin mesh events</li>
+<li>opening and closing streams</li>
+<li>cancellation and error reporting</li>
+</ul>
+<p>The control session should stay responsive even while the plugin is sending or receiving large payloads.</p>
+<p>The native runtime contract is service-oriented, not MCP-oriented.</p>
+<p>The host invokes services such as:</p>
+<ul>
+<li>operations</li>
+<li>prompts</li>
+<li>resources</li>
+<li>completions</li>
+</ul>
+<p>MCP method names like <code>tools/call</code> and <code>prompts/get</code> are projection-layer concerns. They are not the preferred host/plugin runtime contract.</p>
+<h3 id="streams" tabindex="-1">Streams</h3>
+<p>Streams are short-lived negotiated channels for a single request, response, or transfer.</p>
+<p>They are opened via the control session and then carry data independently.</p>
+<p>Streams are used for:</p>
+<ul>
+<li>large HTTP request bodies</li>
+<li>large HTTP responses</li>
+<li>streaming uploads and downloads</li>
+<li>server-sent events or similar long-lived responses</li>
+<li>future bulk data flows between host and plugin</li>
+</ul>
+<p>On Unix, streams map to short-lived Unix sockets.</p>
+<p>On Windows, streams map to short-lived named pipes.</p>
+<p>The protocol concept is <code>stream</code>, not <code>socket</code>, so the transport binding remains platform-specific.</p>
+<h3 id="why-streams-exist" tabindex="-1">Why Streams Exist</h3>
+<p>The current single-socket framed-envelope design is vulnerable to head-of-line blocking. Even chunked transfer traffic still competes with health checks, tool calls, mesh events, and other control messages on the same queue.</p>
+<p>This architecture avoids that by separating:</p>
+<ul>
+<li>control plane traffic</li>
+<li>bulk and streaming data traffic</li>
+</ul>
+<h2 id="manifest" tabindex="-1">Manifest</h2>
+<p>On startup, a plugin returns a manifest that declares what it provides to the host.</p>
+<p>Conceptually, the manifest contains:</p>
+<ul>
+<li>plugin identity and version</li>
+<li>provided capabilities</li>
+<li>MCP contributions</li>
+<li>HTTP contributions</li>
+<li>inference contributions</li>
+<li>any mesh channel declarations the plugin needs</li>
+</ul>
+<p>The manifest is the source of truth for host projections.</p>
+<h2 id="plugin-author-experience" tabindex="-1">Plugin Author Experience</h2>
+<p>The primary design goal is very low boilerplate.</p>
+<p>The preferred DSL is surface-first:</p>
+<ul>
+<li><code>provides</code></li>
+<li><code>mcp</code></li>
+<li><code>http</code></li>
+<li><code>inference</code></li>
+<li><code>mesh</code></li>
+<li><code>events</code></li>
+</ul>
+<p>Lifecycle hooks stay local to the plugin definition rather than becoming manifest items:</p>
+<ul>
+<li><code>startup_policy</code></li>
+<li><code>health</code></li>
+<li><code>on_initialized</code></li>
+<li><code>on_channel_message</code></li>
+<li><code>on_mesh_event</code></li>
+</ul>
+<p>Each section is self-contained. If a plugin contributes something to a host surface, it is declared in the section for that surface.</p>
+<p>Example:</p>
+<pre><code class="language-rust">use mesh_llm_plugin::{
+    capability, plugin_server_info, PluginMetadata,
+    http::{get, post},
+    inference::openai_http,
+    mcp::{external_stdio, prompt, resource, tool},
+    PluginStartupPolicy,
+};
+
+let plugin = mesh_llm_plugin::plugin! {
+    metadata: PluginMetadata::new(
+        &quot;notes&quot;,
+        &quot;1.0.0&quot;,
+        plugin_server_info(
+            &quot;notes&quot;,
+            &quot;1.0.0&quot;,
+            &quot;Notes&quot;,
+            &quot;Shared notes services&quot;,
+            None::&lt;String&gt;,
+        ),
+    ),
+
+    startup_policy: PluginStartupPolicy::PrivateMeshOnly,
+
+    provides: [
+        capability(&quot;notes.v1&quot;),
+        capability(&quot;search.v1&quot;),
+    ],
+
+    mesh: [
+        mesh_llm_plugin::mesh::channel(&quot;notes.v1&quot;),
+    ],
+
+    events: [
+        mesh_llm_plugin::events::peer_up(),
+    ],
+
+    mcp: [
+        tool(&quot;search&quot;)
+            .description(&quot;Search notes&quot;)
+            .input::&lt;SearchArgs&gt;()
+            .handle(search),
+
+        resource(&quot;notes://latest&quot;)
+            .name(&quot;Latest Notes&quot;)
+            .handle(read_latest),
+
+        prompt(&quot;summarize_notes&quot;)
+            .description(&quot;Summarize recent notes&quot;)
+            .handle(summarize_notes),
+
+        external_stdio(&quot;filesystem&quot;, &quot;npx&quot;)
+            .arg(&quot;-y&quot;)
+            .arg(&quot;@modelcontextprotocol/server-filesystem&quot;),
+    ],
+
+    http: [
+        get(&quot;/search&quot;)
+            .description(&quot;Search notes&quot;)
+            .input::&lt;SearchArgs&gt;()
+            .handle(search),
+
+        post(&quot;/notes&quot;)
+            .description(&quot;Create a note&quot;)
+            .input::&lt;PostArgs&gt;()
+            .handle(post_note),
+    ],
+
+    inference: [
+        openai_http(&quot;local-llm&quot;, &quot;http://127.0.0.1:8080/v1&quot;)
+            .managed_by_plugin(false),
+    ],
+
+    health: |_context| {
+        Box::pin(async move { Ok(&quot;ok&quot;.to_string()) })
+    },
+
+    on_initialized: |context| {
+        Box::pin(async move {
+            context
+                .send_json_channel(
+                    &quot;notes.v1&quot;,
+                    String::new(),
+                    &quot;notes&quot;,
+                    &amp;NotesMessage::SyncRequest,
+                )
+                .await
+        })
+    },
+
+    on_channel_message: |message, context| {
+        Box::pin(async move {
+            handle_notes_channel(message, context).await
+        })
+    },
+
+    on_mesh_event: |event, context| {
+        Box::pin(async move {
+            handle_notes_mesh_event(event, context).await
+        })
+    },
+};
+</code></pre>
+<p>In this model:</p>
+<ul>
+<li><code>mcp</code> contains both local MCP contributions and attached external MCP servers</li>
+<li><code>http</code> contains local HTTP contributions</li>
+<li><code>inference</code> contains both attached external inference endpoints and plugin-hosted inference providers</li>
+<li><code>provides</code> declares stable capability contracts that core product routes can depend on</li>
+<li><code>mesh</code> declares which mesh channels the plugin is allowed to receive and send</li>
+<li><code>events</code> declares which mesh events the host may deliver to the plugin</li>
+</ul>
+<p>Event delivery is allowlist-based:</p>
+<ul>
+<li>no <code>mesh</code> declaration means no channel delivery</li>
+<li>no <code>events</code> declaration means no mesh events</li>
+<li>plugins only receive the event kinds they explicitly declare</li>
+</ul>
+<p>The runtime and <code>stapler</code> handle:</p>
+<ul>
+<li>schema exposure</li>
+<li>MCP projection</li>
+<li>HTTP projection</li>
+<li>request validation</li>
+<li>stream negotiation</li>
+<li>transport details</li>
+<li>host-side routing and aggregation</li>
+</ul>
+<p>Plugin authors should not manually implement:</p>
+<ul>
+<li>MCP <code>tools/list</code></li>
+<li>MCP <code>tools/call</code></li>
+<li>MCP <code>resources/read</code></li>
+<li>HTTP routing</li>
+<li>control-plane socket negotiation</li>
+</ul>
+<h2 id="internal-rpc-plugins" tabindex="-1">Internal RPC Plugins</h2>
+<p>Most plugins should use <code>plugin!</code>.</p>
+<p>Host-private plumbing services that need raw RPC methods rather than surfaced MCP, HTTP, or inference declarations should use <code>InternalRpcPluginBuilder</code>.</p>
+<p>This is the escape hatch for internal-only services such as blobstore. It keeps raw host RPC separate from the normal manifest-driven plugin surface.</p>
+<h3 id="streaming" tabindex="-1">Streaming</h3>
+<p>Streaming is explicit in the DSL.</p>
+<p>For HTTP bindings, the preferred modifiers are:</p>
+<ul>
+<li><code>.stream_request()</code></li>
+<li><code>.stream_response()</code></li>
+<li><code>.sse()</code></li>
+</ul>
+<p>These declare whether the request body, response body, or response format requires side-stream transport.</p>
+<h2 id="external-endpoints" tabindex="-1">External Endpoints</h2>
+<p>Plugins may register external services without proxying all traffic through the plugin process.</p>
+<p>This is a control-plane declaration, not a request proxying requirement.</p>
+<p>In practice:</p>
+<ul>
+<li>attached external MCP servers are declared in the <code>mcp</code> section</li>
+<li>attached or plugin-hosted inference backends are declared in the <code>inference</code> section</li>
+</ul>
+<p><code>mesh-llm</code> then talks to those services directly when appropriate.</p>
+<p>This keeps heavy data-plane traffic out of plugin IPC.</p>
+<h3 id="mcp-contributions" tabindex="-1">MCP Contributions</h3>
+<p>The <code>mcp</code> section may contain both:</p>
+<ul>
+<li>local MCP-facing items implemented by the plugin</li>
+<li>attached external MCP servers</li>
+</ul>
+<p>Preferred external forms include:</p>
+<ul>
+<li><code>external_stdio(...)</code></li>
+<li><code>external_http(...)</code></li>
+<li><code>external_tcp(...)</code></li>
+<li><code>external_unix_socket(...)</code></li>
+</ul>
+<p>External MCP names are namespaced as:</p>
+<ul>
+<li><code>plugin_name.method</code></li>
+</ul>
+<h3 id="inference-contributions" tabindex="-1">Inference Contributions</h3>
+<p>The <code>inference</code> section may contain both:</p>
+<ul>
+<li>attached external OpenAI-compatible endpoints</li>
+<li>plugin-hosted inference providers</li>
+</ul>
+<p>Preferred forms include:</p>
+<ul>
+<li><code>openai_http(...)</code> for attached external endpoints</li>
+<li><code>provider(...)</code> for plugin-hosted backends</li>
+</ul>
+<h3 id="why-endpoint-registration-exists" tabindex="-1">Why Endpoint Registration Exists</h3>
+<p>Some services already speak a protocol that <code>mesh-llm</code> knows how to use directly.</p>
+<p>Examples:</p>
+<ul>
+<li>a local OpenAI-compatible inference server</li>
+<li>an external MCP server reachable over stdio, streamable HTTP, Unix socket, named pipe, or TCP</li>
+<li>a plugin-hosted inference runtime such as an MLX-backed local server</li>
+</ul>
+<p>In these cases, the plugin should remain the control-plane owner for:</p>
+<ul>
+<li>discovery</li>
+<li>lifecycle</li>
+<li>readiness</li>
+<li>availability</li>
+</ul>
+<p>But <code>mesh-llm</code> should own the data plane when possible.</p>
+<h3 id="health-and-availability" tabindex="-1">Health And Availability</h3>
+<p>Endpoint health is separate from plugin health.</p>
+<p>If an endpoint health check fails:</p>
+<ul>
+<li>the endpoint becomes unavailable</li>
+<li>the endpoint is removed from routing or aggregation</li>
+<li>the plugin remains loaded</li>
+<li>the plugin is not marked disabled</li>
+<li>the host keeps checking health</li>
+</ul>
+<p>If health returns:</p>
+<ul>
+<li>the endpoint becomes available again automatically</li>
+</ul>
+<p>This is important because a plugin may be healthy while its managed or discovered service is:</p>
+<ul>
+<li>starting</li>
+<li>restarting</li>
+<li>temporarily unhealthy</li>
+<li>reloading a model</li>
+<li>intentionally stopped</li>
+</ul>
+<p>The host should treat plugin liveness and endpoint liveness as separate concerns.</p>
+<h3 id="recommended-state-model" tabindex="-1">Recommended State Model</h3>
+<p>Conceptually, the system should track at least:</p>
+<ul>
+<li>plugin state</li>
+<li>endpoint state</li>
+<li>model or route availability</li>
+</ul>
+<p>Suggested plugin states:</p>
+<ul>
+<li><code>starting</code></li>
+<li><code>running</code></li>
+<li><code>degraded</code></li>
+<li><code>disconnected</code></li>
+<li><code>failed</code></li>
+</ul>
+<p>Suggested endpoint states:</p>
+<ul>
+<li><code>unknown</code></li>
+<li><code>starting</code></li>
+<li><code>healthy</code></li>
+<li><code>unhealthy</code></li>
+<li><code>unavailable</code></li>
+</ul>
+<p>Suggested routed availability states:</p>
+<ul>
+<li><code>advertised</code></li>
+<li><code>routable</code></li>
+<li><code>draining</code></li>
+<li><code>unavailable</code></li>
+</ul>
+<p>Routing decisions should depend on endpoint health, not just plugin process health.</p>
+<h2 id="mcp" tabindex="-1">MCP</h2>
+<p>MCP is implemented by the host, not by individual plugins.</p>
+<p>The plugin author marks which services should appear in MCP:</p>
+<ul>
+<li><code>tool(...)</code></li>
+<li><code>resource(...)</code></li>
+<li><code>resource_template_service(...)</code></li>
+<li><code>prompt(...)</code></li>
+<li><code>completion(...)</code></li>
+</ul>
+<p>The host then synthesizes:</p>
+<ul>
+<li><code>tools/list</code></li>
+<li><code>tools/call</code></li>
+<li><code>resources/list</code></li>
+<li><code>resources/read</code></li>
+<li><code>prompts/list</code></li>
+<li><code>prompts/get</code></li>
+<li>completions where applicable</li>
+</ul>
+<p>External MCP endpoints may also be aggregated into the host's MCP surface via the <code>endpoints:</code> declarations described above.</p>
+<h3 id="mcp-naming" tabindex="-1">MCP Naming</h3>
+<p>By default, tool, resource, and prompt names should be plugin-namespaced.</p>
+<p>Examples:</p>
+<ul>
+<li>tool: <code>blackboard.feed</code></li>
+<li>tool: <code>blackboard.post</code></li>
+<li>resource: <code>blackboard://snapshot</code></li>
+<li>prompt: <code>blackboard.status_brief</code></li>
+</ul>
+<p>Friendly aliases may be added for bundled plugins, but the canonical identity should remain namespaced to avoid collisions.</p>
+<h3 id="mcp-streaming" tabindex="-1">MCP Streaming</h3>
+<p>MCP-facing operations may be:</p>
+<ul>
+<li>buffered</li>
+<li>streaming input</li>
+<li>streaming output</li>
+<li>streaming input and output</li>
+</ul>
+<p>For streaming operations, the host uses negotiated side streams internally rather than pushing large data through the control connection.</p>
+<h2 id="http-bindings" tabindex="-1">HTTP Bindings</h2>
+<p>Plugins may declare HTTP bindings as part of the manifest.</p>
+<p>These bindings let a plugin feel native over HTTP without requiring custom host route code for each plugin.</p>
+<h3 id="default-mounting" tabindex="-1">Default Mounting</h3>
+<p>Plugin-defined HTTP bindings should be mounted under a plugin-owned namespace by default.</p>
+<p>Examples:</p>
+<ul>
+<li><code>/api/plugins/blackboard/feed</code></li>
+<li><code>/api/plugins/blackboard/post</code></li>
+<li><code>/api/plugins/object-store/objects</code></li>
+</ul>
+<p>This avoids collisions and keeps plugin-specific APIs out of the top-level product namespace unless explicitly promoted.</p>
+<h3 id="promoted-product-routes" tabindex="-1">Promoted Product Routes</h3>
+<p>Some routes may become stable product APIs owned by <code>mesh-llm</code>, for example:</p>
+<ul>
+<li><code>/api/objects</code></li>
+</ul>
+<p>These routes should be backed by named capabilities, not by hard-coded plugin IDs.</p>
+<p>Example:</p>
+<ul>
+<li>top-level route: <code>/api/objects</code></li>
+<li>required capability: <code>object-store.v1</code></li>
+<li>provider plugin: whichever plugin the host resolves for that capability</li>
+</ul>
+<p>This keeps product APIs stable while allowing the backing plugin to change.</p>
+<p>External endpoints do not automatically become HTTP routes. They are service registrations that the host may use for routing or aggregation according to their endpoint kind.</p>
+<h3 id="buffered-vs-streamed-http" tabindex="-1">Buffered vs Streamed HTTP</h3>
+<p>HTTP bindings may be declared as:</p>
+<ul>
+<li>buffered request / buffered response</li>
+<li>streamed request / buffered response</li>
+<li>buffered request / streamed response</li>
+<li>streamed request / streamed response</li>
+</ul>
+<p>The host decides whether to keep the invocation on the control channel or negotiate a side stream based on the binding mode and payload size.</p>
+<h2 id="streams-and-large-transfers" tabindex="-1">Streams And Large Transfers</h2>
+<p>Large payloads must not ride the main control connection.</p>
+<p>Instead, the control session negotiates a short-lived stream for the transfer.</p>
+<p>Conceptual flow:</p>
+<ol>
+<li>host sends <code>OpenStream</code></li>
+<li>plugin accepts</li>
+<li>host and plugin establish a short-lived local stream</li>
+<li>request or response bytes flow on that stream</li>
+<li>either side may cancel</li>
+<li>stream is torn down and cleaned up</li>
+</ol>
+<p>This design supports:</p>
+<ul>
+<li>10 GB uploads</li>
+<li>large downloads</li>
+<li>long-lived streaming responses</li>
+<li>future websocket-like or SSE-style responses</li>
+</ul>
+<p>without blocking health checks or other control traffic.</p>
+<h2 id="suggested-control-messages" tabindex="-1">Suggested Control Messages</h2>
+<p>The exact wire format is still open, but the protocol should support concepts like:</p>
+<ul>
+<li><code>Initialize</code></li>
+<li><code>InitializeResponse { manifest }</code></li>
+<li><code>Health</code></li>
+<li><code>Shutdown</code></li>
+<li><code>Invoke</code></li>
+<li><code>InvokeResult</code></li>
+<li><code>Notify</code></li>
+<li><code>MeshEvent</code></li>
+<li><code>OpenStream</code></li>
+<li><code>OpenStreamResult</code></li>
+<li><code>CancelStream</code></li>
+<li><code>StreamError</code></li>
+</ul>
+<p>The stream protocol itself may be raw bytes or lightly framed bytes, depending on the use case.</p>
+<h2 id="capabilities" tabindex="-1">Capabilities</h2>
+<p>Capabilities let core depend on behavior rather than on plugin names.</p>
+<p>Examples:</p>
+<ul>
+<li><code>object-store.v1</code></li>
+<li><code>mesh-blackboard.v1</code></li>
+<li><code>artifact-cache.v1</code></li>
+<li><code>model-catalog-provider.v1</code></li>
+</ul>
+<p>Capabilities are used when:</p>
+<ul>
+<li>core needs a stable product contract</li>
+<li>multiple plugins could satisfy the same role</li>
+<li>the host wants to promote a route into the top-level API</li>
+</ul>
+<p>Capabilities are not required for every plugin. They are mainly for shared contracts that <code>mesh-llm</code> itself depends on.</p>
+<p>Endpoint registration is related but distinct:</p>
+<ul>
+<li>capabilities express stable contracts that core may depend on</li>
+<li>endpoints express concrete service instances that the host can talk to directly</li>
+</ul>
+<p>An endpoint may satisfy a capability, but the two ideas should remain separate in the design.</p>
+<h2 id="mesh-channels" tabindex="-1">Mesh Channels</h2>
+<p>Plugins may declare mesh channels for plugin-specific peer-to-peer coordination.</p>
+<p>These should use the generic plugin mesh transport rather than dedicated core stream types for individual plugins.</p>
+<p>Core should not embed plugin-specific wire protocols in the main mesh transport when the behavior can live behind the generic plugin channel mechanism.</p>
+<h2 id="what-the-host-owns" tabindex="-1">What The Host Owns</h2>
+<p>The host is responsible for:</p>
+<ul>
+<li>launching plugins</li>
+<li>registering bundled plugins</li>
+<li>validating plugin identity</li>
+<li>keeping the control session alive</li>
+<li>stream negotiation and cleanup</li>
+<li>request validation</li>
+<li>HTTP mounting</li>
+<li>MCP exposure</li>
+<li>capability resolution</li>
+<li>route collision detection</li>
+<li>permissions and policy enforcement</li>
+</ul>
+<h2 id="what-plugins-own" tabindex="-1">What Plugins Own</h2>
+<p>A plugin is responsible for:</p>
+<ul>
+<li>declaring its manifest</li>
+<li>implementing handlers</li>
+<li>handling its own local state</li>
+<li>reading and writing stream payloads when invoked</li>
+<li>implementing any plugin-specific business logic</li>
+</ul>
+<h2 id="non-goals" tabindex="-1">Non-Goals</h2>
+<p>The plugin system should not require each plugin to:</p>
+<ul>
+<li>run its own HTTP server</li>
+<li>run its own MCP server</li>
+<li>manually negotiate Unix socket paths in application code</li>
+<li>hard-code core route registration in <code>mesh-llm</code></li>
+</ul>
+<p>The plugin system should also avoid:</p>
+<ul>
+<li>top-level product APIs that are secretly bound to one plugin ID</li>
+<li>plugin-specific core mesh stream types when generic plugin channels are sufficient</li>
+</ul>
+<h2 id="open-questions" tabindex="-1">Open Questions</h2>
+<p>The following are intentionally left open for implementation design:</p>
+<ul>
+<li>exact manifest schema</li>
+<li>exact control protocol message shapes</li>
+<li>exact stream framing format</li>
+<li>capability provider selection when multiple plugins implement the same capability</li>
+<li>whether promoted product routes are configured statically or negotiated dynamically</li>
+<li>how auth and policy rules are expressed for plugin-defined HTTP bindings</li>
+</ul>
+<h2 id="architecture-baseline" tabindex="-1">Architecture Baseline</h2>
+<ul>
+<li>bundled plugins may be auto-registered</li>
+<li>core mesh logic remains plugin-agnostic</li>
+<li>MCP and HTTP are first-class host projections</li>
+<li>product APIs depend on capabilities, not plugin IDs</li>
+<li>large data flows use negotiated side streams, not the control socket</li>
+</ul>
+
+  </article>
+  <aside class="docs-toc" aria-label="On this page">
+    <h2>☰ On this page</h2>
+    <a href="#plugins">Plugins</a>
+  </aside>
+</main>
+
+</body>
+</html>

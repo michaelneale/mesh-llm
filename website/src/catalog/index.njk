@@ -1,0 +1,161 @@
+---
+layout: base.njk
+title: Mesh Catalog
+description: Browse mesh-ready models, layer packages, Hugging Face repositories, and run commands for Mesh LLM.
+permalink: /catalog/index.html
+---
+<header class="shell page-hero">
+  <h1>Catalog</h1>
+  <p class="lead">Browse mesh-ready models, layer packages, Hugging Face repositories, hardware guidance, and commands for public or private meshes.</p>
+</header>
+
+<main class="shell catalog">
+  <div class="toolbar" aria-label="Catalog filters">
+    <div class="control">Search models...</div>
+    <div class="control">Capability</div>
+    <div class="control">Runtime</div>
+    <div class="control">Hardware</div>
+    <div class="control">Source</div>
+  </div>
+
+  <div class="table-card">
+    <table id="catalog-table">
+      <thead>
+        <tr>
+          <th>Model</th>
+          <th>Size / quant</th>
+          <th>Run mode</th>
+          <th>Layer packages</th>
+          <th>Links</th>
+          <th>Model ref</th>
+        </tr>
+      </thead>
+      <tbody id="catalog-rows">
+        <tr>
+          <td><strong>Qwen3 32B</strong><br><span>Q4_K_M GGUF</span></td>
+          <td>19.8GB<br><span class="badge">Q4_K_M</span></td>
+          <td>Multi-machine</td>
+          <td><span class="badge green">Available</span></td>
+          <td><a href="https://huggingface.co/">Hugging Face</a></td>
+          <td><code>unsloth/Qwen3-32B-GGUF:Q4_K_M</code></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="note" id="catalog-note">Loading live catalog data from Hugging Face...</p>
+</main>
+
+<script>
+  const catalogRows = document.getElementById('catalog-rows');
+  const catalogNote = document.getElementById('catalog-note');
+  const rowsEndpoint = 'https://datasets-server.huggingface.co/rows?dataset=meshllm%2Fcatalog&config=default&split=train&offset=0&length=100';
+
+  function escapeHtml(value) {
+    return String(value ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#039;');
+  }
+
+  function badge(text, tone = '') {
+    return `<span class="badge ${tone}">${escapeHtml(text)}</span>`;
+  }
+
+  function repoHref(repo) {
+    return `https://huggingface.co/${encodeURIComponent(repo).replaceAll('%2F', '/')}`;
+  }
+
+  function linksCell(row) {
+    const links = [];
+    const sourceRepo = row.source_model_repo || row.source_repo;
+    if (sourceRepo) links.push(`<a href="${repoHref(sourceRepo)}">Source model</a>`);
+    if (row.primary_package_repo) links.push(`<a href="${repoHref(row.primary_package_repo)}">Layer package</a>`);
+    return links.length ? links.join('<br>') : 'Catalog';
+  }
+
+  function layerPackageCell(row) {
+    if (!row.layer_package_available) return '<span class="badge">Not available</span>';
+    const details = row.primary_package_layer_count ? `${row.primary_package_layer_count} layers` : 'Available';
+    return `<div class="badge-row">${badge(details, 'green')}</div>`;
+  }
+
+  function quantFrom(row) {
+    const candidates = [row.source_file, row.name, row.variant_id].filter(Boolean);
+    for (const candidate of candidates) {
+      const parts = String(candidate).split('/');
+      for (const part of parts) {
+        const exact = part.replace(/\.gguf$/i, '');
+        if (/^(?:UD-)?(?:Q\d(?:_[A-Z0-9]+)+|IQ\d(?:_[A-Z0-9]+)+|F16|BF16|F32)$/i.test(exact)) return exact;
+      }
+      const match = String(candidate).match(/(?:^|[-_/])((?:UD-)?(?:Q\d(?:_[A-Z0-9]+)+|IQ\d(?:_[A-Z0-9]+)+|F16|BF16|F32))(?:\.gguf)?$/i);
+      if (match) return match[1];
+    }
+    return '';
+  }
+
+  function sizeCell(row) {
+    const quant = quantFrom(row);
+    const size = row.size || '';
+    if (!quant) return escapeHtml(size);
+    return `${escapeHtml(size)}<br>${badge(quant)}`;
+  }
+
+  function modelRef(row) {
+    const repo = row.source_model_repo || row.source_repo || '';
+    const quant = quantFrom(row) || row.name || row.variant_id || '';
+    if (!repo || !quant) return quant || repo || '';
+    return `${repo}:${quant}`;
+  }
+
+  function runMode(row) {
+    return row.layer_package_available ? 'Multi-machine' : 'Single machine';
+  }
+
+  function copyButton(ref) {
+    return `<button class="button" type="button" data-copy-ref="${escapeHtml(ref)}">Copy</button>`;
+  }
+
+  function renderRows(rows) {
+    catalogRows.innerHTML = rows.map(({ row }) => {
+      const ref = modelRef(row);
+      return `
+        <tr>
+          <td><strong>${escapeHtml(row.name || row.variant_id)}</strong><br><span>${escapeHtml(row.description || row.source_file || '')}</span></td>
+          <td>${sizeCell(row)}</td>
+          <td>${escapeHtml(runMode(row))}</td>
+          <td>${layerPackageCell(row)}</td>
+          <td>${linksCell(row)}</td>
+          <td><code>${escapeHtml(ref)}</code><br>${copyButton(ref)}</td>
+        </tr>
+      `;
+    }).join('');
+    catalogNote.textContent = `Loaded ${rows.length} live catalog entries from Hugging Face.`;
+  }
+
+  document.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-copy-ref]');
+    if (!button) return;
+    const value = button.getAttribute('data-copy-ref');
+    navigator.clipboard.writeText(value).then(() => {
+      const previous = button.textContent;
+      button.textContent = 'Copied';
+      setTimeout(() => { button.textContent = previous; }, 1200);
+    });
+  });
+
+  fetch(rowsEndpoint)
+    .then((response) => {
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response.json();
+    })
+    .then((data) => {
+      if (!Array.isArray(data.rows) || data.rows.length === 0) throw new Error('No rows returned');
+      renderRows(data.rows);
+    })
+    .catch((error) => {
+      catalogNote.innerHTML = `Using static fallback rows. <span class="error">Live Hugging Face catalog unavailable: ${escapeHtml(error.message)}</span>`;
+    });
+</script>

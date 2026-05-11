@@ -1,0 +1,105 @@
+name: Refresh Hugging Face catalog viewer
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade huggingface_hub
+
+      - name: Regenerate and upload Dataset Viewer files
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          CATALOG_REPO: meshllm/catalog
+        run: |
+          if [ -z "${HF_TOKEN}" ]; then
+            echo "HF_TOKEN secret is required to update ${CATALOG_REPO}" >&2
+            exit 1
+          fi
+
+          python - <<'PY'
+          from huggingface_hub import HfApi, hf_hub_download
+          from pathlib import Path
+          import filecmp
+          import os
+          import shutil
+          import subprocess
+          import tempfile
+
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          repo_id = os.environ["CATALOG_REPO"]
+
+          with tempfile.TemporaryDirectory() as tmp:
+              root = Path(tmp)
+              entries_dir = root / "entries"
+              entries_dir.mkdir(parents=True)
+
+              files = api.list_repo_files(repo_id=repo_id, repo_type="dataset")
+              entry_files = sorted(
+                  path for path in files if path.startswith("entries/") and path.endswith(".json")
+              )
+              if not entry_files:
+                  raise SystemExit(f"{repo_id} has no entries/**/*.json files")
+
+              for path in entry_files:
+                  downloaded = hf_hub_download(
+                      repo_id=repo_id,
+                      repo_type="dataset",
+                      filename=path,
+                      token=os.environ["HF_TOKEN"],
+                  )
+                  destination = root / path
+                  destination.parent.mkdir(parents=True, exist_ok=True)
+                  shutil.copyfile(downloaded, destination)
+
+              output_dir = root / "viewer"
+              subprocess.run(
+                  [
+                      "python",
+                      "scripts/generate-hf-catalog-viewer.py",
+                      "--entries-dir",
+                      str(entries_dir),
+                      "--output-dir",
+                      str(output_dir),
+                  ],
+                  check=True,
+              )
+
+              for filename in ["catalog_rows.jsonl", "README.md"]:
+                  generated = output_dir / filename
+                  try:
+                      current = hf_hub_download(
+                          repo_id=repo_id,
+                          repo_type="dataset",
+                          filename=filename,
+                          token=os.environ["HF_TOKEN"],
+                      )
+                      if filecmp.cmp(generated, current, shallow=False):
+                          print(f"unchanged {repo_id}/{filename}")
+                          continue
+                  except Exception:
+                      pass
+
+                  api.upload_file(
+                      repo_id=repo_id,
+                      repo_type="dataset",
+                      path_or_fileobj=str(generated),
+                      path_in_repo=filename,
+                      commit_message="Refresh Dataset Viewer catalog rows",
+                  )
+                  print(f"uploaded {repo_id}/{filename}")
+          PY

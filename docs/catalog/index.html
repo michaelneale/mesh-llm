@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mesh Catalog - Mesh LLM</title>
+  <meta name="description" content="Browse mesh-ready models, layer packages, Hugging Face repositories, and run commands for Mesh LLM.">
+  <link rel="icon" href="/mesh-llm-logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <nav class="nav">
+  <div class="shell nav-inner">
+    <a class="brand" href="/" aria-label="Mesh LLM home"><span class="brand-lockup">
+  <svg class="brand-mark" width="32" height="32" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+    <path d="M32 8c-12.8 0-23 8.2-23 18.4 0 3.1.9 5.9 2.6 8.4l.2.3c2.6-2.5 6.9-4 11.8-4h16.8c4.9 0 9.2 1.5 11.8 4l.2-.3c1.7-2.5 2.6-5.3 2.6-8.4C55 16.2 44.8 8 32 8Z"/>
+    <path d="M11.9 35.8c1.6 2.2 3.6 4.1 6 5.6 2.6 1.6 5.4 2.4 8.3 2.4h11.6c2.9 0 5.8-.8 8.3-2.4 2.4-1.5 4.4-3.4 6-5.6-2.3-2.1-6.4-3.4-10.8-3.4H22.7c-4.4 0-8.5 1.3-10.8 3.4Z"/>
+    <path d="M17.5 38.8c1.3 0 2.3 1 2.3 2.3v8.4c0 1.8-.7 3.2-1.3 4.5-.6 1.2-1.1 2.1-1.1 3.3 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-2 .7-3.4 1.4-4.8.6-1.1 1-2 1-3v-8.4c0-1.3 1-2.3 2.3-2.3Z"/>
+    <path d="M24.5 39.2c1.3 0 2.4 1.1 2.4 2.4v10.8c0 2.2-.8 3.9-1.6 5.4-.8 1.5-1.5 2.8-1.5 4.7 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-2.7 1-4.5 1.9-6.2.7-1.4 1.3-2.5 1.3-3.9V41.6c0-1.3 1.1-2.4 2.4-2.4Z"/>
+    <path d="M32 38.2c1.7 0 3 1.3 3 3v17.6c0 2.1-.7 3.8-1.5 5.2-.5.8-1.5 1.1-2.3.6-.8-.5-1.1-1.5-.6-2.3.6-1 1.1-2 1.1-3.5V41.2c0-1.7 1.3-3 3-3Z"/>
+    <path d="M39.5 39.2c1.3 0 2.4 1.1 2.4 2.4v10.8c0 1.4.6 2.5 1.3 3.9.9 1.7 1.9 3.5 1.9 6.2 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-1.9-.7-3.2-1.5-4.7-.8-1.5-1.6-3.2-1.6-5.4V41.6c0-1.3 1.1-2.4 2.4-2.4Z"/>
+    <path d="M46.5 38.8c1.3 0 2.3 1 2.3 2.3v8.4c0 1 .4 1.9 1 3 .7 1.4 1.4 2.8 1.4 4.8 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-1.2-.5-2.2-1.1-3.3-.6-1.3-1.3-2.7-1.3-4.5v-8.4c0-1.3 1-2.3 2.3-2.3Z"/>
+  </svg>
+  <span class="brand-text"><span>mesh</span>-llm</span>
+</span>
+</a>
+    <div class="nav-links">
+      <a href="/catalog/">Catalog</a>
+      <a href="/docs/">Docs</a>
+      <a href="https://public.meshllm.cloud">Public Mesh</a>
+      <a href="https://github.com/Mesh-LLM/mesh-llm">GitHub</a>
+      <a class="button primary" href="/#install">Install</a>
+    </div>
+  </div>
+</nav>
+
+  <header class="shell page-hero">
+  <h1>Catalog</h1>
+  <p class="lead">Browse mesh-ready models, layer packages, Hugging Face repositories, hardware guidance, and commands for public or private meshes.</p>
+</header>
+
+<main class="shell catalog">
+  <div class="toolbar" aria-label="Catalog filters">
+    <div class="control">Search models...</div>
+    <div class="control">Capability</div>
+    <div class="control">Runtime</div>
+    <div class="control">Hardware</div>
+    <div class="control">Source</div>
+  </div>
+
+  <div class="table-card">
+    <table id="catalog-table">
+      <thead>
+        <tr>
+          <th>Model</th>
+          <th>Size / quant</th>
+          <th>Run mode</th>
+          <th>Layer packages</th>
+          <th>Links</th>
+          <th>Model ref</th>
+        </tr>
+      </thead>
+      <tbody id="catalog-rows">
+        <tr>
+          <td><strong>Qwen3 32B</strong><br><span>Q4_K_M GGUF</span></td>
+          <td>19.8GB<br><span class="badge">Q4_K_M</span></td>
+          <td>Multi-machine</td>
+          <td><span class="badge green">Available</span></td>
+          <td><a href="https://huggingface.co/">Hugging Face</a></td>
+          <td><code>unsloth/Qwen3-32B-GGUF:Q4_K_M</code></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="note" id="catalog-note">Loading live catalog data from Hugging Face...</p>
+</main>
+
+<script>
+  const catalogRows = document.getElementById('catalog-rows');
+  const catalogNote = document.getElementById('catalog-note');
+  const rowsEndpoint = 'https://datasets-server.huggingface.co/rows?dataset=meshllm%2Fcatalog&config=default&split=train&offset=0&length=100';
+
+  function escapeHtml(value) {
+    return String(value ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#039;');
+  }
+
+  function badge(text, tone = '') {
+    return `<span class="badge ${tone}">${escapeHtml(text)}</span>`;
+  }
+
+  function repoHref(repo) {
+    return `https://huggingface.co/${encodeURIComponent(repo).replaceAll('%2F', '/')}`;
+  }
+
+  function linksCell(row) {
+    const links = [];
+    const sourceRepo = row.source_model_repo || row.source_repo;
+    if (sourceRepo) links.push(`<a href="${repoHref(sourceRepo)}">Source model</a>`);
+    if (row.primary_package_repo) links.push(`<a href="${repoHref(row.primary_package_repo)}">Layer package</a>`);
+    return links.length ? links.join('<br>') : 'Catalog';
+  }
+
+  function layerPackageCell(row) {
+    if (!row.layer_package_available) return '<span class="badge">Not available</span>';
+    const details = row.primary_package_layer_count ? `${row.primary_package_layer_count} layers` : 'Available';
+    return `<div class="badge-row">${badge(details, 'green')}</div>`;
+  }
+
+  function quantFrom(row) {
+    const candidates = [row.source_file, row.name, row.variant_id].filter(Boolean);
+    for (const candidate of candidates) {
+      const parts = String(candidate).split('/');
+      for (const part of parts) {
+        const exact = part.replace(/\.gguf$/i, '');
+        if (/^(?:UD-)?(?:Q\d(?:_[A-Z0-9]+)+|IQ\d(?:_[A-Z0-9]+)+|F16|BF16|F32)$/i.test(exact)) return exact;
+      }
+      const match = String(candidate).match(/(?:^|[-_/])((?:UD-)?(?:Q\d(?:_[A-Z0-9]+)+|IQ\d(?:_[A-Z0-9]+)+|F16|BF16|F32))(?:\.gguf)?$/i);
+      if (match) return match[1];
+    }
+    return '';
+  }
+
+  function sizeCell(row) {
+    const quant = quantFrom(row);
+    const size = row.size || '';
+    if (!quant) return escapeHtml(size);
+    return `${escapeHtml(size)}<br>${badge(quant)}`;
+  }
+
+  function modelRef(row) {
+    const repo = row.source_model_repo || row.source_repo || '';
+    const quant = quantFrom(row) || row.name || row.variant_id || '';
+    if (!repo || !quant) return quant || repo || '';
+    return `${repo}:${quant}`;
+  }
+
+  function runMode(row) {
+    return row.layer_package_available ? 'Multi-machine' : 'Single machine';
+  }
+
+  function copyButton(ref) {
+    return `<button class="button" type="button" data-copy-ref="${escapeHtml(ref)}">Copy</button>`;
+  }
+
+  function renderRows(rows) {
+    catalogRows.innerHTML = rows.map(({ row }) => {
+      const ref = modelRef(row);
+      return `
+        <tr>
+          <td><strong>${escapeHtml(row.name || row.variant_id)}</strong><br><span>${escapeHtml(row.description || row.source_file || '')}</span></td>
+          <td>${sizeCell(row)}</td>
+          <td>${escapeHtml(runMode(row))}</td>
+          <td>${layerPackageCell(row)}</td>
+          <td>${linksCell(row)}</td>
+          <td><code>${escapeHtml(ref)}</code><br>${copyButton(ref)}</td>
+        </tr>
+      `;
+    }).join('');
+    catalogNote.textContent = `Loaded ${rows.length} live catalog entries from Hugging Face.`;
+  }
+
+  document.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-copy-ref]');
+    if (!button) return;
+    const value = button.getAttribute('data-copy-ref');
+    navigator.clipboard.writeText(value).then(() => {
+      const previous = button.textContent;
+      button.textContent = 'Copied';
+      setTimeout(() => { button.textContent = previous; }, 1200);
+    });
+  });
+
+  fetch(rowsEndpoint)
+    .then((response) => {
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response.json();
+    })
+    .then((data) => {
+      if (!Array.isArray(data.rows) || data.rows.length === 0) throw new Error('No rows returned');
+      renderRows(data.rows);
+    })
+    .catch((error) => {
+      catalogNote.innerHTML = `Using static fallback rows. <span class="error">Live Hugging Face catalog unavailable: ${escapeHtml(error.message)}</span>`;
+    });
+</script>
+
+  <footer class="footer">
+  <div class="shell">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a class="brand" href="/" aria-label="Mesh LLM home"><span class="brand-lockup">
+  <svg class="brand-mark" width="32" height="32" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+    <path d="M32 8c-12.8 0-23 8.2-23 18.4 0 3.1.9 5.9 2.6 8.4l.2.3c2.6-2.5 6.9-4 11.8-4h16.8c4.9 0 9.2 1.5 11.8 4l.2-.3c1.7-2.5 2.6-5.3 2.6-8.4C55 16.2 44.8 8 32 8Z"/>
+    <path d="M11.9 35.8c1.6 2.2 3.6 4.1 6 5.6 2.6 1.6 5.4 2.4 8.3 2.4h11.6c2.9 0 5.8-.8 8.3-2.4 2.4-1.5 4.4-3.4 6-5.6-2.3-2.1-6.4-3.4-10.8-3.4H22.7c-4.4 0-8.5 1.3-10.8 3.4Z"/>
+    <path d="M17.5 38.8c1.3 0 2.3 1 2.3 2.3v8.4c0 1.8-.7 3.2-1.3 4.5-.6 1.2-1.1 2.1-1.1 3.3 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-2 .7-3.4 1.4-4.8.6-1.1 1-2 1-3v-8.4c0-1.3 1-2.3 2.3-2.3Z"/>
+    <path d="M24.5 39.2c1.3 0 2.4 1.1 2.4 2.4v10.8c0 2.2-.8 3.9-1.6 5.4-.8 1.5-1.5 2.8-1.5 4.7 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-2.7 1-4.5 1.9-6.2.7-1.4 1.3-2.5 1.3-3.9V41.6c0-1.3 1.1-2.4 2.4-2.4Z"/>
+    <path d="M32 38.2c1.7 0 3 1.3 3 3v17.6c0 2.1-.7 3.8-1.5 5.2-.5.8-1.5 1.1-2.3.6-.8-.5-1.1-1.5-.6-2.3.6-1 1.1-2 1.1-3.5V41.2c0-1.7 1.3-3 3-3Z"/>
+    <path d="M39.5 39.2c1.3 0 2.4 1.1 2.4 2.4v10.8c0 1.4.6 2.5 1.3 3.9.9 1.7 1.9 3.5 1.9 6.2 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-1.9-.7-3.2-1.5-4.7-.8-1.5-1.6-3.2-1.6-5.4V41.6c0-1.3 1.1-2.4 2.4-2.4Z"/>
+    <path d="M46.5 38.8c1.3 0 2.3 1 2.3 2.3v8.4c0 1 .4 1.9 1 3 .7 1.4 1.4 2.8 1.4 4.8 0 .9-.8 1.6-1.6 1.6-.9 0-1.6-.8-1.6-1.6 0-1.2-.5-2.2-1.1-3.3-.6-1.3-1.3-2.7-1.3-4.5v-8.4c0-1.3 1-2.3 2.3-2.3Z"/>
+  </svg>
+  <span class="brand-text"><span>mesh</span>-llm</span>
+</span>
+</a>
+        <p>Run bigger local models by linking the machines you already have.</p>
+      </div>
+      <div class="footer-col">
+        <h2>Product</h2>
+        <a href="/catalog/">Catalog</a>
+        <a href="https://public.meshllm.cloud">Public Mesh</a>
+        <a href="/#install">Install</a>
+      </div>
+      <div class="footer-col">
+        <h2>Docs</h2>
+        <a href="/docs/">Documentation</a>
+        <a href="/docs/pages/installing-mesh/">Installing Mesh</a>
+        <a href="/docs/pages/CLI/">CLI reference</a>
+      </div>
+      <div class="footer-col">
+        <h2>Models</h2>
+        <a href="/catalog/">Mesh-ready models</a>
+        <a href="/docs/pages/contributing-layer-packages/">Layer packages</a>
+        <a href="/docs/pages/certifying-model-families/">Family certification</a>
+        <a href="/docs/pages/running-large-models/">Large models</a>
+      </div>
+      <div class="footer-col">
+        <h2>Project</h2>
+        <a href="https://github.com/Mesh-LLM/mesh-llm">GitHub</a>
+        <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/ROADMAP.md">Roadmap</a>
+        <a href="https://github.com/Mesh-LLM/mesh-llm/blob/main/LICENSE">License</a>
+      </div>
+    </div>
+    <div class="footer-bottom">Mesh LLM is open source under MIT. Built with Rust, QUIC networking, and llama.cpp.</div>
+  </div>
+</footer>
+
+</body>
+</html>

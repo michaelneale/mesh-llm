@@ -1,0 +1,27 @@
+<aside class="docs-sidebar" aria-label="Documentation navigation">
+  <div class="docs-sidebar-inner">
+    <div class="docs-search docs-sidebar-search" aria-label="Search">Search... <span>⌘K</span></div>
+    {% for group in docs %}
+      <section class="docs-nav-group">
+        <h2>{{ group.title }}</h2>
+        {% for link in group.links %}
+          <a href="{{ link[1] }}"{% if page.url == link[1] %} aria-current="page"{% endif %}>{{ link[0] }}</a>
+        {% endfor %}
+      </section>
+    {% endfor %}
+  </div>
+</aside>
+
+<details class="docs-mobile-nav">
+  <summary>Navigation</summary>
+  <div class="docs-mobile-nav-panel">
+    {% for group in docs %}
+      <section class="docs-nav-group">
+        <h2>{{ group.title }}</h2>
+        {% for link in group.links %}
+          <a href="{{ link[1] }}"{% if page.url == link[1] %} aria-current="page"{% endif %}>{{ link[0] }}</a>
+        {% endfor %}
+      </section>
+    {% endfor %}
+  </div>
+</details>

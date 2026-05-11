@@ -22,3 +22,9 @@ __pycache__/
 dist/MeshLLMFFI.xcframework.zip
 sdk/swift/Generated/MeshLLMFFI.xcframework/
 .impeccable.md
+website/node_modules/
+website/.cache/
+website/.eleventy-cache/
+website/output/
+output/
+.tmp/
