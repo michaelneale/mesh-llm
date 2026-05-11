@@ -85,11 +85,27 @@ export interface PeerInfo {
 
 export type MeshPublicationState = 'private' | 'public' | 'publish_failed'
 
+export interface RuntimeStageInfo {
+  stage_id: string
+  model_id: string
+  node_id: string
+  layer_start: number
+  layer_end: number
+  state: string
+}
+
+export interface RuntimeInfo {
+  backend?: string
+  models?: { name: string; status: string; port?: number }[]
+  stages?: RuntimeStageInfo[]
+}
+
 export interface StatusPayload {
   node_id: string
   node_state: 'client' | 'standby' | 'loading' | 'serving'
   model_name: string
   llama_ready?: boolean
+  runtime?: RuntimeInfo
   peers: PeerInfo[]
   models: MeshModelRaw[]
   my_vram_gb: number

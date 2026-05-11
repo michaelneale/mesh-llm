@@ -172,17 +172,26 @@ function adaptPeer(peer: PeerInfo, fallbackIndex: number): Peer {
   }
 }
 
+function isSplitParticipant(payload: StatusPayload): boolean {
+  const stages = payload.runtime?.stages ?? []
+  return stages.some((s) => s.node_id === payload.node_id || s.node_id.startsWith(payload.node_id))
+}
+
 function adaptSelfPeer(payload: StatusPayload): Peer {
+  const splitParticipant = isSplitParticipant(payload)
   const servingModels = normalizeModelList([
     ...payload.serving_models.map(servingModelName),
     payload.node_state === 'serving' ? payload.model_name : undefined
   ])
 
+  // A split worker is in standby but actively participating — treat it as serving
+  const effectiveState = splitParticipant && payload.node_state === 'standby' ? 'serving' : payload.node_state
+
   return {
     id: payload.node_id,
     hostname: payload.hostname ?? payload.my_hostname ?? 'localhost',
     region: payload.region ?? '',
-    status: mapNodeState(payload.node_state),
+    status: mapNodeState(effectiveState),
     hostedModels: servingModels,
     sharePct: 0,
     latencyMs: 0,
@@ -192,7 +201,7 @@ function adaptSelfPeer(payload: StatusPayload): Peer {
     loadPct: payload.load_pct ?? 0,
     shortId: payload.node_id.slice(0, 8),
     role: 'you' as const,
-    nodeState: payload.node_state,
+    nodeState: effectiveState,
     version: payload.version,
     vramGB: payload.my_vram_gb,
     toksPerSec: payload.tok_per_sec

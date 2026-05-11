@@ -164,6 +164,21 @@ export type WakeableNode = {
   wake_eta_secs?: number
 }
 
+export type RuntimeStage = {
+  stage_id: string
+  model_id: string
+  node_id: string
+  layer_start: number
+  layer_end: number
+  state: string
+}
+
+export type RuntimeInfo = {
+  backend?: string
+  models?: { name: string; status: string; port?: number }[]
+  stages?: RuntimeStage[]
+}
+
 export type StatusPayload = {
   version?: string
   latest_version?: string | null
@@ -175,6 +190,7 @@ export type StatusPayload = {
   is_host: boolean
   is_client: boolean
   llama_ready: boolean
+  runtime?: RuntimeInfo
   model_name: string
   models?: string[]
   available_models?: string[]
