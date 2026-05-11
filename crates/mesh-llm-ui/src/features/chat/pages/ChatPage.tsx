@@ -438,6 +438,10 @@ function modelStatusBadge(model: ModelSummary): ModelSelectOption['status'] {
   return { label: 'Warm', tone: 'good' }
 }
 
+function isChatSelectableModel(model: ModelSummary): boolean {
+  return model.status === 'ready' || model.status === 'warm'
+}
+
 export function ChatPageContent({ data = CHAT_HARNESS }: ChatPageProps) {
   const { mode, setMode } = useDataMode()
   const liveMode = mode === 'live'
@@ -447,9 +451,10 @@ export function ChatPageContent({ data = CHAT_HARNESS }: ChatPageProps) {
   const liveModels = modelsQuery.data ? adaptModelsToSummary(modelsQuery.data.mesh_models) : undefined
   const resolvedModels = liveMode ? liveModels : data.models
   const displayModels = resolvedModels ?? data.models
+  const selectableModels = useMemo(() => displayModels.filter(isChatSelectableModel), [displayModels])
   const showLiveError = liveMode && !liveModels && !modelsQuery.isFetching && modelsQuery.isError
   const showLiveLoading = liveMode && !liveModels && !showLiveError
-  const warmModelCount = liveModels?.filter((m) => m.status === 'ready' || m.status === 'warm').length ?? 0
+  const warmModelCount = liveModels?.filter(isChatSelectableModel).length ?? 0
   const canChat =
     !liveMode ||
     (liveStatus?.llama_ready ?? false) ||
@@ -463,7 +468,7 @@ export function ChatPageContent({ data = CHAT_HARNESS }: ChatPageProps) {
   const [systemPromptDraft, setSystemPromptDraft] = useState('')
   const [composerDrafts, setComposerDrafts] = useState<Record<string, ConversationComposerDraft>>({})
   const [model, setModel] = useState('')
-  const modelExists = displayModels.some((item) => item.name === model)
+  const modelExists = selectableModels.some((item) => item.name === model)
   const activeModelName = model === AUTO_MODEL_VALUE ? AUTO_MODEL_VALUE : modelExists ? model : AUTO_MODEL_VALUE
   const [queuedSubmissions, setQueuedSubmissions] = useState<QueuedSubmission[]>([])
   const [attachmentProcessingStatus, setAttachmentProcessingStatus] = useState<AttachmentProcessingStatus | null>(null)
@@ -626,14 +631,14 @@ export function ChatPageContent({ data = CHAT_HARNESS }: ChatPageProps) {
   const options = useMemo<ModelSelectOption[]>(
     () => [
       AUTO_MODEL_OPTION,
-      ...displayModels.map((item) => ({
+      ...selectableModels.map((item) => ({
         value: item.name,
         label: item.name,
         meta: `${item.family} · ${item.context}`,
         status: modelStatusBadge(item)
       }))
     ],
-    [displayModels]
+    [selectableModels]
   )
   const canRetry = hasLastUserTurn(activeMessages.map((message) => ({ role: message.messageRole })))
 
