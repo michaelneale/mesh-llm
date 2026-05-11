@@ -598,11 +598,41 @@ pub(super) async fn start_runtime_split_model(
     let stage0 = stages
         .first()
         .context("split topology did not produce stage 0")?;
+    tracing::info!(
+        model_ref,
+        topology_id,
+        run_id,
+        context_length = planned_topology.context_length,
+        parallel_lanes = planned_topology.slots,
+        local_node = %spec.node.id().fmt_short(),
+        elected_coordinator = %stage0.node_id.fmt_short(),
+        stages = ?split_stage_plan_labels(&stages),
+        participants = ?split_participant_labels(&planned_participants),
+        excluded = ?split_participant_exclusion_labels(&participant_snapshot.excluded),
+        "split topology planned; elected coordinator from stage 0"
+    );
     if stage0.node_id != spec.node.id() {
+        tracing::info!(
+            model_ref,
+            topology_id,
+            run_id,
+            local_node = %spec.node.id().fmt_short(),
+            elected_coordinator = %stage0.node_id.fmt_short(),
+            "split topology election selected a remote coordinator; local node entering standby"
+        );
         return Ok(SplitRuntimeStart::Standby {
             coordinator: stage0.node_id,
         });
     }
+    tracing::info!(
+        model_ref,
+        topology_id,
+        run_id,
+        local_node = %spec.node.id().fmt_short(),
+        context_length = planned_topology.context_length,
+        parallel_lanes = planned_topology.slots,
+        "split topology election selected local node as coordinator"
+    );
 
     let ctx_size = planned_topology.context_length;
     let slots = planned_topology.slots;
@@ -1076,7 +1106,21 @@ async fn claim_split_coordinator_lease(
     let claim = split_coordinator_claim(node.id(), model_ref, package, generation);
     let required_accepts = skippy_coordinator::quorum_requirement(generation.stages.len());
     let mut accepted = 0usize;
+    let mut accepted_nodes = Vec::new();
     let mut errors = Vec::new();
+    tracing::info!(
+        model_ref,
+        topology_id = generation.topology_id,
+        run_id = generation.run_id,
+        generation = generation.generation,
+        coordinator_term = generation.coordinator_term,
+        coordinator = %node.id().fmt_short(),
+        planned_stages = generation.stages.len(),
+        required_accepts,
+        stages = ?split_stage_plan_labels(&generation.stages),
+        participants = ?split_participant_labels(&generation.participants),
+        "claiming split topology coordinator lease"
+    );
 
     for stage in &generation.stages {
         let request = skippy::StageControlRequest::Claim(claim.clone());
@@ -1088,21 +1132,58 @@ async fn claim_split_coordinator_lease(
         match response {
             Ok(skippy::StageControlResponse::ClaimAccepted(ack)) if ack.accepted => {
                 accepted += 1;
+                accepted_nodes.push(stage.node_id);
+                tracing::debug!(
+                    model_ref,
+                    topology_id = generation.topology_id,
+                    generation = generation.generation,
+                    stage_id = stage.stage_id,
+                    stage_node = %stage.node_id.fmt_short(),
+                    "split topology coordinator claim accepted by stage"
+                );
             }
             Ok(skippy::StageControlResponse::ClaimAccepted(ack)) => {
+                let error = ack.error.unwrap_or_else(|| "unknown rejection".to_string());
+                tracing::warn!(
+                    model_ref,
+                    topology_id = generation.topology_id,
+                    generation = generation.generation,
+                    stage_id = stage.stage_id,
+                    stage_node = %stage.node_id.fmt_short(),
+                    error = %error,
+                    "split topology coordinator claim rejected by stage"
+                );
                 errors.push(format!(
                     "{} rejected claim: {}",
                     stage.node_id.fmt_short(),
-                    ack.error.unwrap_or_else(|| "unknown rejection".to_string())
+                    error
                 ));
             }
             Ok(other) => {
+                tracing::warn!(
+                    model_ref,
+                    topology_id = generation.topology_id,
+                    generation = generation.generation,
+                    stage_id = stage.stage_id,
+                    stage_node = %stage.node_id.fmt_short(),
+                    response = ?other,
+                    "split topology coordinator claim returned unexpected response"
+                );
                 errors.push(format!(
                     "{} returned unexpected claim response: {other:?}",
                     stage.node_id.fmt_short()
                 ));
             }
             Err(err) => {
+                tracing::warn!(
+                    model_ref,
+                    topology_id = generation.topology_id,
+                    generation = generation.generation,
+                    stage_id = stage.stage_id,
+                    stage_node = %stage.node_id.fmt_short(),
+                    error = %err,
+                    "split topology coordinator claim failed for stage"
+                );
                 errors.push(format!(
                     "{} claim failed: {err:#}",
                     stage.node_id.fmt_short()
@@ -1116,6 +1197,17 @@ async fn claim_split_coordinator_lease(
         "coordinator claim for {model_ref} accepted by {accepted}/{} planned stage(s), need {required_accepts}: {}",
         generation.stages.len(),
         errors.join("; ")
+    );
+    tracing::info!(
+        model_ref,
+        topology_id = generation.topology_id,
+        run_id = generation.run_id,
+        generation = generation.generation,
+        coordinator_term = generation.coordinator_term,
+        accepted,
+        required_accepts,
+        accepted_nodes = ?split_node_labels(&accepted_nodes),
+        "split topology coordinator lease quorum reached"
     );
     Ok(())
 }
@@ -1444,14 +1536,19 @@ impl SplitTopologyCoordinator {
             return true;
         };
 
-        match split_replan_decision(&self.active, &candidate) {
+        let (replan_decision, replan_decision_reason) =
+            split_replan_decision_with_reason(&self.active, &candidate);
+        match replan_decision {
             SplitReplanDecision::Keep => {
                 tracing::debug!(
                     model_ref = self.model_ref,
                     reason,
+                    decision_reason = replan_decision_reason,
                     active_generation = self.active.generation,
                     active_stages = self.active.stages.len(),
                     candidate_stages = candidate.stages.len(),
+                    active_participants = self.active.participants.len(),
+                    candidate_participants = candidate.participants.len(),
                     "split topology replan skipped; candidate is not materially better"
                 );
             }
@@ -1459,6 +1556,7 @@ impl SplitTopologyCoordinator {
                 tracing::info!(
                     model_ref = self.model_ref,
                     reason,
+                    decision_reason = replan_decision_reason,
                     active_topology_id = self.active.topology_id,
                     active_generation = self.active.generation,
                     candidate_topology_id = candidate.topology_id,
@@ -1632,27 +1730,41 @@ impl SplitTopologyCoordinator {
     }
 }
 
+#[cfg(test)]
 fn split_replan_decision(
     active: &SplitTopologyGeneration,
     candidate: &SplitTopologyGeneration,
 ) -> SplitReplanDecision {
+    split_replan_decision_with_reason(active, candidate).0
+}
+
+fn split_replan_decision_with_reason(
+    active: &SplitTopologyGeneration,
+    candidate: &SplitTopologyGeneration,
+) -> (SplitReplanDecision, &'static str) {
     if split_active_stage_participant_missing(active, &candidate.participants) {
-        return SplitReplanDecision::Candidate;
+        return (
+            SplitReplanDecision::Candidate,
+            "active_stage_participant_missing",
+        );
     }
     if candidate.stages.len() > active.stages.len() {
-        return SplitReplanDecision::Candidate;
+        return (SplitReplanDecision::Candidate, "candidate_has_more_stages");
     }
     if candidate.participants.len() > active.participants.len()
         && candidate.stages.len() == active.stages.len()
     {
-        return SplitReplanDecision::Candidate;
+        return (
+            SplitReplanDecision::Candidate,
+            "candidate_has_more_participants",
+        );
     }
     if split_stage_node_signature(&candidate.stages) != split_stage_node_signature(&active.stages)
         && split_stage_balance_score(&candidate.stages) < split_stage_balance_score(&active.stages)
     {
-        return SplitReplanDecision::Candidate;
+        return (SplitReplanDecision::Candidate, "candidate_improves_balance");
     }
-    SplitReplanDecision::Keep
+    (SplitReplanDecision::Keep, "candidate_not_materially_better")
 }
 
 fn split_loss_recovery_decision(
@@ -3614,6 +3726,10 @@ mod tests {
             split_replan_decision(&active, &candidate),
             SplitReplanDecision::Candidate
         );
+        assert_eq!(
+            split_replan_decision_with_reason(&active, &candidate),
+            (SplitReplanDecision::Candidate, "candidate_has_more_stages")
+        );
     }
 
     #[test]
@@ -3645,6 +3761,10 @@ mod tests {
         assert_eq!(
             split_replan_decision(&active, &candidate),
             SplitReplanDecision::Keep
+        );
+        assert_eq!(
+            split_replan_decision_with_reason(&active, &candidate),
+            (SplitReplanDecision::Keep, "candidate_not_materially_better")
         );
     }
 
