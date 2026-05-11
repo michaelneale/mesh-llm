@@ -231,14 +231,13 @@ impl Node {
         {
             let conn = self.state.lock().await.connections.get(&remote).cloned();
             if let Some(conn) = conn {
-                let mut paths = conn.paths();
-                let path_list = iroh::Watcher::get(&mut paths);
-                for path_info in path_list {
+                let path_list = conn.paths();
+                for path_info in &path_list {
                     if path_info.is_selected() {
-                        let path_rtt_ms = match path_info.rtt() {
-                            Some(rtt) => rtt.as_millis() as u32,
-                            None => continue,
-                        };
+                        let path_rtt_ms = path_info.rtt().as_millis() as u32;
+                        if path_rtt_ms == 0 {
+                            continue;
+                        }
                         let path_type = if path_info.is_ip() { "direct" } else { "relay" };
                         if path_rtt_ms > 0 && path_rtt_ms < rtt_ms {
                             super::emit_mesh_info(format!(
@@ -331,14 +330,13 @@ impl Node {
         {
             let conn = self.state.lock().await.connections.get(&remote).cloned();
             if let Some(conn) = conn {
-                let mut paths = conn.paths();
-                let path_list = iroh::Watcher::get(&mut paths);
-                for path_info in path_list {
+                let path_list = conn.paths();
+                for path_info in &path_list {
                     if path_info.is_selected() {
-                        let rtt_ms = match path_info.rtt() {
-                            Some(rtt) => rtt.as_millis() as u32,
-                            None => continue,
-                        };
+                        let rtt_ms = path_info.rtt().as_millis() as u32;
+                        if rtt_ms == 0 {
+                            continue;
+                        }
                         let path_type = if path_info.is_ip() { "direct" } else { "relay" };
                         if rtt_ms > 0 {
                             super::emit_mesh_info(format!(

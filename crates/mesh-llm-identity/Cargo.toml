@@ -10,7 +10,7 @@ readme = "README.md"
 
 [dependencies]
 crypto_box = "0.9"
-ed25519-dalek = { version = "=3.0.0-pre.6", features = ["rand_core"] }
+ed25519-dalek = { version = "=3.0.0-pre.7", features = ["rand_core"] }
 hex = "0.4"
 rand = "0.10"
 serde.workspace = true

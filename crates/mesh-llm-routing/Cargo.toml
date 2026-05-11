@@ -11,4 +11,4 @@ keywords = ["llm", "mesh", "routing", "inference"]
 categories = ["network-programming"]
 
 [dependencies]
-iroh = "0.98"
+iroh = "1.0.0-rc.0"

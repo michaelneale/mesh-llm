@@ -85,17 +85,21 @@ impl RelayReconnectReason {
 }
 
 pub(super) fn selected_path_snapshot(conn: &Connection) -> RelayPathSnapshot {
-    let mut paths = conn.paths();
-    let path_list = iroh::Watcher::get(&mut paths);
-    for path_info in path_list {
+    let path_list = conn.paths();
+    for path_info in &path_list {
         if path_info.is_selected() {
+            let rtt = path_info.rtt();
             return RelayPathSnapshot {
                 kind: if path_info.is_ip() {
                     SelectedPathKind::Direct
                 } else {
                     SelectedPathKind::Relay
                 },
-                rtt_ms: path_info.rtt().map(|rtt| rtt.as_millis() as u32),
+                rtt_ms: if rtt.is_zero() {
+                    None
+                } else {
+                    Some(rtt.as_millis() as u32)
+                },
             };
         }
     }
@@ -198,11 +202,11 @@ impl Node {
                 };
 
                 for (peer_id, conn) in connections {
-                    let mut paths = conn.paths();
-                    let path_list = iroh::Watcher::get(&mut paths);
-                    for path_info in path_list {
+                    let path_list = conn.paths();
+                    for path_info in &path_list {
                         if path_info.is_selected() {
-                            if let Some(rtt) = path_info.rtt() {
+                            let rtt = path_info.rtt();
+                            if !rtt.is_zero() {
                                 let rtt_ms = rtt.as_millis() as u32;
                                 node.update_peer_rtt(peer_id, rtt_ms).await;
                             }

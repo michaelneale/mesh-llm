@@ -23,7 +23,7 @@ skippy-coordinator = { path = "../skippy-coordinator" }
 skippy-runtime = { path = "../skippy-runtime" }
 skippy-server = { path = "../skippy-server" }
 skippy-topology = { path = "../skippy-topology" }
-iroh = "0.98"
+iroh = "1.0.0-rc.0"
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
@@ -46,7 +46,7 @@ rustls = "0.23.36"
 reqwest = { version = "0.12", features = ["stream", "json"] }
 semver = "1"
 sha2 = "0.10"
-ed25519-dalek = { version = "=3.0.0-pre.6", features = ["rand_core"] }
+ed25519-dalek = { version = "=3.0.0-pre.7", features = ["rand_core"] }
 crypto_box = "0.9"
 chacha20poly1305 = "0.10"
 argon2 = "0.5"
