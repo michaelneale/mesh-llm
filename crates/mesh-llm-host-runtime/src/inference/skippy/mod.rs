@@ -55,6 +55,7 @@ pub(crate) use stage::{
     StageRuntimeState, StageStatusAck, StageStatusFilter, StageStatusSnapshot, StageStopRequest,
     StageWireDType,
 };
+#[cfg(test)]
 pub(crate) use topology::{plan_package_identity_topology, StageTopologyParticipant};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

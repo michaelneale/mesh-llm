@@ -5,6 +5,7 @@ pub mod instance;
 mod interactive;
 mod local;
 mod proxy;
+mod split_planning;
 mod survey;
 pub(crate) mod wakeable;
 
@@ -1029,7 +1030,6 @@ struct StartupLocalModelTask {
     n_batch: Option<u32>,
     n_ubatch: Option<u32>,
     flash_attention: FlashAttentionType,
-    slots: usize,
     parallel_override: Option<usize>,
     split: bool,
     survey_telemetry: survey::SurveyTelemetry,
@@ -1066,7 +1066,6 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         n_batch,
         n_ubatch,
         flash_attention,
-        slots,
         parallel_override,
         split,
         survey_telemetry,
@@ -1137,7 +1136,6 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         n_batch_override: n_batch,
         n_ubatch_override: n_ubatch,
         flash_attention_override: flash_attention,
-        slots,
         parallel_override,
     };
     let mut launch_started: Instant;
@@ -1443,7 +1441,6 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                             n_batch_override: n_batch,
                             n_ubatch_override: n_ubatch,
                             flash_attention_override: flash_attention,
-                            slots,
                             parallel_override,
                         }, &model_ref)
                         .await
@@ -4745,7 +4742,6 @@ async fn run_auto(
         .as_ref()
         .and_then(|m| m.parallel)
         .or(config.gpu.parallel);
-    let primary_slots = primary_parallel_override.unwrap_or(4);
     let model_name_for_election = model_name.clone();
     let primary_target_tx = target_tx.clone();
     let console_state_for_election = console_state.clone();
@@ -4822,7 +4818,6 @@ async fn run_auto(
         n_batch: primary_n_batch,
         n_ubatch: primary_n_ubatch,
         flash_attention: primary_flash_attention,
-        slots: primary_slots,
         parallel_override: primary_parallel_override,
         split: startup_split,
         survey_telemetry: survey_telemetry_for_primary,
@@ -4883,7 +4878,6 @@ async fn run_auto(
             let extra_model_name = extra_name.clone();
             let api_port_extra = api_port;
             let extra_parallel_override = extra_model.parallel.or(config.gpu.parallel);
-            let extra_slots = extra_parallel_override.unwrap_or(4);
             let extra_console_state = console_state.clone();
             let extra_startup_ready_reporter = startup_ready_reporter.clone();
             let extra_startup_load_gate = startup_load_gate.clone();
@@ -4915,7 +4909,6 @@ async fn run_auto(
                     n_batch: extra_n_batch,
                     n_ubatch: extra_n_ubatch,
                     flash_attention: extra_flash_attention,
-                    slots: extra_slots,
                     parallel_override: extra_parallel_override,
                     split: startup_split,
                     survey_telemetry: extra_survey_telemetry,
@@ -5065,7 +5058,6 @@ async fn run_auto(
                             let parallel_override = model_overrides
                                 .and_then(|m| m.parallel)
                                 .or(config.gpu.parallel);
-                            let slots = parallel_override.unwrap_or(4);
 
                             let instance_id =
                                 next_runtime_instance_id(&mut next_runtime_instance_sequence);
@@ -5089,7 +5081,6 @@ async fn run_auto(
                                     flash_attention_override: model_overrides
                                         .and_then(|m| m.flash_attention)
                                         .unwrap_or(FlashAttentionType::Auto),
-                                    slots,
                                     parallel_override,
                                 },
                                 &runtime_model_name,

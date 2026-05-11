@@ -1,6 +1,10 @@
 use super::context_planning::{
     plan_runtime_resources, RuntimeResourcePlan, RuntimeResourcePlanInput,
 };
+use super::split_planning::{
+    default_runtime_headroom_bytes, plan_split_topology, SplitTopologyPlanInput,
+    SplitTopologyPlanNode,
+};
 use crate::api;
 use crate::inference::{election, skippy};
 use crate::mesh::{self, NodeRole};
@@ -143,7 +147,6 @@ pub(super) struct LocalRuntimeModelStartSpec<'a> {
     pub(super) n_batch_override: Option<u32>,
     pub(super) n_ubatch_override: Option<u32>,
     pub(super) flash_attention_override: FlashAttentionType,
-    pub(super) slots: usize,
     pub(super) parallel_override: Option<usize>,
 }
 
@@ -549,14 +552,42 @@ pub(super) async fn start_runtime_split_model(
     .await?;
     let run_id = format!("mesh-split-{}", now_unix_nanos());
     let topology_id = format!("topology-{run_id}");
-    let planned_participants = participant_snapshot.participants.clone();
-    let stages = plan_runtime_slice_topology_with_exclusions(
+    let compact_meta = {
+        let pkg = package.clone();
+        tokio::task::spawn_blocking(move || scan_layer_package_metadata(&pkg))
+            .await
+            .ok()
+            .flatten()
+    }
+    .context("split topology planning requires GGUF metadata")?;
+    let kv_cache_quant =
+        if spec.cache_type_k_override.is_some() || spec.cache_type_v_override.is_some() {
+            let k = spec.cache_type_k_override.unwrap_or("q8_0");
+            let v = spec.cache_type_v_override.unwrap_or("q8_0");
+            models::gguf::GgufKvCacheQuant::from_llama_args(k, v)
+                .unwrap_or(models::gguf::GgufKvCacheQuant::Q8_0)
+        } else {
+            models::gguf::GgufKvCacheQuant::Q8_0
+        };
+    let kv_bytes_per_token = kv_cache_quant
+        .kv_cache_bytes_per_token(&compact_meta)
+        .context("split topology planning requires KV cache byte metadata")?;
+    let planned_topology = plan_runtime_slice_topology_with_resources(
         &topology_id,
         model_ref,
         &package,
-        &planned_participants,
+        &participant_snapshot.participants,
         &participant_snapshot.excluded,
+        SplitTopologyResourceInputs {
+            native_context_length: compact_meta.context_length,
+            kv_bytes_per_token,
+            ctx_size_override: spec.ctx_size_override,
+            parallel_override: spec.parallel_override,
+        },
     )?;
+    let stages = planned_topology.stages;
+    let planned_participants =
+        split_participants_for_stages(&participant_snapshot.participants, &stages);
     anyhow::ensure!(
         split_stages_meet_minimum(&stages),
         "split runtime needs at least two stage participants"
@@ -570,50 +601,8 @@ pub(super) async fn start_runtime_split_model(
         });
     }
 
-    // ── Context planning for splits ──────────────────────────────────
-    // The solo path runs plan_runtime_resources before reaching here.
-    // The split path historically hardcoded 4096 — we now run the same
-    // planner with split-aware inputs so that local-layer-fraction
-    // budgeting produces a useful context window.
-    let local_layer_fraction = if package.layer_count > 0 {
-        let my_layers = stage0.layer_end.saturating_sub(stage0.layer_start);
-        Some(f64::from(my_layers) / f64::from(package.layer_count))
-    } else {
-        None
-    };
-    let compact_meta = {
-        let pkg = package.clone();
-        tokio::task::spawn_blocking(move || scan_layer_package_metadata(&pkg))
-            .await
-            .ok()
-            .flatten()
-    };
-    let total_model_bytes = package.source_model_bytes;
-    let local_model_bytes = if let Some(frac) = local_layer_fraction {
-        (total_model_bytes as f64 * frac) as u64
-    } else {
-        total_model_bytes
-    };
-    let kv_cache_quant =
-        if spec.cache_type_k_override.is_some() || spec.cache_type_v_override.is_some() {
-            let k = spec.cache_type_k_override.unwrap_or("q8_0");
-            let v = spec.cache_type_v_override.unwrap_or("q8_0");
-            models::gguf::GgufKvCacheQuant::from_llama_args(k, v)
-                .unwrap_or(models::gguf::GgufKvCacheQuant::Q8_0)
-        } else {
-            models::gguf::GgufKvCacheQuant::Q8_0
-        };
-    let my_vram = spec.node.vram_bytes();
-    let plan = plan_runtime_resources(RuntimeResourcePlanInput {
-        ctx_size_override: spec.ctx_size_override,
-        parallel_override: spec.parallel_override,
-        model_bytes: local_model_bytes,
-        vram_bytes: my_vram,
-        metadata: compact_meta.as_ref(),
-        kv_cache_quant,
-        local_layer_fraction,
-    });
-    let ctx_size = plan.context_length;
+    let ctx_size = planned_topology.context_length;
+    let slots = planned_topology.slots;
     let projector_path = spec
         .mmproj_override
         .map(Path::to_path_buf)
@@ -641,7 +630,7 @@ pub(super) async fn start_runtime_split_model(
         n_ubatch_override: spec.n_ubatch_override,
         flash_attention_override: spec.flash_attention_override,
         pinned_gpu: spec.pinned_gpu,
-        slots: spec.slots,
+        slots,
     })
     .await?;
     let (coordinator_tx, coordinator_rx) = tokio::sync::mpsc::channel(1);
@@ -655,13 +644,19 @@ pub(super) async fn start_runtime_split_model(
         active,
         projector_path,
         ctx_size,
+        topology_resources: SplitTopologyResourceInputs {
+            native_context_length: compact_meta.context_length,
+            kv_bytes_per_token,
+            ctx_size_override: spec.ctx_size_override,
+            parallel_override: spec.parallel_override,
+        },
         cache_type_k_override: spec.cache_type_k_override.map(str::to_string),
         cache_type_v_override: spec.cache_type_v_override.map(str::to_string),
         n_batch_override: spec.n_batch_override,
         n_ubatch_override: spec.n_ubatch_override,
         flash_attention_override: spec.flash_attention_override,
         pinned_gpu: spec.pinned_gpu.cloned(),
-        slots: spec.slots,
+        slots,
         event_tx: coordinator_tx,
     }));
 
@@ -721,6 +716,7 @@ impl SplitParticipant {
         self
     }
 
+    #[cfg(test)]
     fn to_topology_participant(self) -> skippy::StageTopologyParticipant {
         skippy::StageTopologyParticipant {
             node_id: self.node_id,
@@ -1243,6 +1239,7 @@ struct SplitTopologyCoordinator {
     active: SplitTopologyGeneration,
     projector_path: Option<String>,
     ctx_size: u32,
+    topology_resources: SplitTopologyResourceInputs,
     cache_type_k_override: Option<String>,
     cache_type_v_override: Option<String>,
     n_batch_override: Option<u32>,
@@ -1541,12 +1538,21 @@ impl SplitTopologyCoordinator {
         let generation = self.active.generation.saturating_add(1);
         let run_id = format!("mesh-split-{}-g{}", now_unix_nanos(), generation);
         let topology_id = format!("topology-{run_id}");
-        let stages = plan_runtime_slice_topology(
+        let resources = SplitTopologyResourceInputs {
+            ctx_size_override: Some(self.ctx_size),
+            parallel_override: Some(self.slots),
+            ..self.topology_resources
+        };
+        let planned = plan_runtime_slice_topology_with_resources(
             &topology_id,
             &self.model_ref,
             &self.package,
             planned_participants,
+            &[],
+            resources,
         )?;
+        let stages = planned.stages;
+        let participants = split_participants_for_stages(planned_participants, &stages);
         anyhow::ensure!(
             split_stages_meet_minimum(&stages),
             "split runtime needs at least two stage participants"
@@ -1555,7 +1561,7 @@ impl SplitTopologyCoordinator {
             topology_id,
             run_id,
             generation,
-            planned_participants.to_vec(),
+            participants,
             stages,
         ))
     }
@@ -2178,6 +2184,21 @@ fn split_node_labels(nodes: &[iroh::EndpointId]) -> Vec<String> {
         .collect()
 }
 
+fn split_participants_for_stages(
+    participants: &[SplitParticipant],
+    stages: &[RuntimeSliceStagePlan],
+) -> Vec<SplitParticipant> {
+    let participant_by_node = participants
+        .iter()
+        .copied()
+        .map(|participant| (participant.node_id, participant))
+        .collect::<HashMap<_, _>>();
+    stages
+        .iter()
+        .filter_map(|stage| participant_by_node.get(&stage.node_id).copied())
+        .collect()
+}
+
 fn split_participant_exclusion_labels(excluded: &[SplitParticipantExclusion]) -> Vec<String> {
     excluded
         .iter()
@@ -2191,6 +2212,7 @@ fn split_participant_exclusion_labels(excluded: &[SplitParticipantExclusion]) ->
         .collect()
 }
 
+#[cfg(test)]
 fn plan_runtime_slice_topology(
     topology_id: &str,
     model_ref: &str,
@@ -2200,6 +2222,97 @@ fn plan_runtime_slice_topology(
     plan_runtime_slice_topology_with_exclusions(topology_id, model_ref, package, participants, &[])
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SplitTopologyResourceInputs {
+    native_context_length: u32,
+    kv_bytes_per_token: u64,
+    ctx_size_override: Option<u32>,
+    parallel_override: Option<usize>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PlannedRuntimeSliceTopology {
+    stages: Vec<RuntimeSliceStagePlan>,
+    context_length: u32,
+    slots: usize,
+}
+
+fn plan_runtime_slice_topology_with_resources(
+    topology_id: &str,
+    model_ref: &str,
+    package: &skippy::SkippyPackageIdentity,
+    participants: &[SplitParticipant],
+    excluded: &[SplitParticipantExclusion],
+    resources: SplitTopologyResourceInputs,
+) -> Result<PlannedRuntimeSliceTopology> {
+    tracing::info!(
+        topology_id,
+        model_ref,
+        participants = ?split_participant_labels(participants),
+        layer_count = package.layer_count,
+        native_context_length = resources.native_context_length,
+        "planning resource-aware split runtime topology"
+    );
+
+    let participant_by_id = participants
+        .iter()
+        .copied()
+        .map(|participant| (participant.node_id.to_string(), participant))
+        .collect::<HashMap<_, _>>();
+    let plan = plan_split_topology(SplitTopologyPlanInput {
+        native_context_length: resources.native_context_length,
+        layer_count: package.layer_count,
+        model_weight_bytes: package.source_model_bytes,
+        kv_bytes_per_token: resources.kv_bytes_per_token,
+        context_length_override: resources.ctx_size_override,
+        parallel_lanes_override: resources.parallel_override,
+        minimum_nodes: SPLIT_DEFAULT_MIN_PARTICIPANTS,
+        nodes: participants
+            .iter()
+            .map(|participant| SplitTopologyPlanNode {
+                node_id: participant.node_id.to_string(),
+                detected_vram_bytes: participant.vram_bytes,
+                max_vram_bytes: Some(participant.vram_bytes),
+                runtime_headroom_bytes: default_runtime_headroom_bytes(participant.vram_bytes),
+            })
+            .collect(),
+    })?;
+
+    let mut stages = plan
+        .stages
+        .into_iter()
+        .map(|stage| {
+            let participant = participant_by_id.get(&stage.node_id).ok_or_else(|| {
+                anyhow::anyhow!("topology planner returned unknown node {}", stage.node_id)
+            })?;
+            Ok(RuntimeSliceStagePlan {
+                stage_id: stage.stage_id,
+                stage_index: stage.stage_index,
+                node_id: participant.node_id,
+                layer_start: stage.layer_start,
+                layer_end: stage.layer_end,
+                parameter_bytes: stage.parameter_bytes,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    stages.sort_by_key(|stage| stage.stage_index);
+    validate_split_capacity(model_ref, package, participants, &stages, excluded)?;
+    tracing::info!(
+        topology_id,
+        model_ref,
+        context_length = plan.context_length,
+        slots = plan.parallel_lanes,
+        stages = ?split_stage_plan_labels(&stages),
+        "planned resource-aware split runtime topology"
+    );
+    Ok(PlannedRuntimeSliceTopology {
+        stages,
+        context_length: plan.context_length,
+        slots: plan.parallel_lanes,
+    })
+}
+
+#[cfg(test)]
 fn plan_runtime_slice_topology_with_exclusions(
     topology_id: &str,
     model_ref: &str,

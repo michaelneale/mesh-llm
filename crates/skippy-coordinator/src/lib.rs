@@ -4,6 +4,8 @@
 //! transport, protobuf conversion, node identity types, and stage runtime
 //! process management stay in the host runtime.
 
+pub mod topology;
+
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
