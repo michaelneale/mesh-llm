@@ -167,7 +167,7 @@ fn parallel_lane_candidates(
 }
 
 pub fn minimum_valid_context(native_context: u32) -> u32 {
-    native_context.min(MINIMUM_AUTO_CONTEXT_LENGTH).max(1)
+    native_context.clamp(1, MINIMUM_AUTO_CONTEXT_LENGTH)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
