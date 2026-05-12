@@ -15,10 +15,10 @@
 
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
+#include <chrono>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #define BUFFER_BYTES (512 * 1024 * 1024)  // 512 MB — safely above L2/LLC on all current AMD GPUs
 #define WARMUP_RUNS  3
@@ -100,6 +100,11 @@ static int cmp_double(const void* a, const void* b) {
 static int isHBMDevice(const char* gcnArchName) {
     return (strncmp(gcnArchName, "gfx90", 5) == 0 ||
             strncmp(gcnArchName, "gfx94", 5) == 0);
+}
+
+static double steady_seconds() {
+    using clock = std::chrono::steady_clock;
+    return std::chrono::duration<double>(clock::now().time_since_epoch()).count();
 }
 
 int main(int argc, char** argv) {
@@ -190,8 +195,7 @@ int main(int argc, char** argv) {
             (void)measure_compute_fp16();
         }
 
-        struct timespec wallStart, wallEnd;
-        clock_gettime(CLOCK_MONOTONIC, &wallStart);
+        double wallStart = steady_seconds();
 
         double samples[TIMED_RUNS];
         double fp32Samples[TIMED_RUNS];
@@ -202,9 +206,8 @@ int main(int argc, char** argv) {
             fp16Samples[i] = measure_compute_fp16();
         }
 
-        clock_gettime(CLOCK_MONOTONIC, &wallEnd);
-        double runtimeSecs = (wallEnd.tv_sec  - wallStart.tv_sec)
-                           + (wallEnd.tv_nsec - wallStart.tv_nsec) / 1e9;
+        double wallEnd = steady_seconds();
+        double runtimeSecs = wallEnd - wallStart;
 
         qsort(samples, TIMED_RUNS, sizeof(double), cmp_double);
         qsort(fp32Samples, TIMED_RUNS, sizeof(double), cmp_double);
