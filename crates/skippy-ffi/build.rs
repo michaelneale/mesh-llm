@@ -29,6 +29,7 @@ fn main() {
         std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set"),
     )
     .join("../..");
+    let target = std::env::var("TARGET").unwrap_or_default();
     let build_dir = std::env::var("LLAMA_STAGE_BUILD_DIR")
         .or_else(|_| std::env::var("SKIPPY_LLAMA_BUILD_DIR"))
         .map(std::path::PathBuf::from)
@@ -39,8 +40,7 @@ fn main() {
                 workspace_root.join(path)
             }
         })
-        .unwrap_or_else(|_| workspace_root.join(".deps/llama.cpp/build-stage-abi-static"));
-    let target = std::env::var("TARGET").unwrap_or_default();
+        .unwrap_or_else(|_| default_build_dir(&workspace_root, &target));
 
     let search_dirs = [
         build_dir.join("tools/mtmd"),
@@ -196,6 +196,15 @@ fn main() {
             link_windows_vulkan_libs();
         }
     }
+}
+
+fn default_build_dir(workspace_root: &std::path::Path, target: &str) -> std::path::PathBuf {
+    let suffix = if target.contains("apple-darwin") {
+        "metal"
+    } else {
+        "cpu"
+    };
+    workspace_root.join(format!(".deps/llama-build/build-stage-abi-{suffix}"))
 }
 
 fn static_archive_exists(

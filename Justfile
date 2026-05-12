@@ -2,7 +2,6 @@
 
 llama_dir := env("MESH_LLM_LLAMA_DIR", ".deps/llama.cpp")
 llama_build_root := env("MESH_LLM_LLAMA_BUILD_ROOT", ".deps/llama-build")
-build_dir := env("LLAMA_STAGE_BUILD_DIR", llama_build_root / "build-stage-abi-cpu")
 mesh_dir := "crates/mesh-llm"
 ui_dir := "crates/mesh-llm-ui"
 ui_legacy_dir := "crates/mesh-llm/ui-legacy"
@@ -382,14 +381,25 @@ test-all: _lld-cargo-config
     #!/usr/bin/env bash
     set -euo pipefail
 
-    # Ensure native llama.cpp libraries exist (required by skippy-ffi → cargo test linking)
-    if [ ! -f "{{ build_dir }}/common/libllama-common.a" ]; then
-        echo "ERROR: Native llama.cpp libraries not found at {{ build_dir }}/"
-        echo "Run 'just llama-build' first to prepare them, then retry."
-        exit 1
+    native_backend="${LLAMA_STAGE_BACKEND:-${SKIPPY_LLAMA_BACKEND:-${LLAMA_BACKEND:-}}}"
+    if [[ -z "$native_backend" ]]; then
+        case "$(uname -s)" in
+            Darwin) native_backend="metal" ;;
+            *) native_backend="cpu" ;;
+        esac
+    fi
+    export LLAMA_STAGE_BACKEND="$native_backend"
+
+    if [[ -z "${LLAMA_STAGE_BUILD_DIR:-}" ]]; then
+        LLAMA_STAGE_BUILD_DIR="$(scripts/build-llama.sh --print-build-dir)"
+        export LLAMA_STAGE_BUILD_DIR
     fi
 
-    export LLAMA_STAGE_BUILD_DIR="{{ build_dir }}"
+    echo "=== Native llama.cpp ABI ($LLAMA_STAGE_BACKEND) ==="
+    echo "Build dir: $LLAMA_STAGE_BUILD_DIR"
+    scripts/prepare-llama.sh
+    scripts/build-llama.sh
+    echo ""
 
     # Each UI step runs in a subshell so cd doesn't leak between steps.
     echo "=== 1/7 Rust format check ==="
