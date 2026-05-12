@@ -167,7 +167,7 @@ flowchart TD
     Input["Model metadata and node VRAM budgets"]
     Context["Try context candidates from native down to 64k"]
     Nodes["Try node counts from minimum upward"]
-    Lanes["Try parallel lanes from 16 down to 1"]
+    Lanes["Try parallel lanes from 4 down to 1"]
     Fit{"Can all layers fit?"}
     Plan["Return first valid plan"]
     Reject["Reject topology"]
@@ -194,8 +194,14 @@ candidate shape, the planner estimates per-layer memory as:
 ```text
 bytes_per_layer =
     ceil(model_weight_bytes / layer_count)
-    + ceil(kv_bytes_per_token / layer_count) * context_length * parallel_lanes
+    + ceil(kv_bytes_per_token / layer_count) * context_length
 ```
+
+Parallel lanes share a single unified KV cache (`kv_unified=true` in
+llama.cpp) and do not multiply KV memory cost. The planner defaults to 4
+parallel lanes (matching llama-server's default `--parallel 4`). Users can
+override via `gpu.parallel` in `config.toml` or the per-model `parallel`
+setting.
 
 Each selected node must fit at least one layer, and the selected nodes together
 must fit all layers. Layer ranges are contiguous, but they do not have to be
@@ -207,9 +213,9 @@ outcomes:
 
 - `4 x 70 GiB`: rejected because the model cannot fit above the 64k context
   floor.
-- `4 x 80 GiB`: `4` stages, `65_536` context, `1` lane.
-- `5 x 80 GiB`: `5` stages, native `262_144` context, `2` lanes.
-- `10 x 80 GiB`: still `5` stages, native `262_144` context, `2` lanes,
+- `4 x 80 GiB`: `4` stages, `65_536` context, `4` lanes.
+- `5 x 80 GiB`: `5` stages, native `262_144` context, `4` lanes.
+- `10 x 80 GiB`: still `5` stages, native `262_144` context, `4` lanes,
   because five nodes are enough and fewer nodes wins before more lanes.
 - capped or lower-VRAM nodes receive fewer layers than larger peers.
 
