@@ -14,8 +14,8 @@ use std::{
 use crate::{
     cli::ServeBinaryArgs,
     config::validate_config,
+    frontend::{self, EmbeddedOpenAiArgs},
     kv_integration::{KvStageIntegration, PrefillKvIdentity},
-    openai::{self, EmbeddedOpenAiArgs},
     runtime_state::{load_runtime, RuntimeSessionStats, RuntimeState},
     telemetry::{lifecycle_attrs, now_unix_nanos, Telemetry},
 };
@@ -231,7 +231,7 @@ fn run_binary_stage(options: BinaryStageOptions, shutdown: Arc<AtomicBool>) -> R
         let openai_runtime = runtime.clone();
         let openai_telemetry = telemetry.clone();
         tokio::spawn(async move {
-            if let Err(error) = openai::serve_embedded_openai(EmbeddedOpenAiArgs {
+            if let Err(error) = frontend::serve_embedded_openai(EmbeddedOpenAiArgs {
                 bind_addr: openai_options.bind_addr,
                 config: openai_config,
                 runtime: openai_runtime,

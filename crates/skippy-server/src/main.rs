@@ -3,7 +3,7 @@ use clap::Parser;
 
 use skippy_server::cli::{Cli, Command};
 use skippy_server::{
-    binary_transport::serve_binary, config::example_config, http::serve, openai::serve_openai,
+    binary_transport::serve_binary, config::example_config, frontend::serve_openai, http::serve,
 };
 
 #[tokio::main]
