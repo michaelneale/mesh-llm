@@ -133,6 +133,32 @@ pub(crate) struct SkippyModelLoadOptions {
     pub(crate) selected_device: Option<SkippyDeviceDescriptor>,
     pub(crate) package_identity: Option<SkippyPackageIdentity>,
     pub(crate) projector_path: Option<PathBuf>,
+    pub(crate) telemetry: SkippyTelemetryOptions,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct SkippyTelemetryOptions {
+    pub(crate) metrics_otlp_grpc: Option<String>,
+    pub(crate) queue_capacity: usize,
+    pub(crate) level: TelemetryLevel,
+}
+
+impl SkippyTelemetryOptions {
+    pub(crate) fn off() -> Self {
+        Self {
+            metrics_otlp_grpc: None,
+            queue_capacity: 0,
+            level: TelemetryLevel::Off,
+        }
+    }
+
+    pub(crate) fn debug(metrics_otlp_grpc: Option<String>) -> Self {
+        Self {
+            metrics_otlp_grpc,
+            queue_capacity: 1024,
+            level: TelemetryLevel::Debug,
+        }
+    }
 }
 
 impl SkippyModelLoadOptions {
@@ -156,6 +182,7 @@ impl SkippyModelLoadOptions {
             selected_device: None,
             package_identity: None,
             projector_path: None,
+            telemetry: SkippyTelemetryOptions::off(),
         }
     }
 
@@ -198,6 +225,11 @@ impl SkippyModelLoadOptions {
 
     pub(crate) fn with_projector_path(mut self, projector_path: impl Into<PathBuf>) -> Self {
         self.projector_path = Some(projector_path.into());
+        self
+    }
+
+    pub(crate) fn with_telemetry(mut self, telemetry: SkippyTelemetryOptions) -> Self {
+        self.telemetry = telemetry;
         self
     }
 
@@ -252,9 +284,9 @@ impl SkippyModelHandle {
         let runtime = SkippyRuntimeHandle::load(EmbeddedRuntimeOptions {
             config: stage_config.clone(),
             topology: None,
-            metrics_otlp_grpc: None,
-            telemetry_queue_capacity: 0,
-            telemetry_level: TelemetryLevel::Off,
+            metrics_otlp_grpc: options.telemetry.metrics_otlp_grpc.clone(),
+            telemetry_queue_capacity: options.telemetry.queue_capacity,
+            telemetry_level: options.telemetry.level,
         })
         .with_context(|| {
             format!(
@@ -263,7 +295,12 @@ impl SkippyModelHandle {
                 options.model_path.display()
             )
         })?;
-        let telemetry = Telemetry::new(None, 0, stage_config.clone(), TelemetryLevel::Off);
+        let telemetry = Telemetry::new(
+            options.telemetry.metrics_otlp_grpc.clone(),
+            options.telemetry.queue_capacity,
+            stage_config.clone(),
+            options.telemetry.level,
+        );
         let family_policy = family_policy_for_stage_config(&stage_config);
         let binding = embedded_openai_backend(EmbeddedOpenAiArgs {
             bind_addr: "127.0.0.1:0"
@@ -312,6 +349,7 @@ impl SkippyModelHandle {
         generation_concurrency: usize,
         default_max_tokens: u32,
         hook_policy: Option<Arc<dyn OpenAiHookPolicy>>,
+        telemetry: SkippyTelemetryOptions,
     ) -> Result<Self> {
         configure_materialized_stage_cache();
         let materialized_pin = if config.load_mode == LoadMode::LayerPackage {
@@ -349,9 +387,9 @@ impl SkippyModelHandle {
         let runtime = SkippyRuntimeHandle::load(EmbeddedRuntimeOptions {
             config: config.clone(),
             topology: None,
-            metrics_otlp_grpc: None,
-            telemetry_queue_capacity: 0,
-            telemetry_level: TelemetryLevel::Off,
+            metrics_otlp_grpc: telemetry.metrics_otlp_grpc.clone(),
+            telemetry_queue_capacity: telemetry.queue_capacity,
+            telemetry_level: telemetry.level,
         })
         .with_context(|| {
             format!(
@@ -359,7 +397,12 @@ impl SkippyModelHandle {
                 config.model_id, config.model_path
             )
         })?;
-        let telemetry = Telemetry::new(None, 0, config.clone(), TelemetryLevel::Off);
+        let telemetry = Telemetry::new(
+            telemetry.metrics_otlp_grpc.clone(),
+            telemetry.queue_capacity,
+            config.clone(),
+            telemetry.level,
+        );
         let binding = embedded_openai_backend(EmbeddedOpenAiArgs {
             bind_addr: "127.0.0.1:0"
                 .parse()
