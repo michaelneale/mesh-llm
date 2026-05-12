@@ -75,7 +75,9 @@ Runtime switches:
 - `--publish`: publish your mesh for discovery.
 - `--mesh-name <MESH_NAME>`: friendly mesh name in discovery.
 - `--region <REGION>`: region hint for discovery.
-- `--blackboard`: enable blackboard on public meshes.
+- `--blackboard`: enable blackboard on public meshes. Private meshes enable
+  blackboard by default; public mesh posts are visible to all peers in that
+  mesh.
 - `--name <NAME>`: your blackboard display name.
 - `--max-vram <MAX_VRAM>`: cap VRAM used for planning and fit decisions.
 - `--llama-flavor <LLAMA_FLAVOR>`: force backend binary flavor (`cpu|cuda|rocm|vulkan|metal`).
@@ -96,11 +98,15 @@ Subcommands:
 
 - `recommended`
 - `installed`
+- `cleanup`
+- `prune`
 - `search`
 - `show`
 - `download`
+- `package`
 - `certify`
 - `updates`
+- `delete`
 
 ### `models recommended`
 
@@ -117,6 +123,23 @@ Run this when you want to see what’s already on your machine.
 Switches:
 
 - `--json`: machine-readable output.
+
+### `models cleanup`
+
+Run this when you want to remove stale managed model-cache entries that are no
+longer usable or referenced.
+
+Use `mesh-llm models cleanup --help` for the current safety and confirmation
+switches before deleting anything.
+
+### `models prune`
+
+Run this when you want to clean derived Skippy materialized stage cache. The
+default mode is a preview; pass the confirmation switch shown by
+`mesh-llm models prune --help` to apply the cleanup.
+
+This command treats materialized stages as derived cache and preserves active or
+pinned stage artifacts.
 
 ### `models search`
 
@@ -169,6 +192,43 @@ Switches:
 - `--draft`: also download the recommended draft model (if available).
 - `--json`: machine-readable output.
 
+### `models package`
+
+Use this to plan or submit a Hugging Face Job that splits a source GGUF into a
+Skippy layer-package repository. This is spend-bearing, so the command defaults
+to dry-run behavior and requires `--confirm` before it submits jobs.
+
+Usage:
+
+```bash
+mesh-llm models package unsloth/Qwen3-8B-GGUF:Q4_K_M --dry-run
+mesh-llm models package unsloth/Qwen3-8B-GGUF:Q4_K_M --confirm --follow
+mesh-llm models package --status <job-id>
+mesh-llm models package --logs <job-id>
+mesh-llm models package --list
+```
+
+Switches:
+
+- `--target <REPO>`: destination Hugging Face package repo.
+- `--model-id <MODEL_ID>`: OpenAI-facing package model id.
+- `--flavor <FLAVOR>`: package flavor, default `auto`.
+- `--timeout <DURATION>`: HF Jobs timeout, default `1h` unless size estimates raise it.
+- `--mesh-llm-ref <REF>`: mesh-llm git ref used inside the job, default `main`.
+- `--dry-run`: print the resolved plan, selected hardware, timeout, and maximum cost without side effects.
+- `--confirm`: submit the job.
+- `--follow`: wait for submitted job progress.
+- `--json`: machine-readable output.
+- `--status <JOB_ID>`: inspect a job.
+- `--logs <JOB_ID>`: fetch job logs.
+- `--cancel <JOB_ID>`: cancel a job.
+- `--list`: list known jobs.
+- `--update-script`: refresh the bucket script before a confirmed submission.
+
+Keep source refs in colon-selector form such as
+`unsloth/Qwen3-8B-GGUF:Q4_K_M`. Do not use the deprecated separate `--quant`
+form in generated job inputs.
+
 ### `models certify`
 
 Use this when you want a repeatable Skippy layer-package confidence report
@@ -213,6 +273,13 @@ Switches:
 - `--all`: operate on all cached HF repos.
 - `--check`: check only; do not refresh cache.
 - `--json`: machine-readable output.
+
+### `models delete`
+
+Use this when you need to remove a specific managed model entry. Run
+`mesh-llm models delete --help` first; deletion commands intentionally keep
+confirmation behavior close to the CLI implementation so operators see the
+current safety prompts.
 
 ### `download`
 
@@ -421,6 +488,15 @@ mesh-llm models show mlx-community/SmolLM-135M-8bit
 mesh-llm models download mlx-community/SmolLM-135M-8bit
 ```
 
+5. Skippy layer package ref:
+
+```bash
+mesh-llm models show hf://meshllm/Qwen3-235B-A22B-UD-Q4_K_XL-layers@<commit-sha>
+mesh-llm serve --model hf://meshllm/Qwen3-235B-A22B-UD-Q4_K_XL-layers@<commit-sha> --split
+```
+
+Prefer immutable `hf://namespace/repo@revision` refs for production split runs.
+
 ## Model resolution behavior
 
 Resolution order:
@@ -468,6 +544,7 @@ Shape summary:
 - `installed --json`: `{ cache_dir, results[] }`
 - `recommended --json`: `{ source, results[] }`
 - `updates --json`: check/update results
+- `package --json`: package job plan/status/log/list output
 
 Automation tips:
 

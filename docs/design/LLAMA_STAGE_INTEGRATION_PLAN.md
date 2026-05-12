@@ -2,8 +2,8 @@
 
 ## Purpose
 
-This document captures the planned integration of
-`/Users/jdumay/code/llama-stage-runtime` into mesh-llm.
+Track the planned integration of `/Users/jdumay/code/llama-stage-runtime` into
+mesh-llm here.
 
 The goals are:
 

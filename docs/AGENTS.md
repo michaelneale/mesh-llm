@@ -4,6 +4,13 @@ Mesh LLM exposes an OpenAI-compatible API on `http://localhost:9337/v1`, so most
 
 `/v1/models` lists the models currently available on the mesh. Requests are routed by the `model` field.
 
+General rules for agent clients:
+
+- Use a base URL ending in `/v1` unless the client asks for the full chat-completions URL.
+- Pick an exact model id from `GET /v1/models`.
+- Prefer chat-completions mode unless the client explicitly documents Responses API support.
+- Use a tool-capable model for coding agents.
+
 ## Built-in launcher integrations
 
 For built-in launcher commands such as `goose`, `claude`, `opencode`, and `pi`:
@@ -14,6 +21,10 @@ For built-in launcher commands such as `goose`, `claude`, `opencode`, and `pi`:
 - when the harness exits, the auto-started node is cleaned up
 
 ## Goose
+
+Goose can use either its built-in OpenAI provider or a custom provider JSON.
+Mesh LLM's launcher writes a custom provider so it can target the local mesh
+without hand-editing Goose config.
 
 Launch Goose:
 
@@ -28,6 +39,18 @@ mesh-llm goose --model MiniMax-M2.5-Q4_K_M
 ```
 
 This writes or updates `~/.config/goose/custom_providers/mesh.json` and launches Goose.
+
+Manual OpenAI-provider setup, if you do not want to use the launcher:
+
+```bash
+export GOOSE_PROVIDER="openai"
+export GOOSE_MODEL="<model-id-from-v1-models>"
+export OPENAI_HOST="http://127.0.0.1:9337"
+export OPENAI_API_KEY="mesh"
+```
+
+Goose custom providers live under `~/.config/goose/custom_providers/` on
+macOS/Linux.
 
 ## Claude Code
 
@@ -73,6 +96,11 @@ If only `~/.config/opencode/opencode.jsonc` exists, Mesh LLM stops with a clear 
 
 Mesh LLM injects a temporary OpenCode config with `OPENCODE_CONFIG_CONTENT` when it launches OpenCode, so it does not edit your persistent OpenCode config files.
 
+OpenCode's provider docs use `@ai-sdk/openai-compatible` for providers that
+serve `/v1/chat/completions`, which is the package Mesh LLM injects. Use
+`/connect` and `/models` inside OpenCode if you want to inspect or switch the
+configured provider manually.
+
 If you want to rerun OpenCode manually, use the same config contract Mesh LLM generates:
 
 ```bash
@@ -95,9 +123,10 @@ OPENCODE_CONFIG_CONTENT='{
 }' OPENAI_API_KEY=dummy opencode -m mesh/MiniMax-M2.5-Q4_K_M
 ```
 
-## pi
+## Pi Coding Agent
 
-Launch pi directly through Mesh LLM:
+Here, “Pi” means the Pi Coding Agent, not Raspberry Pi hardware. Launch Pi
+directly through Mesh LLM:
 
 ```bash
 mesh-llm pi
@@ -109,7 +138,7 @@ Use a specific model:
 mesh-llm pi --model MiniMax-M2.5-Q4_K_M
 ```
 
-This writes every model from the mesh into `~/.pi/agent/models.json` and launches pi.
+This writes every model from the mesh into `~/.pi/agent/models.json` and launches Pi.
 To update the Pi config without launching pi, run:
 
 ```bash
@@ -163,13 +192,14 @@ The `models` key belongs inside the provider block and is intentionally last. Wh
 curl -s http://localhost:9337/v1/models | jq '.data[].id'
 ```
 
-Run pi:
+Run Pi:
 
 ```bash
 pi --model "mesh/Qwen 3.6 27B"
 ```
 
-You can switch models interactively with `Ctrl+M` inside pi.
+You can switch models interactively with `Ctrl+M` inside Pi. Pi also supports
+`pi --provider mesh --model <model-id>` and `pi --list-models`.
 
 ## curl or any OpenAI client
 
@@ -209,6 +239,10 @@ mesh-llm blackboard --search "QUESTION"
 ```
 
 Messages are ephemeral, scrubbed for obvious PII, and stay inside the mesh.
+Blackboard is on by default for private invite-token meshes. On public meshes
+joined with `--auto` or discovered through Nostr, enable it explicitly with
+`--blackboard`, and assume posts are visible to every peer in that public mesh.
+Do not post secrets, credentials, private paths, or customer data.
 
 ## Blackboard MCP server
 
