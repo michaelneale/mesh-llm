@@ -226,8 +226,10 @@ impl Gateway {
         let (response_body, reducer_used) =
             self.resolve_decision(decision, &outputs, has_tools).await;
 
-        // Record what we emitted
+        // Record what we emitted + accepted fact for future context
         self.session.record_assistant_response(&response_body);
+        let outcome = extract_turn_outcome(&response_body);
+        self.session.record_turn_outcome(&outcome);
 
         TurnResult {
             response_body,
@@ -286,6 +288,8 @@ impl Gateway {
         };
 
         self.session.record_assistant_response(&response_body);
+        let outcome = extract_turn_outcome(&response_body);
+        self.session.record_turn_outcome(&outcome);
 
         TurnResult {
             response_body,
@@ -493,6 +497,51 @@ fn tool_call_response(name: &str, arguments: &Value) -> Value {
         }],
         "usage": { "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0 }
     })
+}
+
+/// Extract a compact description of what this turn decided.
+fn extract_turn_outcome(response: &Value) -> String {
+    // Tool call?
+    if let Some(tool_calls) = response
+        .pointer("/choices/0/message/tool_calls")
+        .and_then(|tc| tc.as_array())
+    {
+        if let Some(tc) = tool_calls.first() {
+            let name = tc
+                .pointer("/function/name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("?");
+            let args = tc
+                .pointer("/function/arguments")
+                .and_then(|a| a.as_str())
+                .unwrap_or("{}");
+            let short_args = if args.len() > 80 {
+                format!("{}...", &args[..77])
+            } else {
+                args.to_string()
+            };
+            return format!("Called tool {name}({short_args})");
+        }
+    }
+
+    // Text answer — take first sentence or 100 chars
+    if let Some(content) = response
+        .pointer("/choices/0/message/content")
+        .and_then(|c| c.as_str())
+    {
+        let first_sentence = content
+            .split_terminator(&['.', '!', '?'][..])
+            .next()
+            .unwrap_or(content);
+        let truncated = if first_sentence.len() > 100 {
+            format!("{}...", &first_sentence[..97])
+        } else {
+            format!("{first_sentence}.")
+        };
+        return format!("Answered: {truncated}");
+    }
+
+    String::new()
 }
 
 fn short_id() -> String {

@@ -112,9 +112,15 @@ async fn main() {
     println!();
     run_tool_lifecycle_test(&endpoints).await;
 
-    // ── Test 5: Coding question ──────────────────────────────────
+    // ── Test 5: Multi-turn context efficiency ───────────────────
 
-    println!("━━━ Test 5: Code — can the ensemble write better code? ━━━");
+    println!("━━━ Test 5: Multi-turn — does the gateway maintain context efficiently? ━━━");
+    println!();
+    run_multi_turn_test(&endpoints).await;
+
+    // ── Test 6: Coding question ──────────────────────────────────
+
+    println!("━━━ Test 6: Code — can the ensemble write better code? ━━━");
     println!();
     let code_q = json!({
         "messages": [
@@ -371,6 +377,100 @@ async fn run_tool_lifecycle_test(endpoints: &[Endpoint]) {
             truncate(content, 200)
         );
     }
+    println!();
+}
+
+/// Multi-turn conversation: prove the gateway maintains context and workers
+/// get efficient summaries instead of the full history.
+async fn run_multi_turn_test(endpoints: &[Endpoint]) {
+    let config = GatewayConfig {
+        endpoints: endpoints.to_vec(),
+        worker_timeout: Duration::from_secs(60),
+        reducer_timeout: Duration::from_secs(90),
+    };
+    let mut gateway = Gateway::new(config);
+
+    // Turn 1: establish a fact
+    println!("  Turn 1: Establish context");
+    let t1 = json!({
+        "messages": [
+            {"role": "user", "content": "My name is Alice and I live in Melbourne, Australia. Remember this."}
+        ]
+    });
+    let r1 = gateway.turn(&t1).await;
+    let c1 = r1.response_body["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or("[empty]");
+    println!("    Response: {}", truncate(c1, 150));
+    println!(
+        "    ({}ms, {}/{} workers)",
+        r1.elapsed_ms,
+        r1.worker_summaries.iter().filter(|w| w.succeeded).count(),
+        r1.worker_summaries.len()
+    );
+
+    // Turn 2: ask about the fact (tests context retention)
+    println!("  Turn 2: Recall context (workers should get running summary, not raw history)");
+    let t2 = json!({
+        "messages": [
+            {"role": "user", "content": "My name is Alice and I live in Melbourne, Australia. Remember this."},
+            {"role": "assistant", "content": c1},
+            {"role": "user", "content": "What city do I live in?"}
+        ]
+    });
+    let r2 = gateway.turn(&t2).await;
+    let c2 = r2.response_body["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or("[empty]");
+    let mentions_melbourne = c2.to_lowercase().contains("melbourne");
+    println!("    Response: {}", truncate(c2, 150));
+    println!(
+        "    Mentions Melbourne: {} {}",
+        if mentions_melbourne { "✅" } else { "❌" },
+        if mentions_melbourne {
+            ""
+        } else {
+            "(context lost)"
+        }
+    );
+
+    // Turn 3: build on prior context
+    println!("  Turn 3: Build on prior context");
+    let t3 = json!({
+        "messages": [
+            {"role": "user", "content": "My name is Alice and I live in Melbourne, Australia. Remember this."},
+            {"role": "assistant", "content": c1},
+            {"role": "user", "content": "What city do I live in?"},
+            {"role": "assistant", "content": c2},
+            {"role": "user", "content": "What's a good restaurant near where I live? Just name one."}
+        ]
+    });
+    let r3 = gateway.turn(&t3).await;
+    let c3 = r3.response_body["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or("[empty]");
+    let mentions_melbourne_or_aus =
+        c3.to_lowercase().contains("melbourne") || c3.to_lowercase().contains("australia");
+    println!("    Response: {}", truncate(c3, 200));
+    println!(
+        "    References location: {} {}",
+        if mentions_melbourne_or_aus {
+            "✅"
+        } else {
+            "⚠️"
+        },
+        if mentions_melbourne_or_aus {
+            ""
+        } else {
+            "(may have lost context)"
+        }
+    );
+    println!(
+        "    ({}ms, {}/{} workers)",
+        r3.elapsed_ms,
+        r3.worker_summaries.iter().filter(|w| w.succeeded).count(),
+        r3.worker_summaries.len()
+    );
     println!();
 }
 
