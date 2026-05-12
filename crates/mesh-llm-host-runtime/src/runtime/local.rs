@@ -1635,10 +1635,14 @@ impl SplitTopologyCoordinator {
             .as_ref()
             .map(|gpu| gpu.vram_bytes)
             .unwrap_or_else(|| self.node.vram_bytes());
-        model_fits_runtime_capacity(
-            election::total_model_bytes(&self.model_path),
-            local_capacity,
-        )
+        // Use the package's source model bytes when available — layer-package
+        // refs use `hf://` pseudo-paths that `total_model_bytes` cannot stat.
+        let model_bytes = if self.package.source_model_bytes > 0 {
+            self.package.source_model_bytes
+        } else {
+            election::total_model_bytes(&self.model_path)
+        };
+        model_fits_runtime_capacity(model_bytes, local_capacity)
     }
 
     async fn load_and_publish_candidate(

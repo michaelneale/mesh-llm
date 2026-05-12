@@ -5341,8 +5341,21 @@ fn ensure_requested_model(advertised_model_id: &str, requested: &str) -> OpenAiR
 }
 
 /// Strip `@main` so `org/repo@main:Q4` and `org/repo:Q4` compare equal.
+///
+/// Only removes `@main` when it sits at a revision boundary — followed by
+/// `:` (quant separator) or end-of-string.  This avoids corrupting repo
+/// names that happen to contain `@main` as a prefix of a longer segment
+/// (e.g. `@mainland`).
 fn strip_default_revision(id: &str) -> String {
-    id.replacen("@main", "", 1)
+    if let Some(pos) = id.find("@main") {
+        let after = pos + "@main".len();
+        if after == id.len() || id.as_bytes()[after] == b':' {
+            let mut s = id[..pos].to_string();
+            s.push_str(&id[after..]);
+            return s;
+        }
+    }
+    id.to_string()
 }
 
 fn apply_chat_hook_outcome(request: &mut ChatCompletionRequest, outcome: &ChatHookOutcome) {

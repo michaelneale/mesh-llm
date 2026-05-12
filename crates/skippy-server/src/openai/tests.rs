@@ -1192,3 +1192,29 @@ fn configured_default_max_tokens_remains_explicit() {
         Some("context_length_exceeded")
     );
 }
+
+#[test]
+fn strip_default_revision_removes_at_main_before_quant() {
+    assert_eq!(
+        super::strip_default_revision("org/repo@main:Q4"),
+        "org/repo:Q4"
+    );
+}
+
+#[test]
+fn strip_default_revision_removes_at_main_at_end() {
+    assert_eq!(super::strip_default_revision("org/repo@main"), "org/repo");
+}
+
+#[test]
+fn strip_default_revision_preserves_mainland() {
+    assert_eq!(
+        super::strip_default_revision("org/repo@mainland:Q4"),
+        "org/repo@mainland:Q4"
+    );
+}
+
+#[test]
+fn strip_default_revision_preserves_no_revision() {
+    assert_eq!(super::strip_default_revision("org/repo:Q4"), "org/repo:Q4");
+}
