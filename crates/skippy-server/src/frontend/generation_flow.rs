@@ -1,6 +1,7 @@
 use super::*;
 
 impl StageOpenAiBackend {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn generate_text(
         &self,
         prompt: PreparedGenerationPrompt,

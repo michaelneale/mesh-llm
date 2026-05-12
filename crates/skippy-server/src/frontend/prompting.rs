@@ -85,8 +85,6 @@ impl StageOpenAiBackend {
         Ok(parsed_tool_calls_from_message_json(&parsed_json, request))
     }
 
-    #[allow(clippy::too_many_arguments)]
-
     pub(super) fn tokenize(&self, prompt: &str) -> OpenAiResult<Vec<i32>> {
         self.tokenize_with_options(prompt, true)
     }
