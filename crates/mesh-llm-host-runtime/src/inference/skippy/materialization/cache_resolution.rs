@@ -7,10 +7,7 @@ use std::{
 
 use anyhow::{Context, Result};
 
-use super::{
-    is_metadata_only_package_inspection, manifest_artifact_bytes, safe_manifest_file_path,
-    verify_cached_hf_package_files,
-};
+use super::{manifest_artifact_bytes, safe_manifest_file_path, verify_cached_hf_package_files};
 
 pub(super) fn cached_package_snapshots(
     cache_dir: &Path,
@@ -71,20 +68,19 @@ fn cached_snapshot_sort_key(path: &Path) -> (Reverse<SystemTime>, PathBuf) {
 
 fn should_prefer_cached_snapshot_for_request(
     package_dir: &Path,
-    layer_start: u32,
-    layer_end: u32,
-    include_embeddings: bool,
-    include_output: bool,
+    _layer_start: u32,
+    _layer_end: u32,
+    _include_embeddings: bool,
+    _include_output: bool,
 ) -> Result<bool> {
-    if is_metadata_only_package_inspection(
-        layer_start,
-        layer_end,
-        include_embeddings,
-        include_output,
-    ) {
-        return cached_snapshot_has_declared_layer_artifacts(package_dir);
-    }
-    Ok(true)
+    // Always verify that the snapshot has its declared layer artifacts on
+    // disk.  A metadata-only snapshot (model-package.json + shared/ but no
+    // layers/) must never be selected — not even for metadata-only probes —
+    // because the snapshot hash gets baked into the canonical package_ref
+    // and propagated to all later resolution calls (split stage loads,
+    // activation-width inference, etc.) which then fail when the layers
+    // are missing.
+    cached_snapshot_has_declared_layer_artifacts(package_dir)
 }
 
 fn cached_snapshot_has_declared_layer_artifacts(package_dir: &Path) -> Result<bool> {
