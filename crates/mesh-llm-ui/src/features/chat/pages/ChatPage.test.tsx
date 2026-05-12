@@ -544,6 +544,25 @@ describe('ChatPage', () => {
     expect(options[0]).toHaveTextContent('Auto')
   })
 
+  it('excludes cold live models from the chat model selector', async () => {
+    const user = userEvent.setup()
+    vi.mocked(adaptModelsToSummary).mockReturnValue([
+      { ...CHAT_HARNESS.models[0], name: 'warm-model', status: 'warm' },
+      { ...CHAT_HARNESS.models[1], name: 'cold-model', status: 'offline' }
+    ])
+
+    renderChatPage({ mode: 'live' })
+
+    await user.click(screen.getByRole('combobox', { name: 'Select model' }))
+
+    const options = await screen.findAllByRole('option')
+    expect(options.map((option) => option.textContent)).toEqual([
+      expect.stringContaining('Auto'),
+      expect.stringContaining('warm-model')
+    ])
+    expect(screen.queryByText('cold-model')).not.toBeInTheDocument()
+  })
+
   it('loads the default system prompt when no user override is stored', async () => {
     const user = userEvent.setup()
     localStorage.clear()

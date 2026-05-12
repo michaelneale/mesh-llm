@@ -64,6 +64,8 @@ enum Command {
         #[arg(long = "projector")]
         projectors: Vec<PathBuf>,
         #[arg(long)]
+        after_artifact_command: Option<PathBuf>,
+        #[arg(long)]
         model_id: Option<String>,
         #[arg(long)]
         source_repo: Option<String>,
@@ -289,6 +291,11 @@ struct PackageArtifactSpec {
     relative_path: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+struct ArtifactHook {
+    command: Option<PathBuf>,
+}
+
 #[derive(Debug, Default)]
 struct ExplicitSourceIdentity {
     model_id: Option<String>,
@@ -351,6 +358,7 @@ fn main() -> Result<()> {
             model,
             out_dir,
             projectors,
+            after_artifact_command,
             model_id,
             source_repo,
             source_revision,
@@ -359,6 +367,9 @@ fn main() -> Result<()> {
             model,
             out_dir,
             projectors,
+            ArtifactHook {
+                command: after_artifact_command,
+            },
             ExplicitSourceIdentity {
                 model_id,
                 source_repo,
@@ -454,6 +465,7 @@ fn write_package(
     model: String,
     out_dir: PathBuf,
     projectors: Vec<PathBuf>,
+    artifact_hook: ArtifactHook,
     explicit: ExplicitSourceIdentity,
 ) -> Result<()> {
     let input = resolve_package_input(model, explicit)?;
@@ -486,6 +498,7 @@ fn write_package(
             relative_path: PathBuf::from("shared/metadata.gguf"),
         },
         &out_dir,
+        &artifact_hook,
     )?;
     let embeddings = write_package_artifact(
         &source,
@@ -499,6 +512,7 @@ fn write_package(
             relative_path: PathBuf::from("shared/embeddings.gguf"),
         },
         &out_dir,
+        &artifact_hook,
     )?;
     let output = write_package_artifact(
         &source,
@@ -512,6 +526,7 @@ fn write_package(
             relative_path: PathBuf::from("shared/output.gguf"),
         },
         &out_dir,
+        &artifact_hook,
     )?;
 
     let mut layers = Vec::new();
@@ -529,6 +544,7 @@ fn write_package(
                 relative_path: relative,
             },
             &out_dir,
+            &artifact_hook,
         )?;
         layers.push(PackageLayer {
             layer_index,
@@ -543,7 +559,9 @@ fn write_package(
     let projectors = projectors
         .iter()
         .enumerate()
-        .map(|(index, projector)| copy_projector_artifact(projector, index, &out_dir))
+        .map(|(index, projector)| {
+            copy_projector_artifact(projector, index, &out_dir, &artifact_hook)
+        })
         .collect::<Result<Vec<_>>>()?;
 
     let manifest = PackageManifest {
@@ -1055,6 +1073,7 @@ fn write_package_artifact(
     tensors: &[TensorInfo],
     spec: PackageArtifactSpec,
     out_dir: &Path,
+    artifact_hook: &ArtifactHook,
 ) -> Result<PackageArtifact> {
     let stage = stage_plan_from_tensors(
         spec.stage_index as usize,
@@ -1068,19 +1087,22 @@ fn write_package_artifact(
     write_stage_artifact(source, &stage, &path)?;
     let metadata = fs::metadata(&path)
         .with_context(|| format!("read artifact metadata {}", path.display()))?;
-    Ok(PackageArtifact {
+    let artifact = PackageArtifact {
         path: spec.relative_path.display().to_string(),
         tensor_count: stage.tensor_count,
         tensor_bytes: stage.tensor_bytes,
         artifact_bytes: metadata.len(),
         sha256: file_sha256(&path)?,
-    })
+    };
+    run_artifact_hook(artifact_hook, &path, &artifact.path)?;
+    Ok(artifact)
 }
 
 fn copy_projector_artifact(
     projector: &Path,
     index: usize,
     out_dir: &Path,
+    artifact_hook: &ArtifactHook,
 ) -> Result<PackageProjector> {
     if !projector.is_file() {
         bail!("projector is not a file: {}", projector.display());
@@ -1112,14 +1134,39 @@ fn copy_projector_artifact(
     let metadata = fs::metadata(&output_path)
         .with_context(|| format!("read projector metadata {}", output_path.display()))?;
 
-    Ok(PackageProjector {
+    let package_projector = PackageProjector {
         kind: "mmproj".to_string(),
         path: relative_path.to_string_lossy().replace('\\', "/"),
         tensor_count: tensors.len(),
         tensor_bytes: tensors.iter().map(|tensor| tensor.byte_size).sum(),
         artifact_bytes: metadata.len(),
         sha256: file_sha256(&output_path)?,
-    })
+    };
+    run_artifact_hook(artifact_hook, &output_path, &package_projector.path)?;
+    Ok(package_projector)
+}
+
+fn run_artifact_hook(
+    artifact_hook: &ArtifactHook,
+    absolute_path: &Path,
+    relative_path: &str,
+) -> Result<()> {
+    let Some(command) = &artifact_hook.command else {
+        return Ok(());
+    };
+    let status = ProcessCommand::new(command)
+        .env("SKIPPY_PACKAGE_ARTIFACT_PATH", absolute_path)
+        .env("SKIPPY_PACKAGE_ARTIFACT_RELATIVE_PATH", relative_path)
+        .status()
+        .with_context(|| format!("run artifact hook {}", command.display()))?;
+    if !status.success() {
+        bail!(
+            "artifact hook {} failed for {} with status {status}",
+            command.display(),
+            relative_path
+        );
+    }
+    Ok(())
 }
 
 fn build_manifest(

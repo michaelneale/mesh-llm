@@ -137,18 +137,21 @@ mod tests {
             "For upstream architecture details, chat template guidance, sampling recommendations"
         ));
         assert!(EMBEDDED_SCRIPT.contains("Package manifest SHA-256"));
-        assert!(EMBEDDED_SCRIPT.contains("skippy-model-package validate-package"));
+        assert!(EMBEDDED_SCRIPT.contains("uploaded to this repository"));
     }
 
     #[test]
-    fn embedded_script_keeps_large_source_cache_on_bucket_volume() {
+    fn embedded_script_streams_package_artifacts_to_hub() {
         assert!(EMBEDDED_SCRIPT.contains("SOURCE_QUANT"));
         assert!(EMBEDDED_SCRIPT.contains("SOURCE_TOTAL_BYTES"));
-        assert!(EMBEDDED_SCRIPT.contains("Estimated /bucket workspace needed"));
+        assert!(EMBEDDED_SCRIPT.contains("Estimated fallback /bucket cache needed"));
         assert!(EMBEDDED_SCRIPT.contains("estimate_bucket_workspace_bytes"));
         assert!(EMBEDDED_SCRIPT.contains(r#"HF_HUB_CACHE="${HF_HUB_CACHE:-${HF_HOME}/hub}""#));
         assert!(EMBEDDED_SCRIPT.contains(r#"HF_XET_CACHE="${HF_XET_CACHE:-${HF_HOME}/xet}""#));
-        assert!(EMBEDDED_SCRIPT.contains(r#"JOB_TMP_DIR="${JOB_TMP_DIR:-${JOB_WORK_DIR}/tmp}""#));
+        assert!(
+            EMBEDDED_SCRIPT.contains(r#"PACKAGE_DIR="${PACKAGE_DIR:-${LOCAL_WORK_DIR}/package}""#)
+        );
+        assert!(EMBEDDED_SCRIPT.contains(r#"JOB_TMP_DIR="${JOB_TMP_DIR:-${LOCAL_WORK_DIR}/tmp}""#));
         assert!(EMBEDDED_SCRIPT.contains(r#"LOCAL_WORK_DIR="${LOCAL_WORK_DIR:-/tmp/"#));
         assert!(
             EMBEDDED_SCRIPT.contains(r#"BUILD_TMP_DIR="${BUILD_TMP_DIR:-${LOCAL_WORK_DIR}/tmp}""#)
@@ -166,6 +169,12 @@ mod tests {
         assert!(EMBEDDED_SCRIPT.contains("log_storage_snapshot"));
         assert!(EMBEDDED_SCRIPT.contains("start_heartbeat"));
         assert!(EMBEDDED_SCRIPT.contains("Starting write-package"));
+        assert!(EMBEDDED_SCRIPT.contains("upload-package-artifact.py"));
+        assert!(EMBEDDED_SCRIPT.contains("SKIPPY_PACKAGE_ARTIFACT_PATH"));
+        assert!(EMBEDDED_SCRIPT.contains("SKIPPY_PACKAGE_ARTIFACT_RELATIVE_PATH"));
+        assert!(EMBEDDED_SCRIPT.contains(r#"--after-artifact-command "$ARTIFACT_UPLOAD_HOOK""#));
+        assert!(EMBEDDED_SCRIPT.contains("Uploaded and removed"));
+        assert!(!EMBEDDED_SCRIPT.contains("api.upload_folder"));
         assert!(EMBEDDED_SCRIPT.contains(r#"MOUNTED_SOURCE_PATH="/source/${SOURCE_FILE}""#));
         assert!(EMBEDDED_SCRIPT.contains(r#"WRITE_PACKAGE_INPUT="$MOUNTED_SOURCE_PATH""#));
         assert!(EMBEDDED_SCRIPT.contains(r#"--source-file "$SOURCE_FILE""#));
