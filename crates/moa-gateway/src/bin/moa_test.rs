@@ -131,32 +131,7 @@ async fn main() {
 }
 
 async fn discover_ollama_models() -> Result<Vec<Endpoint>, String> {
-    let client = reqwest::Client::new();
-    let resp = client
-        .get("http://localhost:11434/v1/models")
-        .send()
-        .await
-        .map_err(|e| format!("can't reach ollama: {e}"))?;
-    let body: Value = resp.json().await.map_err(|e| format!("bad json: {e}"))?;
-
-    let models: Vec<Endpoint> = body["data"]
-        .as_array()
-        .unwrap_or(&vec![])
-        .iter()
-        .filter_map(|m| {
-            let id = m["id"].as_str()?;
-            // Skip cloud/remote models
-            if id.contains("cloud") {
-                return None;
-            }
-            Some(Endpoint {
-                base_url: "http://localhost:11434/v1".to_string(),
-                model: id.to_string(),
-            })
-        })
-        .collect();
-
-    Ok(models)
+    moa_gateway::discover_endpoints("http://localhost:11434/v1").await
 }
 
 /// Run a question through MoA and each model solo, compare.

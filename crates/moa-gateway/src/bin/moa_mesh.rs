@@ -334,33 +334,7 @@ async fn main() {
 }
 
 async fn discover_models(base_url: &str) -> Result<Vec<Endpoint>, String> {
-    let client = reqwest::Client::new();
-    let resp = client
-        .get(format!("{base_url}/models"))
-        .timeout(Duration::from_secs(10))
-        .send()
-        .await
-        .map_err(|e| format!("can't reach {base_url}/models: {e}"))?;
-    let body: Value = resp.json().await.map_err(|e| format!("bad json: {e}"))?;
-
-    let models: Vec<Endpoint> = body["data"]
-        .as_array()
-        .unwrap_or(&vec![])
-        .iter()
-        .filter_map(|m| {
-            let id = m["id"].as_str()?;
-            // Skip cloud/remote models and moa itself
-            if id.contains("cloud") || id == "moa" {
-                return None;
-            }
-            Some(Endpoint {
-                base_url: base_url.to_string(),
-                model: id.to_string(),
-            })
-        })
-        .collect();
-
-    Ok(models)
+    moa_gateway::discover_endpoints(base_url).await
 }
 
 fn trunc(s: &str, max: usize) -> String {

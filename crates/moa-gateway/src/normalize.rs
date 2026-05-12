@@ -151,7 +151,13 @@ fn try_kv_parse(raw: &str, model: &str, role: WorkerRole, elapsed_ms: u64) -> Op
     }
 
     // Need at least kind to count as structured
-    let kind = kind?;
+    let mut kind = kind?;
+
+    // If the model said "kind: answer" but also named a tool, it's actually
+    // a tool proposal — models frequently mislabel these.
+    if tool.is_some() && kind == OutputKind::Answer {
+        kind = OutputKind::ToolProposal;
+    }
 
     let payload = if payload_lines.is_empty() {
         raw.to_string()
@@ -459,6 +465,16 @@ mod tests {
         let raw = "<think>Let me think about this...</think>The answer is 42.";
         let out = normalize_worker_output(raw, "test-model", WorkerRole::Strong, 100);
         assert_eq!(out.payload, "The answer is 42.");
+    }
+
+    #[test]
+    fn kv_answer_with_tool_is_proposal() {
+        // Models frequently say "kind: answer" but also name a tool — this
+        // should be classified as a tool proposal.
+        let raw = "kind: answer\nconfidence: 0.9\ntool: read_file\narguments: {\"path\": \"src/auth.py\"}";
+        let out = normalize_worker_output(raw, "glm", WorkerRole::Fast, 100);
+        assert_eq!(out.kind, OutputKind::ToolProposal);
+        assert_eq!(out.tool_name.as_deref(), Some("read_file"));
     }
 
     #[test]

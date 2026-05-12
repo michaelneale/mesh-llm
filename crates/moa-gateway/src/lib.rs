@@ -363,14 +363,17 @@ impl Gateway {
     }
 
     /// Pick the best endpoint for the reducer role.
+    ///
+    /// Prefers the first endpoint — for mesh deployments this is typically the
+    /// local model which has zero network RTT.  Remote models are fine as
+    /// parallel workers but terrible as the sequential reducer because every
+    /// relay hop adds latency to the critical path.
     fn pick_reducer_endpoint(&self) -> Endpoint {
-        // Last endpoint is typically the strongest (by assignment order).
-        // Could be smarter with capability metadata later.
         self.config
             .endpoints
-            .last()
+            .first()
             .cloned()
-            .unwrap_or_else(|| self.config.endpoints[0].clone())
+            .unwrap_or_else(|| self.config.endpoints.last().unwrap().clone())
     }
 }
 
@@ -539,6 +542,59 @@ fn extract_turn_outcome(response: &Value) -> String {
     }
 
     String::new()
+}
+
+/// Discover models from an OpenAI-compatible `/v1/models` endpoint.
+///
+/// Deduplicates by display name so the same model under multiple aliases
+/// (e.g. `unsloth/GLM-4.7-Flash-GGUF` and `unsloth/GLM-4.7-Flash-GGUF@main:Q4_K_M`)
+/// only appears once.  Keeps the shorter ID as canonical.
+pub async fn discover_endpoints(base_url: &str) -> Result<Vec<Endpoint>, String> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("{base_url}/models"))
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| format!("can't reach {base_url}/models: {e}"))?;
+    let body: Value = resp.json().await.map_err(|e| format!("bad json: {e}"))?;
+
+    let empty = vec![];
+    let mut entries: Vec<&Value> = body["data"].as_array().unwrap_or(&empty).iter().collect();
+    // Sort by ID length so shorter aliases win dedup
+    entries.sort_by_key(|m| m["id"].as_str().unwrap_or("").len());
+
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut endpoints = Vec::new();
+
+    for m in entries {
+        let id = match m["id"].as_str() {
+            Some(id) => id,
+            None => continue,
+        };
+        if id.contains("cloud") || id == "moa" {
+            continue;
+        }
+        let display = m["display_name"].as_str().unwrap_or(id).to_string();
+        // Normalize: strip quant suffix, GGUF, org prefix
+        let base_name = display
+            .split("-Q")
+            .next()
+            .unwrap_or(&display)
+            .to_lowercase()
+            .replace("-gguf", "")
+            .replace("unsloth/", "")
+            .replace("meshllm/", "");
+        if seen.contains(&base_name) {
+            continue;
+        }
+        seen.insert(base_name);
+        endpoints.push(Endpoint {
+            base_url: base_url.to_string(),
+            model: id.to_string(),
+        });
+    }
+    Ok(endpoints)
 }
 
 fn short_id() -> String {
