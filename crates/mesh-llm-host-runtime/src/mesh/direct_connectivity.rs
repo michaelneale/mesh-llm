@@ -3,9 +3,8 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
 /// Return the first public IPv4 candidate iroh already discovered.
 ///
-/// iroh relays provide address discovery, so prefer their endpoint candidates
-/// before falling back to external STUN. When a fixed bind port is supplied,
-/// pair the discovered public IP with that port for user-managed forwarding.
+/// iroh relays provide address discovery. When a fixed bind port is supplied,
+/// pair the iroh-discovered public IP with that port for user-managed forwarding.
 pub(super) fn iroh_public_addr(addr: &EndpointAddr, advertised_port: u16) -> Option<SocketAddr> {
     addr.addrs
         .iter()
@@ -18,97 +17,6 @@ pub(super) fn iroh_public_addr(addr: &EndpointAddr, advertised_port: u16) -> Opt
             },
             _ => None,
         })
-}
-
-/// Discover our public IP via external STUN only when iroh did not provide it.
-///
-/// We can't send STUN from the bound port (iroh owns it), but we only need
-/// the public IP; the port is known from --bind-port plus router forwarding.
-pub(super) async fn fallback_stun_public_addr(advertised_port: u16) -> Option<SocketAddr> {
-    let stun_servers = [
-        "stun.l.google.com:19302",
-        "stun.cloudflare.com:3478",
-        "stun.stunprotocol.org:3478",
-    ];
-
-    // Bind to an ephemeral port; we only care about the IP, not the mapped port.
-    let sock = tokio::net::UdpSocket::bind("0.0.0.0:0").await.ok()?;
-
-    for server in &stun_servers {
-        // STUN Binding Request: type=0x0001, len=0, magic=0x2112A442, txn=random.
-        let mut req = [0u8; 20];
-        req[0] = 0x00;
-        req[1] = 0x01;
-        req[4] = 0x21;
-        req[5] = 0x12;
-        req[6] = 0xA4;
-        req[7] = 0x42;
-        rand::fill(&mut req[8..20]);
-
-        let addrs = match tokio::net::lookup_host(server).await {
-            Ok(addrs) => addrs,
-            Err(_) => continue,
-        };
-
-        for dest in addrs.filter(SocketAddr::is_ipv4) {
-            if sock.send_to(&req, dest).await.is_err() {
-                continue;
-            }
-
-            let mut buf = [0u8; 256];
-            let len = match tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                sock.recv_from(&mut buf),
-            )
-            .await
-            {
-                Ok(Ok((len, _))) if len >= 20 => len,
-                _ => continue,
-            };
-
-            if let Some(addr) = parse_stun_mapped_ipv4(&req, &buf[..len], advertised_port) {
-                tracing::info!("STUN discovered public address: {addr}");
-                return Some(addr);
-            }
-        }
-    }
-
-    tracing::warn!("STUN: could not discover public address");
-    None
-}
-
-fn parse_stun_mapped_ipv4(
-    request: &[u8; 20],
-    response: &[u8],
-    advertised_port: u16,
-) -> Option<SocketAddr> {
-    let magic = &request[4..8];
-    let mut i = 20;
-    while i + 4 <= response.len() {
-        let attr_type = u16::from_be_bytes([response[i], response[i + 1]]);
-        let attr_len = u16::from_be_bytes([response[i + 2], response[i + 3]]) as usize;
-        if i + 4 + attr_len > response.len() {
-            break;
-        }
-        let val = &response[i + 4..i + 4 + attr_len];
-
-        if attr_type == 0x0020 && attr_len >= 8 && val[1] == 0x01 {
-            let ip = Ipv4Addr::new(
-                val[4] ^ magic[0],
-                val[5] ^ magic[1],
-                val[6] ^ magic[2],
-                val[7] ^ magic[3],
-            );
-            return Some(SocketAddr::V4(SocketAddrV4::new(ip, advertised_port)));
-        }
-        if attr_type == 0x0001 && attr_len >= 8 && val[1] == 0x01 {
-            let ip = Ipv4Addr::new(val[4], val[5], val[6], val[7]);
-            return Some(SocketAddr::V4(SocketAddrV4::new(ip, advertised_port)));
-        }
-
-        i += (4 + (attr_len + 3)) & !3;
-    }
-    None
 }
 
 pub(super) fn is_cgnat_ipv4_addr(addr: Ipv4Addr) -> bool {
@@ -257,7 +165,7 @@ pub(super) async fn warn_if_cgnat_likely(bind_port: Option<u16>, public_addr: Op
         "private/double NAT"
     };
     emit_warning(format!(
-        "Direct UDP port forwarding may not work on --bind-port {bind_port}: router WAN appears to be {nat_kind} while STUN sees a different public IPv4. Router port forwards only cover the local router; ask the ISP to opt out of CGNAT/provide a public IPv4, bridge the upstream router, or use relay/tunnel mode."
+        "Direct UDP port forwarding may not work on --bind-port {bind_port}: router WAN appears to be {nat_kind} while iroh discovered a different public IPv4. Router port forwards only cover the local router; ask the ISP to opt out of CGNAT/provide a public IPv4, bridge the upstream router, or use relay/tunnel mode."
     ));
 }
 

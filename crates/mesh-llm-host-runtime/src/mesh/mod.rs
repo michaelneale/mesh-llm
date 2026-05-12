@@ -2148,16 +2148,10 @@ impl Node {
             }
         }
 
-        // Discover public IP via STUN so the invite token includes it.
-        // With --bind-port, the advertised port is the bound port (for port forwarding).
-        // Without --bind-port, we use port 0 — the IP is still useful for hole-punching.
-        // Prefer iroh's own relay-discovered candidates; fall back to raw STUN
-        // only when the endpoint has not learned a public IPv4.
-        let stun_port = bind_port.unwrap_or(0);
-        let public_addr = match direct_connectivity::iroh_public_addr(&endpoint.addr(), stun_port) {
-            Some(addr) => Some(addr),
-            None => direct_connectivity::fallback_stun_public_addr(stun_port).await,
-        };
+        // Use iroh's relay-discovered public candidate so invite tokens can
+        // include the fixed forwarding port when --bind-port is set.
+        let advertised_port = bind_port.unwrap_or(0);
+        let public_addr = direct_connectivity::iroh_public_addr(&endpoint.addr(), advertised_port);
         direct_connectivity::warn_if_cgnat_likely(bind_port, public_addr).await;
 
         let (peer_change_tx, peer_change_rx) = watch::channel(0usize);
@@ -2458,7 +2452,8 @@ impl Node {
 
     pub fn invite_token(&self) -> String {
         let mut addr = self.endpoint.addr();
-        // Inject STUN-discovered public address if relay STUN didn't provide one.
+        // Inject iroh-discovered public address with the user-advertised port
+        // when no public IPv4 candidate is already present.
         if let Some(pub_addr) = self.public_addr {
             use iroh::TransportAddr;
             let has_public = addr.addrs.iter().any(|a| match a {
