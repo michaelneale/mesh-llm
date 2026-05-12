@@ -788,11 +788,10 @@ pub(crate) fn resolve_hf_package_to_local(
     include_output: bool,
 ) -> Result<String> {
     let parsed = StagePackageRef::parse(package_ref)?;
-    let (repo, revision, floating_revision) = match &parsed {
+    let (repo, revision) = match &parsed {
         StagePackageRef::HuggingFacePackage { repo, revision } => (
             repo.clone(),
             revision.clone().unwrap_or_else(|| "main".to_string()),
-            revision.is_none(),
         ),
         StagePackageRef::LocalPackage(path) => {
             return resolve_local_package_files(
@@ -853,31 +852,6 @@ pub(crate) fn resolve_hf_package_to_local(
             }
         }
     }
-    if floating_revision {
-        for snapshot_dir in cache_resolution::cached_package_snapshots(&cache_dir, &repo_folder)? {
-            if snapshot_dir == direct_snapshot_dir {
-                continue;
-            }
-            match cache_resolution::resolve_cached_hf_package_snapshot(
-                &snapshot_dir,
-                layer_start,
-                layer_end,
-                include_embeddings,
-                include_output,
-            ) {
-                Ok(Some(local_ref)) => return Ok(local_ref),
-                Ok(None) => {}
-                Err(error) => {
-                    tracing::debug!(
-                        package_dir = %snapshot_dir.display(),
-                        error = %error,
-                        "cached HF layer package snapshot is not usable for this request"
-                    );
-                }
-            }
-        }
-    }
-
     let downloaded = crate::models::run_hf_sync(move || {
         download_hf_package_to_local_sync(
             &repo,
@@ -889,42 +863,50 @@ pub(crate) fn resolve_hf_package_to_local(
         )
     })?;
 
-    // The HF SDK resolves `main` to the server-side HEAD commit, which may
-    // differ from the local snapshot that has actual layer files.  When the
-    // downloaded snapshot is missing files the caller needs (skeleton for
-    // metadata-only probes, or incomplete for real stage loads), re-scan the
-    // local cache for a snapshot that can satisfy the request.  This prevents
-    // skeleton hashes from propagating through topology configs and stage loads.
-    let downloaded_dir = std::path::Path::new(&downloaded);
-    if downloaded_dir.join("model-package.json").is_file()
-        && cache_resolution::resolve_cached_hf_package_snapshot(
-            downloaded_dir,
-            layer_start,
-            layer_end,
-            include_embeddings,
-            include_output,
-        )?
-        .is_none()
-    {
-        // Downloaded snapshot can't satisfy this request — find a better one.
-        let cache_dir = crate::models::huggingface_hub_cache_dir();
-        for snapshot_dir in cache_resolution::cached_package_snapshots(&cache_dir, &repo_folder)? {
-            if snapshot_dir.as_path() == downloaded_dir {
-                continue;
-            }
-            if let Ok(Some(better)) = cache_resolution::resolve_cached_hf_package_snapshot(
-                &snapshot_dir,
+    // Metadata-only probes (layer_start == layer_end == 0) download the
+    // manifest and shared metadata but no layer files.  The downloaded
+    // snapshot may be a skeleton whose hash must not propagate through
+    // topology configs and stage loads.  Re-scan the local cache for a
+    // snapshot that has at least one real layer artifact.
+    //
+    // Real stage loads (layer_start < layer_end) always download the
+    // requested layer range, so the downloaded snapshot is guaranteed to
+    // have the needed files — no fallback scan needed.
+    let is_metadata_only = layer_start == 0 && layer_end == 0;
+    if is_metadata_only {
+        let downloaded_dir = std::path::Path::new(&downloaded);
+        if downloaded_dir.join("model-package.json").is_file()
+            && cache_resolution::resolve_cached_hf_package_snapshot(
+                downloaded_dir,
                 layer_start,
                 layer_end,
                 include_embeddings,
                 include_output,
-            ) {
-                tracing::debug!(
-                    downloaded = %downloaded,
-                    better = %better,
-                    "post-download: preferring cached snapshot with requested artifacts over downloaded snapshot"
-                );
-                return Ok(better);
+            )?
+            .is_none()
+        {
+            // Downloaded snapshot is a skeleton — find one with real layers.
+            let cache_dir = crate::models::huggingface_hub_cache_dir();
+            for snapshot_dir in
+                cache_resolution::cached_package_snapshots(&cache_dir, &repo_folder)?
+            {
+                if snapshot_dir.as_path() == downloaded_dir {
+                    continue;
+                }
+                if let Ok(Some(better)) = cache_resolution::resolve_cached_hf_package_snapshot(
+                    &snapshot_dir,
+                    layer_start,
+                    layer_end,
+                    include_embeddings,
+                    include_output,
+                ) {
+                    tracing::debug!(
+                        downloaded = %downloaded,
+                        better = %better,
+                        "post-download: preferring cached snapshot with layer artifacts over skeleton"
+                    );
+                    return Ok(better);
+                }
             }
         }
     }
@@ -1906,7 +1888,10 @@ mod tests {
 
     #[test]
     #[serial]
-    fn floating_hf_package_resolution_prefers_cached_snapshot_with_layers() {
+    /// With an explicit pinned revision that has all requested layers, the
+    /// cache lookup returns it directly without downloading or scanning other
+    /// snapshots.  A stale snapshot with different content must NOT be picked.
+    fn pinned_revision_resolves_directly_from_cache() {
         let prev_hf_home = std::env::var_os("HF_HOME");
         let prev_hf_cache = std::env::var_os("HF_HUB_CACHE");
         let prev_huggingface_cache = std::env::var_os("HUGGINGFACE_HUB_CACHE");
@@ -1923,20 +1908,19 @@ mod tests {
             .join("hf")
             .join("hub")
             .join("models--owner--repo");
-        let refs_dir = repo_cache.join("refs");
-        fs::create_dir_all(&refs_dir).unwrap();
-        fs::write(refs_dir.join("main"), "bad-main").unwrap();
 
-        let bad_snapshot = repo_cache.join("snapshots").join("bad-main");
-        write_cached_package_snapshot(&bad_snapshot, sha256_hex(b"layer"));
-        fs::remove_dir_all(bad_snapshot.join("layers")).unwrap();
+        // Create a complete snapshot at the pinned revision.
+        let pinned_snapshot = repo_cache.join("snapshots").join("abc123");
+        write_cached_package_snapshot(&pinned_snapshot, sha256_hex(b"layer"));
 
-        let complete_snapshot = repo_cache.join("snapshots").join("complete-package");
-        write_cached_package_snapshot(&complete_snapshot, sha256_hex(b"layer"));
+        // Create a stale snapshot that also has layers — must NOT be used.
+        let stale_snapshot = repo_cache.join("snapshots").join("old-stale");
+        write_cached_package_snapshot(&stale_snapshot, sha256_hex(b"layer"));
 
-        let resolved = resolve_hf_package_to_local("hf://owner/repo", 0, 0, false, false).unwrap();
+        let resolved =
+            resolve_hf_package_to_local("hf://owner/repo@abc123", 0, 0, false, false).unwrap();
 
-        assert_eq!(PathBuf::from(resolved), complete_snapshot);
+        assert_eq!(PathBuf::from(resolved), pinned_snapshot);
 
         restore_env("HF_HOME", prev_hf_home);
         restore_env("HF_HUB_CACHE", prev_hf_cache);

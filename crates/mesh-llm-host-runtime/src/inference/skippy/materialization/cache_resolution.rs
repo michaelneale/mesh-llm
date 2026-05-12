@@ -68,22 +68,26 @@ fn cached_snapshot_sort_key(path: &Path) -> (Reverse<SystemTime>, PathBuf) {
 
 fn should_prefer_cached_snapshot_for_request(
     package_dir: &Path,
-    _layer_start: u32,
-    _layer_end: u32,
+    layer_start: u32,
+    layer_end: u32,
     _include_embeddings: bool,
     _include_output: bool,
 ) -> Result<bool> {
-    // Always verify that the snapshot has its declared layer artifacts on
-    // disk.  A metadata-only snapshot (model-package.json + shared/ but no
-    // layers/) must never be selected — not even for metadata-only probes —
-    // because the snapshot hash gets baked into the canonical package_ref
-    // and propagated to all later resolution calls (split stage loads,
-    // activation-width inference, etc.) which then fail when the layers
-    // are missing.
-    cached_snapshot_has_declared_layer_artifacts(package_dir)
+    // Metadata-only probes (layer_start == layer_end == 0) need at least one
+    // layer artifact on disk so the snapshot hash that gets baked into the
+    // canonical package_ref is not a skeleton.  Real stage loads only need
+    // their assigned layer range.
+    if layer_start == 0 && layer_end == 0 {
+        cached_snapshot_has_any_layer_artifact(package_dir)
+    } else {
+        cached_snapshot_has_requested_layers(package_dir, layer_start, layer_end)
+    }
 }
 
-fn cached_snapshot_has_declared_layer_artifacts(package_dir: &Path) -> Result<bool> {
+/// Returns `true` when at least one declared layer artifact is present on disk.
+/// Used for metadata-only probes (`layer_start == layer_end == 0`) to
+/// distinguish a real snapshot from a skeleton (manifest + shared/ only).
+fn cached_snapshot_has_any_layer_artifact(package_dir: &Path) -> Result<bool> {
     let manifest_contents =
         fs::read(package_dir.join("model-package.json")).context("read cached package manifest")?;
     let manifest: serde_json::Value =
@@ -91,10 +95,50 @@ fn cached_snapshot_has_declared_layer_artifacts(package_dir: &Path) -> Result<bo
     let Some(layers) = manifest.get("layers").and_then(|layers| layers.as_array()) else {
         return Ok(false);
     };
-    if layers.is_empty() {
-        return Ok(false);
-    }
     for layer in layers {
+        let Some(path) = layer.get("path").and_then(|path| path.as_str()) else {
+            continue;
+        };
+        let path = safe_manifest_file_path(path)?;
+        let Ok(metadata) = fs::metadata(package_dir.join(path)) else {
+            continue;
+        };
+        if metadata.is_file() {
+            if let Some(expected_bytes) = manifest_artifact_bytes(layer) {
+                if metadata.len() == expected_bytes {
+                    return Ok(true);
+                }
+            } else {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Returns `true` when every layer in `[layer_start, layer_end)` is present on
+/// disk with the expected size.  Used for real stage loads where only the
+/// assigned range needs to be available locally.
+fn cached_snapshot_has_requested_layers(
+    package_dir: &Path,
+    layer_start: u32,
+    layer_end: u32,
+) -> Result<bool> {
+    let manifest_contents =
+        fs::read(package_dir.join("model-package.json")).context("read cached package manifest")?;
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&manifest_contents).context("parse cached package manifest")?;
+    let Some(layers) = manifest.get("layers").and_then(|layers| layers.as_array()) else {
+        return Ok(false);
+    };
+    for (i, layer) in layers.iter().enumerate() {
+        let idx = layer
+            .get("layer_index")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(i as u64) as u32;
+        if idx < layer_start || idx >= layer_end {
+            continue;
+        }
         let Some(path) = layer.get("path").and_then(|path| path.as_str()) else {
             return Ok(false);
         };

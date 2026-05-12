@@ -4518,17 +4518,60 @@ impl Node {
     ) -> anyhow::Result<()> {
         use prost::Message as _;
 
-        let buf = read_len_prefixed(&mut recv).await?;
+        let buf = read_len_prefixed(&mut recv).await.map_err(|e| {
+            tracing::warn!(
+                "handle_stage_control: read_len_prefixed failed from {}: {e}",
+                remote.fmt_short()
+            );
+            e
+        })?;
         let frame = skippy_protocol::proto::stage::StageControlRequest::decode(buf.as_slice())
-            .map_err(|e| anyhow::anyhow!("StageControlRequest decode error: {e}"))?;
-        skippy_protocol::validate_stage_control_request(&frame)
-            .map_err(|e| anyhow::anyhow!("StageControlRequest validation error: {e}"))?;
+            .map_err(|e| {
+                tracing::warn!(
+                    "handle_stage_control: decode failed from {}: {e}",
+                    remote.fmt_short()
+                );
+                anyhow::anyhow!("StageControlRequest decode error: {e}")
+            })?;
+        skippy_protocol::validate_stage_control_request(&frame).map_err(|e| {
+            tracing::warn!(
+                "handle_stage_control: validation failed from {}: {e}",
+                remote.fmt_short()
+            );
+            anyhow::anyhow!("StageControlRequest validation error: {e}")
+        })?;
         if frame.requester_id.as_slice() != remote.as_bytes() {
+            tracing::warn!(
+                "handle_stage_control: requester_id mismatch from {}",
+                remote.fmt_short()
+            );
             anyhow::bail!("stage control requester_id does not match QUIC peer identity");
         }
 
+        let request_kind = match &frame.command {
+            Some(skippy_stage_proto::stage_control_request::Command::ClaimCoordinator(_)) => {
+                "claim"
+            }
+            Some(skippy_stage_proto::stage_control_request::Command::LoadStage(_)) => "load",
+            Some(skippy_stage_proto::stage_control_request::Command::StopStage(_)) => "stop",
+            Some(skippy_stage_proto::stage_control_request::Command::PrepareStage(_)) => "prepare",
+            _ => "other",
+        };
+        tracing::debug!(
+            "handle_stage_control: received {request_kind} from {}",
+            remote.fmt_short()
+        );
+
         let mut request = stage_control_request_from_proto(frame)?;
-        self.prepare_stage_control_request(&mut request).await?;
+        self.prepare_stage_control_request(&mut request)
+            .await
+            .map_err(|e| {
+                tracing::warn!(
+                    "handle_stage_control: prepare failed for {request_kind} from {}: {e}",
+                    remote.fmt_short()
+                );
+                e
+            })?;
         if let crate::inference::skippy::StageControlRequest::Load(load) = &request {
             self.record_stage_topology(stage_topology_from_load(self.endpoint.id(), load))
                 .await;
