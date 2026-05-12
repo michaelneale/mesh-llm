@@ -206,7 +206,7 @@ The running summary is built deterministically (no model calls) from:
 - Tool call/result history: `"web_search() → Bitcoin at $104,250..."`
 - Older facts are compacted: `"[3 earlier facts omitted]"`
 
-This means a 20-turn conversation sends ~200 tokens of summary to the fast
+This means a 20-turn conversation sends ~2k tokens of summary to the fast
 worker, not 20k tokens of raw history.
 
 ## Test results

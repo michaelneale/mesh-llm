@@ -188,9 +188,10 @@ impl Session {
         if outcome.is_empty() {
             return;
         }
-        // Truncate individual facts to keep summary compact
-        let truncated = if outcome.len() > 200 {
-            format!("{}...", &outcome[..197])
+        // Truncate individual facts — generous enough to capture a useful
+        // summary of the turn but not the full response.
+        let truncated = if outcome.len() > 500 {
+            format!("{}...", &outcome[..497])
         } else {
             outcome.to_string()
         };
@@ -203,8 +204,10 @@ impl Session {
 
     /// Deterministic summary rebuild.  No model calls.
     fn rebuild_summary(&mut self) {
-        // Keep the last N facts — older ones are compressed into a single line
-        const MAX_RECENT_FACTS: usize = 5;
+        // Keep the last N facts — older ones are compressed into a single line.
+        // With ~500 chars per fact + tool history, 15 facts gives a summary
+        // budget of roughly 2000 tokens — enough for real agent sessions.
+        const MAX_RECENT_FACTS: usize = 15;
         let total = self.accepted_facts.len();
         let mut parts = Vec::new();
 
@@ -224,8 +227,8 @@ impl Session {
             .iter()
             .map(|p| {
                 if let Some(ref result) = p.result {
-                    let short_result = if result.len() > 80 {
-                        format!("{}...", &result[..77])
+                    let short_result = if result.len() > 300 {
+                        format!("{}...", &result[..297])
                     } else {
                         result.clone()
                     };

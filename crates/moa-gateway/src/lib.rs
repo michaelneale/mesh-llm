@@ -515,8 +515,8 @@ fn extract_turn_outcome(response: &Value) -> String {
                 .pointer("/function/arguments")
                 .and_then(|a| a.as_str())
                 .unwrap_or("{}");
-            let short_args = if args.len() > 80 {
-                format!("{}...", &args[..77])
+            let short_args = if args.len() > 200 {
+                format!("{}...", &args[..197])
             } else {
                 args.to_string()
             };
@@ -524,19 +524,16 @@ fn extract_turn_outcome(response: &Value) -> String {
         }
     }
 
-    // Text answer — take first sentence or 100 chars
+    // Text answer — take first 2-3 sentences or 400 chars, enough to
+    // capture the substance of the response for future context.
     if let Some(content) = response
         .pointer("/choices/0/message/content")
         .and_then(|c| c.as_str())
     {
-        let first_sentence = content
-            .split_terminator(&['.', '!', '?'][..])
-            .next()
-            .unwrap_or(content);
-        let truncated = if first_sentence.len() > 100 {
-            format!("{}...", &first_sentence[..97])
+        let truncated = if content.len() > 400 {
+            format!("{}...", &content[..397])
         } else {
-            format!("{first_sentence}.")
+            content.to_string()
         };
         return format!("Answered: {truncated}");
     }
