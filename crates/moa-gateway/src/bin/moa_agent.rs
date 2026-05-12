@@ -43,10 +43,12 @@ struct AgentSim {
 
 impl AgentSim {
     fn new(endpoints: Vec<Endpoint>) -> Self {
+        // Mesh routing over QUIC relays can take longer than localhost.
+        // Give workers 120s and the reducer 180s.
         let config = GatewayConfig {
             endpoints,
-            worker_timeout: Duration::from_secs(60),
-            reducer_timeout: Duration::from_secs(90),
+            worker_timeout: Duration::from_secs(120),
+            reducer_timeout: Duration::from_secs(180),
         };
         let tools: Value = serde_json::from_str(TOOLS).unwrap();
         Self {
@@ -610,30 +612,7 @@ fn print_turn(_step: usize, result: &TurnResult, sim: &AgentSim) {
 }
 
 async fn discover_models(base_url: &str) -> Result<Vec<Endpoint>, String> {
-    let client = reqwest::Client::new();
-    let resp = client
-        .get(format!("{base_url}/models"))
-        .timeout(Duration::from_secs(10))
-        .send()
-        .await
-        .map_err(|e| format!("can't reach {base_url}/models: {e}"))?;
-    let body: Value = resp.json().await.map_err(|e| format!("bad json: {e}"))?;
-    let models: Vec<Endpoint> = body["data"]
-        .as_array()
-        .unwrap_or(&vec![])
-        .iter()
-        .filter_map(|m| {
-            let id = m["id"].as_str()?;
-            if id.contains("cloud") || id == "moa" {
-                return None;
-            }
-            Some(Endpoint {
-                base_url: base_url.to_string(),
-                model: id.to_string(),
-            })
-        })
-        .collect();
-    Ok(models)
+    moa_gateway::discover_endpoints(base_url).await
 }
 
 fn trunc(s: &str, max: usize) -> String {
