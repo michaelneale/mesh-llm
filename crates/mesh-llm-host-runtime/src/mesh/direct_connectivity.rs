@@ -1,5 +1,25 @@
-use iroh::{EndpointAddr, TransportAddr};
+use iroh::{Endpoint, EndpointAddr, TransportAddr};
+use serde::Serialize;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub(crate) struct DirectConnectivityStatus {
+    pub(crate) direct_candidates: Vec<String>,
+    pub(crate) direct_candidate_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) public_ipv4_candidate: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) invite_public_candidate: Option<String>,
+    pub(crate) iroh_portmapper: IrohPortmapperStatus,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub(crate) struct IrohPortmapperStatus {
+    pub(crate) enabled: bool,
+    pub(crate) mapping_attempts: u64,
+    pub(crate) external_address_updates: u64,
+    pub(crate) has_reported_external_address: bool,
+}
 
 /// Return the first public IPv4 candidate iroh already discovered.
 ///
@@ -17,6 +37,63 @@ pub(super) fn iroh_public_addr(addr: &EndpointAddr, advertised_port: u16) -> Opt
             },
             _ => None,
         })
+}
+
+pub(crate) fn iroh_status(
+    endpoint: &Endpoint,
+    invite_public_candidate: Option<SocketAddr>,
+) -> DirectConnectivityStatus {
+    let endpoint_addr = endpoint.addr();
+    let direct_candidates: Vec<SocketAddr> = endpoint_addr
+        .addrs
+        .iter()
+        .filter_map(|addr| match addr {
+            TransportAddr::Ip(sock) => Some(*sock),
+            TransportAddr::Relay(_) => None,
+            _ => None,
+        })
+        .collect();
+    let public_ipv4_candidate = direct_candidates.iter().find_map(|sock| match sock.ip() {
+        std::net::IpAddr::V4(v4) if is_public_ipv4_addr(v4) => Some(sock.to_string()),
+        _ => None,
+    });
+    let metrics = endpoint.metrics();
+    let mapping_attempts = metrics.net_report.portmap_attempts.get();
+    let external_address_updates = metrics.net_report.portmap_external_address_updated.get();
+
+    DirectConnectivityStatus {
+        direct_candidate_count: direct_candidates.len(),
+        direct_candidates: direct_candidates
+            .into_iter()
+            .map(|addr| addr.to_string())
+            .collect(),
+        public_ipv4_candidate,
+        invite_public_candidate: invite_public_candidate.map(|addr| addr.to_string()),
+        iroh_portmapper: IrohPortmapperStatus {
+            enabled: true,
+            mapping_attempts,
+            external_address_updates,
+            has_reported_external_address: external_address_updates > 0,
+        },
+    }
+}
+
+pub(super) fn emit_iroh_status(endpoint: &Endpoint, invite_public_candidate: Option<SocketAddr>) {
+    let status = iroh_status(endpoint, invite_public_candidate);
+    let candidate = status
+        .invite_public_candidate
+        .as_deref()
+        .or(status.public_ipv4_candidate.as_deref())
+        .unwrap_or("none");
+    let _ = crate::cli::output::emit_event(crate::cli::output::OutputEvent::Info {
+        message: format!(
+            "iroh direct connectivity: {} direct candidate(s), public candidate {candidate}, portmapper enabled (attempts={}, external_updates={})",
+            status.direct_candidate_count,
+            status.iroh_portmapper.mapping_attempts,
+            status.iroh_portmapper.external_address_updates
+        ),
+        context: None,
+    });
 }
 
 pub(super) fn is_cgnat_ipv4_addr(addr: Ipv4Addr) -> bool {

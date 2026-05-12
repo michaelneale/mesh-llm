@@ -13,6 +13,8 @@ pub use mesh_llm_types::mesh::{
 
 mod direct_connectivity;
 
+pub(crate) use direct_connectivity::DirectConnectivityStatus;
+
 use anyhow::{Context, Result};
 use base64::Engine;
 use iroh::endpoint::Connection;
@@ -2152,6 +2154,7 @@ impl Node {
         // include the fixed forwarding port when --bind-port is set.
         let advertised_port = bind_port.unwrap_or(0);
         let public_addr = direct_connectivity::iroh_public_addr(&endpoint.addr(), advertised_port);
+        direct_connectivity::emit_iroh_status(&endpoint, public_addr);
         direct_connectivity::warn_if_cgnat_likely(bind_port, public_addr).await;
 
         let (peer_change_tx, peer_change_rx) = watch::channel(0usize);
@@ -2469,6 +2472,12 @@ impl Node {
         }
         let json = serde_json::to_vec(&addr).expect("serializable");
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&json)
+    }
+
+    pub(crate) fn direct_connectivity_status(
+        &self,
+    ) -> direct_connectivity::DirectConnectivityStatus {
+        direct_connectivity::iroh_status(&self.endpoint, self.public_addr)
     }
 
     /// Decode an invite token into an [`EndpointAddr`] without connecting.

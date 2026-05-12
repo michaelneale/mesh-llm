@@ -411,6 +411,7 @@ mod tests {
             ),
             routing_affinity: crate::network::affinity::AffinityStatsSnapshot::default(),
             routing_metrics: crate::network::metrics::RoutingMetricsStatusSnapshot::default(),
+            direct_connectivity: Default::default(),
             first_joined_mesh_ts: Some(123),
         };
 

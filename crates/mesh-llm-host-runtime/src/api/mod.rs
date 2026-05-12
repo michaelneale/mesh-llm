@@ -887,6 +887,7 @@ impl MeshApi {
         ));
         payload.runtime = runtime;
         payload.wanted_model_refs = self.wanted_model_refs().await;
+        payload.direct_connectivity = node.direct_connectivity_status();
         payload
     }
 

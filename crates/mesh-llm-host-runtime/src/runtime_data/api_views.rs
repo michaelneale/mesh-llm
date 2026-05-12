@@ -65,6 +65,7 @@ pub(crate) fn status_payload(snapshot: StatusViewSnapshot) -> StatusPayload {
         gpus: snapshot.hardware.gpus,
         routing_affinity: snapshot.routing_affinity,
         routing_metrics: snapshot.routing_metrics,
+        direct_connectivity: Default::default(),
         first_joined_mesh_ts: snapshot.hardware.first_joined_mesh_ts,
     }
 }
@@ -199,6 +200,7 @@ mod tests {
             ),
             routing_affinity: crate::network::affinity::AffinityStatsSnapshot::default(),
             routing_metrics: crate::network::metrics::RoutingMetricsStatusSnapshot::default(),
+            direct_connectivity: Default::default(),
             first_joined_mesh_ts: Some(123),
         };
 

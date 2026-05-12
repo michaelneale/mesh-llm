@@ -4,6 +4,7 @@
 
 use super::{RuntimeModelPayload, RuntimeProcessPayload};
 use crate::crypto::{OwnershipStatus, OwnershipSummary};
+use crate::mesh::DirectConnectivityStatus;
 use crate::network::{affinity, metrics};
 use crate::runtime_data;
 use crate::system::hardware::expand_gpu_names;
@@ -349,6 +350,7 @@ pub(crate) struct StatusPayload {
     /// Local-only routing outcome and current-node pressure snapshot measured on
     /// this node only; not mesh-wide aggregates.
     pub(crate) routing_metrics: metrics::RoutingMetricsStatusSnapshot,
+    pub(crate) direct_connectivity: DirectConnectivityStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) first_joined_mesh_ts: Option<u64>,
 }
@@ -1001,6 +1003,7 @@ mod tests {
             gpus: vec![],
             routing_affinity: affinity::AffinityStatsSnapshot::default(),
             routing_metrics: metrics::RoutingMetricsStatusSnapshot::default(),
+            direct_connectivity: DirectConnectivityStatus::default(),
             first_joined_mesh_ts: None,
         };
 
@@ -1053,6 +1056,7 @@ mod tests {
             gpus: vec![],
             routing_affinity: affinity::AffinityStatsSnapshot::default(),
             routing_metrics: metrics::RoutingMetricsStatusSnapshot::default(),
+            direct_connectivity: DirectConnectivityStatus::default(),
             first_joined_mesh_ts: None,
         };
 
@@ -1112,6 +1116,7 @@ mod tests {
             gpus: vec![],
             routing_affinity: affinity::AffinityStatsSnapshot::default(),
             routing_metrics: metrics::RoutingMetricsStatusSnapshot::default(),
+            direct_connectivity: DirectConnectivityStatus::default(),
             first_joined_mesh_ts: None,
         };
 
@@ -1166,6 +1171,7 @@ mod tests {
             gpus: vec![],
             routing_affinity: affinity::AffinityStatsSnapshot::default(),
             routing_metrics: metrics::RoutingMetricsStatusSnapshot::default(),
+            direct_connectivity: DirectConnectivityStatus::default(),
             first_joined_mesh_ts: None,
         };
 
