@@ -6763,6 +6763,17 @@ fn stage_preparation_status_to_proto(
 fn stage_preparation_status_from_proto(
     status: skippy_stage_proto::StagePreparationStatus,
 ) -> crate::inference::skippy::StagePreparationStatus {
+    let coordinator_id = status.coordinator_id.and_then(|id| match id.parse() {
+        Ok(id) => Some(id),
+        Err(error) => {
+            tracing::warn!(
+                coordinator_id = %id,
+                error = %error,
+                "invalid stage preparation coordinator_id"
+            );
+            None
+        }
+    });
     crate::inference::skippy::StagePreparationStatus {
         topology_id: status.topology_id,
         run_id: status.run_id,
@@ -6781,7 +6792,7 @@ fn stage_preparation_status_from_proto(
         error: status.error,
         shutdown_generation: status.shutdown_generation,
         coordinator_term: status.coordinator_term,
-        coordinator_id: status.coordinator_id.and_then(|id| id.parse().ok()),
+        coordinator_id,
         lease_until_unix_ms: status.lease_until_unix_ms,
     }
 }

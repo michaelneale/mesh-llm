@@ -369,6 +369,52 @@ impl Drop for GenerationQueueReservation {
     }
 }
 
+async fn acquire_generation_permit_with_queue(
+    generation_limit: Arc<Semaphore>,
+    generation_queue_depth: Arc<AtomicUsize>,
+    generation_queue_limit: usize,
+    admission_timeout: Duration,
+) -> OpenAiResult<OwnedSemaphorePermit> {
+    match generation_limit.clone().try_acquire_owned() {
+        Ok(permit) => return Ok(permit),
+        Err(TryAcquireError::Closed) => return Err(generation_lanes_busy_error()),
+        Err(TryAcquireError::NoPermits) => {}
+    }
+
+    let _queue_reservation =
+        reserve_generation_queue(generation_queue_depth, generation_queue_limit)
+            .ok_or_else(generation_queue_full_error)?;
+    tokio::time::timeout(admission_timeout, generation_limit.acquire_owned())
+        .await
+        .map_err(|_| generation_queue_timeout_error(admission_timeout))?
+        .map_err(|_| generation_lanes_busy_error())
+}
+
+fn reserve_generation_queue(
+    generation_queue_depth: Arc<AtomicUsize>,
+    generation_queue_limit: usize,
+) -> Option<GenerationQueueReservation> {
+    let mut current = generation_queue_depth.load(Ordering::Acquire);
+    loop {
+        if current >= generation_queue_limit {
+            return None;
+        }
+        match generation_queue_depth.compare_exchange_weak(
+            current,
+            current + 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => {
+                return Some(GenerationQueueReservation {
+                    depth: generation_queue_depth,
+                });
+            }
+            Err(next) => current = next,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GenerationTokenLimit {
     Explicit(u32),
@@ -1463,44 +1509,13 @@ impl OpenAiBackend for StageOpenAiBackend {
 
 impl StageOpenAiBackend {
     async fn acquire_generation_permit(&self) -> OpenAiResult<OwnedSemaphorePermit> {
-        match self.generation_limit.clone().try_acquire_owned() {
-            Ok(permit) => return Ok(permit),
-            Err(TryAcquireError::Closed) => return Err(generation_lanes_busy_error()),
-            Err(TryAcquireError::NoPermits) => {}
-        }
-
-        let _queue_reservation = self
-            .reserve_generation_queue()
-            .ok_or_else(generation_queue_full_error)?;
-        tokio::time::timeout(
+        acquire_generation_permit_with_queue(
+            self.generation_limit.clone(),
+            self.generation_queue_depth.clone(),
+            self.generation_queue_limit,
             GENERATION_ADMISSION_TIMEOUT,
-            self.generation_limit.clone().acquire_owned(),
         )
         .await
-        .map_err(|_| generation_queue_timeout_error(GENERATION_ADMISSION_TIMEOUT))?
-        .map_err(|_| generation_lanes_busy_error())
-    }
-
-    fn reserve_generation_queue(&self) -> Option<GenerationQueueReservation> {
-        let mut current = self.generation_queue_depth.load(Ordering::Acquire);
-        loop {
-            if current >= self.generation_queue_limit {
-                return None;
-            }
-            match self.generation_queue_depth.compare_exchange_weak(
-                current,
-                current + 1,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => {
-                    return Some(GenerationQueueReservation {
-                        depth: self.generation_queue_depth.clone(),
-                    });
-                }
-                Err(next) => current = next,
-            }
-        }
     }
 
     fn openai_attrs(&self, ids: &OpenAiGenerationIds) -> BTreeMap<String, Value> {

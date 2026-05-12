@@ -88,7 +88,7 @@ export type MeshPublicationState = 'private' | 'public' | 'publish_failed'
 export interface RuntimeStageInfo {
   stage_id: string
   model_id: string
-  node_id: string
+  node_id?: string
   layer_start: number
   layer_end: number
   state: string

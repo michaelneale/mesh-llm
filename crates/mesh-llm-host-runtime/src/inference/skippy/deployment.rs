@@ -130,7 +130,7 @@ pub(crate) fn stage_stop_request(
         run_id: context.run_id.to_string(),
         stage_id: stage.stage_id.clone(),
         shutdown_generation,
-        coordinator_term: shutdown_generation,
+        coordinator_term: 0,
     }
 }
 

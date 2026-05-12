@@ -83,9 +83,9 @@ pub fn plan_topology(input: &TopologyPlanningInput) -> Result<TopologyPlan, Topo
         for node_count in minimum_nodes..=nodes.len().min(input.layer_count as usize) {
             for parallel_lanes in lane_candidates.iter().copied() {
                 let mut best_for_count: Option<CandidatePlan> = None;
-                for subset in node_subsets(&nodes, node_count) {
+                for_each_node_subset(&nodes, node_count, |subset| {
                     if let Some(candidate) =
-                        fit_candidate(input, &subset, context_length, parallel_lanes)
+                        fit_candidate(input, subset, context_length, parallel_lanes)
                     {
                         if best_for_count
                             .as_ref()
@@ -94,7 +94,7 @@ pub fn plan_topology(input: &TopologyPlanningInput) -> Result<TopologyPlan, Topo
                             best_for_count = Some(candidate);
                         }
                     }
-                }
+                });
                 if let Some(candidate) = best_for_count {
                     return Ok(candidate.plan);
                 }
@@ -202,22 +202,20 @@ fn usable_nodes(nodes: &[TopologyNode]) -> Vec<UsableNode> {
     nodes
 }
 
-fn node_subsets(nodes: &[UsableNode], count: usize) -> Vec<Vec<UsableNode>> {
-    let mut subsets = Vec::new();
+fn for_each_node_subset(nodes: &[UsableNode], count: usize, mut visit: impl FnMut(&[UsableNode])) {
     let mut current = Vec::with_capacity(count);
-    collect_node_subsets(nodes, count, 0, &mut current, &mut subsets);
-    subsets
+    visit_node_subsets(nodes, count, 0, &mut current, &mut visit);
 }
 
-fn collect_node_subsets(
+fn visit_node_subsets(
     nodes: &[UsableNode],
     count: usize,
     start: usize,
     current: &mut Vec<UsableNode>,
-    subsets: &mut Vec<Vec<UsableNode>>,
+    visit: &mut impl FnMut(&[UsableNode]),
 ) {
     if current.len() == count {
-        subsets.push(current.clone());
+        visit(current);
         return;
     }
     let needed = count - current.len();
@@ -226,7 +224,7 @@ fn collect_node_subsets(
     }
     for index in start..=nodes.len() - needed {
         current.push(nodes[index].clone());
-        collect_node_subsets(nodes, count, index + 1, current, subsets);
+        visit_node_subsets(nodes, count, index + 1, current, visit);
         current.pop();
     }
 }

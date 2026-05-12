@@ -174,7 +174,7 @@ function adaptPeer(peer: PeerInfo, fallbackIndex: number): Peer {
 
 function isSplitParticipant(payload: StatusPayload): boolean {
   const stages = payload.runtime?.stages ?? []
-  return stages.some((s) => s.node_id === payload.node_id || s.node_id.startsWith(payload.node_id))
+  return stages.some((s) => s.node_id === payload.node_id)
 }
 
 function adaptSelfPeer(payload: StatusPayload): Peer {

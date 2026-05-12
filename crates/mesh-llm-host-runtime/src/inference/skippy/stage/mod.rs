@@ -105,6 +105,7 @@ impl StageControlState {
     }
 
     async fn claim(&mut self, claim: StageCoordinatorClaim) -> Result<StageCoordinatorClaimAck> {
+        let attempted_claim = claim.clone();
         match self
             .coordinator_claims
             .accept_claim(claim, current_time_unix_ms())
@@ -125,20 +126,9 @@ impl StageControlState {
                 claim,
                 error: None,
             }),
-            ClaimDecision::Rejected { current, reason } => Ok(StageCoordinatorClaimAck {
+            ClaimDecision::Rejected { reason, .. } => Ok(StageCoordinatorClaimAck {
                 accepted: false,
-                claim: current.unwrap_or_else(|| StageCoordinatorClaim {
-                    model_id: String::new(),
-                    package_ref: String::new(),
-                    manifest_sha256: String::new(),
-                    topology_id: String::new(),
-                    run_id: String::new(),
-                    coordinator_id: String::new(),
-                    coordinator_term: 0,
-                    participant_set_hash: String::new(),
-                    topology_hash: String::new(),
-                    lease_until_unix_ms: 0,
-                }),
+                claim: attempted_claim,
                 error: Some(reason.to_string()),
             }),
         }

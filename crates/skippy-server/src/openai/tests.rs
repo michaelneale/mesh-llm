@@ -1,7 +1,17 @@
 use super::*;
-use std::{env, fs, net::SocketAddr};
+use std::{
+    env, fs,
+    net::SocketAddr,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
+use axum::{http::StatusCode, response::IntoResponse};
 use serde_json::json;
+use tokio::sync::Semaphore;
 
 const MM_MODEL_ENV: &str = "SKIPPY_MM_MODEL";
 const MM_PROJECTOR_ENV: &str = "SKIPPY_MM_PROJECTOR";
@@ -136,6 +146,106 @@ fn infer_activation_width(path: &Path) -> Result<i32> {
 
 fn unsupported_code(error: OpenAiError) -> Option<String> {
     error.body().error.code
+}
+
+fn assert_generation_rate_limit(error: OpenAiError, message_fragment: &str) {
+    assert_eq!(error.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body = error.body();
+    assert_eq!(body.error.code.as_deref(), Some("rate_limit_exceeded"));
+    assert!(
+        body.error.message.contains(message_fragment),
+        "expected {:?} to contain {:?}",
+        body.error.message,
+        message_fragment
+    );
+
+    let response = error.into_response();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok()),
+        Some("1")
+    );
+}
+
+#[tokio::test]
+async fn generation_admission_uses_open_lane_without_queueing() {
+    let generation_limit = Arc::new(Semaphore::new(1));
+    let generation_queue_depth = Arc::new(AtomicUsize::new(0));
+
+    let permit = acquire_generation_permit_with_queue(
+        generation_limit,
+        generation_queue_depth.clone(),
+        1,
+        Duration::from_millis(10),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(generation_queue_depth.load(Ordering::Acquire), 0);
+    drop(permit);
+}
+
+#[tokio::test]
+async fn generation_admission_rejects_when_queue_full() {
+    let generation_limit = Arc::new(Semaphore::new(0));
+    let generation_queue_depth = Arc::new(AtomicUsize::new(1));
+
+    let error = acquire_generation_permit_with_queue(
+        generation_limit,
+        generation_queue_depth.clone(),
+        1,
+        Duration::from_millis(10),
+    )
+    .await
+    .unwrap_err();
+
+    assert_generation_rate_limit(error, "queue is full");
+    assert_eq!(generation_queue_depth.load(Ordering::Acquire), 1);
+}
+
+#[tokio::test]
+async fn generation_admission_times_out_and_releases_queue_slot() {
+    let generation_limit = Arc::new(Semaphore::new(0));
+    let generation_queue_depth = Arc::new(AtomicUsize::new(0));
+
+    let error = acquire_generation_permit_with_queue(
+        generation_limit,
+        generation_queue_depth.clone(),
+        1,
+        Duration::from_millis(5),
+    )
+    .await
+    .unwrap_err();
+
+    assert_generation_rate_limit(error, "timed out waiting");
+    assert_eq!(generation_queue_depth.load(Ordering::Acquire), 0);
+}
+
+#[tokio::test]
+async fn generation_admission_waits_for_released_lane() {
+    let generation_limit = Arc::new(Semaphore::new(0));
+    let generation_queue_depth = Arc::new(AtomicUsize::new(0));
+    let release_limit = generation_limit.clone();
+    let release_task = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        release_limit.add_permits(1);
+    });
+
+    let permit = acquire_generation_permit_with_queue(
+        generation_limit,
+        generation_queue_depth.clone(),
+        1,
+        Duration::from_secs(1),
+    )
+    .await
+    .unwrap();
+
+    release_task.await.unwrap();
+    assert_eq!(generation_queue_depth.load(Ordering::Acquire), 0);
+    drop(permit);
 }
 
 #[test]
