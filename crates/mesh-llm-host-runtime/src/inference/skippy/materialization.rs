@@ -890,50 +890,43 @@ pub(crate) fn resolve_hf_package_to_local(
     })?;
 
     // The HF SDK resolves `main` to the server-side HEAD commit, which may
-    // differ from the local snapshot that has actual layer files.  For
-    // metadata-only probes (identity resolution) this creates a skeleton
-    // snapshot whose hash gets baked into the canonical package_ref.  Re-scan
-    // the local cache after the download: if a snapshot with layer artifacts
-    // exists, prefer it over the freshly-downloaded skeleton.
-    if is_metadata_only_package_inspection(
-        layer_start,
-        layer_end,
-        include_embeddings,
-        include_output,
-    ) {
-        let downloaded_dir = std::path::Path::new(&downloaded);
-        if downloaded_dir.join("model-package.json").is_file() {
-            if cache_resolution::resolve_cached_hf_package_snapshot(
-                downloaded_dir,
-                layer_start,
-                layer_end,
-                include_embeddings,
-                include_output,
-            )?
-            .is_none()
+    // differ from the local snapshot that has actual layer files.  When the
+    // downloaded snapshot is missing files the caller needs (skeleton for
+    // metadata-only probes, or incomplete for real stage loads), re-scan the
+    // local cache for a snapshot that can satisfy the request.  This prevents
+    // skeleton hashes from propagating through topology configs and stage loads.
+    let downloaded_dir = std::path::Path::new(&downloaded);
+    if downloaded_dir.join("model-package.json").is_file() {
+        if cache_resolution::resolve_cached_hf_package_snapshot(
+            downloaded_dir,
+            layer_start,
+            layer_end,
+            include_embeddings,
+            include_output,
+        )?
+        .is_none()
+        {
+            // Downloaded snapshot can't satisfy this request — find a better one.
+            let cache_dir = crate::models::huggingface_hub_cache_dir();
+            for snapshot_dir in
+                cache_resolution::cached_package_snapshots(&cache_dir, &repo_folder)?
             {
-                // Downloaded snapshot is a skeleton — find a better one.
-                let cache_dir = crate::models::huggingface_hub_cache_dir();
-                for snapshot_dir in
-                    cache_resolution::cached_package_snapshots(&cache_dir, &repo_folder)?
-                {
-                    if snapshot_dir.as_path() == downloaded_dir {
-                        continue;
-                    }
-                    if let Ok(Some(better)) = cache_resolution::resolve_cached_hf_package_snapshot(
-                        &snapshot_dir,
-                        layer_start,
-                        layer_end,
-                        include_embeddings,
-                        include_output,
-                    ) {
-                        tracing::debug!(
-                            downloaded = %downloaded,
-                            better = %better,
-                            "post-download: preferring cached snapshot with layer artifacts over skeleton"
-                        );
-                        return Ok(better);
-                    }
+                if snapshot_dir.as_path() == downloaded_dir {
+                    continue;
+                }
+                if let Ok(Some(better)) = cache_resolution::resolve_cached_hf_package_snapshot(
+                    &snapshot_dir,
+                    layer_start,
+                    layer_end,
+                    include_embeddings,
+                    include_output,
+                ) {
+                    tracing::debug!(
+                        downloaded = %downloaded,
+                        better = %better,
+                        "post-download: preferring cached snapshot with requested artifacts over downloaded snapshot"
+                    );
+                    return Ok(better);
                 }
             }
         }

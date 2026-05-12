@@ -477,6 +477,9 @@ fn infer_activation_width_from_layers(
         return Ok(None);
     };
     let layer_path = package_dir.join(safe_relative_manifest_path(&layer.path)?);
+    if !layer_path.is_file() {
+        return Ok(None);
+    }
     let info = match crate::ModelInfo::open(&layer_path) {
         Ok(info) => info,
         Err(_) => return Ok(None),
