@@ -1,9 +1,30 @@
+use iroh::{EndpointAddr, TransportAddr};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
-/// Discover our public IP via STUN, then pair it with the given port.
+/// Return the first public IPv4 candidate iroh already discovered.
+///
+/// iroh relays provide address discovery, so prefer their endpoint candidates
+/// before falling back to external STUN. When a fixed bind port is supplied,
+/// pair the discovered public IP with that port for user-managed forwarding.
+pub(super) fn iroh_public_addr(addr: &EndpointAddr, advertised_port: u16) -> Option<SocketAddr> {
+    addr.addrs
+        .iter()
+        .find_map(|transport_addr| match transport_addr {
+            TransportAddr::Ip(sock) => match sock.ip() {
+                std::net::IpAddr::V4(v4) if is_public_ipv4_addr(v4) => {
+                    Some(SocketAddr::V4(SocketAddrV4::new(v4, advertised_port)))
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+}
+
+/// Discover our public IP via external STUN only when iroh did not provide it.
+///
 /// We can't send STUN from the bound port (iroh owns it), but we only need
 /// the public IP; the port is known from --bind-port plus router forwarding.
-pub(super) async fn stun_public_addr(advertised_port: u16) -> Option<SocketAddr> {
+pub(super) async fn fallback_stun_public_addr(advertised_port: u16) -> Option<SocketAddr> {
     let stun_servers = [
         "stun.l.google.com:19302",
         "stun.cloudflare.com:3478",
@@ -290,6 +311,24 @@ mod tests {
         assert_eq!(
             upnp_wan_control_url("http://192.168.1.1:5000/rootDesc.xml", description).as_deref(),
             Some("http://192.168.1.1:5000/ctl/IPConn")
+        );
+    }
+
+    #[test]
+    fn iroh_public_addr_prefers_endpoint_candidates() {
+        let mut addrs = std::collections::BTreeSet::new();
+        addrs.insert(TransportAddr::Ip("100.72.12.34:9999".parse().unwrap()));
+        addrs.insert(TransportAddr::Ip("198.51.100.10:9999".parse().unwrap()));
+        addrs.insert(TransportAddr::Ip("203.0.113.10:9999".parse().unwrap()));
+        addrs.insert(TransportAddr::Ip("8.8.8.8:9999".parse().unwrap()));
+        let addr = EndpointAddr {
+            id: iroh::SecretKey::generate().public(),
+            addrs,
+        };
+
+        assert_eq!(
+            iroh_public_addr(&addr, 53238),
+            Some("8.8.8.8:53238".parse().unwrap())
         );
     }
 }
