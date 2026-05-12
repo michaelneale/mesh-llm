@@ -63,7 +63,7 @@ fn current_time_unix_ms() -> u64 {
 
 const MIN_PINNED_GPU_CONFIG_PEER_VERSION: &str = "0.59.0";
 pub(super) const PEER_CONNECT_AND_GOSSIP_TIMEOUT: std::time::Duration =
-    std::time::Duration::from_secs(15);
+    std::time::Duration::from_secs(30);
 const ARTIFACT_TRANSFER_OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const ARTIFACT_TRANSFER_READ_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const ARTIFACT_TRANSFER_BUFFER_BYTES: usize = 1024 * 1024;
@@ -2646,16 +2646,29 @@ impl Node {
         let addr: EndpointAddr =
             serde_json::from_slice(&json).context("invalid invite token JSON")?;
 
+        // Three attempts with increasing backoff.  Relay-only joins need
+        // WebSocket setup + QUIC handshake at high RTT — two attempts at
+        // 15s were not enough.  Three at 30s with 5s/10s gaps give ~105s
+        // total budget which covers all but the worst relay conditions.
+        let backoffs = [5, 10];
         self.state.lock().await.dead_peers.remove(&addr.id);
-        match self.connect_to_peer(addr.clone()).await {
-            Ok(()) => Ok(()),
-            Err(first_err) => {
-                tracing::info!("First join attempt failed ({first_err:#}), retrying in 5s...");
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                self.state.lock().await.dead_peers.remove(&addr.id);
-                self.connect_to_peer(addr).await
+        let mut last_err = match self.connect_to_peer(addr.clone()).await {
+            Ok(()) => return Ok(()),
+            Err(e) => e,
+        };
+        for (attempt, delay_secs) in backoffs.iter().enumerate() {
+            tracing::info!(
+                "Join attempt {} failed ({last_err:#}), retrying in {delay_secs}s...",
+                attempt + 1
+            );
+            tokio::time::sleep(std::time::Duration::from_secs(*delay_secs)).await;
+            self.state.lock().await.dead_peers.remove(&addr.id);
+            match self.connect_to_peer(addr.clone()).await {
+                Ok(()) => return Ok(()),
+                Err(e) => last_err = e,
             }
         }
+        Err(last_err)
     }
 
     /// Connect to a peer without gossip exchange — for passive nodes (clients/standby).

@@ -4242,6 +4242,7 @@ async fn run_auto(
     // Join mesh if --join was given or auto-discovery queued fallback candidates.
     if !cli.join.is_empty() || !auto_join_candidates.is_empty() {
         let mut joined = false;
+        let mut last_join_error: Option<String> = None;
         let join_attempts: Vec<(String, Option<String>)> = if !cli.join.is_empty() {
             cli.join
                 .iter()
@@ -4267,7 +4268,10 @@ async fn run_auto(
                     successful_join = Some((t.clone(), mesh_name.clone()));
                     break;
                 }
-                Err(e) => tracing::warn!("Failed to join via token: {e}"),
+                Err(e) => {
+                    tracing::warn!("Failed to join via token: {e}");
+                    last_join_error = Some(format!("{e:#}"));
+                }
             }
         }
 
@@ -4284,8 +4288,9 @@ async fn run_auto(
         }
 
         if !joined {
+            let reason = last_join_error.as_deref().unwrap_or("unknown");
             let _ = emit_event(OutputEvent::Warning {
-                message: "Failed to join any peer — running standalone".to_string(),
+                message: format!("Failed to join any peer — running standalone ({reason})"),
                 context: None,
             });
         }
