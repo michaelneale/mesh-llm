@@ -157,3 +157,158 @@ fn cached_snapshot_has_requested_layers(
     }
     Ok(true)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        hex::encode(Sha256::digest(bytes))
+    }
+
+    /// Write a multi-layer snapshot with `layer_count` layers.  Layers in
+    /// `present_layers` get a real file on disk; the rest are declared in
+    /// the manifest but missing from the filesystem.
+    fn write_multi_layer_snapshot(dir: &Path, layer_count: u32, present_layers: &[u32]) {
+        fs::create_dir_all(dir.join("shared")).unwrap();
+        fs::create_dir_all(dir.join("layers")).unwrap();
+        fs::write(dir.join("shared/metadata.gguf"), b"metadata").unwrap();
+
+        let layer_content = b"layer";
+        let layer_sha = sha256_hex(layer_content);
+        let layers: Vec<_> = (0..layer_count)
+            .map(|i| {
+                let path = format!("layers/layer-{i:03}.gguf");
+                if present_layers.contains(&i) {
+                    fs::write(dir.join(&path), layer_content).unwrap();
+                }
+                serde_json::json!({
+                    "layer_index": i,
+                    "path": path,
+                    "tensor_count": 1,
+                    "tensor_bytes": 1,
+                    "artifact_bytes": layer_content.len(),
+                    "sha256": layer_sha,
+                })
+            })
+            .collect();
+
+        let manifest = serde_json::json!({
+            "schema_version": 1,
+            "model_id": "model-a",
+            "source_model": {
+                "path": "model-a.gguf",
+                "sha256": "aaaa",
+                "files": []
+            },
+            "format": "layer-package",
+            "layer_count": layer_count,
+            "activation_width": 4096,
+            "shared": {
+                "metadata": {
+                    "path": "shared/metadata.gguf",
+                    "tensor_count": 1,
+                    "tensor_bytes": 1,
+                    "artifact_bytes": 8,
+                    "sha256": sha256_hex(b"metadata")
+                }
+            },
+            "layers": layers,
+            "skippy_abi_version": "0.1.0",
+        });
+        fs::write(
+            dir.join("model-package.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    // --- cached_snapshot_has_any_layer_artifact ---
+
+    #[test]
+    fn any_layer_artifact_rejects_skeleton_with_no_layers() {
+        let dir = tempfile::tempdir().unwrap();
+        write_multi_layer_snapshot(dir.path(), 4, &[]);
+        assert!(!cached_snapshot_has_any_layer_artifact(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn any_layer_artifact_accepts_single_layer_present() {
+        let dir = tempfile::tempdir().unwrap();
+        write_multi_layer_snapshot(dir.path(), 4, &[2]);
+        assert!(cached_snapshot_has_any_layer_artifact(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn any_layer_artifact_accepts_all_layers_present() {
+        let dir = tempfile::tempdir().unwrap();
+        write_multi_layer_snapshot(dir.path(), 4, &[0, 1, 2, 3]);
+        assert!(cached_snapshot_has_any_layer_artifact(dir.path()).unwrap());
+    }
+
+    // --- cached_snapshot_has_requested_layers ---
+
+    #[test]
+    fn requested_layers_accepts_when_range_present() {
+        let dir = tempfile::tempdir().unwrap();
+        // 8 layers, only 4..8 present on disk
+        write_multi_layer_snapshot(dir.path(), 8, &[4, 5, 6, 7]);
+        assert!(cached_snapshot_has_requested_layers(dir.path(), 4, 8).unwrap());
+    }
+
+    #[test]
+    fn requested_layers_rejects_when_range_partially_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        // 8 layers, only 4,5,7 present — layer 6 missing
+        write_multi_layer_snapshot(dir.path(), 8, &[4, 5, 7]);
+        assert!(!cached_snapshot_has_requested_layers(dir.path(), 4, 8).unwrap());
+    }
+
+    #[test]
+    fn requested_layers_accepts_when_only_requested_subset_present() {
+        let dir = tempfile::tempdir().unwrap();
+        // 8 layers, only 2,3 present — outside range missing is fine
+        write_multi_layer_snapshot(dir.path(), 8, &[2, 3]);
+        assert!(cached_snapshot_has_requested_layers(dir.path(), 2, 4).unwrap());
+    }
+
+    #[test]
+    fn requested_layers_rejects_completely_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        write_multi_layer_snapshot(dir.path(), 8, &[]);
+        assert!(!cached_snapshot_has_requested_layers(dir.path(), 0, 4).unwrap());
+    }
+
+    // --- should_prefer_cached_snapshot_for_request (dispatch) ---
+
+    #[test]
+    fn metadata_probe_uses_any_layer_check() {
+        let dir = tempfile::tempdir().unwrap();
+        // 8 layers, only layer 5 present — metadata probe should accept
+        write_multi_layer_snapshot(dir.path(), 8, &[5]);
+        assert!(should_prefer_cached_snapshot_for_request(dir.path(), 0, 0, false, false).unwrap());
+    }
+
+    #[test]
+    fn metadata_probe_rejects_skeleton() {
+        let dir = tempfile::tempdir().unwrap();
+        write_multi_layer_snapshot(dir.path(), 8, &[]);
+        assert!(
+            !should_prefer_cached_snapshot_for_request(dir.path(), 0, 0, false, false).unwrap()
+        );
+    }
+
+    #[test]
+    fn stage_load_uses_requested_range_check() {
+        let dir = tempfile::tempdir().unwrap();
+        // 8 layers, only 4..8 present
+        write_multi_layer_snapshot(dir.path(), 8, &[4, 5, 6, 7]);
+        // Requesting 4..8 = passes
+        assert!(should_prefer_cached_snapshot_for_request(dir.path(), 4, 8, false, false).unwrap());
+        // Requesting 0..4 = fails (layers 0-3 missing)
+        assert!(
+            !should_prefer_cached_snapshot_for_request(dir.path(), 0, 4, false, false).unwrap()
+        );
+    }
+}
