@@ -53,13 +53,13 @@ fn pack_fast(session: &Session, has_tools: bool) -> PackedContext {
         }
     }
 
-    // Add a brief summary if there's history
+    // Add running summary if there's history — this is compact and
+    // deterministic, much cheaper than raw message history.
     if session.turn_count() > 1 {
-        let recent = session.recent_messages(4);
-        let summary = summarize_messages(&recent);
+        let summary = session.running_summary();
         if !summary.is_empty() {
             system_parts.push(String::new());
-            system_parts.push(format!("Context: {summary}"));
+            system_parts.push(format!("Session context:\n{summary}"));
         }
     }
 
@@ -101,19 +101,31 @@ fn pack_specialist(session: &Session, has_tools: bool) -> PackedContext {
         }
     }
 
-    // Include recent conversation context
-    let recent = session.recent_messages(6);
+    // Include running summary for multi-turn context instead of dumping
+    // raw message history — keeps the specialist focused and cheap.
+    if session.turn_count() > 1 {
+        let summary = session.running_summary();
+        if !summary.is_empty() {
+            system_parts.push(String::new());
+            system_parts.push(format!("Session context:\n{summary}"));
+        }
+    }
+
+    // Only include the last 2-3 user/assistant messages for immediate context,
+    // not the full history.
     let mut messages = vec![json!({"role": "system", "content": system_parts.join("\n")})];
 
-    // Add recent history (skip system messages, keep user/assistant/tool)
+    let recent = session.recent_messages(4);
     for msg in &recent {
         let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
-        if role != "system" && role != "" {
+        // Skip system, tool, and assistant-with-tool_calls — those are folded
+        // into the running summary.
+        if role == "user" || (role == "assistant" && msg.get("tool_calls").is_none()) {
             messages.push(msg.clone());
         }
     }
 
-    // If the last message isn't the current user turn, add it
+    // Ensure the current user turn is present
     if messages
         .last()
         .and_then(|m| m.get("content").and_then(|c| c.as_str()))
@@ -316,23 +328,4 @@ pub fn pack_for_tool_result_turn(session: &Session, has_tools: bool) -> Vec<Valu
         json!({"role": "system", "content": system_parts.join("\n")}),
         json!({"role": "user", "content": user_text}),
     ]
-}
-
-/// Quick summary of messages for compact context.
-fn summarize_messages(messages: &[Value]) -> String {
-    let mut parts = Vec::new();
-    for msg in messages {
-        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("?");
-        let content = msg
-            .get("content")
-            .and_then(|c| c.as_str())
-            .unwrap_or("[non-text]");
-        let truncated = if content.len() > 100 {
-            format!("{}...", &content[..97])
-        } else {
-            content.to_string()
-        };
-        parts.push(format!("{role}: {truncated}"));
-    }
-    parts.join(" | ")
 }

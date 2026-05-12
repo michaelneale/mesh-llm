@@ -26,6 +26,15 @@ pub struct PendingToolCall {
     pub result: Option<String>,
 }
 
+/// A resolved fact or decision from a prior turn.
+#[derive(Debug, Clone)]
+pub struct AcceptedFact {
+    /// Which turn produced this fact.
+    pub turn: usize,
+    /// Short description of what was established.
+    pub fact: String,
+}
+
 /// Canonical session state across turns.
 pub struct Session {
     /// Full message history as received/emitted.
@@ -38,6 +47,11 @@ pub struct Session {
     turns: usize,
     /// Whether the last thing we emitted was a tool_call.
     last_was_tool_call: bool,
+    /// Progressive summary — grows slowly, captures accepted facts and
+    /// decisions from prior turns so workers don't need raw history.
+    accepted_facts: Vec<AcceptedFact>,
+    /// Compact summary of the conversation so far (deterministic, not model-generated).
+    running_summary: String,
 }
 
 impl Session {
@@ -48,6 +62,8 @@ impl Session {
             pending_tools: Vec::new(),
             turns: 0,
             last_was_tool_call: false,
+            accepted_facts: Vec::new(),
+            running_summary: String::new(),
         }
     }
 
@@ -166,11 +182,82 @@ impl Session {
         }
     }
 
+    /// Record what the gateway decided this turn — used to build the
+    /// running summary for future turns' workers.
+    pub fn record_turn_outcome(&mut self, outcome: &str) {
+        if outcome.is_empty() {
+            return;
+        }
+        // Truncate individual facts to keep summary compact
+        let truncated = if outcome.len() > 200 {
+            format!("{}...", &outcome[..197])
+        } else {
+            outcome.to_string()
+        };
+        self.accepted_facts.push(AcceptedFact {
+            turn: self.turns,
+            fact: truncated,
+        });
+        self.rebuild_summary();
+    }
+
+    /// Deterministic summary rebuild.  No model calls.
+    fn rebuild_summary(&mut self) {
+        // Keep the last N facts — older ones are compressed into a single line
+        const MAX_RECENT_FACTS: usize = 5;
+        let total = self.accepted_facts.len();
+        let mut parts = Vec::new();
+
+        if total > MAX_RECENT_FACTS {
+            let old_count = total - MAX_RECENT_FACTS;
+            parts.push(format!("[{old_count} earlier facts omitted]"));
+        }
+
+        let start = total.saturating_sub(MAX_RECENT_FACTS);
+        for fact in &self.accepted_facts[start..] {
+            parts.push(format!("Turn {}: {}", fact.turn, fact.fact));
+        }
+
+        // Also include tool call history compactly
+        let tool_history: Vec<String> = self
+            .pending_tools
+            .iter()
+            .map(|p| {
+                if let Some(ref result) = p.result {
+                    let short_result = if result.len() > 80 {
+                        format!("{}...", &result[..77])
+                    } else {
+                        result.clone()
+                    };
+                    format!("{}() → {}", p.function_name, short_result)
+                } else {
+                    format!("{}() → pending", p.function_name)
+                }
+            })
+            .collect();
+        if !tool_history.is_empty() {
+            parts.push(format!("Tools used: {}", tool_history.join("; ")));
+        }
+
+        self.running_summary = parts.join("\n");
+    }
+
     // ── Accessors for context packing ─────────────────────────────
 
     /// Full message history.
     pub fn messages(&self) -> &[Value] {
         &self.messages
+    }
+
+    /// Running summary of prior turns — compact, deterministic, no model calls.
+    /// Use this instead of raw history for workers that can't see everything.
+    pub fn running_summary(&self) -> &str {
+        &self.running_summary
+    }
+
+    /// Accepted facts from prior turns.
+    pub fn accepted_facts(&self) -> &[AcceptedFact] {
+        &self.accepted_facts
     }
 
     /// Tool schemas (if any).

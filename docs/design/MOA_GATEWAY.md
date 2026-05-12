@@ -179,6 +179,36 @@ one transcript, one tool stream, one authoritative session.
 
 ---
 
+## Multi-turn context efficiency
+
+Workers don't get the full conversation history every turn.  Instead, the
+gateway maintains a **running summary** — a compact, deterministic record
+of accepted facts and tool results from prior turns.
+
+```
+Turn 1: "My name is Alice, I live in Melbourne"
+  → All workers see only this message
+  → Running summary: "Turn 1: Answered: Understood, Alice..."
+
+Turn 2: "What city do I live in?"
+  → Fast worker gets: current task + running summary (2 lines)
+  → Specialist gets: running summary + last 2 messages
+  → Strong worker gets: running summary + last 4 messages
+  → MoA answers: "You live in Melbourne" ✅
+
+Turn 3: "Good restaurant near where I live?"
+  → Workers see running summary with Melbourne context
+  → MoA answers: "Supernormal on Little Collins Street in Melbourne's CBD" ✅
+```
+
+The running summary is built deterministically (no model calls) from:
+- `AcceptedFact` entries: first sentence of each turn's response
+- Tool call/result history: `"web_search() → Bitcoin at $104,250..."`
+- Older facts are compacted: `"[3 earlier facts omitted]"`
+
+This means a 20-turn conversation sends ~200 tokens of summary to the fast
+worker, not 20k tokens of raw history.
+
 ## Test results
 
 Tested against 3 ollama models: `llama3.2:3b`, `qwen3:4b`, `qwen3.6:27b`.
@@ -189,12 +219,15 @@ Tested against 3 ollama models: `llama3.2:3b`, `qwen3:4b`, `qwen3.6:27b`.
 | Reasoning (bat & ball) | ✅ MoA produces correct $0.05 answer with step-by-step reasoning |
 | Tool calling | ✅ Correctly produces `get_weather({location: "Tokyo"})` via arbiter escalation |
 | Tool lifecycle | ✅ Full cycle: query → tool_call → tool_result → final answer |
-| Code | ✅ Produces palindrome function (though solo llama3.2 was also correct) |
+| Multi-turn context | ✅ Workers retain context via running summary across 3+ turns |
+| Multi-turn tool chain | ✅ Weather query → tool result → follow-up "bring jacket?" answered with context |
+| Code | ✅ Produces palindrome function |
 
 Observed patterns:
 - The arbiter correctly escalates when workers disagree (answer vs tool)
-- Tool result turns correctly bypass full fan-out
+- Tool result turns correctly bypass full fan-out (reducer only)
 - The reducer correctly synthesizes tool results into final answers
+- Multi-turn workers get compact running summaries, not raw history
 - Think-tag stripping handles Qwen3 reasoning models
 - Ollama's `reasoning` field is used as fallback for empty content
 
@@ -229,12 +262,17 @@ into mesh-llm would add:
 
 ---
 
-## Running the test
+## Running the tests
 
 ```bash
-# Start ollama with models
+# Against ollama (detailed test with solo comparison)
 ollama pull llama3.2:3b && ollama pull qwen3:4b && ollama pull qwen3.6:27b
-
-# Run the comparison test
 cargo run -p moa-gateway --bin moa-test
+
+# Against any OpenAI-compatible multi-model endpoint
+cargo run -p moa-gateway --bin moa-mesh -- --url http://localhost:11434/v1
+
+# Against mesh-llm proxy (once connected)
+mesh-llm client --auto  # in another terminal
+cargo run -p moa-gateway --bin moa-mesh  # defaults to localhost:9337
 ```
