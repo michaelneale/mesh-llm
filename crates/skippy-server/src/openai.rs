@@ -1902,18 +1902,6 @@ impl StageOpenAiBackend {
         reply_stats.kv_imported_tokens += local_restore.token_count as i64;
         reply_stats.kv_hit_stage_mask |= openai_stage_mask(request.config.stage_index);
 
-        let decode_message = embedded_decode_message(
-            request.wire_dtype,
-            DecodeMessageArgs {
-                request_id: request.ids.request_id,
-                session_id: request.ids.session_id,
-                prompt_token_count: request.prompt_token_ids.len(),
-                pos_start: prefill_tokens.len(),
-                decode_step: 0,
-                current,
-                sampling: wire_sampling.clone(),
-            },
-        )?;
         let stage0_timer = PhaseTimer::start();
         let token_runtime_lock_wait_ms;
         let token_runtime_lock_hold_ms;
@@ -1925,6 +1913,28 @@ impl StageOpenAiBackend {
                 .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
             token_runtime_lock_wait_ms = lock_timer.elapsed_ms();
             let lock_hold_timer = PhaseTimer::start();
+            if let Some(metadata) = request.chat_sampling_metadata {
+                runtime
+                    .configure_chat_sampling(
+                        session_key,
+                        metadata,
+                        request.prompt_token_ids.len() as u64,
+                        request.sampling.enabled.then_some(request.sampling),
+                    )
+                    .map_err(openai_backend_error)?;
+            }
+            let decode_message = embedded_decode_message(
+                request.wire_dtype,
+                DecodeMessageArgs {
+                    request_id: request.ids.request_id,
+                    session_id: request.ids.session_id,
+                    prompt_token_count: request.prompt_token_ids.len(),
+                    pos_start: prefill_tokens.len(),
+                    decode_step: 0,
+                    current,
+                    sampling: wire_sampling.clone(),
+                },
+            )?;
             let output = run_binary_stage_message(
                 &mut runtime,
                 session_key,
@@ -1951,6 +1961,7 @@ impl StageOpenAiBackend {
                 prefix_tokens: prefill_tokens,
                 current,
                 sampling: wire_sampling,
+                chat_sampling_metadata: request.chat_sampling_metadata,
             },
         )?;
         let forwarded = forwarded_stage_message_timed(
@@ -4116,10 +4127,7 @@ impl StageOpenAiBackend {
             let mut prefill_planner = request.prefill_chunk_policy.planner();
             if prefill_token_count > 0 {
                 let prefill_tokens = &request.prompt_token_ids[..prefill_token_count];
-                if request.max_tokens > 0
-                    && request.draft.is_none()
-                    && request.chat_sampling_metadata.is_none()
-                {
+                if request.max_tokens > 0 && request.draft.is_none() {
                     let current = *request
                         .prompt_token_ids
                         .last()
@@ -6737,6 +6745,7 @@ struct RestorePrefillDecodeMessageArgs<'a> {
     prefix_tokens: &'a [i32],
     current: i32,
     sampling: Option<WireSamplingConfig>,
+    chat_sampling_metadata: Option<&'a str>,
 }
 
 fn embedded_restore_prefill_decode_message(
@@ -6763,7 +6772,7 @@ fn embedded_restore_prefill_decode_message(
         request_id: args.request_id,
         session_id: args.session_id,
         sampling: args.sampling,
-        chat_sampling_metadata: None,
+        chat_sampling_metadata: args.chat_sampling_metadata.map(str::to_string),
         tokens,
         positions: Vec::new(),
         activation: Vec::new(),

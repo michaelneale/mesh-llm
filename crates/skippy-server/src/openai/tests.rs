@@ -1,4 +1,5 @@
 use super::*;
+use std::io::Cursor;
 use std::{env, fs, net::SocketAddr};
 
 use serde_json::json;
@@ -707,6 +708,45 @@ fn multimodal_final_prefill_message_requests_downstream_prediction() {
     assert_eq!(message.token_count, 17);
     assert_eq!(message.state.current_token, LLAMA_TOKEN_NULL);
     assert_eq!(message.sampling, Some(sampling));
+}
+
+#[test]
+fn restore_prefill_decode_message_carries_chat_sampling_metadata() {
+    let metadata = r#"{"grammar":"chat","prompt_tokens":4}"#;
+    let sampling = WireSamplingConfig {
+        flags: 1,
+        seed: 7,
+        ..WireSamplingConfig::default()
+    };
+
+    let message = embedded_restore_prefill_decode_message(
+        WireActivationDType::F16,
+        RestorePrefillDecodeMessageArgs {
+            request_id: 11,
+            session_id: 13,
+            prompt_token_count: 4,
+            pos_start: 3,
+            decode_step: 0,
+            prefix_tokens: &[101, 102, 103],
+            current: 104,
+            sampling: Some(sampling.clone()),
+            chat_sampling_metadata: Some(metadata),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(message.kind, WireMessageKind::TryRestorePrefillDecode);
+    assert_eq!(message.tokens, vec![101, 102, 103, 104]);
+    assert_eq!(message.sampling, Some(sampling.clone()));
+    assert_eq!(message.chat_sampling_metadata.as_deref(), Some(metadata));
+
+    let mut encoded = Vec::new();
+    write_stage_message(&mut encoded, &message, WireActivationDType::F16).unwrap();
+    let decoded = skippy_protocol::binary::read_stage_message(Cursor::new(encoded), 2816).unwrap();
+    assert_eq!(decoded.kind, WireMessageKind::TryRestorePrefillDecode);
+    assert_eq!(decoded.tokens, vec![101, 102, 103, 104]);
+    assert_eq!(decoded.sampling, Some(sampling));
+    assert_eq!(decoded.chat_sampling_metadata.as_deref(), Some(metadata));
 }
 
 #[test]

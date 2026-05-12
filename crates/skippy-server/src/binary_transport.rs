@@ -1821,6 +1821,17 @@ fn handle_binary_restore_prefill_decode_control(
         let mut runtime = runtime.lock().expect("runtime lock poisoned");
         let runtime_lock_wait_ms = elapsed_ms(lock_started);
         let lock_hold_started = Instant::now();
+        if let Some(metadata) = message.chat_sampling_metadata.as_deref() {
+            let sampling = runtime_sampling_config(message.sampling.as_ref());
+            runtime
+                .configure_chat_sampling(
+                    session_id,
+                    metadata,
+                    message.state.prompt_token_count.max(0) as u64,
+                    sampling.as_ref(),
+                )
+                .context("configure restore-decode chat sampling")?;
+        }
         let (predicted, _, output) = run_binary_stage_message(
             &mut runtime,
             session_id,
