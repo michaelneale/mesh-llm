@@ -15,10 +15,14 @@
 
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
-#include <chrono>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <time.h>
+#endif
 
 #define BUFFER_BYTES (512 * 1024 * 1024)  // 512 MB — safely above L2/LLC on all current AMD GPUs
 #define WARMUP_RUNS  3
@@ -103,8 +107,17 @@ static int isHBMDevice(const char* gcnArchName) {
 }
 
 static double steady_seconds() {
-    using clock = std::chrono::steady_clock;
-    return std::chrono::duration<double>(clock::now().time_since_epoch()).count();
+#ifdef _WIN32
+    LARGE_INTEGER frequency;
+    LARGE_INTEGER counter;
+    QueryPerformanceFrequency(&frequency);
+    QueryPerformanceCounter(&counter);
+    return (double)counter.QuadPart / (double)frequency.QuadPart;
+#else
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (double)now.tv_sec + (double)now.tv_nsec / 1e9;
+#endif
 }
 
 int main(int argc, char** argv) {

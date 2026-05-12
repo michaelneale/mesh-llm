@@ -6,7 +6,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <time.h>
+#endif
 #include <algorithm>
 
 #define BUFFER_BYTES (512 * 1024 * 1024)  // 512 MB — safely above L2/LLC on all current NVIDIA GPUs
@@ -86,6 +90,20 @@ static void check(cudaError_t err, const char* ctx) {
 static int cmp_double(const void* a, const void* b) {
     double da = *(const double*)a, db = *(const double*)b;
     return (da > db) - (da < db);
+}
+
+static double steady_seconds() {
+#ifdef _WIN32
+    LARGE_INTEGER frequency;
+    LARGE_INTEGER counter;
+    QueryPerformanceFrequency(&frequency);
+    QueryPerformanceCounter(&counter);
+    return (double)counter.QuadPart / (double)frequency.QuadPart;
+#else
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (double)now.tv_sec + (double)now.tv_nsec / 1e9;
+#endif
 }
 
 int main(int argc, char** argv) {
@@ -176,8 +194,7 @@ int main(int argc, char** argv) {
             (void)measure_compute_fp16();
         }
 
-        struct timespec wallStart, wallEnd;
-        clock_gettime(CLOCK_MONOTONIC, &wallStart);
+        double wallStart = steady_seconds();
 
         double samples[TIMED_RUNS];
         double fp32Samples[TIMED_RUNS];
@@ -188,9 +205,8 @@ int main(int argc, char** argv) {
             fp16Samples[i] = measure_compute_fp16();
         }
 
-        clock_gettime(CLOCK_MONOTONIC, &wallEnd);
-        double runtimeSecs = (wallEnd.tv_sec  - wallStart.tv_sec)
-                           + (wallEnd.tv_nsec - wallStart.tv_nsec) / 1e9;
+        double wallEnd = steady_seconds();
+        double runtimeSecs = wallEnd - wallStart;
 
         qsort(samples, TIMED_RUNS, sizeof(double), cmp_double);
         qsort(fp32Samples, TIMED_RUNS, sizeof(double), cmp_double);
