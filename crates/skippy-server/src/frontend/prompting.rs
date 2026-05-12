@@ -195,4 +195,14 @@ impl StageOpenAiBackend {
         }
         Ok(None)
     }
+
+    pub(super) fn generation_hooks_active(
+        &self,
+        hook_request: &Option<ChatCompletionRequest>,
+        hook_runtime: Option<&tokio::runtime::Handle>,
+    ) -> bool {
+        self.hook_policy.is_some()
+            && hook_runtime.is_some()
+            && hook_request.as_ref().is_some_and(chat_mesh_hooks_enabled)
+    }
 }

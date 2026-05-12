@@ -359,6 +359,9 @@ impl StageOpenAiBackend {
                 .expect("checked non-empty prompt");
             let mut hook_request = request.hook_request;
             let hook_runtime = request.hook_runtime;
+            let generation_hooks_active =
+                self.generation_hooks_active(&hook_request, hook_runtime.as_ref());
+            let emit_token_debug = self.telemetry.is_debug_enabled();
             let mut post_prefill_hook_checked = false;
             let mut last_mid_generation_hook_at = None;
             while decoded_tokens < request.max_tokens as usize {
@@ -397,104 +400,125 @@ impl StageOpenAiBackend {
                             request.sampling.enabled.then_some(request.sampling),
                         )
                         .map_err(openai_backend_error)?;
-                    token_decode_ms = decode_call_timer.elapsed_ms();
-                    let signal_timer = PhaseTimer::start();
-                    token_signal = runtime.last_token_signal(&session_id).ok();
-                    signal_window = runtime.signal_window(&session_id, 16).ok();
-                    token_signal_ms = signal_timer.elapsed_ms();
+                    token_decode_ms = if emit_token_debug {
+                        decode_call_timer.elapsed_ms()
+                    } else {
+                        0.0
+                    };
+                    if generation_hooks_active {
+                        let signal_timer = PhaseTimer::start();
+                        token_signal = runtime.last_token_signal(&session_id).ok();
+                        signal_window = runtime.signal_window(&session_id, 16).ok();
+                        token_signal_ms = signal_timer.elapsed_ms();
+                    } else {
+                        token_signal = None;
+                        signal_window = None;
+                        token_signal_ms = 0.0;
+                    }
                     runtime_sessions_after = Some(runtime.session_stats());
-                    token_runtime_lock_hold_ms = hold_timer.elapsed_ms();
+                    token_runtime_lock_hold_ms = if emit_token_debug {
+                        hold_timer.elapsed_ms()
+                    } else {
+                        0.0
+                    };
                     runtime_lock_hold_ms += token_runtime_lock_hold_ms;
                     runtime_lock_hold_max_ms =
                         runtime_lock_hold_max_ms.max(token_runtime_lock_hold_ms);
                     predicted
                 };
-                if let Some(injected_current) = self.maybe_run_generation_hooks(
-                    &session_id,
-                    &mut hook_request,
-                    hook_runtime.as_ref(),
-                    decoded_tokens,
-                    &mut post_prefill_hook_checked,
-                    &mut last_mid_generation_hook_at,
-                    token_signal,
-                    signal_window,
-                )? {
-                    current = injected_current;
-                    continue;
+                if generation_hooks_active {
+                    if let Some(injected_current) = self.maybe_run_generation_hooks(
+                        &session_id,
+                        &mut hook_request,
+                        hook_runtime.as_ref(),
+                        decoded_tokens,
+                        &mut post_prefill_hook_checked,
+                        &mut last_mid_generation_hook_at,
+                        token_signal,
+                        signal_window,
+                    )? {
+                        current = injected_current;
+                        continue;
+                    }
                 }
                 decoded_tokens += 1;
-                let mut token_attrs = self.openai_attrs(request.ids);
-                token_attrs.insert("llama_stage.decode_step".to_string(), json!(decode_step));
-                token_attrs.insert(
-                    "llama_stage.decode_token_phase".to_string(),
-                    json!(decode_token_phase(
-                        u32::try_from(decode_step).unwrap_or(u32::MAX)
-                    )),
-                );
-                token_attrs.insert(
-                    "llama_stage.stage0_compute_ms".to_string(),
-                    json!(token_timer.elapsed_ms()),
-                );
-                token_attrs.insert(
-                    "llama_stage.decode_call_ms".to_string(),
-                    json!(token_decode_ms),
-                );
-                token_attrs.insert("llama_stage.signal_ms".to_string(), json!(token_signal_ms));
-                token_attrs.insert(
-                    "llama_stage.runtime_lock_wait_ms".to_string(),
-                    json!(token_runtime_lock_wait_ms),
-                );
-                token_attrs.insert(
-                    "llama_stage.runtime_lock_hold_ms".to_string(),
-                    json!(token_runtime_lock_hold_ms),
-                );
-                token_attrs.insert("llama_stage.predicted_token".to_string(), json!(current));
-                token_attrs.insert("llama_stage.message_kind".to_string(), json!("DecodeToken"));
-                self.emit_openai_phase("stage.openai_decode_token", token_timer, token_attrs);
+                if emit_token_debug {
+                    let mut token_attrs = self.openai_attrs(request.ids);
+                    token_attrs.insert("llama_stage.decode_step".to_string(), json!(decode_step));
+                    token_attrs.insert(
+                        "llama_stage.decode_token_phase".to_string(),
+                        json!(decode_token_phase(
+                            u32::try_from(decode_step).unwrap_or(u32::MAX)
+                        )),
+                    );
+                    token_attrs.insert(
+                        "llama_stage.stage0_compute_ms".to_string(),
+                        json!(token_timer.elapsed_ms()),
+                    );
+                    token_attrs.insert(
+                        "llama_stage.decode_call_ms".to_string(),
+                        json!(token_decode_ms),
+                    );
+                    token_attrs.insert("llama_stage.signal_ms".to_string(), json!(token_signal_ms));
+                    token_attrs.insert(
+                        "llama_stage.runtime_lock_wait_ms".to_string(),
+                        json!(token_runtime_lock_wait_ms),
+                    );
+                    token_attrs.insert(
+                        "llama_stage.runtime_lock_hold_ms".to_string(),
+                        json!(token_runtime_lock_hold_ms),
+                    );
+                    token_attrs.insert("llama_stage.predicted_token".to_string(), json!(current));
+                    token_attrs
+                        .insert("llama_stage.message_kind".to_string(), json!("DecodeToken"));
+                    self.emit_openai_phase("stage.openai_decode_token", token_timer, token_attrs);
+                }
                 if on_token(current)? == TokenControl::Stop {
                     break;
                 }
             }
-            let mut attrs = self.openai_attrs(request.ids);
-            attrs.insert(
-                "llama_stage.decode_token_count".to_string(),
-                json!(decoded_tokens),
-            );
-            attrs.insert(
-                "llama_stage.runtime_lock_wait_ms".to_string(),
-                json!(runtime_lock_wait_ms),
-            );
-            attrs.insert(
-                "llama_stage.runtime_lock_wait_max_ms".to_string(),
-                json!(runtime_lock_wait_max_ms),
-            );
-            attrs.insert(
-                "llama_stage.runtime_lock_hold_ms".to_string(),
-                json!(runtime_lock_hold_ms),
-            );
-            attrs.insert(
-                "llama_stage.runtime_lock_hold_max_ms".to_string(),
-                json!(runtime_lock_hold_max_ms),
-            );
-            attrs.insert(
-                "llama_stage.runtime_lock_acquires".to_string(),
-                json!(runtime_lock_acquires),
-            );
-            if let Some(stats) = runtime_sessions_before.as_ref() {
-                Self::insert_runtime_session_stats(
-                    &mut attrs,
-                    "llama_stage.runtime_sessions_before",
-                    stats,
+            if emit_token_debug {
+                let mut attrs = self.openai_attrs(request.ids);
+                attrs.insert(
+                    "llama_stage.decode_token_count".to_string(),
+                    json!(decoded_tokens),
                 );
-            }
-            if let Some(stats) = runtime_sessions_after.as_ref() {
-                Self::insert_runtime_session_stats(
-                    &mut attrs,
-                    "llama_stage.runtime_sessions_after",
-                    stats,
+                attrs.insert(
+                    "llama_stage.runtime_lock_wait_ms".to_string(),
+                    json!(runtime_lock_wait_ms),
                 );
+                attrs.insert(
+                    "llama_stage.runtime_lock_wait_max_ms".to_string(),
+                    json!(runtime_lock_wait_max_ms),
+                );
+                attrs.insert(
+                    "llama_stage.runtime_lock_hold_ms".to_string(),
+                    json!(runtime_lock_hold_ms),
+                );
+                attrs.insert(
+                    "llama_stage.runtime_lock_hold_max_ms".to_string(),
+                    json!(runtime_lock_hold_max_ms),
+                );
+                attrs.insert(
+                    "llama_stage.runtime_lock_acquires".to_string(),
+                    json!(runtime_lock_acquires),
+                );
+                if let Some(stats) = runtime_sessions_before.as_ref() {
+                    Self::insert_runtime_session_stats(
+                        &mut attrs,
+                        "llama_stage.runtime_sessions_before",
+                        stats,
+                    );
+                }
+                if let Some(stats) = runtime_sessions_after.as_ref() {
+                    Self::insert_runtime_session_stats(
+                        &mut attrs,
+                        "llama_stage.runtime_sessions_after",
+                        stats,
+                    );
+                }
+                self.emit_openai_phase("stage.openai_decode", decode_timer, attrs);
             }
-            self.emit_openai_phase("stage.openai_decode", decode_timer, attrs);
             Ok(())
         })();
         let lock_timer = PhaseTimer::start();
