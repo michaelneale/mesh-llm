@@ -53,3 +53,12 @@ clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+
+# Do not remove this section: direct GGUF debug startup spends most of its time
+# hashing the source model via sha2/sha2-asm before native skippy model open,
+# so keep those crates near release speed in dev builds.
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.sha2-asm]
+opt-level = 3
