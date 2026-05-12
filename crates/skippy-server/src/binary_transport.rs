@@ -28,6 +28,8 @@ use skippy_protocol::{
         send_reply_ack, send_reply_ack_with_stats, send_reply_predicted_tokens_with_stats,
         send_reply_predicted_with_stats, state_flags, StageReplyStats, StageSamplingConfig,
         StageStateHeader, StageWireMessage, WireActivationDType, WireMessageKind, WireReplyKind,
+        STAGE_LOGIT_BIAS_WIRE_BYTES, STAGE_SAMPLING_CONFIG_BASE_BYTES,
+        STAGE_WIRE_FIXED_HEADER_BYTES,
     },
     MessageBase, StageConfig, StageTopology, SCHEMA_VERSION,
 };
@@ -368,6 +370,8 @@ fn handle_binary_connection(
     };
 
     loop {
+        let recv_start_unix_nanos = now_unix_nanos() as u64;
+        let recv_started = Instant::now();
         let message = match read_stage_message(&mut *upstream, activation_width) {
             Ok(message) => message,
             Err(error)
@@ -379,16 +383,44 @@ fn handle_binary_connection(
             }
             Err(error) => return Err(error).context("read binary stage message"),
         };
+        let recv_end_unix_nanos = now_unix_nanos() as u64;
+        let recv_read_ms = elapsed_ms(recv_started);
         let message_start_unix_nanos = now_unix_nanos() as u64;
         let message_started = Instant::now();
         let session_id = binary_message_session_id(connection_session_id, &message);
         let session_key = session_id.to_string();
         let mut recv_attrs = binary_message_attrs(config, session_id, &message);
         recv_attrs.insert(
+            "llama_stage.recv_start_unix_nanos".to_string(),
+            json!(recv_start_unix_nanos),
+        );
+        recv_attrs.insert(
+            "llama_stage.recv_end_unix_nanos".to_string(),
+            json!(recv_end_unix_nanos),
+        );
+        recv_attrs.insert("llama_stage.recv_read_ms".to_string(), json!(recv_read_ms));
+        recv_attrs.insert(
+            "llama_stage.source_stage_index".to_string(),
+            json!(message.state.source_stage_index),
+        );
+        recv_attrs.insert(
+            "llama_stage.configured_upstream_stage_index".to_string(),
+            json!(config.upstream.as_ref().map(|peer| peer.stage_index)),
+        );
+        recv_attrs.insert(
+            "llama_stage.message_wire_bytes".to_string(),
+            json!(estimated_stage_message_wire_bytes(&message)),
+        );
+        recv_attrs.insert(
             "skippy.activation_bytes".to_string(),
             json!(message.activation.len()),
         );
-        telemetry.emit_debug("stage.binary_recv", recv_attrs);
+        telemetry.emit_debug_span(
+            "stage.binary_recv",
+            recv_attrs,
+            recv_start_unix_nanos,
+            recv_end_unix_nanos,
+        );
 
         if message.kind == WireMessageKind::Stop {
             if pending_prefill_replies != 0 {
@@ -1084,6 +1116,17 @@ fn handle_binary_connection(
                 }
                 upstream_reply_end_unix_nanos = Some(now_unix_nanos() as u64);
                 upstream_reply_ms += elapsed_ms(reply_started);
+                emit_upstream_reply_write_span(
+                    telemetry,
+                    config,
+                    session_id,
+                    &message,
+                    reply.kind,
+                    reply.predicted_tokens.len(),
+                    reply_start_unix_nanos,
+                    upstream_reply_end_unix_nanos.unwrap_or(reply_start_unix_nanos),
+                    elapsed_ms(reply_started),
+                );
             } else if max_deferred_prefill_replies == 0 {
                 let wait_start_unix_nanos = now_unix_nanos() as u64;
                 downstream_wait_start_unix_nanos.get_or_insert(wait_start_unix_nanos);
@@ -1103,6 +1146,17 @@ fn handle_binary_connection(
                         .context("relay ACK")?;
                     upstream_reply_end_unix_nanos = Some(now_unix_nanos() as u64);
                     upstream_reply_ms += elapsed_ms(reply_started);
+                    emit_upstream_reply_write_span(
+                        telemetry,
+                        config,
+                        session_id,
+                        &message,
+                        WireReplyKind::Ack,
+                        0,
+                        reply_start_unix_nanos,
+                        upstream_reply_end_unix_nanos.unwrap_or(reply_start_unix_nanos),
+                        elapsed_ms(reply_started),
+                    );
                 } else {
                     pending_reply_stats.merge(message_reply_stats);
                 }
@@ -1132,6 +1186,17 @@ fn handle_binary_connection(
                         .context("deferred relay ACK")?;
                     upstream_reply_end_unix_nanos = Some(now_unix_nanos() as u64);
                     upstream_reply_ms += elapsed_ms(reply_started);
+                    emit_upstream_reply_write_span(
+                        telemetry,
+                        config,
+                        session_id,
+                        &message,
+                        WireReplyKind::Ack,
+                        0,
+                        reply_start_unix_nanos,
+                        upstream_reply_end_unix_nanos.unwrap_or(reply_start_unix_nanos),
+                        elapsed_ms(reply_started),
+                    );
                 } else {
                     pending_reply_stats.merge(message_reply_stats);
                 }
@@ -1166,6 +1231,25 @@ fn handle_binary_connection(
             }
             upstream_reply_end_unix_nanos = Some(now_unix_nanos() as u64);
             upstream_reply_ms += elapsed_ms(reply_started);
+            emit_upstream_reply_write_span(
+                telemetry,
+                config,
+                session_id,
+                &message,
+                if message.kind == WireMessageKind::VerifySpan {
+                    WireReplyKind::PredictedTokens
+                } else {
+                    WireReplyKind::PredictedToken
+                },
+                if message.kind == WireMessageKind::VerifySpan {
+                    predicted_tokens.len()
+                } else {
+                    1
+                },
+                reply_start_unix_nanos,
+                upstream_reply_end_unix_nanos.unwrap_or(reply_start_unix_nanos),
+                elapsed_ms(reply_started),
+            );
         } else if !early_prefill_ack {
             let reply_start_unix_nanos = now_unix_nanos() as u64;
             upstream_reply_start_unix_nanos.get_or_insert(reply_start_unix_nanos);
@@ -1173,6 +1257,17 @@ fn handle_binary_connection(
             send_reply_ack_with_stats(&mut *upstream, message_reply_stats).context("send ACK")?;
             upstream_reply_end_unix_nanos = Some(now_unix_nanos() as u64);
             upstream_reply_ms += elapsed_ms(reply_started);
+            emit_upstream_reply_write_span(
+                telemetry,
+                config,
+                session_id,
+                &message,
+                WireReplyKind::Ack,
+                0,
+                reply_start_unix_nanos,
+                upstream_reply_end_unix_nanos.unwrap_or(reply_start_unix_nanos),
+                elapsed_ms(reply_started),
+            );
         } else {
             pending_reply_stats.merge(message_reply_stats);
         }
@@ -1349,6 +1444,85 @@ fn insert_optional_unix_nanos(attrs: &mut BTreeMap<String, Value>, key: &str, va
     if let Some(value) = value {
         attrs.insert(key.to_string(), json!(value));
     }
+}
+
+fn estimated_stage_message_wire_bytes(message: &StageWireMessage) -> usize {
+    let sampling_bytes = message.sampling.as_ref().map_or(0, |sampling| {
+        STAGE_SAMPLING_CONFIG_BASE_BYTES
+            + sampling
+                .logit_bias
+                .len()
+                .min(skippy_protocol::binary::MAX_STAGE_LOGIT_BIAS)
+                * STAGE_LOGIT_BIAS_WIRE_BYTES
+    });
+    let chat_metadata_bytes = message
+        .chat_sampling_metadata
+        .as_ref()
+        .map_or(0, |metadata| std::mem::size_of::<u32>() + metadata.len());
+    let payload_bytes = if message.kind == WireMessageKind::StateImport {
+        message.raw_bytes.len()
+    } else {
+        message.tokens.len() * std::mem::size_of::<i32>()
+            + message.positions.len() * std::mem::size_of::<i32>()
+            + message.activation.len()
+    };
+
+    STAGE_WIRE_FIXED_HEADER_BYTES + sampling_bytes + chat_metadata_bytes + payload_bytes
+}
+
+fn estimated_reply_wire_bytes(reply_kind: WireReplyKind, predicted_token_count: usize) -> usize {
+    const REPLY_HEADER_BYTES: usize = 3 * std::mem::size_of::<i32>();
+    const REPLY_STATS_BYTES: usize = 34 * std::mem::size_of::<i64>();
+    let token_count = match reply_kind {
+        WireReplyKind::Ack => 0,
+        WireReplyKind::PredictedToken => 1,
+        WireReplyKind::PredictedTokens => predicted_token_count,
+    };
+    REPLY_HEADER_BYTES + token_count * std::mem::size_of::<i32>() + REPLY_STATS_BYTES
+}
+
+fn emit_upstream_reply_write_span(
+    telemetry: &Telemetry,
+    config: &StageConfig,
+    session_id: u64,
+    message: &StageWireMessage,
+    reply_kind: WireReplyKind,
+    predicted_token_count: usize,
+    start_unix_nanos: u64,
+    end_unix_nanos: u64,
+    write_ms: f64,
+) {
+    let mut attrs = binary_message_attrs(config, session_id, message);
+    attrs.insert(
+        "llama_stage.reply_kind".to_string(),
+        json!(format!("{reply_kind:?}")),
+    );
+    attrs.insert(
+        "llama_stage.reply_predicted_token_count".to_string(),
+        json!(predicted_token_count),
+    );
+    attrs.insert("llama_stage.upstream_reply_ms".to_string(), json!(write_ms));
+    attrs.insert(
+        "llama_stage.reply_wire_bytes".to_string(),
+        json!(estimated_reply_wire_bytes(
+            reply_kind,
+            predicted_token_count
+        )),
+    );
+    attrs.insert(
+        "llama_stage.upstream_reply_start_unix_nanos".to_string(),
+        json!(start_unix_nanos),
+    );
+    attrs.insert(
+        "llama_stage.upstream_reply_end_unix_nanos".to_string(),
+        json!(end_unix_nanos),
+    );
+    telemetry.emit_debug_span(
+        "stage.binary_upstream_reply_write",
+        attrs,
+        start_unix_nanos,
+        end_unix_nanos,
+    );
 }
 
 fn insert_runtime_session_stats(
