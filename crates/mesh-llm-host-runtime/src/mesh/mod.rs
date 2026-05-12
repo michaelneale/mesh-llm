@@ -13,7 +13,9 @@ pub use mesh_llm_types::mesh::{
 
 mod direct_connectivity;
 
-pub(crate) use direct_connectivity::DirectConnectivityStatus;
+pub(crate) use direct_connectivity::{
+    format_network_doctor, network_doctor, DirectConnectivityStatus,
+};
 
 use anyhow::{Context, Result};
 use base64::Engine;

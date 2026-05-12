@@ -1,3 +1,4 @@
+use anyhow::Context;
 use iroh::{Endpoint, EndpointAddr, TransportAddr};
 use serde::Serialize;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
@@ -19,6 +20,56 @@ pub(crate) struct IrohPortmapperStatus {
     pub(crate) mapping_attempts: u64,
     pub(crate) external_address_updates: u64,
     pub(crate) has_reported_external_address: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct NetworkDoctorReport {
+    pub(crate) bind_port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) iroh_public_ipv4: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) router_wan_ipv4: Option<String>,
+    pub(crate) router_wan_type: RouterWanType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) invite_public_candidate: Option<String>,
+    pub(crate) upnp_igd: UpnpIgdReport,
+    pub(crate) direct_udp: DirectUdpReport,
+    pub(crate) iroh: DirectConnectivityStatus,
+    pub(crate) recommendation: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RouterWanType {
+    PublicIpv4,
+    Cgnat,
+    PrivateUpstreamNat,
+    Unavailable,
+}
+
+impl RouterWanType {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::PublicIpv4 => "public IPv4",
+            Self::Cgnat => "CGNAT",
+            Self::PrivateUpstreamNat => "private upstream NAT",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct UpnpIgdReport {
+    pub(crate) discovered: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) wan_matches_iroh: Option<bool>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct DirectUdpReport {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) expected_reachable: Option<bool>,
+    pub(crate) reason: String,
 }
 
 /// Return the first public IPv4 candidate iroh already discovered.
@@ -75,6 +126,260 @@ pub(crate) fn iroh_status(
             external_address_updates,
             has_reported_external_address: external_address_updates > 0,
         },
+    }
+}
+
+pub(crate) async fn network_doctor(
+    bind_port: Option<u16>,
+    relay_urls: &[String],
+) -> anyhow::Result<NetworkDoctorReport> {
+    let endpoint = bind_doctor_endpoint(bind_port, relay_urls).await?;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), endpoint.online()).await;
+
+    let invite_public_candidate = wait_for_invite_public_candidate(&endpoint, bind_port).await;
+    let iroh = iroh_status(&endpoint, invite_public_candidate);
+    let router_wan_ip = upnp_router_wan_ipv4().await;
+    let report = build_network_doctor_report(bind_port, router_wan_ip, iroh);
+    endpoint.close().await;
+    Ok(report)
+}
+
+async fn bind_doctor_endpoint(
+    bind_port: Option<u16>,
+    relay_urls: &[String],
+) -> anyhow::Result<Endpoint> {
+    use iroh::endpoint::QuicTransportConfig;
+    let transport_config = QuicTransportConfig::builder()
+        .max_concurrent_bidi_streams(1024u32.into())
+        .build();
+    let mut builder = Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(iroh::SecretKey::generate())
+        .transport_config(transport_config);
+
+    {
+        use iroh::{RelayConfig, RelayMap};
+        let urls: Vec<String> = if relay_urls.is_empty() {
+            vec![
+                "https://usw1-2.relay.michaelneale.mesh-llm.iroh.link./".into(),
+                "https://aps1-1.relay.michaelneale.mesh-llm.iroh.link./".into(),
+            ]
+        } else {
+            relay_urls.to_vec()
+        };
+        let configs: Vec<RelayConfig> = urls
+            .iter()
+            .map(|url| {
+                let relay_url = url
+                    .parse()
+                    .with_context(|| format!("invalid relay URL: {url}"))?;
+                Ok(RelayConfig::new(relay_url, None))
+            })
+            .collect::<anyhow::Result<_>>()?;
+        builder = builder.relay_mode(iroh::endpoint::RelayMode::Custom(RelayMap::from_iter(
+            configs,
+        )));
+    }
+
+    if let Some(port) = bind_port {
+        builder = builder.bind_addr(SocketAddr::from(([0, 0, 0, 0], port)))?;
+    }
+
+    Ok(builder.bind().await?)
+}
+
+async fn wait_for_invite_public_candidate(
+    endpoint: &Endpoint,
+    bind_port: Option<u16>,
+) -> Option<SocketAddr> {
+    let started = std::time::Instant::now();
+    loop {
+        let addr = endpoint.addr();
+        let advertised_port = bind_port.unwrap_or(0);
+        let candidate = if bind_port.is_some() {
+            iroh_public_addr(&addr, advertised_port)
+        } else {
+            first_iroh_public_addr(&addr)
+        };
+        if candidate.is_some() || started.elapsed() >= std::time::Duration::from_secs(5) {
+            return candidate;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+}
+
+fn first_iroh_public_addr(addr: &EndpointAddr) -> Option<SocketAddr> {
+    addr.addrs
+        .iter()
+        .find_map(|transport_addr| match transport_addr {
+            TransportAddr::Ip(sock) => match sock.ip() {
+                std::net::IpAddr::V4(v4) if is_public_ipv4_addr(v4) => Some(*sock),
+                _ => None,
+            },
+            _ => None,
+        })
+}
+
+fn build_network_doctor_report(
+    bind_port: Option<u16>,
+    router_wan_ip: Option<Ipv4Addr>,
+    iroh: DirectConnectivityStatus,
+) -> NetworkDoctorReport {
+    let public_candidate = iroh
+        .invite_public_candidate
+        .as_deref()
+        .or(iroh.public_ipv4_candidate.as_deref())
+        .and_then(|addr| addr.parse::<SocketAddr>().ok());
+    let iroh_public_ipv4 = public_candidate.and_then(|addr| match addr {
+        SocketAddr::V4(addr) => Some(addr.ip().to_string()),
+        SocketAddr::V6(_) => None,
+    });
+    let router_wan_type = router_wan_ip
+        .map(classify_router_wan)
+        .unwrap_or(RouterWanType::Unavailable);
+    let wan_matches_iroh = match (&iroh_public_ipv4, router_wan_ip) {
+        (Some(public_ip), Some(router_ip)) => Some(public_ip == &router_ip.to_string()),
+        _ => None,
+    };
+    let (expected_reachable, reason, recommendation) = direct_udp_assessment(
+        bind_port,
+        iroh_public_ipv4.as_deref(),
+        router_wan_type,
+        wan_matches_iroh,
+    );
+
+    NetworkDoctorReport {
+        bind_port,
+        iroh_public_ipv4,
+        router_wan_ipv4: router_wan_ip.map(|ip| ip.to_string()),
+        router_wan_type,
+        invite_public_candidate: iroh.invite_public_candidate.clone(),
+        upnp_igd: UpnpIgdReport {
+            discovered: router_wan_ip.is_some(),
+            wan_matches_iroh,
+        },
+        direct_udp: DirectUdpReport {
+            expected_reachable,
+            reason,
+        },
+        iroh,
+        recommendation,
+    }
+}
+
+fn classify_router_wan(addr: Ipv4Addr) -> RouterWanType {
+    if is_public_ipv4_addr(addr) {
+        RouterWanType::PublicIpv4
+    } else if is_cgnat_ipv4_addr(addr) {
+        RouterWanType::Cgnat
+    } else {
+        RouterWanType::PrivateUpstreamNat
+    }
+}
+
+fn direct_udp_assessment(
+    bind_port: Option<u16>,
+    iroh_public_ipv4: Option<&str>,
+    router_wan_type: RouterWanType,
+    wan_matches_iroh: Option<bool>,
+) -> (Option<bool>, String, String) {
+    if bind_port.is_none() {
+        return (
+            Some(false),
+            "missing_bind_port".into(),
+            "Run with --bind-port so the same UDP port can be forwarded and advertised.".into(),
+        );
+    }
+    if iroh_public_ipv4.is_none() {
+        return (
+            None,
+            "iroh_public_ipv4_unavailable".into(),
+            "Wait for iroh relay address discovery, then retry. Relay mode remains available."
+                .into(),
+        );
+    }
+    match (router_wan_type, wan_matches_iroh) {
+        (RouterWanType::Cgnat | RouterWanType::PrivateUpstreamNat, Some(false)) => (
+            Some(false),
+            "router_wan_differs_from_iroh_public_ipv4".into(),
+            "Ask the ISP to opt out of CGNAT/provide a public IPv4, bridge the upstream router, or use relay/tunnel mode.".into(),
+        ),
+        (RouterWanType::PublicIpv4, Some(true)) => (
+            Some(true),
+            "router_wan_matches_iroh_public_ipv4".into(),
+            "If the UDP bind port is forwarded to this host, direct mesh paths can be tested.".into(),
+        ),
+        (RouterWanType::PublicIpv4, Some(false)) => (
+            None,
+            "router_wan_differs_from_iroh_public_ipv4".into(),
+            "The router reports a public IPv4, but it differs from iroh's public candidate; verify router WAN state and upstream routing.".into(),
+        ),
+        (RouterWanType::Unavailable, None) => (
+            None,
+            "upnp_igd_unavailable".into(),
+            "UPnP/IGD did not report a router WAN address; verify the router manually or use relay/tunnel mode.".into(),
+        ),
+        _ => (
+            None,
+            "wan_match_unknown".into(),
+            "Could not prove direct UDP reachability from local diagnostics alone; use a second network to test the bind port.".into(),
+        ),
+    }
+}
+
+pub(crate) fn format_network_doctor(report: &NetworkDoctorReport) -> String {
+    let bind_port = report
+        .bind_port
+        .map(|port| port.to_string())
+        .unwrap_or_else(|| "none".into());
+    let iroh_public = report.iroh_public_ipv4.as_deref().unwrap_or("unavailable");
+    let router_wan = report.router_wan_ipv4.as_deref().unwrap_or("unavailable");
+    let invite = report
+        .invite_public_candidate
+        .as_deref()
+        .unwrap_or("unavailable");
+    let upnp = if report.upnp_igd.discovered {
+        "discovered router"
+    } else {
+        "not discovered"
+    };
+    let wan_match = match report.upnp_igd.wan_matches_iroh {
+        Some(true) => "router WAN matches iroh public candidate",
+        Some(false) => "router WAN differs from iroh public candidate",
+        None => "unknown",
+    };
+    let result = match report.direct_udp.expected_reachable {
+        Some(true) => "✅ Result: router WAN matches public IPv4. If UDP is forwarded to this host, direct mesh paths can be tested.",
+        Some(false) => "❌ Result: direct inbound UDP is unlikely to work from the public internet.",
+        None => "⚠️ Result: direct inbound UDP reachability is unknown from local diagnostics alone.",
+    };
+
+    format!(
+        "🩺 Direct UDP readiness\n  bind port:               {bind_port}\n  🌍 iroh public IPv4:     {iroh_public}\n  🛜 router WAN IPv4:      {router_wan}\n  {} router WAN type:      {}\n  📣 invite candidate:     {invite}\n  {} UPnP/IGD:             {upnp}\n  {} WAN/public match:     {wan_match}\n  🧭 iroh candidates:      {}\n  🗺️ iroh portmapper:      attempts={}, external_updates={}\n\n{result}\nReason: {}\nFix: {}",
+        router_wan_icon(report.router_wan_type),
+        report.router_wan_type.label(),
+        if report.upnp_igd.discovered { "✅" } else { "⚠️" },
+        wan_match_icon(report.upnp_igd.wan_matches_iroh),
+        report.iroh.direct_candidate_count,
+        report.iroh.iroh_portmapper.mapping_attempts,
+        report.iroh.iroh_portmapper.external_address_updates,
+        report.direct_udp.reason,
+        report.recommendation
+    )
+}
+
+fn router_wan_icon(wan_type: RouterWanType) -> &'static str {
+    match wan_type {
+        RouterWanType::PublicIpv4 => "✅",
+        RouterWanType::Cgnat | RouterWanType::PrivateUpstreamNat => "⚠️",
+        RouterWanType::Unavailable => "⚠️",
+    }
+}
+
+fn wan_match_icon(wan_matches_iroh: Option<bool>) -> &'static str {
+    match wan_matches_iroh {
+        Some(true) => "✅",
+        Some(false) => "❌",
+        None => "⚠️",
     }
 }
 
@@ -314,6 +619,44 @@ mod tests {
         assert_eq!(
             iroh_public_addr(&addr, 53238),
             Some("8.8.8.8:53238".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn network_doctor_flags_cgnat_mismatch() {
+        let iroh = DirectConnectivityStatus {
+            public_ipv4_candidate: Some("8.8.8.8:53238".into()),
+            invite_public_candidate: Some("8.8.8.8:53238".into()),
+            ..Default::default()
+        };
+        let report =
+            build_network_doctor_report(Some(53238), Some("100.72.12.34".parse().unwrap()), iroh);
+
+        assert_eq!(report.router_wan_type, RouterWanType::Cgnat);
+        assert_eq!(report.upnp_igd.wan_matches_iroh, Some(false));
+        assert_eq!(report.direct_udp.expected_reachable, Some(false));
+        assert_eq!(
+            report.direct_udp.reason,
+            "router_wan_differs_from_iroh_public_ipv4"
+        );
+    }
+
+    #[test]
+    fn network_doctor_accepts_matching_public_wan() {
+        let iroh = DirectConnectivityStatus {
+            public_ipv4_candidate: Some("8.8.8.8:53238".into()),
+            invite_public_candidate: Some("8.8.8.8:53238".into()),
+            ..Default::default()
+        };
+        let report =
+            build_network_doctor_report(Some(53238), Some("8.8.8.8".parse().unwrap()), iroh);
+
+        assert_eq!(report.router_wan_type, RouterWanType::PublicIpv4);
+        assert_eq!(report.upnp_igd.wan_matches_iroh, Some(true));
+        assert_eq!(report.direct_udp.expected_reachable, Some(true));
+        assert_eq!(
+            report.direct_udp.reason,
+            "router_wan_matches_iroh_public_ipv4"
         );
     }
 }

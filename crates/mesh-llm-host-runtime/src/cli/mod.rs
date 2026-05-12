@@ -36,6 +36,22 @@ pub(crate) enum TrustCommand {
 }
 
 #[derive(Subcommand, Debug)]
+pub(crate) enum NetworkCommand {
+    /// Diagnose direct UDP reachability using iroh and local router signals.
+    Doctor {
+        /// Bind QUIC to this fixed UDP port while probing direct reachability.
+        #[arg(long)]
+        bind_port: Option<u16>,
+        /// Override iroh relay URLs used for address discovery.
+        #[arg(long)]
+        relay: Vec<String>,
+        /// Print machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 pub(crate) enum AuthCommand {
     /// Generate a new owner keypair and save to keystore.
     Init {
@@ -444,6 +460,11 @@ pub(crate) enum Command {
         json: bool,
         #[command(subcommand)]
         command: Option<GpuCommand>,
+    },
+    /// Diagnose mesh networking and direct UDP reachability.
+    Network {
+        #[command(subcommand)]
+        command: NetworkCommand,
     },
     /// Inspect and manage local runtime-served models.
     #[command(hide = true)]
