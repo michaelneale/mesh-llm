@@ -3423,7 +3423,7 @@ impl DashboardState {
             .find(|candidate| candidate.model == model)
         {
             if !matches!(existing.status, RuntimeStatus::Ready)
-                || matches!(status, RuntimeStatus::Ready)
+                || matches!(status, RuntimeStatus::Ready | RuntimeStatus::Stopped)
             {
                 existing.status = status;
             }

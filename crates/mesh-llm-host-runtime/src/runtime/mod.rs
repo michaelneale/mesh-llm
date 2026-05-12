@@ -2719,7 +2719,7 @@ fn preflight_config_owned_startup_models_with_gpus(
             continue;
         }
 
-        let resolved_gpu = hardware::resolve_pinned_gpu(plan.gpu_id.as_deref(), gpus)
+        let resolved_gpu = hardware::resolve_pinned_gpu_strict(plan.gpu_id.as_deref(), gpus)
             .map_err(anyhow::Error::new)
             .with_context(|| {
                 format!(

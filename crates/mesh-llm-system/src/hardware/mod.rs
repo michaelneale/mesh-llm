@@ -233,7 +233,7 @@ fn read_windows_video_controllers() -> Vec<(String, u64)> {
 
 #[cfg(target_os = "macos")]
 fn query_metal_recommended_working_set_bytes() -> Option<u64> {
-    use std::ffi::{c_char, c_void, CStr};
+    use std::ffi::{c_char, c_void};
 
     #[link(name = "Metal", kind = "framework")]
     extern "C" {
@@ -251,7 +251,7 @@ fn query_metal_recommended_working_set_bytes() -> Option<u64> {
         if device.is_null() {
             return None;
         }
-        let selector = CStr::from_bytes_with_nul_unchecked(b"recommendedMaxWorkingSetSize\0");
+        let selector = c"recommendedMaxWorkingSetSize";
         let selector = sel_registerName(selector.as_ptr());
         if selector.is_null() {
             return None;
@@ -886,6 +886,21 @@ pub fn resolve_pinned_gpu<'a>(
     configured_id: Option<&str>,
     gpus: &'a [GpuFacts],
 ) -> Result<&'a GpuFacts, PinnedGpuResolverError> {
+    resolve_pinned_gpu_with_compatibility(configured_id, gpus, true)
+}
+
+pub fn resolve_pinned_gpu_strict<'a>(
+    configured_id: Option<&str>,
+    gpus: &'a [GpuFacts],
+) -> Result<&'a GpuFacts, PinnedGpuResolverError> {
+    resolve_pinned_gpu_with_compatibility(configured_id, gpus, false)
+}
+
+fn resolve_pinned_gpu_with_compatibility<'a>(
+    configured_id: Option<&str>,
+    gpus: &'a [GpuFacts],
+    accept_single_pinnable_gpu_fallback: bool,
+) -> Result<&'a GpuFacts, PinnedGpuResolverError> {
     let available_pinnable_ids = pinnable_gpu_stable_ids(gpus);
     let Some(configured_id) = configured_id.map(str::trim).filter(|id| !id.is_empty()) else {
         return Err(PinnedGpuResolverError::MissingConfiguredId {
@@ -921,19 +936,21 @@ pub fn resolve_pinned_gpu<'a>(
                 .iter()
                 .filter(|gpu| !gpu_pinnable_ids(gpu).is_empty())
                 .collect::<Vec<_>>();
-            if let [gpu] = pinnable_gpus.as_slice() {
-                tracing::warn!(
-                    "configured gpu_id '{}' did not match the single available pinnable GPU; accepting '{}' for compatibility",
-                    configured_id,
-                    gpu_pinnable_ids(gpu).join(", ")
-                );
-                Ok(*gpu)
-            } else {
-                Err(PinnedGpuResolverError::NoMatch {
-                    configured_id,
-                    available_pinnable_ids,
-                })
+            if accept_single_pinnable_gpu_fallback {
+                if let [gpu] = pinnable_gpus.as_slice() {
+                    tracing::warn!(
+                        "configured gpu_id '{}' did not match the single available pinnable GPU; accepting '{}' for compatibility",
+                        configured_id,
+                        gpu_pinnable_ids(gpu).join(", ")
+                    );
+                    return Ok(*gpu);
+                }
             }
+
+            Err(PinnedGpuResolverError::NoMatch {
+                configured_id,
+                available_pinnable_ids,
+            })
         }
         _ => Err(PinnedGpuResolverError::AmbiguousMatch {
             configured_id,
