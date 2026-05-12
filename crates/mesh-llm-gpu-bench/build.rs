@@ -88,6 +88,39 @@ fn archive_static_lib(object: &std::path::Path, lib_name: &str) {
     println!("cargo:rustc-link-lib=static={lib_name}");
 }
 
+fn target_is_windows_msvc() -> bool {
+    std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
+}
+
+fn target_uses_static_crt() -> bool {
+    std::env::var("CARGO_CFG_TARGET_FEATURE")
+        .map(|features| features.split(',').any(|feature| feature == "crt-static"))
+        .unwrap_or(false)
+}
+
+fn add_windows_cuda_crt_flags(command: &mut std::process::Command) {
+    if target_is_windows_msvc() {
+        let runtime = if target_uses_static_crt() {
+            "/MT"
+        } else {
+            "/MD"
+        };
+        command.arg("-Xcompiler").arg(runtime);
+    }
+}
+
+fn add_windows_hip_crt_flags(command: &mut std::process::Command) {
+    if target_is_windows_msvc() {
+        let runtime = if target_uses_static_crt() {
+            "-fms-runtime-lib=static"
+        } else {
+            "-fms-runtime-lib=dll"
+        };
+        command.arg(runtime);
+    }
+}
+
 fn build_cuda() {
     let source = native_source("cuda", "membench-fingerprint.cu");
     let wrapper = write_wrapper(
@@ -100,6 +133,7 @@ fn build_cuda() {
     run_or_panic({
         let mut command = std::process::Command::new(nvcc);
         command.arg("-O3");
+        add_windows_cuda_crt_flags(&mut command);
         if !cfg!(windows) {
             command.arg("-Xcompiler").arg("-fPIC");
         }
@@ -122,6 +156,7 @@ fn build_hip() {
     run_or_panic({
         let mut command = std::process::Command::new(hipcc);
         command.arg("-O3").arg("-std=c++17");
+        add_windows_hip_crt_flags(&mut command);
         if !cfg!(windows) {
             command.arg("-fPIC");
         }
