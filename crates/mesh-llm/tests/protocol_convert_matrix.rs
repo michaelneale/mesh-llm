@@ -5,12 +5,15 @@
 //! and the v0 legacy tunnel-map decode path.
 
 use mesh_client::proto::node::{
-    GossipFrame, NodeConfigSnapshot, NodeGpuConfig, NodeModelEntry, PeerAnnouncement,
+    GossipFrame, NodeConfigSnapshot, NodeGpuConfig, NodeModelEntry, OwnerControlEnvelope,
+    OwnerControlGetConfigRequest, OwnerControlRequest, PeerAnnouncement,
 };
 use mesh_client::protocol::convert::canonical_config_hash;
 use mesh_client::protocol::{
-    decode_control_frame, decode_legacy_tunnel_map_frame, encode_control_frame, ControlFrameError,
-    MAX_CONTROL_FRAME_BYTES, NODE_PROTOCOL_GENERATION, STREAM_GOSSIP, STREAM_TUNNEL_MAP,
+    decode_control_frame, decode_legacy_tunnel_map_frame, decode_owner_control_envelope,
+    encode_control_frame, encode_owner_control_envelope, owner_control_rejection_envelope,
+    ControlFrameError, MAX_CONTROL_FRAME_BYTES, NODE_PROTOCOL_GENERATION, STREAM_GOSSIP,
+    STREAM_TUNNEL_MAP,
 };
 
 fn minimal_config() -> NodeConfigSnapshot {
@@ -170,4 +173,70 @@ fn gossip_frame_with_wrong_generation_is_rejected() {
     let err = decode_control_frame::<GossipFrame>(STREAM_GOSSIP, &encoded)
         .expect_err("gossip frame with gen=0 must be rejected");
     assert!(matches!(err, ControlFrameError::BadGeneration { got: 0 }));
+}
+
+#[test]
+fn owner_control_get_config_roundtrip_works() {
+    let envelope = OwnerControlEnvelope {
+        gen: NODE_PROTOCOL_GENERATION,
+        handshake: None,
+        request: Some(OwnerControlRequest {
+            request_id: 77,
+            get_config: Some(OwnerControlGetConfigRequest {
+                requester_node_id: vec![0x11; 32],
+                target_node_id: vec![0x22; 32],
+            }),
+            watch_config: None,
+            apply_config: None,
+            refresh_inventory: None,
+        }),
+        response: None,
+        error: None,
+    };
+    let decoded = decode_owner_control_envelope(&encode_owner_control_envelope(&envelope))
+        .expect("valid owner control envelope must decode");
+    assert_eq!(decoded.request.unwrap().request_id, 77);
+}
+
+#[test]
+fn owner_control_unknown_command_maps_to_structured_error() {
+    let envelope = OwnerControlEnvelope {
+        gen: NODE_PROTOCOL_GENERATION,
+        handshake: None,
+        request: Some(OwnerControlRequest {
+            request_id: 88,
+            get_config: None,
+            watch_config: None,
+            apply_config: None,
+            refresh_inventory: None,
+        }),
+        response: None,
+        error: None,
+    };
+    let bytes = encode_owner_control_envelope(&envelope);
+    let err = decode_owner_control_envelope(&bytes)
+        .expect_err("missing command variant must fail validation");
+    let rejection = owner_control_rejection_envelope(&bytes, Some(88), &err);
+    let error = rejection
+        .error
+        .expect("rejection must carry structured error");
+    assert_eq!(
+        mesh_client::proto::node::OwnerControlErrorCode::try_from(error.code).unwrap(),
+        mesh_client::proto::node::OwnerControlErrorCode::UnknownCommand
+    );
+}
+
+#[test]
+fn owner_control_legacy_json_maps_to_structured_error() {
+    let legacy_json = br#"{"request_id":99,"command":"GetConfig"}"#;
+    let err = decode_owner_control_envelope(legacy_json)
+        .expect_err("legacy json must be rejected by protobuf-only owner-control lane");
+    let rejection = owner_control_rejection_envelope(legacy_json, Some(99), &err);
+    let error = rejection
+        .error
+        .expect("rejection must carry structured error");
+    assert_eq!(
+        mesh_client::proto::node::OwnerControlErrorCode::try_from(error.code).unwrap(),
+        mesh_client::proto::node::OwnerControlErrorCode::LegacyJsonUnsupported
+    );
 }

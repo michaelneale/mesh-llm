@@ -13,7 +13,10 @@ pub mod events;
 pub mod protocol;
 
 pub use client::{
-    ChatMessage, ChatRequest, ClientBuilder, ClientError, InviteToken, MeshClient, Model,
+    ChatMessage, ChatRequest, ClientBuilder, ClientError, ConfigTransportSelection,
+    ControlPlaneBootstrapOptions, ControlPlaneClientError, ControlPlaneConnection,
+    ControlPlaneNegotiationError, ControlPlaneRetryPolicy, InviteToken, MeshClient, Model,
+    OwnerControlClient, OwnerControlRemoteError, OwnerControlWatchEvent, OwnerControlWatchStream,
     RequestId, ResponsesRequest, Status,
 };
 pub use crypto::keys::OwnerKeypair;

@@ -398,6 +398,14 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) owner_key: Option<PathBuf>,
 
+    /// Bind address for the owner-control listener. Defaults to 127.0.0.1:0 when owner identity is configured.
+    #[arg(long, hide = true)]
+    pub(crate) control_bind: Option<std::net::SocketAddr>,
+
+    /// Advertised owner-control address encoded into the local-only bootstrap token.
+    #[arg(long, hide = true)]
+    pub(crate) control_advertise_addr: Option<std::net::SocketAddr>,
+
     /// Fail startup if owner attestation cannot be loaded or signed.
     #[arg(long)]
     pub(crate) owner_required: bool,
@@ -748,6 +756,8 @@ where
         "--nostr-relay",
         "--config",
         "--owner-key",
+        "--control-bind",
+        "--control-advertise-addr",
         "--node-label",
         "--trust-policy",
         "--trust-owner",

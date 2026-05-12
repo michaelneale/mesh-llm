@@ -4,6 +4,9 @@ use super::heartbeat::{
     RELAY_ONLY_RECONNECT_SECS, RELAY_RECONNECT_COOLDOWN_SECS,
 };
 use super::*;
+use crate::api;
+use crate::network::affinity;
+use crate::plugin;
 use crate::proto::node::{GossipFrame, NodeRole, PeerAnnouncement, RouteTableRequest};
 use serial_test::serial;
 use skippy_protocol::proto::stage as skippy_stage_proto;
@@ -150,6 +153,7 @@ async fn make_test_node(role: super::NodeRole) -> Result<Node> {
         display_name: Arc::new(Mutex::new(None)),
         owner_attestation: Arc::new(Mutex::new(None)),
         owner_summary: Arc::new(Mutex::new(OwnershipSummary::default())),
+        control_listener: Arc::new(Mutex::new(None)),
         trust_store: Arc::new(Mutex::new(TrustStore::default())),
         trust_policy: TrustPolicy::Off,
         enumerate_host: false,
@@ -945,6 +949,660 @@ fn verified_owner_summary(owner_id: &str) -> OwnershipSummary {
         verified: true,
         ..OwnershipSummary::default()
     }
+}
+
+async fn build_mesh_api_for_control_tests(node: Node) -> api::MeshApi {
+    let resolved_plugins = plugin::ResolvedPlugins {
+        externals: vec![],
+        inactive: vec![],
+    };
+    let (mesh_tx, _mesh_rx) = tokio::sync::mpsc::channel(1);
+    let plugin_manager = plugin::PluginManager::start(
+        &resolved_plugins,
+        plugin::PluginHostMode {
+            mesh_visibility: mesh_llm_plugin::MeshVisibility::Private,
+        },
+        mesh_tx,
+    )
+    .await
+    .unwrap();
+    let runtime_data_collector = node.runtime_data_collector();
+    let runtime_data_producer =
+        runtime_data_collector.producer(crate::runtime_data::RuntimeDataSource {
+            scope: "runtime",
+            plugin_data_key: None,
+            plugin_endpoint_key: None,
+        });
+    api::MeshApi::new(api::MeshApiConfig {
+        node,
+        model_name: "test-model".to_string(),
+        api_port: 3131,
+        model_size_bytes: 0,
+        owner_key_path: None,
+        plugin_manager,
+        affinity_router: affinity::AffinityRouter::default(),
+        runtime_data_collector,
+        runtime_data_producer,
+    })
+}
+
+#[tokio::test]
+async fn control_plane_listener_starts_with_owner() -> anyhow::Result<()> {
+    let (node, secret_key) = Node::new_for_tests_with_secret(super::NodeRole::Worker).await?;
+    *node.owner_summary.lock().await = verified_owner_summary("owner-a");
+
+    node.maybe_start_control_listener(secret_key, None, None, None)
+        .await?;
+
+    let endpoint = node
+        .control_endpoint()
+        .await
+        .expect("verified owner should start a control listener");
+    let decoded = Node::decode_invite_token(&endpoint)?;
+    assert_eq!(decoded.id, node.endpoint.id());
+    assert_ne!(decoded, node.endpoint.addr());
+    assert!(decoded.addrs.iter().any(|addr| match addr {
+        iroh::TransportAddr::Ip(sock) => sock.ip().is_loopback(),
+        _ => false,
+    }));
+
+    node.shutdown_control_listener().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn control_plane_listener_uses_explicit_advertised_address() -> anyhow::Result<()> {
+    let (node, secret_key) = Node::new_for_tests_with_secret(super::NodeRole::Worker).await?;
+    *node.owner_summary.lock().await = verified_owner_summary("owner-a");
+    let advertised_addr = std::net::SocketAddr::from(([203, 0, 113, 10], 18443));
+
+    node.maybe_start_control_listener(secret_key, None, Some(advertised_addr), None)
+        .await?;
+
+    let endpoint = node
+        .control_endpoint()
+        .await
+        .expect("verified owner should start a control listener");
+    let decoded = Node::decode_invite_token(&endpoint)?;
+    assert_eq!(decoded.id, node.endpoint.id());
+    assert_eq!(decoded.addrs.len(), 1);
+    assert!(decoded
+        .addrs
+        .contains(&iroh::TransportAddr::Ip(advertised_addr)));
+
+    node.shutdown_control_listener().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn control_plane_listener_disabled_without_owner() -> anyhow::Result<()> {
+    let (node, secret_key) = Node::new_for_tests_with_secret(super::NodeRole::Worker).await?;
+
+    node.maybe_start_control_listener(
+        secret_key,
+        Some("127.0.0.1:7447".parse().unwrap()),
+        None,
+        None,
+    )
+    .await?;
+
+    assert!(node.control_endpoint().await.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn control_plane_listener_accepts_only_control_alpn() -> anyhow::Result<()> {
+    let (node, secret_key) = Node::new_for_tests_with_secret(super::NodeRole::Worker).await?;
+    *node.owner_summary.lock().await = verified_owner_summary("owner-a");
+    node.maybe_start_control_listener(secret_key, None, None, None)
+        .await?;
+    let endpoint = Node::decode_invite_token(
+        &node
+            .control_endpoint()
+            .await
+            .expect("verified owner should expose control endpoint"),
+    )?;
+    let client = Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(SecretKey::generate())
+        .alpns(vec![ALPN_CONTROL_V1.to_vec(), ALPN_V1.to_vec()])
+        .relay_mode(iroh::endpoint::RelayMode::Disabled)
+        .bind_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))?
+        .bind()
+        .await?;
+
+    client
+        .connect(endpoint.clone(), ALPN_CONTROL_V1)
+        .await
+        .expect("control endpoint should accept mesh-llm-control/1");
+    assert!(client.connect(endpoint, ALPN_V1).await.is_err());
+
+    node.shutdown_control_listener().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn control_plane_endpoint_not_in_gossip_or_status() -> anyhow::Result<()> {
+    let (node, secret_key) = Node::new_for_tests_with_secret(super::NodeRole::Worker).await?;
+    *node.owner_summary.lock().await = verified_owner_summary("owner-a");
+    node.maybe_start_control_listener(secret_key, None, None, None)
+        .await?;
+    let control_endpoint = node
+        .control_endpoint()
+        .await
+        .expect("verified owner should expose control endpoint");
+
+    let announcements = node.collect_announcements().await;
+    assert!(announcements
+        .iter()
+        .all(|announcement| encode_endpoint_addr_token(&announcement.addr) != control_endpoint));
+
+    let api = build_mesh_api_for_control_tests(node.clone()).await;
+    api.set_control_bootstrap(api::ControlBootstrapPayload {
+        enabled: true,
+        local_only: true,
+        requires_explicit_remote_endpoint: true,
+        allow_legacy_config: false,
+        endpoint: Some(control_endpoint.clone()),
+    })
+    .await;
+    let status_snapshot = api.status_snapshot_string().await;
+    assert!(!status_snapshot.contains(&control_endpoint));
+
+    node.shutdown_control_listener().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn control_plane_listener_shutdown_stops_listener_task() -> anyhow::Result<()> {
+    let (node, secret_key) = Node::new_for_tests_with_secret(super::NodeRole::Worker).await?;
+    *node.owner_summary.lock().await = verified_owner_summary("owner-a");
+    node.maybe_start_control_listener(secret_key, None, None, None)
+        .await?;
+    let endpoint = Node::decode_invite_token(
+        &node
+            .control_endpoint()
+            .await
+            .expect("verified owner should expose control endpoint"),
+    )?;
+
+    node.shutdown_control_listener().await;
+
+    let client = Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(SecretKey::generate())
+        .alpns(vec![ALPN_CONTROL_V1.to_vec()])
+        .relay_mode(iroh::endpoint::RelayMode::Disabled)
+        .bind_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))?
+        .bind()
+        .await?;
+    assert!(client.connect(endpoint, ALPN_CONTROL_V1).await.is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn control_plane_get_watch_apply_config() -> Result<()> {
+    use crate::proto::node::{
+        ConfigApplyMode, NodeConfigSnapshot, NodeGpuConfig, NodeModelEntry, OwnerControlRequest,
+    };
+
+    let owner_keypair = test_owner_keypair(0x91, 0x92);
+    let tmp =
+        std::env::temp_dir().join(format!("mesh-llm-control-config-{}", rand::random::<u64>()));
+    std::fs::create_dir_all(&tmp).ok();
+
+    let (server, _secret_key, config_path) =
+        start_owner_control_test_server(&owner_keypair, &tmp).await?;
+
+    let (_get_endpoint, mut get_send, mut get_recv, requester_id) =
+        open_owner_control_stream(&server, &owner_keypair).await?;
+    write_len_prefixed(
+        &mut get_send,
+        &crate::proto::node::OwnerControlEnvelope {
+            gen: NODE_PROTOCOL_GENERATION,
+            handshake: None,
+            request: Some(OwnerControlRequest {
+                request_id: 1,
+                get_config: Some(crate::proto::node::OwnerControlGetConfigRequest {
+                    requester_node_id: requester_id.as_bytes().to_vec(),
+                    target_node_id: server.id().as_bytes().to_vec(),
+                }),
+                watch_config: None,
+                apply_config: None,
+                refresh_inventory: None,
+            }),
+            response: None,
+            error: None,
+        }
+        .encode_to_vec(),
+    )
+    .await?;
+    let get_envelope = read_owner_control_envelope(&mut get_recv).await?;
+    let get_response = get_envelope
+        .response
+        .expect("get request should return a response");
+    let initial_snapshot = get_response
+        .get_config
+        .expect("get response should carry get_config")
+        .snapshot
+        .expect("get response should carry a snapshot");
+    assert_eq!(initial_snapshot.revision, 0);
+    assert_eq!(initial_snapshot.node_id, server.id().as_bytes().to_vec());
+
+    let (_watch_endpoint, mut watch_send, mut watch_recv, watch_requester_id) =
+        open_owner_control_stream(&server, &owner_keypair).await?;
+    write_len_prefixed(
+        &mut watch_send,
+        &crate::proto::node::OwnerControlEnvelope {
+            gen: NODE_PROTOCOL_GENERATION,
+            handshake: None,
+            request: Some(OwnerControlRequest {
+                request_id: 2,
+                get_config: None,
+                watch_config: Some(crate::proto::node::OwnerControlWatchConfigRequest {
+                    requester_node_id: watch_requester_id.as_bytes().to_vec(),
+                    target_node_id: server.id().as_bytes().to_vec(),
+                    include_snapshot: true,
+                }),
+                apply_config: None,
+                refresh_inventory: None,
+            }),
+            response: None,
+            error: None,
+        }
+        .encode_to_vec(),
+    )
+    .await?;
+    let watch_initial = read_owner_control_envelope(&mut watch_recv).await?;
+    let watch_initial_snapshot = watch_initial
+        .response
+        .expect("watch should return a response")
+        .watch_config
+        .expect("watch response should carry watch_config")
+        .snapshot
+        .expect("watch should send an initial snapshot first");
+    assert_eq!(watch_initial_snapshot.revision, 0);
+
+    let (_apply_endpoint, mut apply_send, mut apply_recv, apply_requester_id) =
+        open_owner_control_stream(&server, &owner_keypair).await?;
+    let applied_config = NodeConfigSnapshot {
+        version: 1,
+        gpu: Some(NodeGpuConfig {
+            assignment: crate::proto::node::GpuAssignment::Auto as i32,
+        }),
+        models: vec![NodeModelEntry {
+            model: "test-model.gguf".to_string(),
+            mmproj: None,
+            ctx_size: Some(4096),
+            gpu_id: None,
+            model_ref: None,
+            mmproj_ref: None,
+        }],
+        plugins: vec![],
+    };
+    write_len_prefixed(
+        &mut apply_send,
+        &crate::proto::node::OwnerControlEnvelope {
+            gen: NODE_PROTOCOL_GENERATION,
+            handshake: None,
+            request: Some(OwnerControlRequest {
+                request_id: 3,
+                get_config: None,
+                watch_config: None,
+                apply_config: Some(crate::proto::node::OwnerControlApplyConfigRequest {
+                    requester_node_id: apply_requester_id.as_bytes().to_vec(),
+                    target_node_id: server.id().as_bytes().to_vec(),
+                    expected_revision: 0,
+                    config: Some(applied_config.clone()),
+                }),
+                refresh_inventory: None,
+            }),
+            response: None,
+            error: None,
+        }
+        .encode_to_vec(),
+    )
+    .await?;
+    let apply_envelope = read_owner_control_envelope(&mut apply_recv).await?;
+    let apply_response = apply_envelope
+        .response
+        .expect("apply should return a response")
+        .apply_config
+        .expect("apply response should carry apply_config");
+    assert!(apply_response.success);
+    assert_eq!(apply_response.current_revision, 1);
+    assert_eq!(apply_response.apply_mode, ConfigApplyMode::Staged as i32);
+
+    let watch_update = read_owner_control_envelope(&mut watch_recv).await?;
+    let watch_update = watch_update
+        .response
+        .expect("watch update should return a response")
+        .watch_config
+        .expect("watch update should carry watch_config")
+        .update
+        .expect("watch stream should emit an update after apply");
+    assert_eq!(watch_update.revision, 1);
+    assert_eq!(watch_update.config_hash, apply_response.config_hash);
+
+    let persisted_before_noop =
+        std::fs::read_to_string(&config_path).expect("config should exist after staged apply");
+    write_len_prefixed(
+        &mut apply_send,
+        &crate::proto::node::OwnerControlEnvelope {
+            gen: NODE_PROTOCOL_GENERATION,
+            handshake: None,
+            request: Some(OwnerControlRequest {
+                request_id: 4,
+                get_config: None,
+                watch_config: None,
+                apply_config: Some(crate::proto::node::OwnerControlApplyConfigRequest {
+                    requester_node_id: apply_requester_id.as_bytes().to_vec(),
+                    target_node_id: server.id().as_bytes().to_vec(),
+                    expected_revision: 1,
+                    config: Some(applied_config),
+                }),
+                refresh_inventory: None,
+            }),
+            response: None,
+            error: None,
+        }
+        .encode_to_vec(),
+    )
+    .await?;
+    let noop_envelope = read_owner_control_envelope(&mut apply_recv).await?;
+    let noop_response = noop_envelope
+        .response
+        .expect("noop apply should return a response")
+        .apply_config
+        .expect("noop apply should carry apply_config");
+    assert!(noop_response.success);
+    assert_eq!(noop_response.current_revision, 1);
+    assert_eq!(noop_response.apply_mode, ConfigApplyMode::Noop as i32);
+    let persisted_after_noop =
+        std::fs::read_to_string(&config_path).expect("config should still be readable after noop");
+    assert_eq!(persisted_before_noop, persisted_after_noop);
+
+    server.shutdown_control_listener().await;
+    std::fs::remove_dir_all(&tmp).ok();
+    Ok(())
+}
+
+#[tokio::test]
+async fn control_plane_watch_observes_apply_revision() -> Result<()> {
+    use crate::proto::node::{NodeConfigSnapshot, NodeGpuConfig, OwnerControlRequest};
+
+    let owner_keypair = test_owner_keypair(0x93, 0x94);
+    let tmp =
+        std::env::temp_dir().join(format!("mesh-llm-control-watch-{}", rand::random::<u64>()));
+    std::fs::create_dir_all(&tmp).ok();
+    let (server, _secret_key, _config_path) =
+        start_owner_control_test_server(&owner_keypair, &tmp).await?;
+
+    let (_watch_endpoint, mut watch_send, mut watch_recv, watch_requester_id) =
+        open_owner_control_stream(&server, &owner_keypair).await?;
+    write_len_prefixed(
+        &mut watch_send,
+        &crate::proto::node::OwnerControlEnvelope {
+            gen: NODE_PROTOCOL_GENERATION,
+            handshake: None,
+            request: Some(OwnerControlRequest {
+                request_id: 10,
+                get_config: None,
+                watch_config: Some(crate::proto::node::OwnerControlWatchConfigRequest {
+                    requester_node_id: watch_requester_id.as_bytes().to_vec(),
+                    target_node_id: server.id().as_bytes().to_vec(),
+                    include_snapshot: true,
+                }),
+                apply_config: None,
+                refresh_inventory: None,
+            }),
+            response: None,
+            error: None,
+        }
+        .encode_to_vec(),
+    )
+    .await?;
+    let initial = read_owner_control_envelope(&mut watch_recv).await?;
+    let initial_revision = initial
+        .response
+        .expect("watch should return a response")
+        .watch_config
+        .expect("watch should return watch_config")
+        .snapshot
+        .expect("watch should start with a snapshot")
+        .revision;
+
+    let (_apply_endpoint, mut apply_send, mut apply_recv, apply_requester_id) =
+        open_owner_control_stream(&server, &owner_keypair).await?;
+    write_len_prefixed(
+        &mut apply_send,
+        &crate::proto::node::OwnerControlEnvelope {
+            gen: NODE_PROTOCOL_GENERATION,
+            handshake: None,
+            request: Some(OwnerControlRequest {
+                request_id: 11,
+                get_config: None,
+                watch_config: None,
+                apply_config: Some(crate::proto::node::OwnerControlApplyConfigRequest {
+                    requester_node_id: apply_requester_id.as_bytes().to_vec(),
+                    target_node_id: server.id().as_bytes().to_vec(),
+                    expected_revision: initial_revision,
+                    config: Some(NodeConfigSnapshot {
+                        version: 1,
+                        gpu: Some(NodeGpuConfig {
+                            assignment: crate::proto::node::GpuAssignment::Auto as i32,
+                        }),
+                        models: vec![],
+                        plugins: vec![],
+                    }),
+                }),
+                refresh_inventory: None,
+            }),
+            response: None,
+            error: None,
+        }
+        .encode_to_vec(),
+    )
+    .await?;
+    let apply = read_owner_control_envelope(&mut apply_recv).await?;
+    let applied = apply
+        .response
+        .expect("apply should return a response")
+        .apply_config
+        .expect("apply should return apply_config");
+    assert!(applied.success);
+
+    let update = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        read_owner_control_envelope(&mut watch_recv),
+    )
+    .await
+    .expect("watch stream should emit an update within 5 seconds")?;
+    let update = update
+        .response
+        .expect("watch update should return a response")
+        .watch_config
+        .expect("watch update should return watch_config")
+        .update
+        .expect("watch update should carry an update payload");
+    assert_eq!(update.revision, initial_revision + 1);
+    assert_eq!(update.config_hash, applied.config_hash);
+
+    server.shutdown_control_listener().await;
+    std::fs::remove_dir_all(&tmp).ok();
+    Ok(())
+}
+
+#[tokio::test]
+async fn control_plane_apply_rejects_stale_revision() -> Result<()> {
+    use crate::proto::node::{
+        NodeConfigSnapshot, NodeGpuConfig, OwnerControlErrorCode, OwnerControlRequest,
+    };
+
+    let owner_keypair = test_owner_keypair(0x95, 0x96);
+    let tmp =
+        std::env::temp_dir().join(format!("mesh-llm-control-stale-{}", rand::random::<u64>()));
+    std::fs::create_dir_all(&tmp).ok();
+    let (server, _secret_key, _config_path) =
+        start_owner_control_test_server(&owner_keypair, &tmp).await?;
+
+    let initial_hash = { *server.config_state.lock().await.config_hash() };
+
+    let (_apply_endpoint, mut apply_send, mut apply_recv, apply_requester_id) =
+        open_owner_control_stream(&server, &owner_keypair).await?;
+    let apply_once = |request_id, expected_revision| crate::proto::node::OwnerControlEnvelope {
+        gen: NODE_PROTOCOL_GENERATION,
+        handshake: None,
+        request: Some(OwnerControlRequest {
+            request_id,
+            get_config: None,
+            watch_config: None,
+            apply_config: Some(crate::proto::node::OwnerControlApplyConfigRequest {
+                requester_node_id: apply_requester_id.as_bytes().to_vec(),
+                target_node_id: server.id().as_bytes().to_vec(),
+                expected_revision,
+                config: Some(NodeConfigSnapshot {
+                    version: 1,
+                    gpu: Some(NodeGpuConfig {
+                        assignment: crate::proto::node::GpuAssignment::Auto as i32,
+                    }),
+                    models: vec![crate::proto::node::NodeModelEntry {
+                        model: "stale-test-model.gguf".to_string(),
+                        mmproj: None,
+                        ctx_size: Some(2048),
+                        gpu_id: None,
+                        model_ref: None,
+                        mmproj_ref: None,
+                    }],
+                    plugins: vec![],
+                }),
+            }),
+            refresh_inventory: None,
+        }),
+        response: None,
+        error: None,
+    };
+
+    write_len_prefixed(&mut apply_send, &apply_once(20, 0).encode_to_vec()).await?;
+    let first = read_owner_control_envelope(&mut apply_recv).await?;
+    assert!(
+        first
+            .response
+            .expect("first apply should return a response")
+            .apply_config
+            .expect("first apply should return apply_config")
+            .success
+    );
+
+    let hash_after_first = { *server.config_state.lock().await.config_hash() };
+    write_len_prefixed(&mut apply_send, &apply_once(21, 0).encode_to_vec()).await?;
+    let stale = read_owner_control_envelope(&mut apply_recv).await?;
+    let stale_error = stale
+        .error
+        .expect("stale apply should return an error envelope");
+    assert_eq!(
+        stale_error.code,
+        OwnerControlErrorCode::RevisionConflict as i32
+    );
+    assert_eq!(stale_error.request_id, Some(21));
+    assert_eq!(stale_error.current_revision, Some(1));
+    assert_eq!(
+        { *server.config_state.lock().await.config_hash() },
+        hash_after_first
+    );
+    assert_ne!(initial_hash, hash_after_first);
+
+    server.shutdown_control_listener().await;
+    std::fs::remove_dir_all(&tmp).ok();
+    Ok(())
+}
+
+#[tokio::test]
+#[serial]
+async fn control_plane_refresh_inventory() -> Result<()> {
+    use crate::proto::node::OwnerControlRequest;
+
+    let owner_keypair = test_owner_keypair(0x97, 0x98);
+    let tmp = std::env::temp_dir().join(format!(
+        "mesh-llm-control-refresh-{}",
+        rand::random::<u64>()
+    ));
+    let hf_cache = tmp.join("hf-cache");
+    std::fs::create_dir_all(&hf_cache).ok();
+    let _hf_cache_guard = EnvVarGuard::set("HF_HUB_CACHE", &hf_cache);
+    let gguf_path = hf_cache.join("Refresh-Test-Q4_K_M.gguf");
+    let file = std::fs::File::create(&gguf_path)?;
+    file.set_len(600_000_000)?;
+
+    let (server, _secret_key, _config_path) =
+        start_owner_control_test_server(&owner_keypair, &tmp).await?;
+    let expected_model_ref = crate::models::model_ref_for_path(&gguf_path);
+    let expected_inventory_name = gguf_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .expect("gguf test file should have a valid stem")
+        .to_string();
+    assert!(server.available_models().await.is_empty());
+
+    let (_refresh_endpoint, mut refresh_send, mut refresh_recv, requester_id) =
+        open_owner_control_stream(&server, &owner_keypair).await?;
+    let refresh_request = |request_id| crate::proto::node::OwnerControlEnvelope {
+        gen: NODE_PROTOCOL_GENERATION,
+        handshake: None,
+        request: Some(OwnerControlRequest {
+            request_id,
+            get_config: None,
+            watch_config: None,
+            apply_config: None,
+            refresh_inventory: Some(crate::proto::node::OwnerControlRefreshInventoryRequest {
+                requester_node_id: requester_id.as_bytes().to_vec(),
+                target_node_id: server.id().as_bytes().to_vec(),
+            }),
+        }),
+        response: None,
+        error: None,
+    };
+
+    write_len_prefixed(&mut refresh_send, &refresh_request(30).encode_to_vec()).await?;
+    let first = read_owner_control_envelope(&mut refresh_recv).await?;
+    let first_snapshot = first
+        .response
+        .expect("refresh should return a response")
+        .refresh_inventory
+        .expect("refresh should return refresh_inventory")
+        .snapshot
+        .expect("refresh should include a config snapshot");
+    assert_eq!(first_snapshot.node_id, server.id().as_bytes().to_vec());
+    assert!(server
+        .available_models()
+        .await
+        .contains(&expected_model_ref));
+    let inventory_snapshot = server.runtime_data_collector().local_inventory_snapshot();
+    assert!(inventory_snapshot
+        .model_names
+        .contains(&expected_inventory_name));
+
+    write_len_prefixed(&mut refresh_send, &refresh_request(31).encode_to_vec()).await?;
+    let second = read_owner_control_envelope(&mut refresh_recv).await?;
+    let second_snapshot = second
+        .response
+        .expect("second refresh should return a response")
+        .refresh_inventory
+        .expect("second refresh should return refresh_inventory")
+        .snapshot
+        .expect("second refresh should include a config snapshot");
+    assert_eq!(first_snapshot.revision, second_snapshot.revision);
+    assert_eq!(
+        server
+            .available_models()
+            .await
+            .iter()
+            .filter(|model| *model == &expected_model_ref)
+            .count(),
+        1
+    );
+
+    server.shutdown_control_listener().await;
+    std::fs::remove_dir_all(&tmp).ok();
+    Ok(())
 }
 
 #[tokio::test]
@@ -1842,7 +2500,7 @@ fn gossip_frame_roundtrip_preserves_scanned_model_metadata() {
                 local_file_name: Some("Qwen3-8B-Q4_K_M.gguf".into()),
                 identity_hash: Some("identity-hash".into()),
             },
-            capabilities: Default::default(),
+            capabilities: crate::models::ModelCapabilities::default(),
             topology: None,
         }],
         served_model_runtime: vec![ModelRuntimeDescriptor {
@@ -4091,6 +4749,7 @@ async fn make_test_node_with_owner(
         display_name: Arc::new(Mutex::new(None)),
         owner_attestation: Arc::new(Mutex::new(Some(owner_attestation))),
         owner_summary: Arc::new(Mutex::new(owner_summary)),
+        control_listener: Arc::new(Mutex::new(None)),
         trust_store: Arc::new(Mutex::new(trust_store)),
         trust_policy: TrustPolicy::Off,
         enumerate_host: false,
@@ -4145,6 +4804,168 @@ fn build_signed_config_push(
     let payload = config_push_signature_payload(&push);
     push.signature = owner_keypair.sign_bytes(&payload).to_vec();
     push
+}
+
+fn proto_signed_node_ownership(
+    ownership: &crate::crypto::SignedNodeOwnership,
+) -> crate::proto::node::SignedNodeOwnership {
+    crate::proto::node::SignedNodeOwnership {
+        version: ownership.claim.version,
+        cert_id: ownership.claim.cert_id.clone(),
+        owner_id: ownership.claim.owner_id.clone(),
+        owner_sign_public_key: hex::decode(&ownership.claim.owner_sign_public_key)
+            .expect("test owner_sign_public_key must decode"),
+        node_endpoint_id: hex::decode(&ownership.claim.node_endpoint_id)
+            .expect("test node_endpoint_id must decode"),
+        issued_at_unix_ms: ownership.claim.issued_at_unix_ms,
+        expires_at_unix_ms: ownership.claim.expires_at_unix_ms,
+        node_label: ownership.claim.node_label.clone(),
+        hostname_hint: ownership.claim.hostname_hint.clone(),
+        signature: hex::decode(&ownership.signature).expect("test signature must decode"),
+    }
+}
+
+async fn open_owner_control_stream(
+    target: &Node,
+    owner_keypair: &crate::crypto::OwnerKeypair,
+) -> Result<(
+    Endpoint,
+    iroh::endpoint::SendStream,
+    iroh::endpoint::RecvStream,
+    EndpointId,
+)> {
+    let endpoint = Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(SecretKey::generate())
+        .alpns(vec![ALPN_CONTROL_V1.to_vec()])
+        .relay_mode(iroh::endpoint::RelayMode::Disabled)
+        .bind_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))?
+        .bind()
+        .await?;
+    let ownership = sign_node_ownership(
+        owner_keypair,
+        endpoint.id().as_bytes(),
+        current_time_unix_ms() + DEFAULT_NODE_CERT_LIFETIME_SECS * 1000,
+        None,
+        None,
+    )?;
+    let control_addr = Node::decode_invite_token(
+        &target
+            .control_endpoint()
+            .await
+            .expect("control endpoint should be available for owner-control tests"),
+    )?;
+    let conn = endpoint.connect(control_addr, ALPN_CONTROL_V1).await?;
+    let (mut send, recv) = conn.open_bi().await?;
+    write_len_prefixed(
+        &mut send,
+        &crate::proto::node::OwnerControlEnvelope {
+            gen: NODE_PROTOCOL_GENERATION,
+            handshake: Some(crate::proto::node::OwnerControlHandshake {
+                ownership: Some(proto_signed_node_ownership(&ownership)),
+            }),
+            request: None,
+            response: None,
+            error: None,
+        }
+        .encode_to_vec(),
+    )
+    .await?;
+    let endpoint_id = endpoint.id();
+    Ok((endpoint, send, recv, endpoint_id))
+}
+
+async fn read_owner_control_envelope(
+    recv: &mut iroh::endpoint::RecvStream,
+) -> Result<crate::proto::node::OwnerControlEnvelope> {
+    let bytes = crate::protocol::read_len_prefixed(recv).await?;
+    let envelope = crate::proto::node::OwnerControlEnvelope::decode(bytes.as_slice())?;
+    envelope
+        .validate_frame()
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    Ok(envelope)
+}
+
+async fn start_owner_control_test_server(
+    owner_keypair: &crate::crypto::OwnerKeypair,
+    config_dir: &std::path::Path,
+) -> Result<(Node, SecretKey, std::path::PathBuf)> {
+    let (node, secret_key) =
+        Node::new_for_tests_with_secret(super::NodeRole::Host { http_port: 9337 }).await?;
+    let config_path = config_dir.join("config.toml");
+    *node.config_state.lock().await =
+        crate::runtime::config_state::ConfigState::load(&config_path).unwrap_or_default();
+
+    let ownership = sign_node_ownership(
+        owner_keypair,
+        node.id().as_bytes(),
+        current_time_unix_ms() + DEFAULT_NODE_CERT_LIFETIME_SECS * 1000,
+        None,
+        None,
+    )?;
+    let trust_store = TrustStore::default();
+    let owner_summary = verify_node_ownership(
+        Some(&ownership),
+        node.id().as_bytes(),
+        &trust_store,
+        TrustPolicy::Off,
+        current_time_unix_ms(),
+    );
+    *node.owner_attestation.lock().await = Some(ownership);
+    *node.owner_summary.lock().await = owner_summary;
+    *node.trust_store.lock().await = trust_store;
+    node.maybe_start_control_listener(secret_key.clone(), None, None, None)
+        .await?;
+    Ok((node, secret_key, config_path))
+}
+
+async fn setup_joined_legacy_config_test_nodes(
+    test_name: &str,
+    owner_keypair: &crate::crypto::OwnerKeypair,
+) -> Result<(
+    Node,
+    Node,
+    EndpointId,
+    iroh::endpoint::Connection,
+    std::path::PathBuf,
+)> {
+    let tmp = std::env::temp_dir().join(format!("mesh-llm-{test_name}-{}", rand::random::<u64>()));
+    std::fs::create_dir_all(tmp.join("server")).ok();
+    std::fs::create_dir_all(tmp.join("client")).ok();
+
+    let server = make_test_node_with_owner(
+        super::NodeRole::Host { http_port: 9337 },
+        owner_keypair,
+        &tmp.join("server"),
+    )
+    .await?;
+    let client =
+        make_test_node_with_owner(super::NodeRole::Worker, owner_keypair, &tmp.join("client"))
+            .await?;
+
+    server.set_mesh_id(format!("{test_name}-mesh-01")).await;
+    client.set_mesh_id(format!("{test_name}-mesh-01")).await;
+    server.start_accepting();
+    client.start_accepting();
+
+    let server_id = server.id();
+    let server_addr = server.endpoint.addr();
+    let invite =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&server_addr)?);
+
+    client.join(&invite).await?;
+    wait_for_peer(&client, server_id).await;
+    wait_for_peer(&server, client.id()).await;
+
+    let conn = {
+        let state = client.state.lock().await;
+        state
+            .connections
+            .get(&server_id)
+            .cloned()
+            .expect("connection to server must exist after join")
+    };
+
+    Ok((server, client, server_id, conn, tmp))
 }
 
 /// Wait until `node` has `target` in its peers list. Times out after 5 s.
@@ -4230,6 +5051,183 @@ async fn config_subscribe_matching_owner_receives_snapshot() -> Result<()> {
         "snapshot must not carry an error"
     );
 
+    std::fs::remove_dir_all(&tmp).ok();
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn control_plane_legacy_compat_old_client_legacy_stream_still_works() -> Result<()> {
+    use crate::proto::node::{NodeConfigSnapshot, NodeGpuConfig};
+    use crate::protocol::write_len_prefixed;
+    use prost::Message as _;
+
+    let owner_keypair = test_owner_keypair(0xa1, 0xa2);
+    let (server, client, server_id, conn, tmp) =
+        setup_joined_legacy_config_test_nodes("control-plane-legacy-old-client", &owner_keypair)
+            .await?;
+
+    let (snapshot, mut notif_rx) = client.subscribe_to_config(&conn).await?;
+    assert_eq!(snapshot.node_id, server_id.as_bytes().to_vec());
+
+    let push = build_signed_config_push(
+        &owner_keypair,
+        &client.id(),
+        &server_id,
+        snapshot.revision,
+        NodeConfigSnapshot {
+            version: 1,
+            gpu: Some(NodeGpuConfig {
+                assignment: crate::proto::node::GpuAssignment::Auto as i32,
+            }),
+            models: vec![crate::proto::node::NodeModelEntry {
+                model: "legacy-client-model.gguf".to_string(),
+                mmproj: None,
+                ctx_size: None,
+                gpu_id: None,
+                model_ref: None,
+                mmproj_ref: None,
+            }],
+            plugins: vec![],
+        },
+    );
+
+    let (mut send, mut recv) = conn.open_bi().await?;
+    send.write_all(&[STREAM_CONFIG_PUSH]).await?;
+    write_len_prefixed(&mut send, &push.encode_to_vec()).await?;
+    send.finish()?;
+
+    let buf = crate::protocol::read_len_prefixed(&mut recv).await?;
+    let push_resp = crate::proto::node::ConfigPushResponse::decode(buf.as_slice())?;
+    assert!(
+        push_resp.success,
+        "legacy mesh-plane config push must still succeed: {:?}",
+        push_resp.error
+    );
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), notif_rx.changed())
+        .await
+        .expect("legacy subscribe stream must receive update")
+        .expect("legacy subscribe watch channel must remain open");
+    assert_eq!(notif_rx.borrow_and_update().revision, snapshot.revision + 1);
+
+    server.shutdown_control_listener().await;
+    std::fs::remove_dir_all(&tmp).ok();
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn control_plane_legacy_compat_new_client_prefers_control_alpn() -> Result<()> {
+    use crate::proto::node::OwnerControlRequest;
+
+    let owner_keypair = test_owner_keypair(0xa3, 0xa4);
+    let tmp = std::env::temp_dir().join(format!(
+        "mesh-llm-control-plane-prefers-control-{}",
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&tmp).ok();
+
+    let (server, _secret_key, _config_path) =
+        start_owner_control_test_server(&owner_keypair, &tmp).await?;
+    let control_addr = Node::decode_invite_token(
+        &server
+            .control_endpoint()
+            .await
+            .expect("owner-controlled node should expose control endpoint"),
+    )?;
+
+    let wrong_alpn_client = Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(SecretKey::generate())
+        .alpns(vec![ALPN_CONTROL_V1.to_vec(), ALPN_V1.to_vec()])
+        .relay_mode(iroh::endpoint::RelayMode::Disabled)
+        .bind_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))?
+        .bind()
+        .await?;
+    assert!(wrong_alpn_client
+        .connect(control_addr.clone(), ALPN_V1)
+        .await
+        .is_err());
+
+    let (_endpoint, mut send, mut recv, requester_id) =
+        open_owner_control_stream(&server, &owner_keypair).await?;
+    write_len_prefixed(
+        &mut send,
+        &crate::proto::node::OwnerControlEnvelope {
+            gen: NODE_PROTOCOL_GENERATION,
+            handshake: None,
+            request: Some(OwnerControlRequest {
+                request_id: 41,
+                get_config: Some(crate::proto::node::OwnerControlGetConfigRequest {
+                    requester_node_id: requester_id.as_bytes().to_vec(),
+                    target_node_id: server.id().as_bytes().to_vec(),
+                }),
+                watch_config: None,
+                apply_config: None,
+                refresh_inventory: None,
+            }),
+            response: None,
+            error: None,
+        }
+        .encode_to_vec(),
+    )
+    .await?;
+
+    let envelope = read_owner_control_envelope(&mut recv).await?;
+    let snapshot = envelope
+        .response
+        .expect("owner-control request should receive response")
+        .get_config
+        .expect("response should carry get_config result")
+        .snapshot
+        .expect("get_config should return initial snapshot");
+    assert_eq!(snapshot.node_id, server.id().as_bytes().to_vec());
+
+    server.shutdown_control_listener().await;
+    std::fs::remove_dir_all(&tmp).ok();
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn control_plane_legacy_compat_control_alpn_rejects_legacy_frames() -> Result<()> {
+    let owner_keypair = test_owner_keypair(0xa5, 0xa6);
+    let tmp = std::env::temp_dir().join(format!(
+        "mesh-llm-control-plane-legacy-json-{}",
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&tmp).ok();
+
+    let (server, _secret_key, _config_path) =
+        start_owner_control_test_server(&owner_keypair, &tmp).await?;
+    let control_addr = Node::decode_invite_token(
+        &server
+            .control_endpoint()
+            .await
+            .expect("owner-controlled node should expose control endpoint"),
+    )?;
+
+    let client = Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(SecretKey::generate())
+        .alpns(vec![ALPN_CONTROL_V1.to_vec()])
+        .relay_mode(iroh::endpoint::RelayMode::Disabled)
+        .bind_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))?
+        .bind()
+        .await?;
+    let conn = client.connect(control_addr, ALPN_CONTROL_V1).await?;
+    let (mut send, mut recv) = conn.open_bi().await?;
+    write_len_prefixed(&mut send, br#"{"request_id":7,"command":"GetConfig"}"#).await?;
+
+    let rejection = read_owner_control_envelope(&mut recv).await?;
+    assert_eq!(
+        crate::proto::node::OwnerControlErrorCode::try_from(
+            rejection
+                .error
+                .expect("legacy json should be rejected")
+                .code,
+        )
+        .unwrap(),
+        crate::proto::node::OwnerControlErrorCode::LegacyJsonUnsupported
+    );
+
+    server.shutdown_control_listener().await;
     std::fs::remove_dir_all(&tmp).ok();
     Ok(())
 }
@@ -4398,6 +5396,7 @@ async fn config_subscribe_rejects_pinned_snapshot_for_older_peer() -> Result<()>
                     assignment: crate::plugin::GpuAssignment::Pinned,
                     ..Default::default()
                 },
+                owner_control: Default::default(),
                 telemetry: Default::default(),
                 models: vec![crate::plugin::ModelConfigEntry {
                     model: "Qwen3-8B-Q4_K_M".into(),
@@ -4502,6 +5501,7 @@ async fn config_subscribe_rejects_pinned_snapshot_for_malformed_peer_version() -
                     assignment: crate::plugin::GpuAssignment::Pinned,
                     ..Default::default()
                 },
+                owner_control: Default::default(),
                 telemetry: Default::default(),
                 models: vec![crate::plugin::ModelConfigEntry {
                     model: "Qwen3-8B-Q4_K_M".into(),
@@ -4604,6 +5604,7 @@ async fn config_subscribe_allows_pinned_snapshot_for_same_release_prerelease_pee
                     assignment: crate::plugin::GpuAssignment::Pinned,
                     ..Default::default()
                 },
+                owner_control: Default::default(),
                 telemetry: Default::default(),
                 models: vec![crate::plugin::ModelConfigEntry {
                     model: "Qwen3-8B-Q4_K_M".into(),
@@ -4785,6 +5786,7 @@ async fn config_subscribe_closes_when_revision_becomes_pinned_for_malformed_peer
                     assignment: crate::plugin::GpuAssignment::Pinned,
                     ..Default::default()
                 },
+                owner_control: Default::default(),
                 telemetry: Default::default(),
                 models: vec![crate::plugin::ModelConfigEntry {
                     model: "Qwen3-8B-Q4_K_M".into(),
@@ -4891,6 +5893,7 @@ async fn config_subscribe_closes_when_revision_becomes_pinned_for_older_peer() -
                     assignment: crate::plugin::GpuAssignment::Pinned,
                     ..Default::default()
                 },
+                owner_control: Default::default(),
                 telemetry: Default::default(),
                 models: vec![crate::plugin::ModelConfigEntry {
                     model: "Qwen3-8B-Q4_K_M".into(),
@@ -4998,6 +6001,7 @@ async fn config_subscribe_keeps_stream_open_when_revision_becomes_pinned_for_sam
                     assignment: crate::plugin::GpuAssignment::Pinned,
                     ..Default::default()
                 },
+                owner_control: Default::default(),
                 telemetry: Default::default(),
                 models: vec![crate::plugin::ModelConfigEntry {
                     model: "Qwen3-8B-Q4_K_M".into(),

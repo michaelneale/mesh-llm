@@ -244,6 +244,7 @@ mod tests {
                 assignment: GpuAssignment::Auto,
                 parallel: None,
             },
+            owner_control: Default::default(),
             telemetry: Default::default(),
             models: vec![],
             plugins: vec![],
@@ -363,6 +364,7 @@ mod tests {
                 assignment: GpuAssignment::Auto,
                 parallel: None,
             },
+            owner_control: Default::default(),
             telemetry: Default::default(),
             models: vec![crate::plugin::ModelConfigEntry {
                 model: model.to_string(),
@@ -403,6 +405,7 @@ mod tests {
                 assignment: GpuAssignment::Auto,
                 parallel: None,
             },
+            owner_control: Default::default(),
             telemetry: Default::default(),
             models: vec![crate::plugin::ModelConfigEntry {
                 model: "test.gguf".to_string(),
@@ -450,6 +453,7 @@ mod tests {
                 assignment: GpuAssignment::Auto,
                 parallel: None,
             },
+            owner_control: Default::default(),
             telemetry: Default::default(),
             models: vec![crate::plugin::ModelConfigEntry {
                 model: "noop-test.gguf".to_string(),

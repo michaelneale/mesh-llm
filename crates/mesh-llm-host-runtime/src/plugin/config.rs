@@ -16,11 +16,21 @@ pub struct MeshConfig {
     #[serde(default)]
     pub gpu: GpuConfig,
     #[serde(default)]
+    pub owner_control: OwnerControlConfig,
+    #[serde(default)]
     pub telemetry: TelemetryConfig,
     #[serde(default)]
     pub models: Vec<ModelConfigEntry>,
     #[serde(rename = "plugin", default)]
     pub plugins: Vec<PluginConfigEntry>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct OwnerControlConfig {
+    #[serde(default)]
+    pub bind: Option<std::net::SocketAddr>,
+    #[serde(default)]
+    pub advertise_addr: Option<std::net::SocketAddr>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -150,6 +160,21 @@ pub(crate) fn validate_config(config: &MeshConfig) -> Result<()> {
     if let Some(version) = config.version {
         if version != 1 {
             bail!("unsupported config version {version}; expected version = 1");
+        }
+    }
+    if let Some(bind) = config.owner_control.bind {
+        if bind.port() == 0 && !bind.ip().is_loopback() {
+            bail!(
+                "owner_control.bind must use a concrete port when binding a non-loopback address"
+            );
+        }
+    }
+    if let Some(advertise_addr) = config.owner_control.advertise_addr {
+        if advertise_addr.port() == 0 {
+            bail!("owner_control.advertise_addr must use a concrete port");
+        }
+        if advertise_addr.ip().is_unspecified() {
+            bail!("owner_control.advertise_addr must not use an unspecified IP address");
         }
     }
     if let Some(parallel) = config.gpu.parallel {
@@ -429,6 +454,10 @@ mod tests {
             r#"
 version = 1
 
+[owner_control]
+bind = "127.0.0.1:7447"
+advertise_addr = "203.0.113.10:18443"
+
 [gpu]
 assignment = "auto"
 
@@ -448,6 +477,14 @@ command = "/tmp/demo"
         .unwrap();
 
         assert_eq!(config.version, Some(1));
+        assert_eq!(
+            config.owner_control.bind,
+            Some("127.0.0.1:7447".parse().unwrap())
+        );
+        assert_eq!(
+            config.owner_control.advertise_addr,
+            Some("203.0.113.10:18443".parse().unwrap())
+        );
         assert_eq!(config.gpu.assignment, GpuAssignment::Auto);
         assert_eq!(config.models.len(), 2);
         assert_eq!(config.models[0].model, "Qwen3-8B-Q4_K_M");
@@ -531,6 +568,54 @@ queue_size = 0
                 .contains("telemetry.queue_size must be at least 1"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn owner_control_config_rejects_ephemeral_non_loopback_bind() {
+        let config: MeshConfig = toml::from_str(
+            r#"
+[owner_control]
+bind = "0.0.0.0:0"
+"#,
+        )
+        .unwrap();
+
+        let err = validate_config(&config).unwrap_err();
+        assert!(err.to_string().contains(
+            "owner_control.bind must use a concrete port when binding a non-loopback address"
+        ));
+    }
+
+    #[test]
+    fn owner_control_config_rejects_unspecified_advertise_addr() {
+        let config: MeshConfig = toml::from_str(
+            r#"
+[owner_control]
+advertise_addr = "0.0.0.0:18443"
+"#,
+        )
+        .unwrap();
+
+        let err = validate_config(&config).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("owner_control.advertise_addr must not use an unspecified IP address"));
+    }
+
+    #[test]
+    fn owner_control_config_rejects_ephemeral_advertise_addr() {
+        let config: MeshConfig = toml::from_str(
+            r#"
+[owner_control]
+advertise_addr = "127.0.0.1:0"
+"#,
+        )
+        .unwrap();
+
+        let err = validate_config(&config).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("owner_control.advertise_addr must use a concrete port"));
     }
 
     #[test]

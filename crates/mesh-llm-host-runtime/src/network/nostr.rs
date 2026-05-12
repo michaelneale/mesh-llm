@@ -1356,6 +1356,41 @@ mod scoring_tests {
     }
 
     #[test]
+    fn public_listing_json_does_not_expose_control_endpoint_data() {
+        let control_endpoint =
+            "control://mesh-llm-control/1?token=owner-only-endpoint-never-public";
+        let mesh = make_mesh(
+            Some("mesh-llm"),
+            Some("public-mesh"),
+            &["Qwen3-8B-Q4_K_M"],
+            2,
+            24_000_000_000,
+            0,
+            0,
+        );
+
+        let listing_json = serde_json::to_string(&mesh.listing).expect("listing must serialize");
+        let discovered_json = serde_json::to_string(&mesh).expect("discovered mesh must serialize");
+
+        assert!(
+            !listing_json.contains(control_endpoint),
+            "published MeshListing JSON must not leak control endpoint data"
+        );
+        assert!(
+            !discovered_json.contains(control_endpoint),
+            "discovered public listing JSON must not leak control endpoint data"
+        );
+        assert!(
+            !listing_json.contains("mesh-llm-control/1"),
+            "published MeshListing JSON must not mention the owner-control ALPN"
+        );
+        assert!(
+            !discovered_json.contains("owner-only-endpoint"),
+            "public discovery JSON must not expose owner-only endpoint tokens"
+        );
+    }
+
+    #[test]
     fn score_other_named_mesh_no_community_bonus() {
         // Non-community named meshes are excluded from --auto entirely by
         // `is_auto_eligible`; within `score_mesh` they simply don't get the

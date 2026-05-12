@@ -10,6 +10,7 @@ pub(crate) use convert::*;
 use iroh::endpoint::Connection;
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 use prost::Message;
+pub const ALPN_CONTROL_V1: &[u8] = b"mesh-llm-control/1";
 pub const ALPN_V1: &[u8] = b"mesh-llm/1";
 #[cfg(test)]
 pub const ALPN: &[u8] = ALPN_V1;
@@ -29,6 +30,7 @@ pub(crate) const STREAM_CONFIG_SUBSCRIBE: u8 = 0x0b;
 pub(crate) const STREAM_CONFIG_PUSH: u8 = 0x0c;
 pub(crate) const STREAM_SUBPROTOCOL: u8 = 0x0d;
 const _: () = {
+    let _ = ALPN_CONTROL_V1;
     let _ = STREAM_CONFIG_SUBSCRIBE;
     let _ = STREAM_CONFIG_PUSH;
     let _ = STREAM_SUBPROTOCOL;
@@ -55,6 +57,7 @@ pub(crate) enum ControlFrameError {
         got: usize,
     },
     MissingHttpPort,
+    MissingOwnerId,
     InvalidConfigHashLength {
         got: usize,
     },
@@ -67,6 +70,11 @@ pub(crate) enum ControlFrameError {
         got: usize,
     },
     MissingConfig,
+    MissingControlEnvelope,
+    MissingControlCommand,
+    MissingControlResult,
+    MissingControlOwnership,
+    MissingRequestId,
     #[cfg(test)]
     DecodeError(String),
     #[cfg(test)]
@@ -100,6 +108,7 @@ impl std::fmt::Display for ControlFrameError {
             ControlFrameError::MissingHttpPort => {
                 write!(f, "HOST-role peer annotation missing http_port")
             }
+            ControlFrameError::MissingOwnerId => write!(f, "config frame missing owner_id"),
             ControlFrameError::InvalidConfigHashLength { got } => {
                 write!(f, "invalid config_hash length: expected 32, got {}", got)
             }
@@ -115,6 +124,27 @@ impl std::fmt::Display for ControlFrameError {
             }
             ControlFrameError::MissingConfig => {
                 write!(f, "config field is required but missing")
+            }
+            ControlFrameError::MissingControlEnvelope => {
+                write!(f, "owner control envelope requires exactly one payload")
+            }
+            ControlFrameError::MissingControlCommand => {
+                write!(
+                    f,
+                    "owner control request requires exactly one command variant"
+                )
+            }
+            ControlFrameError::MissingControlResult => {
+                write!(
+                    f,
+                    "owner control response requires exactly one result variant"
+                )
+            }
+            ControlFrameError::MissingControlOwnership => {
+                write!(f, "owner control handshake missing ownership attestation")
+            }
+            ControlFrameError::MissingRequestId => {
+                write!(f, "owner control request_id must be non-zero")
             }
             #[cfg(test)]
             ControlFrameError::DecodeError(msg) => write!(f, "protobuf decode error: {}", msg),
@@ -299,6 +329,245 @@ impl ValidateControlFrame for crate::proto::node::ConfigPushResponse {
         }
         if self.success || !self.config_hash.is_empty() {
             validate_config_hash_length(self.config_hash.len())?;
+        }
+        Ok(())
+    }
+}
+
+impl ValidateControlFrame for crate::proto::node::OwnerControlEnvelope {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        if self.gen != NODE_PROTOCOL_GENERATION {
+            return Err(ControlFrameError::BadGeneration { got: self.gen });
+        }
+        let payloads = [
+            self.handshake.is_some(),
+            self.request.is_some(),
+            self.response.is_some(),
+            self.error.is_some(),
+        ];
+        if payloads.into_iter().filter(|present| *present).count() != 1 {
+            return Err(ControlFrameError::MissingControlEnvelope);
+        }
+        if let Some(handshake) = &self.handshake {
+            handshake.validate_frame()?;
+        }
+        if let Some(request) = &self.request {
+            request.validate_frame()?;
+        }
+        if let Some(response) = &self.response {
+            response.validate_frame()?;
+        }
+        if let Some(error) = &self.error {
+            error.validate_frame()?;
+        }
+        Ok(())
+    }
+}
+
+impl ValidateControlFrame for crate::proto::node::OwnerControlHandshake {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        let ownership = self
+            .ownership
+            .as_ref()
+            .ok_or(ControlFrameError::MissingControlOwnership)?;
+        if ownership.owner_id.trim().is_empty() {
+            return Err(ControlFrameError::MissingOwnerId);
+        }
+        validate_public_key_length(ownership.owner_sign_public_key.len())?;
+        validate_endpoint_id_length(ownership.node_endpoint_id.len())?;
+        if ownership.signature.is_empty() {
+            return Err(ControlFrameError::MissingSignature);
+        }
+        if ownership.signature.len() != 64 {
+            return Err(ControlFrameError::InvalidSignatureLength {
+                got: ownership.signature.len(),
+            });
+        }
+        Ok(())
+    }
+}
+
+impl ValidateControlFrame for crate::proto::node::OwnerControlRequest {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        if self.request_id == 0 {
+            return Err(ControlFrameError::MissingRequestId);
+        }
+        let commands = [
+            self.get_config.is_some(),
+            self.watch_config.is_some(),
+            self.apply_config.is_some(),
+            self.refresh_inventory.is_some(),
+        ];
+        if commands.into_iter().filter(|present| *present).count() != 1 {
+            return Err(ControlFrameError::MissingControlCommand);
+        }
+        if let Some(request) = &self.get_config {
+            request.validate_frame()?;
+        }
+        if let Some(request) = &self.watch_config {
+            request.validate_frame()?;
+        }
+        if let Some(request) = &self.apply_config {
+            request.validate_frame()?;
+        }
+        if let Some(request) = &self.refresh_inventory {
+            request.validate_frame()?;
+        }
+        Ok(())
+    }
+}
+
+impl ValidateControlFrame for crate::proto::node::OwnerControlResponse {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        if self.request_id == 0 {
+            return Err(ControlFrameError::MissingRequestId);
+        }
+        let results = [
+            self.get_config.is_some(),
+            self.watch_config.is_some(),
+            self.apply_config.is_some(),
+            self.refresh_inventory.is_some(),
+        ];
+        if results.into_iter().filter(|present| *present).count() != 1 {
+            return Err(ControlFrameError::MissingControlResult);
+        }
+        if let Some(response) = &self.get_config {
+            response.validate_frame()?;
+        }
+        if let Some(response) = &self.watch_config {
+            response.validate_frame()?;
+        }
+        if let Some(response) = &self.apply_config {
+            response.validate_frame()?;
+        }
+        if let Some(response) = &self.refresh_inventory {
+            response.validate_frame()?;
+        }
+        Ok(())
+    }
+}
+
+impl ValidateControlFrame for crate::proto::node::OwnerControlError {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        if matches!(
+            crate::proto::node::OwnerControlErrorCode::try_from(self.code),
+            Err(_) | Ok(crate::proto::node::OwnerControlErrorCode::Unspecified)
+        ) {
+            return Err(ControlFrameError::MissingControlResult);
+        }
+        Ok(())
+    }
+}
+
+impl ValidateControlFrame for crate::proto::node::OwnerControlGetConfigRequest {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        validate_endpoint_id_length(self.requester_node_id.len())?;
+        validate_endpoint_id_length(self.target_node_id.len())?;
+        Ok(())
+    }
+}
+
+impl ValidateControlFrame for crate::proto::node::OwnerControlGetConfigResponse {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        self.snapshot
+            .as_ref()
+            .ok_or(ControlFrameError::MissingConfig)?
+            .validate_frame()
+    }
+}
+
+impl ValidateControlFrame for crate::proto::node::OwnerControlWatchConfigRequest {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        validate_endpoint_id_length(self.requester_node_id.len())?;
+        validate_endpoint_id_length(self.target_node_id.len())?;
+        Ok(())
+    }
+}
+
+impl ValidateControlFrame for crate::proto::node::OwnerControlWatchConfigResponse {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        let results = [
+            self.accepted.is_some(),
+            self.snapshot.is_some(),
+            self.update.is_some(),
+        ];
+        if results.into_iter().filter(|present| *present).count() != 1 {
+            return Err(ControlFrameError::MissingControlResult);
+        }
+        if let Some(accepted) = &self.accepted {
+            accepted.validate_frame()?;
+        }
+        if let Some(snapshot) = &self.snapshot {
+            snapshot.validate_frame()?;
+        }
+        if let Some(update) = &self.update {
+            update.validate_frame()?;
+        }
+        Ok(())
+    }
+}
+
+impl ValidateControlFrame for crate::proto::node::OwnerControlWatchAccepted {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        validate_endpoint_id_length(self.target_node_id.len())?;
+        Ok(())
+    }
+}
+
+impl ValidateControlFrame for crate::proto::node::OwnerControlApplyConfigRequest {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        validate_endpoint_id_length(self.requester_node_id.len())?;
+        validate_endpoint_id_length(self.target_node_id.len())?;
+        if self.config.is_none() {
+            return Err(ControlFrameError::MissingConfig);
+        }
+        Ok(())
+    }
+}
+
+impl ValidateControlFrame for crate::proto::node::OwnerControlApplyConfigResponse {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        if self.success || !self.config_hash.is_empty() {
+            validate_config_hash_length(self.config_hash.len())?;
+        }
+        Ok(())
+    }
+}
+
+impl ValidateControlFrame for crate::proto::node::OwnerControlRefreshInventoryRequest {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        validate_endpoint_id_length(self.requester_node_id.len())?;
+        validate_endpoint_id_length(self.target_node_id.len())?;
+        Ok(())
+    }
+}
+
+impl ValidateControlFrame for crate::proto::node::OwnerControlRefreshInventoryResponse {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        self.snapshot
+            .as_ref()
+            .ok_or(ControlFrameError::MissingConfig)?
+            .validate_frame()
+    }
+}
+
+impl ValidateControlFrame for crate::proto::node::OwnerControlConfigSnapshot {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        validate_endpoint_id_length(self.node_id.len())?;
+        validate_config_hash_length(self.config_hash.len())?;
+        if self.config.is_none() {
+            return Err(ControlFrameError::MissingConfig);
+        }
+        Ok(())
+    }
+}
+
+impl ValidateControlFrame for crate::proto::node::OwnerControlConfigUpdate {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        validate_endpoint_id_length(self.node_id.len())?;
+        validate_config_hash_length(self.config_hash.len())?;
+        if self.config.is_none() {
+            return Err(ControlFrameError::MissingConfig);
         }
         Ok(())
     }
@@ -1657,6 +1926,7 @@ mod tests {
                 assignment: GpuAssignment::Auto,
                 parallel: None,
             },
+            owner_control: Default::default(),
             telemetry: Default::default(),
             models: vec![ModelConfigEntry {
                 model: "Qwen3-8B.gguf".to_string(),
@@ -1714,6 +1984,7 @@ mod tests {
                 assignment: GpuAssignment::Auto,
                 parallel: None,
             },
+            owner_control: Default::default(),
             telemetry: Default::default(),
             models: vec![ModelConfigEntry {
                 model: "test.gguf".to_string(),
@@ -1741,6 +2012,7 @@ mod tests {
                 assignment: GpuAssignment::Auto,
                 parallel: None,
             },
+            owner_control: Default::default(),
             telemetry: Default::default(),
             models: vec![ModelConfigEntry {
                 model: "other.gguf".to_string(),
@@ -1771,6 +2043,7 @@ mod tests {
                 assignment: GpuAssignment::Pinned,
                 parallel: None,
             },
+            owner_control: Default::default(),
             telemetry: Default::default(),
             models: vec![ModelConfigEntry {
                 model: "Qwen3-8B-Q4_K_M".to_string(),

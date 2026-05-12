@@ -67,6 +67,10 @@ mesh-llm serve --auto --headless
   the model locally without stage traffic.
 - **Mesh routing.** Every node exposes the same `/v1` API. Requests are routed
   by the `model` field to the peer that can serve that model.
+- **Owner-control plane.** Operator config and inventory actions use an
+  additive `mesh-llm-control/1` lane with explicit endpoint bootstrap, while
+  public mesh join, gossip, routing, and inference stay on the public mesh
+  plane for mixed-version compatibility.
 - **Skippy stage splits.** Large dense models can load as package-backed layer
   stages. The coordinator plans contiguous layer ranges, starts downstream
   stages first, waits for readiness, then publishes the stage-0 route.
@@ -126,7 +130,8 @@ plus `glslc`.
 | [docs/AGENTS.md](docs/AGENTS.md) | Goose, Claude Code, OpenCode, Pi, curl, and blackboard |
 | [docs/EXO_COMPARISON.md](docs/EXO_COMPARISON.md) | Balanced comparison with Exo |
 | [docs/CLI.md](docs/CLI.md) | Command reference and JSON automation |
-| [docs/USAGE.md](docs/USAGE.md) | Longer operational usage guide |
+| [docs/USAGE.md](docs/USAGE.md) | Longer operational usage guide, runtime control, owner-control operator flows |
+| [docs/design/TESTING.md](docs/design/TESTING.md) | Testing playbook, mixed-version QA, remote deploy checks |
 | [docs/skippy/FAMILY_STATUS.md](docs/skippy/FAMILY_STATUS.md) | Certified Skippy model-family status |
 | [docs/specs/layer-package-repos.md](docs/specs/layer-package-repos.md) | Manifest and artifact format spec |
 

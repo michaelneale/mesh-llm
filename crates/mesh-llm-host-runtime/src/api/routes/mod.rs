@@ -74,6 +74,10 @@ pub(super) const DISPATCH_REQUEST: DispatchRequestFn =
                 | ("GET", "/api/runtime/endpoints")
                 | ("GET", "/api/runtime/processes")
                 | ("GET", "/api/runtime/stages")
+                | ("GET", "/api/runtime/control-bootstrap")
+                | ("POST", "/api/runtime/control/get-config")
+                | ("POST", "/api/runtime/control/refresh-inventory")
+                | ("POST", "/api/runtime/control/apply-config")
                 | ("POST", "/api/runtime/models")
                 | ("GET", "/api/events") => {
                     runtime::handle(stream, state, method, path_only, body).await?;
