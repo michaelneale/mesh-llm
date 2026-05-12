@@ -20,3 +20,7 @@ path = "src/bin/moa_test.rs"
 [[bin]]
 name = "moa-mesh"
 path = "src/bin/moa_mesh.rs"
+
+[[bin]]
+name = "moa-agent"
+path = "src/bin/moa_agent.rs"

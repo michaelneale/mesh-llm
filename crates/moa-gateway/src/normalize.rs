@@ -231,13 +231,56 @@ fn heuristic_classify(raw: &str, model: &str, role: WorkerRole, elapsed_ms: u64)
     }
 }
 
+/// Known tool names that models might reference in prose.  These are
+/// matched against the lowercased text to detect tool proposals that
+/// weren't formatted as structured output.
+const KNOWN_TOOLS: &[&str] = &[
+    "read_file",
+    "edit_file",
+    "run_command",
+    "search_code",
+    "web_search",
+    "get_weather",
+    "create_file",
+    "delete_file",
+    "list_files",
+];
+
 fn looks_like_tool_proposal(lower: &str, _raw: &str) -> bool {
-    (lower.contains("tool_call")
+    // Explicit structured markers
+    let has_structured = lower.contains("tool_call")
         || lower.contains("function_call")
         || lower.contains("i would call")
         || lower.contains("i propose calling")
-        || lower.contains("tool_proposal"))
-        && !lower.contains("i would not")
+        || lower.contains("tool_proposal");
+
+    if has_structured && !lower.contains("i would not") {
+        return true;
+    }
+
+    // Agentic patterns: model describes using a tool by name
+    let mentions_tool = KNOWN_TOOLS.iter().any(|t| lower.contains(t));
+    if mentions_tool {
+        // Must also have an action verb — not just mentioning the tool in discussion
+        let has_action = lower.contains("i'll use")
+            || lower.contains("i will use")
+            || lower.contains("let me use")
+            || lower.contains("i need to use")
+            || lower.contains("use the")
+            || lower.contains("using the")
+            || lower.contains("should use")
+            || lower.contains("call the")
+            || lower.contains("calling")
+            || lower.contains("propose")
+            || lower.contains("**tool**")
+            || lower.contains("tool:")
+            || lower.contains("identify the tool");
+        if has_action {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn looks_like_critique(lower: &str) -> bool {
@@ -269,7 +312,7 @@ fn looks_like_uncertainty(lower: &str) -> bool {
 
 /// Try to extract a tool name and arguments from messy text.
 fn extract_tool_proposal(raw: &str) -> (Option<String>, Option<Value>) {
-    // Look for function_call or tool_call JSON
+    // Strategy 1: Look for structured JSON in the text
     if let Some(json_str) = extract_json_object(raw) {
         if let Ok(obj) = serde_json::from_str::<Value>(&json_str) {
             // {"function": "name", "arguments": {...}}
@@ -287,8 +330,28 @@ fn extract_tool_proposal(raw: &str) -> (Option<String>, Option<Value>) {
                 let args = obj.get("arguments").cloned();
                 return (Some(name.to_string()), args);
             }
+            // Could be the arguments themselves (e.g. {"path": "src/auth.py"})
+            // Look for a tool name in the surrounding text
+            let lower = raw.to_lowercase();
+            for tool in KNOWN_TOOLS {
+                if lower.contains(tool) {
+                    return (Some(tool.to_string()), Some(obj));
+                }
+            }
         }
     }
+
+    // Strategy 2: Find a known tool name in prose and try to extract args
+    let lower = raw.to_lowercase();
+    for tool in KNOWN_TOOLS {
+        if lower.contains(tool) {
+            // Try to find JSON arguments nearby
+            let args =
+                extract_json_object(raw).and_then(|s| serde_json::from_str::<Value>(&s).ok());
+            return (Some(tool.to_string()), args);
+        }
+    }
+
     (None, None)
 }
 
@@ -396,6 +459,24 @@ mod tests {
         let raw = "<think>Let me think about this...</think>The answer is 42.";
         let out = normalize_worker_output(raw, "test-model", WorkerRole::Strong, 100);
         assert_eq!(out.payload, "The answer is 42.");
+    }
+
+    #[test]
+    fn prose_tool_proposal() {
+        // Small models often describe tool usage in prose instead of structured output
+        let raw = "I'll use the read_file tool to examine the code:\n```json\n{\"path\": \"src/auth.py\"}\n```";
+        let out = normalize_worker_output(raw, "small-model", WorkerRole::Fast, 100);
+        assert_eq!(out.kind, OutputKind::ToolProposal);
+        assert_eq!(out.tool_name.as_deref(), Some("read_file"));
+    }
+
+    #[test]
+    fn prose_edit_proposal() {
+        let raw = "I need to use the edit_file tool to fix this bug. The arguments would be:\n{\"path\": \"src/auth.py\", \"old_text\": \"== password\", \"new_text\": \"== hash(password)\"}";
+        let out = normalize_worker_output(raw, "qwen3:4b", WorkerRole::Specialist, 200);
+        assert_eq!(out.kind, OutputKind::ToolProposal);
+        assert_eq!(out.tool_name.as_deref(), Some("edit_file"));
+        assert!(out.tool_arguments.is_some());
     }
 
     #[test]
