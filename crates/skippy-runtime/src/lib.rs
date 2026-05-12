@@ -316,7 +316,7 @@ impl NativeLogAggregator {
             self.record_tensor_group(tensor_type, count);
             events.extend(
                 self.tensor_progress
-                    .advance(count, "model", "tensor types", "types"),
+                    .advance(count, "model", "tensors", "tensors"),
             );
             if self.tensor_progress.is_complete() {
                 events.extend(self.flush_tensor_group_summary());
@@ -3486,12 +3486,21 @@ mod tests {
     use tokio::sync::mpsc::error::TryRecvError;
 
     use super::{
-        flush_native_log_writer, parse_cache_type, redirect_native_logs_to_file,
-        register_filtered_native_logs, restore_native_logs, set_filtered_native_logs_enabled,
-        unregister_filtered_native_logs, write_native_log, ChatTemplateMessage, FlashAttentionType,
-        ModelInfo, NativeLogAggregator, NativeLogEvent, RuntimeConfig, RuntimeLoadMode, StageModel,
-        TensorRole, GGML_TYPE_F16, GGML_TYPE_Q4_0, GGML_TYPE_Q8_0,
+        flush_native_log_writer, parse_cache_type, parse_layer_assign_index,
+        redirect_native_logs_to_file, register_filtered_native_logs, restore_native_logs,
+        set_filtered_native_logs_enabled, unregister_filtered_native_logs, write_native_log,
+        ChatTemplateMessage, FlashAttentionType, ModelInfo, NativeLogAggregator, NativeLogEvent,
+        RuntimeConfig, RuntimeLoadMode, StageModel, TensorRole, GGML_TYPE_F16, GGML_TYPE_Q4_0,
+        GGML_TYPE_Q8_0,
     };
+
+    static NATIVE_LOG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn native_log_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        NATIVE_LOG_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     fn correctness_model() -> Option<PathBuf> {
         env::var_os("SKIPPY_CORRECTNESS_MODEL").map(PathBuf::from)
@@ -3566,6 +3575,8 @@ mod tests {
 
     #[test]
     fn native_log_writer_flushes_newline_and_partial_line() -> anyhow::Result<()> {
+        let _native_log_guard = native_log_test_guard();
+
         struct RestoreNativeLogs;
 
         impl Drop for RestoreNativeLogs {
@@ -3899,6 +3910,8 @@ mod tests {
 
     #[test]
     fn write_native_log_respects_forwarding_flag() {
+        let _native_log_guard = native_log_test_guard();
+
         struct ResetNativeLogForwarding;
 
         impl Drop for ResetNativeLogForwarding {
@@ -3933,6 +3946,8 @@ mod tests {
 
     #[test]
     fn register_filtered_native_logs_replaces_receiver_cleanly() {
+        let _native_log_guard = native_log_test_guard();
+
         struct ResetNativeLogForwarding;
 
         impl Drop for ResetNativeLogForwarding {
@@ -4012,16 +4027,14 @@ mod tests {
         aggregator.process_line("llm_load_print_meta: version = 3");
 
         let e0 = aggregator.process_line("load_tensors: layer   0 assigned to device CUDA0");
-        assert!(
-            e0.is_empty(),
-            "layer 0 of 4 = 25%, not a 10-multiple boundary yet"
-        );
+        assert!(e0.iter().any(|event| event.message.contains("layers 10%")));
+        assert!(e0.iter().any(|event| event.message.contains("layers 20%")));
 
         let e1 = aggregator.process_line("load_tensors: layer   1 assigned to device CUDA0");
-        assert!(e1.is_empty(), "50% would emit at 50 not 20");
+        assert!(e1.iter().any(|event| event.message.contains("layers 50%")));
 
         let e2 = aggregator.process_line("load_tensors: layer   2 assigned to device CUDA0");
-        assert!(e2.is_empty());
+        assert!(e2.iter().any(|event| event.message.contains("layers 70%")));
 
         let e3 = aggregator.process_line("load_tensors: layer   3 assigned to device CUDA0");
         let pcts: Vec<&str> = e3

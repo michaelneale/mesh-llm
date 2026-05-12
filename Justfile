@@ -409,7 +409,10 @@ test-all: _lld-cargo-config
     cargo clippy -p mesh-llm -- -D warnings
     echo ""
     echo "=== 3/7 Rust tests ==="
+    echo "--- mesh-llm ---"
     cargo test -p mesh-llm
+    echo "--- skippy-runtime lib ---"
+    cargo test -p skippy-runtime --lib
     echo ""
     echo "=== 4/7 ESLint + Prettier ==="
     (cd "{{ ui_dir }}" && pnpm run lint)
