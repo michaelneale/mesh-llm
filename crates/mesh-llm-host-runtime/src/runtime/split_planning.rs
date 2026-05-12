@@ -274,11 +274,11 @@ fn split_candidate_bytes_per_layer(
     weight_per_layer: u64,
     kv_per_layer: u64,
     context_length: u32,
-    parallel_lanes: usize,
+    _parallel_lanes: usize,
 ) -> u64 {
-    let kv_bytes = u128::from(kv_per_layer)
-        .saturating_mul(u128::from(context_length))
-        .saturating_mul(parallel_lanes as u128);
+    // KV cache is a single unified allocation shared across all parallel
+    // lanes with eviction — lane count does not multiply KV memory cost.
+    let kv_bytes = u128::from(kv_per_layer).saturating_mul(u128::from(context_length));
     let total = u128::from(weight_per_layer).saturating_add(kv_bytes);
     total.min(u128::from(u64::MAX)) as u64
 }
