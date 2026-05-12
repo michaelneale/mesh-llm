@@ -611,6 +611,7 @@ async fn real_multimodal_split_smoke_when_fixture_is_set() -> Result<()> {
             prefill_chunk_policy: PrefillChunkPolicy::Fixed { chunk_size: 64 },
             activation_width: fixture.activation_width,
             downstream_wire_condition: WireCondition::new(0.0, None)?,
+            prefill_reply_credit_limit: 0,
             lane_pool: Some(lane_pool),
         },
         draft: None,

@@ -248,6 +248,7 @@ fn run_binary_stage(options: BinaryStageOptions, shutdown: Arc<AtomicBool>) -> R
                 draft_n_gpu_layers: openai_options.draft_n_gpu_layers,
                 activation_width,
                 wire_dtype,
+                reply_credit_limit,
                 downstream_connect_timeout_secs,
                 downstream_wire_condition,
                 telemetry: openai_telemetry,
