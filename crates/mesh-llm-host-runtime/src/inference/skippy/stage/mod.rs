@@ -385,7 +385,7 @@ impl StageControlState {
             telemetry_level: TelemetryLevel::Off,
             max_inflight: effective_load.lane_count as usize,
             reply_credit_limit: None,
-            async_prefill_forward: false,
+            async_prefill_forward: true,
             downstream_wire_condition: WireCondition::new(0.0, None)?,
             downstream_connect_timeout_secs: 30,
             openai: None,

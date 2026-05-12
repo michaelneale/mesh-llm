@@ -59,9 +59,14 @@ pub struct ServeBinaryArgs {
     pub reply_credit_limit: Option<usize>,
     #[arg(
         long,
-        help = "Forward eligible non-final prefill activation frames on a bounded background writer."
+        help = "Forward eligible non-final prefill activation frames on a bounded background writer. Enabled by default."
     )]
     pub async_prefill_forward: bool,
+    #[arg(
+        long,
+        help = "Disable async forwarding for eligible non-final prefill activation frames."
+    )]
+    pub no_async_prefill_forward: bool,
     #[arg(
         long,
         default_value_t = 0.0,

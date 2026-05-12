@@ -337,10 +337,10 @@ large downstream write before the next stage can start. With chunking and credit
 the chain behaves more like a wavefront: while `stage-1` consumes chunk `i`,
 `stage-0` can be computing chunk `i+1`, and a writer thread can be draining the
 activation frame for chunk `i` to the next host. That overlap can reduce TTFT
-when the network and receiver can keep up, but it is topology dependent:
-`--async-prefill-forward` remains opt-in, and benchmark notes in
-[docs/EXPERIMENTS.md](docs/EXPERIMENTS.md) should be checked before promoting a
-new default.
+when the network and receiver can keep up. `serve-binary`, mesh-launched
+stages, and the WAN lab enable `--async-prefill-forward` by default; use
+`--no-async-prefill-forward` or `ASYNC_PREFILL_FORWARD=0` when comparing against
+the synchronous prefill path.
 
 ```mermaid
 pie title Reference Mixed-192 Data Volume
