@@ -86,9 +86,9 @@ This is a single-node strategy. The goal is running e.g. Qwen3.5-397B-A17B (~209
 
 Today mesh-llm has two MoE modes: **solo** (model fits in memory, run it whole) and **split** (model doesn't fit, shard experts across nodes). SSD streaming would be a third mode: model doesn't fit in memory but *does* fit on one node's SSD. No mesh coordination, no cross-node traffic, no splitting — just one machine streaming experts from disk.
 
-**Plan:** Use flash-moe directly as an alternative backend, not hack SSD streaming into llama.cpp. llama.cpp's `ggml_mul_mat_id` assumes all expert weights resident in one contiguous tensor — changing that is deep surgery across ggml, the Metal backend, and the model loader. Flash-moe is a working engine. Mesh-llm spawns it like it spawns llama-server — process management + HTTP wrapper.
+**Status:** Initial mesh-llm integration exists as a built-in `flash-moe` plugin adapter. Mesh-llm can spawn a local Flash-MoE `infer --serve` process or attach an already-running OpenAI-compatible `/v1` endpoint, then route to it through the plugin inference path. The adapter intentionally does not vendor Flash-MoE, automate Flash-MoE installation, or prepare SSD-streaming artifacts.
 
-Only supports Qwen3.5-397B for now (hardcoded architecture). That's fine — it's the model we want to run.
+Flash-MoE only supports Qwen3.5-397B for now (hardcoded architecture). That's fine for the target model. Remaining mesh-llm work is install/artifact-prep documentation, real-machine smoke coverage for the target path, and revisiting out-of-tree adapter packaging once the plugin SDK and crates.io surface are stable enough.
 
 ## Blackboard ✅
 

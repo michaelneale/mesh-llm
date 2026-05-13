@@ -50,6 +50,7 @@ use mesh_llm_plugin::MeshVisibility;
 
 pub const BLACKBOARD_PLUGIN_ID: &str = "blackboard";
 pub const BLOBSTORE_PLUGIN_ID: &str = "blobstore";
+pub const FLASH_MOE_PLUGIN_ID: &str = "flash-moe";
 pub const OPENAI_ENDPOINT_PLUGIN_ID: &str = "openai-endpoint";
 pub const TELEMETRY_PLUGIN_ID: &str = "telemetry";
 pub const TELEMETRY_CAPABILITY: &str = "telemetry.metrics.v1";
@@ -1718,6 +1719,7 @@ pub async fn run_plugin_process(name: String) -> Result<()> {
     match name.as_str() {
         BLACKBOARD_PLUGIN_ID => crate::plugins::blackboard::run_plugin(name).await,
         BLOBSTORE_PLUGIN_ID => crate::plugins::blobstore::run_plugin(name).await,
+        FLASH_MOE_PLUGIN_ID => crate::plugins::flash_moe::run_plugin(name).await,
         OPENAI_ENDPOINT_PLUGIN_ID => crate::plugins::openai_endpoint::run_plugin(name).await,
         TELEMETRY_PLUGIN_ID => crate::plugins::telemetry::run_plugin(name).await,
         _ => bail!("Unknown built-in plugin '{}'", name),
@@ -1920,6 +1922,112 @@ mod tests {
         };
         let result = resolve_plugins(&config, private_host_mode());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn flash_moe_can_be_enabled_with_managed_command() {
+        let config = MeshConfig {
+            plugins: vec![PluginConfigEntry {
+                name: FLASH_MOE_PLUGIN_ID.into(),
+                enabled: Some(true),
+                command: Some(" /opt/flash-moe/infer ".into()),
+                args: vec![
+                    "--model".into(),
+                    "/models/qwen3.5".into(),
+                    "--weights".into(),
+                    "/models/experts.bin".into(),
+                ],
+                url: None,
+            }],
+            ..MeshConfig::default()
+        };
+
+        let resolved = resolve_plugins(&config, private_host_mode()).unwrap();
+
+        assert_eq!(resolved.externals.len(), 4);
+        assert_eq!(resolved.externals[0].name, BLACKBOARD_PLUGIN_ID);
+        assert_eq!(resolved.externals[1].name, TELEMETRY_PLUGIN_ID);
+        assert_eq!(resolved.externals[2].name, FLASH_MOE_PLUGIN_ID);
+        assert_eq!(resolved.externals[3].name, BLOBSTORE_PLUGIN_ID);
+        let spec = &resolved.externals[2];
+        assert!(spec.args.contains(&"--plugin".to_string()));
+        assert!(spec.args.contains(&FLASH_MOE_PLUGIN_ID.to_string()));
+        assert_eq!(
+            spec.env
+                .get("MESH_LLM_FLASH_MOE_COMMAND")
+                .map(String::as_str),
+            Some("/opt/flash-moe/infer")
+        );
+        assert_eq!(
+            spec.env
+                .get("MESH_LLM_FLASH_MOE_ARGS_JSON")
+                .map(String::as_str),
+            Some(r#"["--model","/models/qwen3.5","--weights","/models/experts.bin"]"#)
+        );
+        assert!(!spec.env.contains_key("MESH_LLM_FLASH_MOE_URL"));
+        assert_eq!(spec.url, None);
+    }
+
+    #[test]
+    fn flash_moe_can_attach_existing_endpoint() {
+        let config = MeshConfig {
+            plugins: vec![PluginConfigEntry {
+                name: FLASH_MOE_PLUGIN_ID.into(),
+                enabled: Some(true),
+                command: None,
+                args: Vec::new(),
+                url: Some(" http://127.0.0.1:8000/v1/ ".into()),
+            }],
+            ..MeshConfig::default()
+        };
+
+        let resolved = resolve_plugins(&config, private_host_mode()).unwrap();
+        let spec = resolved
+            .externals
+            .iter()
+            .find(|spec| spec.name == FLASH_MOE_PLUGIN_ID)
+            .expect("flash-moe spec");
+
+        assert_eq!(
+            spec.env.get("MESH_LLM_FLASH_MOE_URL").map(String::as_str),
+            Some("http://127.0.0.1:8000/v1/")
+        );
+        assert!(!spec.env.contains_key("MESH_LLM_FLASH_MOE_COMMAND"));
+        assert!(spec.args.contains(&FLASH_MOE_PLUGIN_ID.to_string()));
+    }
+
+    #[test]
+    fn flash_moe_rejects_missing_command_or_url() {
+        let config = MeshConfig {
+            plugins: vec![PluginConfigEntry {
+                name: FLASH_MOE_PLUGIN_ID.into(),
+                enabled: Some(true),
+                command: None,
+                args: Vec::new(),
+                url: None,
+            }],
+            ..MeshConfig::default()
+        };
+
+        let err = resolve_plugins(&config, private_host_mode()).unwrap_err();
+        assert!(err.to_string().contains("requires `command` or `url`"));
+    }
+
+    #[test]
+    fn flash_moe_rejects_user_supplied_serve_arg() {
+        let config = MeshConfig {
+            plugins: vec![PluginConfigEntry {
+                name: FLASH_MOE_PLUGIN_ID.into(),
+                enabled: Some(true),
+                command: Some("/opt/flash-moe/infer".into()),
+                args: vec!["--serve".into(), "9000".into()],
+                url: None,
+            }],
+            ..MeshConfig::default()
+        };
+
+        let err = resolve_plugins(&config, private_host_mode()).unwrap_err();
+        assert!(err.to_string().contains("owns the flash-moe `--serve`"));
     }
 
     #[test]

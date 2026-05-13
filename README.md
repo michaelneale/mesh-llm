@@ -58,6 +58,7 @@ mesh-llm serve --auto --headless
 | Join by invite token | `mesh-llm serve --join <token>` | [docs/MESHES.md](docs/MESHES.md) |
 | Run an API-only client | `mesh-llm client --auto` | [docs/MESHES.md](docs/MESHES.md) |
 | Run a big model with splits | `mesh-llm serve --model hf://meshllm/<repo>@<rev> --split` | [docs/SKIPPY_SPLITS.md](docs/SKIPPY_SPLITS.md) |
+| Attach a Flash-MoE SSD backend | `mesh-llm serve` with `[[plugin]] name = "flash-moe"` | [docs/plugins/flash-moe.md](docs/plugins/flash-moe.md) |
 | Use Goose, OpenCode, Claude Code, or Pi | `mesh-llm goose`, `mesh-llm opencode`, `mesh-llm claude`, `mesh-llm pi` | [docs/AGENTS.md](docs/AGENTS.md) |
 | Build or contribute | `just build` | [CONTRIBUTING.md](CONTRIBUTING.md) |
 
@@ -132,6 +133,7 @@ plus `glslc`.
 | [docs/CLI.md](docs/CLI.md) | Command reference and JSON automation |
 | [docs/USAGE.md](docs/USAGE.md) | Longer operational usage guide, runtime control, owner-control operator flows |
 | [docs/design/TESTING.md](docs/design/TESTING.md) | Testing playbook, mixed-version QA, remote deploy checks |
+| [docs/plugins/flash-moe.md](docs/plugins/flash-moe.md) | Optional Flash-MoE SSD expert streaming backend setup |
 | [docs/skippy/FAMILY_STATUS.md](docs/skippy/FAMILY_STATUS.md) | Certified Skippy model-family status |
 | [docs/specs/layer-package-repos.md](docs/specs/layer-package-repos.md) | Manifest and artifact format spec |
 

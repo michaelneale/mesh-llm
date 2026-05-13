@@ -8,6 +8,7 @@ As implementation lands, this document should be updated to match the intended e
 
 Plugin-specific documentation:
 
+- [Flash-MoE](flash-moe.md) - built-in OpenAI-compatible backend adapter for single-node SSD expert streaming
 - [Telemetry](telemetry.md) - built-in OTLP metrics-only runtime and routing telemetry
 
 The main goals are:
