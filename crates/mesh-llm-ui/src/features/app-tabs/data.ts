@@ -999,10 +999,7 @@ export const SHELL_HARNESS: ShellHarnessData = {
   productName: 'mesh-llm',
   brand: { primary: 'mesh', accent: 'llm' },
   footerLinks: [
-    { label: 'Docs', href: 'https://docs.meshllm.cloud/' },
-    { label: 'Agents', href: 'https://docs.meshllm.cloud/agents' },
-    { label: 'Models', href: 'https://docs.meshllm.cloud/models' },
-    { label: 'Common patterns', href: 'https://docs.meshllm.cloud/patterns' }
+    { label: 'Docs', href: 'https://docs.meshllm.cloud/' }
   ],
   footerTrailingLink: { label: 'GitHub', href: 'https://github.com/Mesh-LLM/mesh-llm' },
   topNavApiAccessLinks: [

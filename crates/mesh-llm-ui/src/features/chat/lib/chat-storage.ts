@@ -48,10 +48,7 @@ export function findLastUserMessageIndex(messages: ThreadMessage[] | ChatMessage
   return -1
 }
 
-export async function loadPersistedChatState(
-  _reader?: () => Promise<ChatState | null>
-): Promise<ChatState | undefined> {
+export async function loadPersistedChatState(): Promise<ChatState | undefined> {
   const { loadChatState: load } = await import('@/features/chat/api/chat-storage')
-  const state = await load('live')
-  return state
+  return await load('live')
 }

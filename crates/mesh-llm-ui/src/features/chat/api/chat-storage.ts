@@ -1,4 +1,4 @@
-import { openDB, type DBSchema } from 'idb'
+import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
 import type { ConversationGroup, ThreadMessage } from '@/features/app-tabs/types'
 import type { ChatConversation } from '@/features/chat/lib/chat-types'
 
@@ -35,7 +35,7 @@ interface ChatDB extends DBSchema {
 
 const CHAT_STATE_SCHEMA_VERSION = 1
 const DB_NAME = 'mesh-llm-chat-db'
-const DB_VERSION = 1
+const DB_VERSION = 2
 const STORE_NAME = 'state'
 const STATE_KEYS: Record<ChatStorageScope, string> = {
   harness: 'chat-state:harness',
@@ -45,6 +45,12 @@ const LOCAL_STORAGE_KEYS: Record<ChatStorageScope, string> = {
   harness: 'mesh-llm.chat-state.harness',
   live: 'mesh-llm.chat-state.live'
 }
+/**
+ * Key used by the v1 schema (old UI) to store chat state.
+ * The v1 store used `keyPath: "id"` and stored a wrapper object
+ * `{ id: "chat-state", state: <ChatState>, updatedAt: ... }`.
+ */
+const V1_STATE_KEY = 'chat-state'
 export const MAX_CHAT_CONVERSATIONS = 80
 export const MAX_CHAT_THREAD_MESSAGES = 120
 export const MAX_CHAT_MESSAGE_BODY_CHARS = 20_000
@@ -358,7 +364,6 @@ function saveLocalChatState(scope: ChatStorageScope, envelope: StoredChatStateEn
 function clearLocalChatState(scope: ChatStorageScope): void {
   const storage = localChatStorage()
   if (!storage) return
-
   try {
     storage.removeItem(LOCAL_STORAGE_KEYS[scope])
   } catch (error) {
@@ -366,14 +371,101 @@ function clearLocalChatState(scope: ChatStorageScope): void {
   }
 }
 
-async function openChatDB() {
-  return openDB<ChatDB>(DB_NAME, DB_VERSION, {
-    upgrade(db) {
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME)
+function v1SavedAt(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value !== 'string') return undefined
+
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+async function readV1ChatState(): Promise<StoredChatStateEnvelope | undefined> {
+  if (typeof indexedDB === 'undefined') return undefined
+
+  return new Promise((resolve) => {
+    let db: IDBDatabase | undefined
+    const openRequest = indexedDB.open(DB_NAME)
+
+    openRequest.onerror = () => resolve(undefined)
+    openRequest.onupgradeneeded = () => {
+      openRequest.transaction?.abort()
+    }
+    openRequest.onsuccess = () => {
+      db = openRequest.result
+      try {
+        if (db.version >= DB_VERSION) {
+          db.close()
+          resolve(undefined)
+          return
+        }
+        if (!db.objectStoreNames.contains(STORE_NAME)) {
+          db.close()
+          resolve(undefined)
+          return
+        }
+
+        const tx = db.transaction(STORE_NAME, 'readonly')
+        const store = tx.objectStore(STORE_NAME)
+        const getRequest = store.get(V1_STATE_KEY)
+
+        getRequest.onsuccess = () => {
+          db?.close()
+          const record: unknown = getRequest.result
+          if (!isRecord(record) || !isChatState(record.state)) {
+            resolve(undefined)
+            return
+          }
+
+          resolve(createStoredChatStateEnvelope(record.state, v1SavedAt(record.updatedAt)))
+        }
+        getRequest.onerror = () => {
+          db?.close()
+          resolve(undefined)
+        }
+      } catch {
+        db?.close()
+        resolve(undefined)
       }
     }
   })
+}
+
+let openPromise: Promise<IDBPDatabase<ChatDB>> | null = null
+
+async function openChatDB(): Promise<IDBPDatabase<ChatDB>> {
+  if (!openPromise) {
+    openPromise = openChatDBOnce().catch((error) => {
+      openPromise = null
+      throw error
+    })
+  }
+  return openPromise
+}
+
+async function openChatDBOnce(): Promise<IDBPDatabase<ChatDB>> {
+  const migratedState = await readV1ChatState()
+
+  const db = await openDB<ChatDB>(DB_NAME, DB_VERSION, {
+    upgrade(database, oldVersion) {
+      if (oldVersion < 2 && database.objectStoreNames.contains(STORE_NAME)) {
+        database.deleteObjectStore(STORE_NAME)
+      }
+      if (!database.objectStoreNames.contains(STORE_NAME)) {
+        database.createObjectStore(STORE_NAME)
+      }
+    }
+  })
+
+  if (migratedState) {
+    try {
+      await db.put(STORE_NAME, migratedState, STATE_KEYS.live)
+      saveLocalChatState('live', migratedState)
+    } catch (error) {
+      void error
+    }
+  }
+
+  return db
 }
 
 export async function loadChatState(scope: ChatStorageScope): Promise<ChatState | undefined> {
@@ -389,11 +481,9 @@ export async function loadChatState(scope: ChatStorageScope): Promise<ChatState 
       !selectedState.isRecovery &&
       (!indexedState || localState.savedAt > indexedState.savedAt)
     ) {
-      queueChatStateWrite(
-        scope,
-        createStoredChatStateEnvelope(selectedState.state, selectedState.savedAt),
-        { onlyIfNewer: true }
-      )
+      queueChatStateWrite(scope, createStoredChatStateEnvelope(selectedState.state, selectedState.savedAt), {
+        onlyIfNewer: true
+      })
     }
 
     return selectedState?.state

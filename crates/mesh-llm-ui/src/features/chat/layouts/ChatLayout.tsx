@@ -195,7 +195,7 @@ export function ChatLayout({
           </div>
         </div>
       </section>
-      {!hideSidebar && !showDesktopSidebar ? (
+      {!showDesktopSidebar ? (
         <Popover.Root>
           <Popover.Trigger asChild>
             <button
