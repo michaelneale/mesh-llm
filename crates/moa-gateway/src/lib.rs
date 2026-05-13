@@ -175,6 +175,17 @@ impl Gateway {
 
     /// Full fan-out: dispatch to all workers, gather, arbitrate.
     async fn handle_query(&mut self, has_tools: bool, start: Instant) -> TurnResult {
+        // ── Passthrough mode ─────────────────────────────────────
+        // When tools are present (agentic use), pass the original messages
+        // to workers and return the first successful raw response.  The MoA
+        // envelope (normalize → arbitrate → reduce) actively harms tool-use
+        // because it replaces the client's system prompt and tools, confusing
+        // small models.  In passthrough mode MoA still provides redundancy:
+        // if the first worker fails, the next one answers.
+        if has_tools {
+            return self.handle_passthrough(start).await;
+        }
+
         let assignments = worker::assign_roles(&self.config.endpoints, has_tools);
 
         tracing::info!(
@@ -235,6 +246,105 @@ impl Gateway {
             response_body,
             worker_summaries: summaries,
             reducer_used,
+            elapsed_ms: start.elapsed().as_millis() as u64,
+        }
+    }
+
+    /// Passthrough mode: fan out with original messages, return the first
+    /// successful raw response.  Used when tools are present so native
+    /// tool_call format is preserved.
+    async fn handle_passthrough(&mut self, start: Instant) -> TurnResult {
+        let messages = self.session.all_messages();
+        let tools = self.session.tools().cloned();
+        let mut join_set = tokio::task::JoinSet::new();
+
+        tracing::info!(
+            "moa: passthrough mode (tools present), {} endpoints",
+            self.config.endpoints.len(),
+        );
+
+        for endpoint in &self.config.endpoints {
+            let ep = endpoint.clone();
+            let msgs = messages.clone();
+            let t = tools.clone();
+            let http = self.http.clone();
+            let timeout = self.config.worker_timeout;
+
+            join_set.spawn(async move {
+                let t0 = Instant::now();
+                let result =
+                    worker::call_raw_with_tools(&http, &ep, &msgs, t.as_ref(), 4096, timeout).await;
+                let elapsed = t0.elapsed().as_millis() as u64;
+                (ep.model.clone(), result, elapsed)
+            });
+        }
+
+        let mut summaries = Vec::new();
+        let mut best_response: Option<Value> = None;
+
+        while let Some(join_result) = join_set.join_next().await {
+            match join_result {
+                Ok((model, Ok(resp), elapsed)) => {
+                    tracing::info!(
+                        "moa: passthrough worker {} succeeded ({}ms)",
+                        model,
+                        elapsed,
+                    );
+                    summaries.push(WorkerSummary {
+                        model,
+                        role: WorkerRole::Generalist,
+                        succeeded: true,
+                        elapsed_ms: elapsed,
+                        output_kind: None,
+                        confidence: None,
+                    });
+                    // Take the first successful response
+                    if best_response.is_none() {
+                        best_response = Some(resp);
+                    }
+                }
+                Ok((model, Err(e), elapsed)) => {
+                    tracing::warn!(
+                        "moa: passthrough worker {} failed ({}ms): {}",
+                        model,
+                        elapsed,
+                        e,
+                    );
+                    summaries.push(WorkerSummary {
+                        model,
+                        role: WorkerRole::Generalist,
+                        succeeded: false,
+                        elapsed_ms: elapsed,
+                        output_kind: None,
+                        confidence: None,
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!("moa: passthrough task panicked: {e}");
+                }
+            }
+        }
+
+        let response_body =
+            best_response.unwrap_or_else(|| error_response("All MoA workers failed"));
+
+        // Clean up the passthrough response:
+        // - Rewrite model field to "moa"
+        // - Strip <think>...</think> tags from content
+        let mut response_body = response_body;
+        if let Some(obj) = response_body.as_object_mut() {
+            obj.insert("model".to_string(), json!("moa"));
+        }
+        clean_passthrough_content(&mut response_body);
+
+        self.session.record_assistant_response(&response_body);
+        let outcome = extract_turn_outcome(&response_body);
+        self.session.record_turn_outcome(&outcome);
+
+        TurnResult {
+            response_body,
+            worker_summaries: summaries,
+            reducer_used: false,
             elapsed_ms: start.elapsed().as_millis() as u64,
         }
     }
@@ -595,6 +705,22 @@ pub async fn discover_endpoints(base_url: &str) -> Result<Vec<Endpoint>, String>
         });
     }
     Ok(endpoints)
+}
+
+/// Clean up a passthrough response: strip think tags from content,
+/// remove stray KV envelope lines (kind:/confidence:/payload:).
+fn clean_passthrough_content(response: &mut Value) {
+    if let Some(content) = response
+        .pointer_mut("/choices/0/message/content")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+    {
+        let cleaned = normalize::strip_passthrough_content(&content);
+        if let Some(msg) = response.pointer_mut("/choices/0/message") {
+            msg.as_object_mut()
+                .map(|o| o.insert("content".to_string(), json!(cleaned)));
+        }
+    }
 }
 
 fn short_id() -> String {

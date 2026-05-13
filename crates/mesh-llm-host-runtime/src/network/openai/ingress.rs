@@ -64,6 +64,11 @@ pub(crate) async fn api_proxy(
                         }
                         models.sort();
                         models.dedup();
+                        // Offer "moa" virtual model when ≥2 distinct models
+                        // are available for mixture-of-agents fan-out.
+                        if models.len() >= 2 && !models.contains(&"moa".to_string()) {
+                            models.push("moa".to_string());
+                        }
                         let descriptors = node.served_model_descriptors().await;
                         let _ = proxy::send_models_list_with_descriptors(
                             tcp_stream,
@@ -242,6 +247,51 @@ pub(crate) async fn api_proxy(
                     if let Some(ref name) = effective_model {
                         node.record_request(name);
                     }
+
+                    // ── MoA intercept ─────────────────────────────────
+                    // When model == "moa", fan out to all available models
+                    // via the MoA gateway and return the arbitrated result.
+                    // Uses the `callable` list which includes both local
+                    // targets and mesh-served models.
+                    if effective_model.as_deref() == Some("moa") {
+                        request.ensure_body_json();
+                        if let Some(body_json) = request.body_json.clone() {
+                            let moa_models: Vec<String> = callable
+                                .iter()
+                                .filter(|m| m.as_str() != "moa")
+                                .cloned()
+                                .collect();
+                            if moa_models.len() >= 2 {
+                                // Strip stream flag — MoA workers are non-streaming;
+                                // we synthesize SSE frames from the final response
+                                // when the client asked for streaming.
+                                let was_streaming = body_json
+                                    .get("stream")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false);
+                                let mut moa_body = body_json;
+                                moa_body.as_object_mut().map(|o| o.remove("stream"));
+
+                                let moa_result =
+                                    handle_moa_request(port, &moa_models, moa_body).await;
+
+                                if was_streaming {
+                                    let _ = send_moa_as_sse(tcp_stream, &moa_result).await;
+                                } else {
+                                    let _ = proxy::send_json_ok(tcp_stream, &moa_result).await;
+                                }
+                                return;
+                            }
+                        }
+                        // Fallback: not enough models or no body
+                        let _ = proxy::send_503(
+                            tcp_stream,
+                            "MoA requires ≥2 models available in the mesh",
+                        )
+                        .await;
+                        return;
+                    }
+                    // ── end MoA ──────────────────────────────────────
 
                     let use_pipeline = classification
                         .as_ref()
@@ -509,6 +559,167 @@ fn has_available_candidates(targets: &election::ModelTargets, model: &str) -> bo
         .candidates(model)
         .iter()
         .any(|target| !matches!(target, election::InferenceTarget::None))
+}
+
+/// Wrap a completed MoA chat-completion response as SSE frames so streaming
+/// clients (like Goose) can consume it.  Emits one delta chunk with the full
+/// content, then a `finish_reason: stop` chunk, then `[DONE]`.
+async fn send_moa_as_sse(
+    mut stream: tokio::net::TcpStream,
+    response: &serde_json::Value,
+) -> std::io::Result<()> {
+    use tokio::io::AsyncWriteExt;
+
+    let header = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
+    stream.write_all(header.as_bytes()).await?;
+
+    let id = response
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("chatcmpl-moa");
+    let model = response
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("moa");
+    let raw_content = response
+        .pointer("/choices/0/message/content")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    // Strip <think>...</think> tags so streaming clients get clean content
+    let content = strip_think_from_content(raw_content);
+
+    // Check if this is a tool_calls response
+    let tool_calls = response
+        .pointer("/choices/0/message/tool_calls")
+        .and_then(|v| v.as_array())
+        .cloned();
+
+    let finish_reason = if tool_calls.is_some() {
+        "tool_calls"
+    } else {
+        "stop"
+    };
+
+    // Content or tool_calls chunk
+    let delta = if let Some(ref tcs) = tool_calls {
+        // For tool_calls, emit them in the delta
+        serde_json::json!({
+            "role": "assistant",
+            "tool_calls": tcs.iter().enumerate().map(|(i, tc)| {
+                serde_json::json!({
+                    "index": i,
+                    "id": tc.get("id").and_then(|v| v.as_str()).unwrap_or("call_0"),
+                    "type": "function",
+                    "function": tc.get("function").cloned().unwrap_or(serde_json::json!({})),
+                })
+            }).collect::<Vec<_>>()
+        })
+    } else {
+        serde_json::json!({ "role": "assistant", "content": content })
+    };
+
+    let chunk = serde_json::json!({
+        "id": id,
+        "object": "chat.completion.chunk",
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "delta": delta,
+            "finish_reason": null,
+        }]
+    });
+    let data = format!("data: {}\n\n", chunk);
+    let framed = format!("{:x}\r\n{}\r\n", data.len(), data);
+    stream.write_all(framed.as_bytes()).await?;
+
+    // Stop chunk
+    let stop = serde_json::json!({
+        "id": id,
+        "object": "chat.completion.chunk",
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "delta": {},
+            "finish_reason": finish_reason,
+        }]
+    });
+    let data = format!("data: {}\n\n", stop);
+    let framed = format!("{:x}\r\n{}\r\n", data.len(), data);
+    stream.write_all(framed.as_bytes()).await?;
+
+    // Done
+    let done = "data: [DONE]\n\n";
+    let framed = format!("{:x}\r\n{}\r\n", done.len(), done);
+    stream.write_all(framed.as_bytes()).await?;
+
+    // Terminating chunk
+    stream.write_all(b"0\r\n\r\n").await?;
+    stream.shutdown().await?;
+    Ok(())
+}
+
+/// Strip `<think>...</think>` tags and orphan `</think>` from content.
+fn strip_think_from_content(text: &str) -> String {
+    let mut result = text.to_string();
+    while let Some(start) = result.find("<think>") {
+        if let Some(end) = result[start..].find("</think>") {
+            result = format!(
+                "{}{}",
+                &result[..start],
+                &result[start + end + "</think>".len()..]
+            );
+        } else {
+            result = result[..start].to_string();
+            break;
+        }
+    }
+    result = result.replace("</think>", "");
+    result.trim().to_string()
+}
+
+/// Handle a MoA (mixture-of-agents) request by fanning out to all available
+/// models through the local API proxy and arbitrating the responses.
+///
+/// Each worker endpoint points back at `localhost:{api_port}/v1` with a
+/// different model name — the existing proxy handles routing each one to
+/// the correct local or remote backend.  This avoids duplicating any
+/// routing/tunnel logic.
+async fn handle_moa_request(
+    api_port: u16,
+    model_names: &[String],
+    body: serde_json::Value,
+) -> serde_json::Value {
+    let base_url = format!("http://localhost:{api_port}/v1");
+    let endpoints: Vec<moa_gateway::Endpoint> = model_names
+        .iter()
+        .map(|m| moa_gateway::Endpoint {
+            base_url: base_url.clone(),
+            model: m.clone(),
+        })
+        .collect();
+
+    let config = moa_gateway::GatewayConfig {
+        endpoints,
+        worker_timeout: std::time::Duration::from_secs(120),
+        reducer_timeout: std::time::Duration::from_secs(180),
+    };
+
+    let mut gateway = moa_gateway::Gateway::new(config);
+    let result = gateway.turn(&body).await;
+
+    tracing::info!(
+        "moa: {}ms, {}/{} workers, reducer={}",
+        result.elapsed_ms,
+        result
+            .worker_summaries
+            .iter()
+            .filter(|w| w.succeeded)
+            .count(),
+        result.worker_summaries.len(),
+        result.reducer_used,
+    );
+
+    result.response_body
 }
 
 pub(crate) fn callable_models(targets: &election::ModelTargets) -> Vec<String> {

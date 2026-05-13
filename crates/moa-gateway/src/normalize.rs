@@ -39,18 +39,85 @@ pub fn normalize_worker_output(
     role: WorkerRole,
     elapsed_ms: u64,
 ) -> WorkerOutput {
+    // Pre-clean: strip thinking tags so downstream parsers see clean text.
+    let cleaned = strip_thinking_tags(raw);
+    let text = if cleaned.is_empty() { raw } else { &cleaned };
+
     // Strategy 1: try JSON parse
-    if let Some(output) = try_json_parse(raw, model, role, elapsed_ms) {
+    if let Some(output) = try_json_parse(text, model, role, elapsed_ms) {
         return output;
     }
 
     // Strategy 2: try line-based key:value extraction
-    if let Some(output) = try_kv_parse(raw, model, role, elapsed_ms) {
+    if let Some(output) = try_kv_parse(text, model, role, elapsed_ms) {
         return output;
     }
 
     // Strategy 3: heuristic classification
-    heuristic_classify(raw, model, role, elapsed_ms)
+    let mut output = heuristic_classify(text, model, role, elapsed_ms);
+
+    // Final cleanup: strip any KV envelope lines that leaked into the payload
+    // (e.g. when KV parse fails but the text ends with kind:/confidence:/payload:
+    // lines from truncated model output).
+    output.payload = strip_kv_envelope(&output.payload);
+
+    output
+}
+
+/// Remove KV envelope metadata lines from text.  Models sometimes include
+/// `kind: answer\nconfidence: 1.0\npayload: ...` as part of their prose when
+/// the structured output wasn't parsed.
+fn strip_kv_envelope(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut cleaned = Vec::new();
+    let mut in_kv_block = false;
+    let mut payload_text: Option<String> = None;
+
+    for line in &lines {
+        let trimmed = line.trim();
+        if trimmed.starts_with("kind:")
+            || trimmed.starts_with("confidence:")
+            || trimmed.starts_with("tool:")
+            || trimmed.starts_with("arguments:")
+        {
+            in_kv_block = true;
+            continue;
+        }
+        if trimmed.starts_with("payload:") {
+            in_kv_block = true;
+            let val = trimmed.strip_prefix("payload:").unwrap().trim();
+            if !val.is_empty() {
+                payload_text = Some(val.to_string());
+            }
+            continue;
+        }
+        if in_kv_block {
+            // Lines after payload: are part of the payload value
+            if let Some(ref mut pt) = payload_text {
+                pt.push('\n');
+                pt.push_str(line);
+            }
+            continue;
+        }
+        cleaned.push(*line);
+    }
+
+    // If we found a payload: value in the KV block, prefer that
+    if let Some(pt) = payload_text {
+        let pt = pt.trim().to_string();
+        if !pt.is_empty() {
+            return pt;
+        }
+    }
+
+    // Otherwise use the non-KV lines
+    let result = cleaned.join("\n").trim().to_string();
+    if result.is_empty() {
+        // Everything was KV — return original
+        text.trim().to_string()
+    } else {
+        result
+    }
 }
 
 /// Try parsing as a JSON envelope.
@@ -159,10 +226,35 @@ fn try_kv_parse(raw: &str, model: &str, role: WorkerRole, elapsed_ms: u64) -> Op
         kind = OutputKind::ToolProposal;
     }
 
-    let payload = if payload_lines.is_empty() {
-        raw.to_string()
-    } else {
+    // If payload was found, use it.  If not (e.g. truncated by max_tokens),
+    // try to extract the last substantive line before the KV block, or fall
+    // back to the confidence value as a signal that KV was found but incomplete.
+    let payload = if !payload_lines.is_empty() {
         payload_lines.join("\n")
+    } else {
+        // KV envelope was found but payload: line was missing or truncated.
+        // Use lines before the KV block as the payload — they're often the
+        // model's natural-language answer before it started formatting.
+        let mut pre_kv = Vec::new();
+        for line in raw.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("kind:")
+                || trimmed.starts_with("confidence:")
+                || trimmed.starts_with("tool:")
+                || trimmed.starts_with("arguments:")
+            {
+                break;
+            }
+            if !trimmed.is_empty() {
+                pre_kv.push(trimmed);
+            }
+        }
+        if pre_kv.is_empty() {
+            raw.to_string()
+        } else {
+            // Take the last meaningful line(s) — skip reasoning preamble
+            pre_kv.last().unwrap_or(&raw).to_string()
+        }
     };
 
     Some(WorkerOutput {
@@ -404,7 +496,15 @@ fn extract_json_object(text: &str) -> Option<String> {
     None
 }
 
+/// Clean passthrough content for display: strip think tags, orphan </think>,
+/// and any KV envelope lines (kind:/confidence:/payload:) that leaked.
+pub fn strip_passthrough_content(text: &str) -> String {
+    let stripped = strip_thinking_tags(text);
+    strip_kv_envelope(&stripped)
+}
+
 /// Strip `<think>...</think>` tags that reasoning models emit.
+/// Also removes orphan `</think>` tags.
 fn strip_thinking_tags(text: &str) -> String {
     let mut result = text.to_string();
     // Remove <think>...</think> blocks (greedy)
@@ -421,6 +521,8 @@ fn strip_thinking_tags(text: &str) -> String {
             break;
         }
     }
+    // Remove any orphan </think> tags
+    result = result.replace("</think>", "");
     result.trim().to_string()
 }
 
@@ -493,6 +595,36 @@ mod tests {
         assert_eq!(out.kind, OutputKind::ToolProposal);
         assert_eq!(out.tool_name.as_deref(), Some("edit_file"));
         assert!(out.tool_arguments.is_some());
+    }
+
+    #[test]
+    fn think_tags_then_kv() {
+        let raw = "<think>\nThe user is asking a simple question.\nMultiple workers agree the answer is Canberra.\nI should provide a direct answer.\n</think>\nkind: answer\nconfidence: 1.0\npayload: Canberra is the capital of Australia.";
+        let out = normalize_worker_output(raw, "glm", WorkerRole::Reducer, 500);
+        assert_eq!(out.kind, OutputKind::Answer);
+        assert_eq!(out.payload, "Canberra is the capital of Australia.");
+        assert!(!out.payload.contains("think"));
+        assert!(!out.payload.contains("kind:"));
+    }
+
+    #[test]
+    fn heuristic_strips_trailing_kv() {
+        // Model outputs reasoning text then KV envelope at the end
+        let raw = "Let me analyze this.\n\n1. The answer is 4.\n2. This is simple math.\n\nkind: answer\nconfidence: 1.0\npayload: 4";
+        let out = normalize_worker_output(raw, "glm", WorkerRole::Fast, 100);
+        assert_eq!(out.kind, OutputKind::Answer);
+        // Payload should be "4" (from the payload: line), not the full reasoning
+        assert_eq!(out.payload, "4");
+    }
+
+    #[test]
+    fn heuristic_strips_kv_no_payload() {
+        // Model outputs reasoning then truncated KV (no payload line)
+        let raw = "The capital of Australia is Canberra.\n\nkind: answer\nconfidence: 1.0";
+        let out = normalize_worker_output(raw, "qwen", WorkerRole::Fast, 100);
+        assert_eq!(out.kind, OutputKind::Answer);
+        // Should use the pre-KV text
+        assert_eq!(out.payload, "The capital of Australia is Canberra.");
     }
 
     #[test]

@@ -18,43 +18,58 @@ pub struct PackedContext {
 
 /// Build a context packet for a worker based on its role.
 pub fn pack_for_worker(session: &Session, role: WorkerRole, has_tools: bool) -> PackedContext {
+    // When tools are present (agentic use via Goose/pi/etc.), pass through
+    // the original messages faithfully — the client's system prompt already
+    // has tool instructions the model needs to follow.  Wrapping them in a
+    // MoA envelope confuses models.
+    if has_tools {
+        return pack_passthrough(session, role);
+    }
+
     match role {
-        WorkerRole::Fast => pack_fast(session, has_tools),
-        WorkerRole::Specialist => pack_specialist(session, has_tools),
-        WorkerRole::Strong => pack_strong(session, has_tools),
-        WorkerRole::Generalist => pack_strong(session, has_tools),
-        WorkerRole::Reducer => pack_strong(session, has_tools),
+        WorkerRole::Fast => pack_fast(session),
+        WorkerRole::Specialist => pack_specialist(session),
+        WorkerRole::Strong => pack_strong(session),
+        WorkerRole::Generalist => pack_strong(session),
+        WorkerRole::Reducer => pack_strong(session),
+    }
+}
+
+/// Passthrough mode: forward the original messages to the worker as-is.
+/// Used when the client (Goose, pi, etc.) has already set up tools and
+/// system prompts — we don't want to interfere.
+fn pack_passthrough(session: &Session, role: WorkerRole) -> PackedContext {
+    let messages = session.all_messages();
+    let max_tokens = match role {
+        WorkerRole::Fast => 512,
+        WorkerRole::Specialist => 1024,
+        WorkerRole::Strong | WorkerRole::Generalist | WorkerRole::Reducer => 2048,
+    };
+    PackedContext {
+        messages,
+        max_tokens,
     }
 }
 
 /// Fast worker: current task only, tool names, short max_tokens.
-fn pack_fast(session: &Session, has_tools: bool) -> PackedContext {
+fn pack_fast(session: &Session) -> PackedContext {
     let user_text = session.last_user_text();
     let mut system_parts = vec![
         "You are a fast analysis worker in a multi-model ensemble.".to_string(),
-        "Given the task below, produce a structured response:".to_string(),
+        "Given the task below, produce ONLY the structured response below with NO explanation, \
+         reasoning, or preamble. Start your response directly with 'kind:'."
+            .to_string(),
         String::new(),
-        "kind: answer | tool_proposal | critique | uncertainty".to_string(),
+        "kind: answer | tool_proposal".to_string(),
         "confidence: 0.0-1.0".to_string(),
-        "tool: (optional) tool name".to_string(),
-        "arguments: (optional) tool arguments as JSON".to_string(),
         "payload: your response text".to_string(),
         String::new(),
-        "Be concise. If you think a tool should be called, say so. Do not \
-         actually execute tools."
+        "IMPORTANT: Output ONLY the fields above. No thinking, no explanation, \
+         no markdown. Just the key: value lines starting with 'kind:'."
             .to_string(),
     ];
 
-    if has_tools {
-        let names = session.tool_names();
-        if !names.is_empty() {
-            system_parts.push(String::new());
-            system_parts.push(format!("Available tools: {}", names.join(", ")));
-        }
-    }
-
-    // Add running summary if there's history — this is compact and
-    // deterministic, much cheaper than raw message history.
+    // Add running summary if there's history
     if session.turn_count() > 1 {
         let summary = session.running_summary();
         if !summary.is_empty() {
@@ -73,36 +88,22 @@ fn pack_fast(session: &Session, has_tools: bool) -> PackedContext {
 }
 
 /// Specialist worker: recent history, compact tool descriptions.
-fn pack_specialist(session: &Session, has_tools: bool) -> PackedContext {
+fn pack_specialist(session: &Session) -> PackedContext {
     let user_text = session.last_user_text();
     let mut system_parts = vec![
         "You are a specialist worker in a multi-model ensemble.".to_string(),
-        "Analyze the task carefully and produce a structured response:".to_string(),
+        "Analyze the task and produce ONLY the structured response below. \
+         Start your response directly with 'kind:' — no preamble."
+            .to_string(),
         String::new(),
-        "kind: answer | tool_proposal | critique | uncertainty".to_string(),
+        "kind: answer | tool_proposal".to_string(),
         "confidence: 0.0-1.0".to_string(),
-        "tool: (optional) tool name".to_string(),
-        "arguments: (optional) tool arguments as JSON".to_string(),
         "payload: your detailed response".to_string(),
         String::new(),
-        "If a tool should be called, specify which one and with what arguments. \
-         Do not execute tools yourself."
-            .to_string(),
+        "Output ONLY the fields above. No thinking, no explanation, no markdown.".to_string(),
     ];
 
-    if has_tools {
-        let summaries = session.tool_summaries();
-        if !summaries.is_empty() {
-            system_parts.push(String::new());
-            system_parts.push("Available tools:".to_string());
-            for s in &summaries {
-                system_parts.push(format!("  - {s}"));
-            }
-        }
-    }
-
-    // Include running summary for multi-turn context instead of dumping
-    // raw message history — keeps the specialist focused and cheap.
+    // Include running summary for multi-turn context
     if session.turn_count() > 1 {
         let summary = session.running_summary();
         if !summary.is_empty() {
@@ -111,21 +112,16 @@ fn pack_specialist(session: &Session, has_tools: bool) -> PackedContext {
         }
     }
 
-    // Only include the last 2-3 user/assistant messages for immediate context,
-    // not the full history.
     let mut messages = vec![json!({"role": "system", "content": system_parts.join("\n")})];
 
     let recent = session.recent_messages(4);
     for msg in &recent {
         let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
-        // Skip system, tool, and assistant-with-tool_calls — those are folded
-        // into the running summary.
         if role == "user" || (role == "assistant" && msg.get("tool_calls").is_none()) {
             messages.push(msg.clone());
         }
     }
 
-    // Ensure the current user turn is present
     if messages
         .last()
         .and_then(|m| m.get("content").and_then(|c| c.as_str()))
@@ -141,38 +137,20 @@ fn pack_specialist(session: &Session, has_tools: bool) -> PackedContext {
 }
 
 /// Strong worker: more context, full tool descriptions where possible.
-fn pack_strong(session: &Session, has_tools: bool) -> PackedContext {
+fn pack_strong(session: &Session) -> PackedContext {
     let user_text = session.last_user_text();
     let mut system_parts = vec![
         "You are a strong reasoning worker in a multi-model ensemble.".to_string(),
-        "Analyze the task thoroughly and produce a structured response:".to_string(),
+        "Analyze the task thoroughly and produce ONLY the structured response below. \
+         Start your response directly with 'kind:' — no preamble."
+            .to_string(),
         String::new(),
-        "kind: answer | tool_proposal | critique | uncertainty".to_string(),
+        "kind: answer | tool_proposal".to_string(),
         "confidence: 0.0-1.0".to_string(),
-        "tool: (optional) tool name".to_string(),
-        "arguments: (optional) tool arguments as JSON".to_string(),
         "payload: your thorough response".to_string(),
         String::new(),
-        "Think step by step. If a tool should be called, specify exactly which one \
-         and with what arguments. If you can answer directly, do so with high \
-         confidence. Do not execute tools yourself."
-            .to_string(),
+        "Output ONLY the fields above. No thinking, no explanation, no markdown.".to_string(),
     ];
-
-    if has_tools {
-        // Give strong worker full tool schemas
-        if let Some(tools) = session.tools() {
-            if let Some(tools_array) = tools.as_array() {
-                system_parts.push(String::new());
-                system_parts.push("Available tools (full schema):".to_string());
-                for tool in tools_array {
-                    if let Ok(compact) = serde_json::to_string(tool) {
-                        system_parts.push(format!("  {compact}"));
-                    }
-                }
-            }
-        }
-    }
 
     // Include system prompt if present
     if let Some(sp) = session.system_prompt() {
@@ -182,11 +160,10 @@ fn pack_strong(session: &Session, has_tools: bool) -> PackedContext {
 
     let mut messages = vec![json!({"role": "system", "content": system_parts.join("\n")})];
 
-    // Include more history for the strong worker
     let recent = session.recent_messages(10);
     for msg in &recent {
         let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
-        if role != "system" && role != "" {
+        if role != "system" && !role.is_empty() {
             messages.push(msg.clone());
         }
     }
@@ -219,14 +196,16 @@ pub fn pack_for_reducer(
         format!("Reason for escalation: {reason}"),
         String::new(),
         "Review the worker outputs below and produce ONE final response.".to_string(),
-        "Either answer directly or propose exactly one tool call.".to_string(),
+        "Start your response directly with 'kind:' — no preamble, no thinking, no explanation."
+            .to_string(),
         String::new(),
-        "Respond with:".to_string(),
         "kind: answer | tool_proposal".to_string(),
         "confidence: 0.0-1.0".to_string(),
-        "tool: (if tool_proposal) tool name".to_string(),
-        "arguments: (if tool_proposal) tool arguments as JSON".to_string(),
+        "tool: (only if tool_proposal) tool name".to_string(),
+        "arguments: (only if tool_proposal) tool arguments as JSON".to_string(),
         "payload: your final response".to_string(),
+        String::new(),
+        "Output ONLY the fields above.".to_string(),
     ];
 
     if has_tools {

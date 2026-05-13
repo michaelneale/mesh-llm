@@ -78,6 +78,66 @@ pub fn assign_roles(endpoints: &[Endpoint], _has_tools: bool) -> Vec<Assignment>
     assignments
 }
 
+/// Call a worker endpoint.  Returns the full JSON response body unchanged.
+/// Used in passthrough mode (when tools are present) so the native response
+/// format (including tool_calls) is preserved.
+pub async fn call_raw(
+    http: &reqwest::Client,
+    endpoint: &Endpoint,
+    messages: &[Value],
+    max_tokens: u32,
+    timeout: Duration,
+) -> Result<Value, String> {
+    call_raw_with_tools(http, endpoint, messages, None, max_tokens, timeout).await
+}
+
+/// Like `call_raw` but also forwards tool definitions.
+pub async fn call_raw_with_tools(
+    http: &reqwest::Client,
+    endpoint: &Endpoint,
+    messages: &[Value],
+    tools: Option<&Value>,
+    max_tokens: u32,
+    timeout: Duration,
+) -> Result<Value, String> {
+    let url = format!("{}/chat/completions", endpoint.base_url);
+
+    let mut body = json!({
+        "model": endpoint.model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": 0.3,
+        "stream": false,
+    });
+
+    if let Some(tools) = tools {
+        body.as_object_mut()
+            .unwrap()
+            .insert("tools".to_string(), tools.clone());
+    }
+
+    let resp = http
+        .post(&url)
+        .json(&body)
+        .timeout(timeout)
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("HTTP {}: {}", status, &body[..body.len().min(200)]));
+    }
+
+    let resp_body: Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("response parse failed: {e}"))?;
+
+    Ok(resp_body)
+}
+
 /// Call a worker endpoint.  Returns the raw assistant text content.
 pub async fn call(
     http: &reqwest::Client,
@@ -174,6 +234,8 @@ pub async fn call(
 }
 
 /// Strip `<think>...</think>` tags, return the remaining content.
+/// Also removes orphan `</think>` tags left by models that emit
+/// multiple or mismatched think blocks.
 fn strip_thinking(text: &str) -> String {
     let mut result = text.to_string();
     while let Some(start) = result.find("<think>") {
@@ -189,6 +251,8 @@ fn strip_thinking(text: &str) -> String {
             break;
         }
     }
+    // Remove any orphan </think> tags
+    result = result.replace("</think>", "");
     result.trim().to_string()
 }
 

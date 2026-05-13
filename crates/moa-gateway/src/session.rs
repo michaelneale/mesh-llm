@@ -252,6 +252,12 @@ impl Session {
         &self.messages
     }
 
+    /// Clone all messages for passthrough to workers that need the full
+    /// original conversation (e.g. when tools are present).
+    pub fn all_messages(&self) -> Vec<Value> {
+        self.messages.clone()
+    }
+
     /// Running summary of prior turns — compact, deterministic, no model calls.
     /// Use this instead of raw history for workers that can't see everything.
     pub fn running_summary(&self) -> &str {
