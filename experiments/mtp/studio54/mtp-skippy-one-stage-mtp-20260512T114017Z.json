@@ -1,0 +1,326 @@
+{
+  "run_id": "mtp-skippy-one-stage-mtp-20260512T114017Z",
+  "mode": "one-stage-mtp",
+  "status": "complete",
+  "metrics_report": {
+    "run": {
+      "run_id": "mtp-skippy-one-stage-mtp-20260512T114017Z",
+      "status": "completed",
+      "started_at_unix_nanos": 1778586021909389000,
+      "finished_at_unix_nanos": 1778586027002100000,
+      "config": {
+        "config": {
+          "experiment": "mtp-skippy-local",
+          "layer_count": 65,
+          "mode": "one-stage-mtp",
+          "model_id": "unsloth/Qwen3.6-27B-MTP-GGUF:IQ4_XS",
+          "model_path": "/Users/jdumay/tmp/mesh-llm-mtp/experiments/mtp/models/Qwen3.6-27B-IQ4_XS.gguf",
+          "mtp_enabled": true,
+          "split_layer": 33,
+          "stage_count": 1
+        }
+      }
+    },
+    "counts": {
+      "log_exports": 0,
+      "metric_exports": 0,
+      "requests": 1,
+      "span_events": 0,
+      "spans": 7,
+      "stages": 1
+    },
+    "telemetry_loss": {
+      "dropped_events": 0,
+      "export_errors": 0
+    },
+    "requests": [
+      {
+        "run_id": "mtp-skippy-one-stage-mtp-20260512T114017Z",
+        "request_id": "10908205161605564777",
+        "session_id": "4843572058932691673",
+        "first_seen_unix_nanos": 1778586025931939000
+      }
+    ],
+    "stages": [
+      {
+        "run_id": "mtp-skippy-one-stage-mtp-20260512T114017Z",
+        "stage_id": "stage-0",
+        "first_seen_unix_nanos": 1778586021937575000,
+        "attributes": {
+          "skippy.layer_end": 65,
+          "skippy.layer_start": 0,
+          "skippy.load_mode": "runtime-slice",
+          "skippy.model_id": "unsloth/Qwen3.6-27B-MTP-GGUF:IQ4_XS",
+          "skippy.otel_dropped_events": 0,
+          "skippy.otel_export_errors": 0,
+          "skippy.run_id": "mtp-skippy-one-stage-mtp-20260512T114017Z",
+          "skippy.stage_id": "stage-0",
+          "skippy.stage_index": 0,
+          "skippy.topology_id": "mtp-skippy-local"
+        }
+      }
+    ],
+    "stage_request_summaries": [
+      {
+        "run_id": "mtp-skippy-one-stage-mtp-20260512T114017Z",
+        "request_id": "10908205161605564777",
+        "stage_id": "stage-0",
+        "span_count": 1,
+        "first_start_unix_nanos": 1778586024076470000,
+        "last_end_unix_nanos": 1778586025928463000
+      }
+    ],
+    "spans": [
+      {
+        "run_id": "mtp-skippy-one-stage-mtp-20260512T114017Z",
+        "request_id": null,
+        "session_id": null,
+        "stage_id": "stage-0",
+        "trace_id": "18aece9047d5d4880000000000000001",
+        "span_id": "0000000000000001",
+        "parent_span_id": null,
+        "name": "stage.binary_server_start",
+        "kind": 1,
+        "start_time_unix_nanos": 1778586021933733000,
+        "end_time_unix_nanos": 1778586021933733001,
+        "attributes": {
+          "skippy.layer_end": 65,
+          "skippy.layer_start": 0,
+          "skippy.load_mode": "runtime-slice",
+          "skippy.model_id": "unsloth/Qwen3.6-27B-MTP-GGUF:IQ4_XS",
+          "skippy.otel_dropped_events": 0,
+          "skippy.otel_export_errors": 0,
+          "skippy.run_id": "mtp-skippy-one-stage-mtp-20260512T114017Z",
+          "skippy.stage_id": "stage-0",
+          "skippy.stage_index": 0,
+          "skippy.topology_id": "mtp-skippy-local"
+        }
+      },
+      {
+        "run_id": "mtp-skippy-one-stage-mtp-20260512T114017Z",
+        "request_id": null,
+        "session_id": null,
+        "stage_id": "stage-0",
+        "trace_id": "18aece908e905df80000000000000002",
+        "span_id": "0000000000000002",
+        "parent_span_id": null,
+        "name": "stage.binary_runtime_prewarm",
+        "kind": 1,
+        "start_time_unix_nanos": 1778586023120363000,
+        "end_time_unix_nanos": 1778586023120363001,
+        "attributes": {
+          "llama_stage.elapsed_ms": 0.039125,
+          "llama_stage.lane_count": 1,
+          "llama_stage.max_inflight": 1,
+          "llama_stage.runtime_sessions_active": 0,
+          "llama_stage.runtime_sessions_idle": 1,
+          "skippy.layer_end": 65,
+          "skippy.layer_start": 0,
+          "skippy.load_mode": "runtime-slice",
+          "skippy.model_id": "unsloth/Qwen3.6-27B-MTP-GGUF:IQ4_XS",
+          "skippy.otel_dropped_events": 0,
+          "skippy.otel_export_errors": 0,
+          "skippy.run_id": "mtp-skippy-one-stage-mtp-20260512T114017Z",
+          "skippy.stage_id": "stage-0",
+          "skippy.stage_index": 0,
+          "skippy.topology_id": "mtp-skippy-local"
+        }
+      },
+      {
+        "run_id": "mtp-skippy-one-stage-mtp-20260512T114017Z",
+        "request_id": null,
+        "session_id": null,
+        "stage_id": "stage-0",
+        "trace_id": "18aece908e9255e00000000000000003",
+        "span_id": "0000000000000003",
+        "parent_span_id": null,
+        "name": "stage.openai_server_start",
+        "kind": 1,
+        "start_time_unix_nanos": 1778586023120492000,
+        "end_time_unix_nanos": 1778586023120492001,
+        "attributes": {
+          "skippy.layer_end": 65,
+          "skippy.layer_start": 0,
+          "skippy.load_mode": "runtime-slice",
+          "skippy.model_id": "unsloth/Qwen3.6-27B-MTP-GGUF:IQ4_XS",
+          "skippy.otel_dropped_events": 0,
+          "skippy.otel_export_errors": 0,
+          "skippy.run_id": "mtp-skippy-one-stage-mtp-20260512T114017Z",
+          "skippy.stage_id": "stage-0",
+          "skippy.stage_index": 0,
+          "skippy.topology_id": "mtp-skippy-local"
+        }
+      },
+      {
+        "run_id": "mtp-skippy-one-stage-mtp-20260512T114017Z",
+        "request_id": null,
+        "session_id": null,
+        "stage_id": "stage-0",
+        "trace_id": "18aece908e9265800000000000000004",
+        "span_id": "0000000000000004",
+        "parent_span_id": null,
+        "name": "stage.openai_runtime_prewarm",
+        "kind": 1,
+        "start_time_unix_nanos": 1778586023120496000,
+        "end_time_unix_nanos": 1778586023120508000,
+        "attributes": {
+          "llama_stage.elapsed_ms": 0.011958,
+          "llama_stage.generation_concurrency": 1,
+          "llama_stage.lane_count": 1,
+          "llama_stage.runtime_sessions_active": 0,
+          "llama_stage.runtime_sessions_idle": 1,
+          "skippy.layer_end": 65,
+          "skippy.layer_start": 0,
+          "skippy.load_mode": "runtime-slice",
+          "skippy.model_id": "unsloth/Qwen3.6-27B-MTP-GGUF:IQ4_XS",
+          "skippy.otel_dropped_events": 0,
+          "skippy.otel_export_errors": 0,
+          "skippy.run_id": "mtp-skippy-one-stage-mtp-20260512T114017Z",
+          "skippy.stage_id": "stage-0",
+          "skippy.stage_index": 0,
+          "skippy.topology_id": "mtp-skippy-local"
+        }
+      },
+      {
+        "run_id": "mtp-skippy-one-stage-mtp-20260512T114017Z",
+        "request_id": null,
+        "session_id": null,
+        "stage_id": "stage-0",
+        "trace_id": "18aece90c41bfa680000000000000005",
+        "span_id": "0000000000000005",
+        "parent_span_id": null,
+        "name": "stage.openai_http_request",
+        "kind": 1,
+        "start_time_unix_nanos": 1778586024018705000,
+        "end_time_unix_nanos": 1778586024019002000,
+        "attributes": {
+          "llama_stage.elapsed_ms": 0.28645899999999996,
+          "llama_stage.http_method": "GET",
+          "llama_stage.http_path": "/v1/models",
+          "llama_stage.http_status": 200,
+          "skippy.otel_dropped_events": 0,
+          "skippy.otel_export_errors": 0,
+          "skippy.run_id": "mtp-skippy-one-stage-mtp-20260512T114017Z",
+          "skippy.stage_id": "stage-0"
+        }
+      },
+      {
+        "run_id": "mtp-skippy-one-stage-mtp-20260512T114017Z",
+        "request_id": null,
+        "session_id": null,
+        "stage_id": "stage-0",
+        "trace_id": "18aece90c5b367300000000000000006",
+        "span_id": "0000000000000006",
+        "parent_span_id": null,
+        "name": "stage.openai_http_request",
+        "kind": 1,
+        "start_time_unix_nanos": 1778586024045406000,
+        "end_time_unix_nanos": 1778586024076446000,
+        "attributes": {
+          "llama_stage.elapsed_ms": 31.03875,
+          "llama_stage.http_method": "POST",
+          "llama_stage.http_path": "/v1/chat/completions",
+          "llama_stage.http_status": 200,
+          "skippy.otel_dropped_events": 0,
+          "skippy.otel_export_errors": 0,
+          "skippy.run_id": "mtp-skippy-one-stage-mtp-20260512T114017Z",
+          "skippy.stage_id": "stage-0"
+        }
+      },
+      {
+        "run_id": "mtp-skippy-one-stage-mtp-20260512T114017Z",
+        "request_id": "10908205161605564777",
+        "session_id": "4843572058932691673",
+        "stage_id": "stage-0",
+        "trace_id": "18aece90c78d66f00000000000000007",
+        "span_id": "0000000000000007",
+        "parent_span_id": null,
+        "name": "stage.openai_generation_summary",
+        "kind": 1,
+        "start_time_unix_nanos": 1778586024076470000,
+        "end_time_unix_nanos": 1778586025928463000,
+        "attributes": {
+          "llama_stage.completion_token_count": 8,
+          "llama_stage.detokenize_ms": 0.019919,
+          "llama_stage.elapsed_ms": 1851.972375,
+          "llama_stage.eog_check_ms": 0.008543,
+          "llama_stage.openai_backend": "embedded-stage0",
+          "llama_stage.prompt_token_count": 39,
+          "llama_stage.text_emit_ms": 0.193125,
+          "skippy.kv.cached_prompt_tokens": 0,
+          "skippy.kv.matched_prefix_tokens": 0,
+          "skippy.kv.suffix_prefill_tokens": 38,
+          "skippy.layer_end": 65,
+          "skippy.layer_start": 0,
+          "skippy.load_mode": "runtime-slice",
+          "skippy.model_id": "unsloth/Qwen3.6-27B-MTP-GGUF:IQ4_XS",
+          "skippy.otel_dropped_events": 0,
+          "skippy.otel_export_errors": 0,
+          "skippy.request_id": "10908205161605564777",
+          "skippy.run_id": "mtp-skippy-one-stage-mtp-20260512T114017Z",
+          "skippy.session_id": "4843572058932691673",
+          "skippy.stage_id": "stage-0",
+          "skippy.stage_index": 0,
+          "skippy.topology_id": "mtp-skippy-local"
+        }
+      }
+    ]
+  },
+  "driver_result": {
+    "base_url": "http://127.0.0.1:33631/v1",
+    "model": "unsloth/Qwen3.6-27B-MTP-GGUF:IQ4_XS",
+    "endpoint": "/v1/chat/completions",
+    "stream": true,
+    "include_usage": true,
+    "max_tokens": 8,
+    "concurrency_depth": 1,
+    "request_timeout_secs": 600,
+    "request_count": 1,
+    "prompt_corpus": "/Users/jdumay/tmp/mesh-llm-mtp/crates/skippy-bench/corpora/speculative_coding_prompts.jsonl",
+    "prompt_limit": 1,
+    "sampling": {
+      "temperature": null,
+      "top_p": null,
+      "top_k": null,
+      "seed": null,
+      "enable_thinking": false,
+      "reasoning_effort": null
+    },
+    "results": [
+      {
+        "sequence": 0,
+        "prompt_id": "spec-code-001",
+        "category": "rust_edit",
+        "length_bucket": null,
+        "session_id": "chat-corpus-session-0",
+        "prompt_chars": 97,
+        "elapsed_ms": 1884.3551249999998,
+        "ttft_ms": 513.776208,
+        "completion_tokens": 8,
+        "prompt_tokens": 39,
+        "total_tokens": 47,
+        "finish_reason": "length",
+        "output_chars": 21,
+        "error": null,
+        "api_error_code": null
+      }
+    ],
+    "summary": {
+      "count": 1,
+      "errors": 0,
+      "elapsed_ms_min": 1884.3551249999998,
+      "elapsed_ms_mean": 1884.3551249999998,
+      "elapsed_ms_p50": 1884.3551249999998,
+      "elapsed_ms_p95": 1884.3551249999998,
+      "elapsed_ms_p99": 1884.3551249999998,
+      "ttft_ms_p50": 513.776208,
+      "ttft_ms_p95": 513.776208,
+      "ttft_ms_p99": 513.776208,
+      "completion_tokens": 8,
+      "total_tokens": 47,
+      "total_wall_ms": 1884.4925830000002,
+      "completion_tok_s": 4.245174574932248,
+      "total_tok_s": 24.94040062772696
+    }
+  }
+}

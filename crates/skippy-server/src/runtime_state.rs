@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeMap,
+    path::PathBuf,
     sync::{Arc, Mutex},
     time::Instant,
 };
@@ -8,9 +9,9 @@ use anyhow::{bail, Context, Result};
 use skippy_protocol::{FlashAttentionType, LoadMode, StageConfig};
 use skippy_runtime::{
     parse_cache_type, ActivationFrame, FlashAttentionType as RuntimeFlashAttentionType,
-    GenerationSignalWindow, MediaInput, MediaPrefill, MediaPrefillFrame, RuntimeConfig,
-    RuntimeKvPage, RuntimeKvPageDesc, RuntimeLoadMode, SamplingConfig, StageModel, StageSession,
-    StageSessionCheckpoint, TokenSignal,
+    GenerationSignalWindow, MediaInput, MediaPrefill, MediaPrefillFrame, MtpDecodeResult, MtpHead,
+    MtpParams, MtpSession, RuntimeConfig, RuntimeKvPage, RuntimeKvPageDesc, RuntimeLoadMode,
+    SamplingConfig, StageModel, StageSession, StageSessionCheckpoint, TokenSignal,
 };
 
 use crate::package::select_package_parts;
@@ -26,6 +27,11 @@ pub struct RuntimeState {
     session_token_counts: BTreeMap<String, u64>,
     session_checkpoints: BTreeMap<String, StageSessionCheckpoint>,
     session_resident_prefixes: BTreeMap<String, ResidentLanePrefix>,
+    mtp_model_path: Option<PathBuf>,
+    mtp_runtime_config: RuntimeConfig,
+    mtp_params: MtpParams,
+    mtp_head: Option<MtpHead>,
+    mtp_sessions: BTreeMap<String, MtpSession>,
 }
 
 struct RuntimeLaneSession {
@@ -150,6 +156,207 @@ impl RuntimeState {
         )
     }
 
+    pub fn configure_mtp_capture(&mut self, session_id: &str, enabled: bool) -> Result<()> {
+        self.session(session_id)?.set_capture_pre_norm(enabled)
+    }
+
+    pub fn supports_mtp_head(&self) -> bool {
+        self.model.supports_mtp_head() && self.mtp_model_path.is_some()
+    }
+
+    pub fn warm_mtp_head(&mut self) -> Result<()> {
+        if self.mtp_head.is_some() {
+            return Ok(());
+        }
+        if !self.model.supports_mtp_head() {
+            bail!("runtime model does not expose a supported MTP head");
+        }
+        let path = self
+            .mtp_model_path
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("MTP requires a stage model_path"))?;
+        self.mtp_head = Some(MtpHead::open(
+            path,
+            &self.mtp_runtime_config,
+            &self.mtp_params,
+        )?);
+        Ok(())
+    }
+
+    pub fn copy_pre_norm(&mut self, session_id: &str, token_count: u32) -> Result<Vec<f32>> {
+        self.session(session_id)?.copy_pre_norm(token_count)
+    }
+
+    pub fn mtp_draft(
+        &mut self,
+        session_id: &str,
+        last_token: i32,
+        position: u32,
+        output_capacity: usize,
+    ) -> Result<Vec<i32>> {
+        let h_pre_norm = self.copy_pre_norm(session_id, 1)?;
+        self.mtp_draft_from_pre_norm(
+            session_id,
+            &h_pre_norm,
+            last_token,
+            position,
+            output_capacity,
+        )
+    }
+
+    pub fn mtp_ingest(
+        &mut self,
+        session_id: &str,
+        token_ids: &[i32],
+        pos_start: u32,
+    ) -> Result<()> {
+        if token_ids.is_empty() {
+            return Ok(());
+        }
+        let h_pre_norm = self.copy_pre_norm(
+            session_id,
+            u32::try_from(token_ids.len()).context("MTP ingest token count exceeds u32")?,
+        )?;
+        self.warm_mtp_head()?;
+        if !self.mtp_sessions.contains_key(session_id) {
+            let mut session = self
+                .mtp_head
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!("MTP head was not opened"))?
+                .create_session()?;
+            session.reset()?;
+            self.mtp_sessions.insert(session_id.to_string(), session);
+        }
+        self.mtp_sessions
+            .get_mut(session_id)
+            .ok_or_else(|| anyhow::anyhow!("MTP session was not created"))?
+            .ingest(token_ids, &h_pre_norm, pos_start)
+    }
+
+    pub fn mtp_draft_synced(
+        &mut self,
+        session_id: &str,
+        last_token: i32,
+        position: u32,
+        output_capacity: usize,
+    ) -> Result<Vec<i32>> {
+        if output_capacity == 0 {
+            return Ok(Vec::new());
+        }
+        let session = self
+            .mtp_sessions
+            .get_mut(session_id)
+            .ok_or_else(|| anyhow::anyhow!("MTP session was not synchronized"))?;
+        let (tokens, _) = session.draft_synced(last_token, position, output_capacity)?;
+        Ok(tokens)
+    }
+
+    pub fn mtp_decode_step(
+        &mut self,
+        session_id: &str,
+        input_token: i32,
+        sampling: Option<&SamplingConfig>,
+        max_new_tokens: usize,
+        max_speculative_tokens: usize,
+        mtp_enabled: bool,
+    ) -> Result<(Vec<i32>, MtpDecodeResult)> {
+        self.warm_mtp_head()?;
+        if !self.mtp_sessions.contains_key(session_id) {
+            let mut session = self
+                .mtp_head
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!("MTP head was not opened"))?
+                .create_session()?;
+            session.reset()?;
+            self.mtp_sessions.insert(session_id.to_string(), session);
+        }
+        let lane = self
+            .sessions
+            .get_mut(session_id)
+            .ok_or_else(|| anyhow::anyhow!("session {session_id} was not created"))?;
+        let mtp_session = self
+            .mtp_sessions
+            .get_mut(session_id)
+            .ok_or_else(|| anyhow::anyhow!("MTP session was not created"))?;
+        let (tokens, result) = lane.session.mtp_decode_step(
+            mtp_session,
+            input_token,
+            sampling,
+            max_new_tokens,
+            max_speculative_tokens,
+            mtp_enabled,
+        )?;
+        self.add_session_tokens(session_id, tokens.len() as u64);
+        Ok((tokens, result))
+    }
+
+    pub fn mtp_generate_span(
+        &mut self,
+        session_id: &str,
+        input_token: i32,
+        sampling: Option<&SamplingConfig>,
+        max_new_tokens: usize,
+        max_speculative_tokens: usize,
+        mtp_enabled: bool,
+    ) -> Result<(Vec<i32>, MtpDecodeResult)> {
+        self.warm_mtp_head()?;
+        if !self.mtp_sessions.contains_key(session_id) {
+            let mut session = self
+                .mtp_head
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!("MTP head was not opened"))?
+                .create_session()?;
+            session.reset()?;
+            self.mtp_sessions.insert(session_id.to_string(), session);
+        }
+        let lane = self
+            .sessions
+            .get_mut(session_id)
+            .ok_or_else(|| anyhow::anyhow!("session {session_id} was not created"))?;
+        let mtp_session = self
+            .mtp_sessions
+            .get_mut(session_id)
+            .ok_or_else(|| anyhow::anyhow!("MTP session was not created"))?;
+        let (tokens, result) = lane.session.mtp_generate_span(
+            mtp_session,
+            input_token,
+            sampling,
+            max_new_tokens,
+            max_speculative_tokens,
+            mtp_enabled,
+        )?;
+        self.add_session_tokens(session_id, tokens.len() as u64);
+        Ok((tokens, result))
+    }
+
+    pub fn mtp_draft_from_pre_norm(
+        &mut self,
+        session_id: &str,
+        h_pre_norm: &[f32],
+        last_token: i32,
+        position: u32,
+        output_capacity: usize,
+    ) -> Result<Vec<i32>> {
+        if output_capacity == 0 {
+            return Ok(Vec::new());
+        }
+        self.warm_mtp_head()?;
+        if !self.mtp_sessions.contains_key(session_id) {
+            let session = self
+                .mtp_head
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!("MTP head was not opened"))?
+                .create_session()?;
+            self.mtp_sessions.insert(session_id.to_string(), session);
+        }
+        let session = self
+            .mtp_sessions
+            .get_mut(session_id)
+            .ok_or_else(|| anyhow::anyhow!("MTP session was not created"))?;
+        let (tokens, _) = session.draft(h_pre_norm, last_token, position, output_capacity)?;
+        Ok(tokens)
+    }
+
     pub fn last_token_signal(&mut self, session_id: &str) -> Result<TokenSignal> {
         self.session(session_id)?.last_token_signal()
     }
@@ -232,6 +439,13 @@ impl RuntimeState {
         let output = session.verify_tokens_frame(token_ids, input, 0)?;
         self.add_session_tokens(session_id, token_ids.len() as u64);
         Ok(output)
+    }
+
+    pub fn verify_tokens(&mut self, session_id: &str, token_ids: &[i32]) -> Result<Vec<i32>> {
+        let session = self.session(session_id)?;
+        let predicted = session.verify_tokens(token_ids)?;
+        self.add_session_tokens(session_id, token_ids.len() as u64);
+        Ok(predicted)
     }
 
     pub fn checkpoint_session(&mut self, session_id: &str) -> Result<()> {
@@ -324,6 +538,7 @@ impl RuntimeState {
         }
         self.session_token_counts.remove(session_id);
         self.session_checkpoints.remove(session_id);
+        self.mtp_sessions.remove(session_id);
         Ok(RuntimeSessionDropStats {
             reset_session,
             reset_ms: reset_started.elapsed().as_secs_f64() * 1000.0,
@@ -746,6 +961,11 @@ pub fn load_runtime(config: &StageConfig) -> Result<Option<Arc<Mutex<RuntimeStat
         session_token_counts: BTreeMap::new(),
         session_checkpoints: BTreeMap::new(),
         session_resident_prefixes: BTreeMap::new(),
+        mtp_model_path: config.model_path.as_ref().map(PathBuf::from),
+        mtp_runtime_config: runtime_config,
+        mtp_params: MtpParams::default(),
+        mtp_head: None,
+        mtp_sessions: BTreeMap::new(),
     }))))
 }
 

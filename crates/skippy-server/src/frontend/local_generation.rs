@@ -175,11 +175,34 @@ impl StageOpenAiBackend {
                     self.telemetry.emit_debug("stage.openai_kv_timing", attrs);
                 }
                 let mut decoded_prefill_suffix = false;
+                if request.mtp {
+                    if runtime.supports_mtp_head() {
+                        runtime
+                            .configure_mtp_capture(&session_id, true)
+                            .map_err(openai_backend_error)?;
+                    } else {
+                        return Err(OpenAiError::backend(
+                            "MTP requested but this runtime/model does not expose a supported MTP head",
+                        ));
+                    }
+                }
                 if restored_prefill_tokens < prefill_tokens.len() {
                     decoded_prefill_suffix = true;
+                    let suffix = &prefill_tokens[restored_prefill_tokens..];
                     runtime
-                        .prefill(&session_id, &prefill_tokens[restored_prefill_tokens..])
+                        .prefill(&session_id, suffix)
                         .map_err(openai_backend_error)?;
+                    if request.mtp {
+                        runtime
+                            .mtp_ingest(
+                                &session_id,
+                                suffix,
+                                u32::try_from(restored_prefill_tokens).map_err(|_| {
+                                    OpenAiError::backend("MTP prefill position exceeds u32")
+                                })?,
+                            )
+                            .map_err(openai_backend_error)?;
+                    }
                 }
                 cache_stats.matched_prefix_tokens = saturating_u32(restored_prefill_tokens);
                 cache_stats.suffix_prefill_tokens =
@@ -364,6 +387,16 @@ impl StageOpenAiBackend {
             let emit_token_debug = self.telemetry.is_debug_enabled();
             let mut post_prefill_hook_checked = false;
             let mut last_mid_generation_hook_at = None;
+            let mut speculative_stats = OpenAiSpeculativeStats {
+                adaptive_window_start: request.mtp_window,
+                adaptive_window_final: request.mtp_window,
+                adaptive_window_max: request.mtp_window,
+                adaptive_window_min: if request.mtp { request.mtp_window } else { 0 },
+                adaptive_window_max_seen: request.mtp_window,
+                adaptive_window_enabled: false,
+                ..OpenAiSpeculativeStats::default()
+            };
+            let mut mtp_synced = request.mtp;
             while decoded_tokens < request.max_tokens as usize {
                 if request
                     .cancellation
@@ -371,8 +404,229 @@ impl StageOpenAiBackend {
                 {
                     break;
                 }
+                if request.mtp && mtp_synced && !generation_hooks_active && decoded_tokens > 0 {
+                    let decode_step = decoded_tokens;
+                    let token_timer = PhaseTimer::start();
+                    let input_token = current;
+                    let remaining = request.max_tokens as usize - decoded_tokens;
+                    let span_limit = remaining.min(32);
+                    let token_runtime_lock_wait_ms;
+                    let token_runtime_lock_hold_ms;
+                    let token_signal_ms;
+                    let committed_tokens;
+                    let mtp_result;
+                    {
+                        let lock_timer = PhaseTimer::start();
+                        let mut runtime = self
+                            .runtime
+                            .lock()
+                            .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
+                        let lock_wait_ms = lock_timer.elapsed_ms();
+                        token_runtime_lock_wait_ms = lock_wait_ms;
+                        runtime_lock_wait_ms += lock_wait_ms;
+                        runtime_lock_wait_max_ms = runtime_lock_wait_max_ms.max(lock_wait_ms);
+                        runtime_lock_acquires += 1;
+                        let hold_timer = PhaseTimer::start();
+                        runtime_sessions_before.get_or_insert_with(|| runtime.session_stats());
+                        (committed_tokens, mtp_result) = runtime
+                            .mtp_generate_span(
+                                &session_id,
+                                input_token,
+                                request.sampling.enabled.then_some(request.sampling),
+                                span_limit,
+                                request.mtp_window.max(1).min(span_limit.saturating_sub(1)),
+                                mtp_synced,
+                            )
+                            .map_err(openai_backend_error)?;
+                        let signal_timer = PhaseTimer::start();
+                        let _ = runtime.last_token_signal(&session_id).ok();
+                        let _ = runtime.signal_window(&session_id, 16).ok();
+                        token_signal_ms = signal_timer.elapsed_ms();
+                        runtime_sessions_after = Some(runtime.session_stats());
+                        token_runtime_lock_hold_ms = hold_timer.elapsed_ms();
+                        runtime_lock_hold_ms += token_runtime_lock_hold_ms;
+                        runtime_lock_hold_max_ms =
+                            runtime_lock_hold_max_ms.max(token_runtime_lock_hold_ms);
+                    }
+                    if mtp_result.mtp_disabled {
+                        mtp_synced = false;
+                    }
+                    speculative_stats.observe_mtp_decode_result(&mtp_result);
+                    if committed_tokens.is_empty() {
+                        mtp_synced = false;
+                        continue;
+                    }
+                    let mut token_attrs = self.openai_attrs(request.ids);
+                    token_attrs.insert("llama_stage.decode_step".to_string(), json!(decode_step));
+                    token_attrs.insert(
+                        "llama_stage.decode_token_phase".to_string(),
+                        json!(decode_token_phase(
+                            u32::try_from(decode_step).unwrap_or(u32::MAX)
+                        )),
+                    );
+                    token_attrs.insert(
+                        "llama_stage.stage0_compute_ms".to_string(),
+                        json!(token_timer.elapsed_ms()),
+                    );
+                    token_attrs.insert(
+                        "llama_stage.decode_call_ms".to_string(),
+                        json!(mtp_result.target_decode_ms),
+                    );
+                    token_attrs.insert("llama_stage.signal_ms".to_string(), json!(token_signal_ms));
+                    token_attrs.insert(
+                        "llama_stage.runtime_lock_wait_ms".to_string(),
+                        json!(token_runtime_lock_wait_ms),
+                    );
+                    token_attrs.insert(
+                        "llama_stage.runtime_lock_hold_ms".to_string(),
+                        json!(token_runtime_lock_hold_ms),
+                    );
+                    token_attrs.insert(
+                        "llama_stage.predicted_token".to_string(),
+                        json!(committed_tokens.last().copied().unwrap_or(current)),
+                    );
+                    token_attrs.insert(
+                        "llama_stage.message_kind".to_string(),
+                        json!("MtpGenerateSpan"),
+                    );
+                    self.emit_openai_phase("stage.openai_decode_token", token_timer, token_attrs);
+                    let mut stop_requested = false;
+                    for token in committed_tokens {
+                        current = token;
+                        decoded_tokens += 1;
+                        if on_token(current)? == TokenControl::Stop {
+                            stop_requested = true;
+                            break;
+                        }
+                        if decoded_tokens >= request.max_tokens as usize {
+                            break;
+                        }
+                    }
+                    if stop_requested {
+                        break;
+                    }
+                    continue;
+                }
+                if request.mtp && mtp_synced {
+                    let decode_step = decoded_tokens;
+                    let token_timer = PhaseTimer::start();
+                    let input_token = current;
+                    let remaining = request.max_tokens as usize - decoded_tokens;
+                    let token_runtime_lock_wait_ms;
+                    let token_runtime_lock_hold_ms;
+                    let token_signal_ms;
+                    let token_signal;
+                    let signal_window;
+                    let committed_tokens;
+                    let mtp_result;
+                    {
+                        let lock_timer = PhaseTimer::start();
+                        let mut runtime = self
+                            .runtime
+                            .lock()
+                            .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
+                        let lock_wait_ms = lock_timer.elapsed_ms();
+                        token_runtime_lock_wait_ms = lock_wait_ms;
+                        runtime_lock_wait_ms += lock_wait_ms;
+                        runtime_lock_wait_max_ms = runtime_lock_wait_max_ms.max(lock_wait_ms);
+                        runtime_lock_acquires += 1;
+                        let hold_timer = PhaseTimer::start();
+                        runtime_sessions_before.get_or_insert_with(|| runtime.session_stats());
+                        (committed_tokens, mtp_result) = runtime
+                            .mtp_decode_step(
+                                &session_id,
+                                input_token,
+                                request.sampling.enabled.then_some(request.sampling),
+                                remaining,
+                                request.mtp_window.max(1).min(remaining.saturating_sub(1)),
+                                mtp_synced,
+                            )
+                            .map_err(openai_backend_error)?;
+                        let signal_timer = PhaseTimer::start();
+                        token_signal = runtime.last_token_signal(&session_id).ok();
+                        signal_window = runtime.signal_window(&session_id, 16).ok();
+                        token_signal_ms = signal_timer.elapsed_ms();
+                        runtime_sessions_after = Some(runtime.session_stats());
+                        token_runtime_lock_hold_ms = hold_timer.elapsed_ms();
+                        runtime_lock_hold_ms += token_runtime_lock_hold_ms;
+                        runtime_lock_hold_max_ms =
+                            runtime_lock_hold_max_ms.max(token_runtime_lock_hold_ms);
+                    }
+                    if mtp_result.mtp_disabled {
+                        mtp_synced = false;
+                    }
+                    speculative_stats.observe_mtp_decode_result(&mtp_result);
+                    if let Some(injected_current) = self.maybe_run_generation_hooks(
+                        &session_id,
+                        &mut hook_request,
+                        hook_runtime.as_ref(),
+                        decoded_tokens,
+                        &mut post_prefill_hook_checked,
+                        &mut last_mid_generation_hook_at,
+                        token_signal,
+                        signal_window,
+                    )? {
+                        current = injected_current;
+                        continue;
+                    }
+                    let mut token_attrs = self.openai_attrs(request.ids);
+                    token_attrs.insert("llama_stage.decode_step".to_string(), json!(decode_step));
+                    token_attrs.insert(
+                        "llama_stage.decode_token_phase".to_string(),
+                        json!(decode_token_phase(
+                            u32::try_from(decode_step).unwrap_or(u32::MAX)
+                        )),
+                    );
+                    token_attrs.insert(
+                        "llama_stage.stage0_compute_ms".to_string(),
+                        json!(token_timer.elapsed_ms()),
+                    );
+                    token_attrs.insert(
+                        "llama_stage.decode_call_ms".to_string(),
+                        json!(mtp_result.target_decode_ms),
+                    );
+                    token_attrs.insert("llama_stage.signal_ms".to_string(), json!(token_signal_ms));
+                    token_attrs.insert(
+                        "llama_stage.runtime_lock_wait_ms".to_string(),
+                        json!(token_runtime_lock_wait_ms),
+                    );
+                    token_attrs.insert(
+                        "llama_stage.runtime_lock_hold_ms".to_string(),
+                        json!(token_runtime_lock_hold_ms),
+                    );
+                    token_attrs.insert(
+                        "llama_stage.predicted_token".to_string(),
+                        json!(committed_tokens.last().copied().unwrap_or(current)),
+                    );
+                    token_attrs.insert(
+                        "llama_stage.message_kind".to_string(),
+                        json!("MtpDecodeStep"),
+                    );
+                    self.emit_openai_phase("stage.openai_decode_token", token_timer, token_attrs);
+                    let mut stop_requested = false;
+                    for token in committed_tokens {
+                        current = token;
+                        decoded_tokens += 1;
+                        if on_token(current)? == TokenControl::Stop {
+                            stop_requested = true;
+                            break;
+                        }
+                        if decoded_tokens >= request.max_tokens as usize {
+                            break;
+                        }
+                    }
+                    if stop_requested {
+                        break;
+                    }
+                    continue;
+                }
                 let decode_step = decoded_tokens;
                 let token_timer = PhaseTimer::start();
+                let input_token = current;
+                let input_position = request
+                    .prompt_token_ids
+                    .len()
+                    .saturating_add(decoded_tokens);
                 let token_runtime_lock_wait_ms;
                 let token_runtime_lock_hold_ms;
                 let token_decode_ms;
@@ -396,7 +650,7 @@ impl StageOpenAiBackend {
                     let predicted = runtime
                         .decode_sampled(
                             &session_id,
-                            current,
+                            input_token,
                             request.sampling.enabled.then_some(request.sampling),
                         )
                         .map_err(openai_backend_error)?;
@@ -405,6 +659,17 @@ impl StageOpenAiBackend {
                     } else {
                         0.0
                     };
+                    if request.mtp && mtp_synced {
+                        runtime
+                            .mtp_ingest(
+                                &session_id,
+                                &[input_token],
+                                u32::try_from(input_position).map_err(|_| {
+                                    OpenAiError::backend("MTP decode position exceeds u32")
+                                })?,
+                            )
+                            .map_err(openai_backend_error)?;
+                    }
                     if generation_hooks_active {
                         let signal_timer = PhaseTimer::start();
                         token_signal = runtime.last_token_signal(&session_id).ok();
@@ -476,6 +741,151 @@ impl StageOpenAiBackend {
                 if on_token(current)? == TokenControl::Stop {
                     break;
                 }
+                if request.mtp && mtp_synced && decoded_tokens < request.max_tokens as usize {
+                    let remaining = request.max_tokens as usize - decoded_tokens;
+                    let proposal_limit = remaining.min(request.mtp_window.max(1));
+                    let propose_timer = PhaseTimer::start();
+                    let draft_tokens = {
+                        let mut runtime = self
+                            .runtime
+                            .lock()
+                            .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
+                        runtime
+                            .mtp_draft_synced(
+                                &session_id,
+                                current,
+                                u32::try_from(request.prompt_token_ids.len() + decoded_tokens)
+                                    .map_err(|_| {
+                                        OpenAiError::backend("MTP position exceeds u32")
+                                    })?,
+                                proposal_limit,
+                            )
+                            .map_err(openai_backend_error)?
+                    };
+                    speculative_stats.draft_propose_ms += propose_timer.elapsed_ms();
+                    speculative_stats.mtp_propose_ms += propose_timer.elapsed_ms();
+                    if draft_tokens.len() > 1 {
+                        let verify_inputs = verify_inputs_for_proposals(current, &draft_tokens);
+                        let verify_timer = PhaseTimer::start();
+                        let predicted_tokens = {
+                            let mut runtime = self
+                                .runtime
+                                .lock()
+                                .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
+                            runtime
+                                .checkpoint_session(&session_id)
+                                .map_err(openai_backend_error)?;
+                            let predicted_tokens = runtime
+                                .verify_tokens(&session_id, &verify_inputs)
+                                .map_err(openai_backend_error)?;
+                            predicted_tokens
+                        };
+                        speculative_stats.windows += 1;
+                        speculative_stats.draft_tokens += draft_tokens.len();
+                        speculative_stats.primary_verify_requests += 1;
+                        speculative_stats.primary_verify_tokens += verify_inputs.len();
+                        speculative_stats.primary_verify_elapsed_ms += verify_timer.elapsed_ms();
+                        let mut adaptive_window = request.mtp_window.max(1);
+                        let decision = classify_verify_span(
+                            &draft_tokens,
+                            &predicted_tokens,
+                            decoded_tokens,
+                            request.max_tokens as usize,
+                            |token| token_is_eog_with_runtime(&self.runtime, token),
+                        )?;
+                        speculative_stats.observe_verify_decision(
+                            decision,
+                            &mut adaptive_window,
+                            false,
+                            request.mtp_window.max(1),
+                        );
+                        if matches!(
+                            decision.kind,
+                            VerifySpanDecisionKind::FullAccept
+                                | VerifySpanDecisionKind::TailReject
+                                | VerifySpanDecisionKind::AcceptedStop
+                        ) {
+                            let mut runtime = self
+                                .runtime
+                                .lock()
+                                .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
+                            runtime
+                                .mtp_ingest(
+                                    &session_id,
+                                    &verify_inputs,
+                                    u32::try_from(request.prompt_token_ids.len() + decoded_tokens)
+                                        .map_err(|_| {
+                                            OpenAiError::backend("MTP verify position exceeds u32")
+                                        })?,
+                                )
+                                .map_err(openai_backend_error)?;
+                        } else {
+                            mtp_synced = false;
+                        }
+                        let mut commit_tokens = predicted_tokens[..decision.commit_count].to_vec();
+                        if decision.requires_repair() {
+                            mtp_synced = false;
+                            speculative_stats.recovery_restores += 1;
+                            {
+                                let mut runtime = self
+                                    .runtime
+                                    .lock()
+                                    .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
+                                runtime
+                                    .restore_session(&session_id)
+                                    .map_err(openai_backend_error)?;
+                            }
+                            let repair_input_count =
+                                decision.repair_input_count.ok_or_else(|| {
+                                    OpenAiError::backend("missing local MTP repair count")
+                                })?;
+                            if repair_input_count == 1 {
+                                let repaired = {
+                                    let mut runtime = self.runtime.lock().map_err(|_| {
+                                        OpenAiError::backend("runtime lock poisoned")
+                                    })?;
+                                    runtime
+                                        .decode_sampled(
+                                            &session_id,
+                                            current,
+                                            request.sampling.enabled.then_some(request.sampling),
+                                        )
+                                        .map_err(openai_backend_error)?
+                                };
+                                commit_tokens = vec![repaired];
+                                speculative_stats.recovery_decode_repairs += 1;
+                            } else {
+                                let repaired_predictions = {
+                                    let mut runtime = self.runtime.lock().map_err(|_| {
+                                        OpenAiError::backend("runtime lock poisoned")
+                                    })?;
+                                    runtime
+                                        .verify_tokens(
+                                            &session_id,
+                                            &verify_inputs[..repair_input_count],
+                                        )
+                                        .map_err(openai_backend_error)?
+                                };
+                                commit_tokens = repaired_commit_tokens(
+                                    &draft_tokens,
+                                    decision.accepted_before_reject,
+                                    repair_input_count,
+                                    &repaired_predictions,
+                                )?;
+                                speculative_stats.recovery_reverify_tokens += repair_input_count;
+                            }
+                        }
+                        for token in commit_tokens {
+                            current = token;
+                            decoded_tokens += 1;
+                            if on_token(current)? == TokenControl::Stop
+                                || decoded_tokens >= request.max_tokens as usize
+                            {
+                                break;
+                            }
+                        }
+                    }
+                }
             }
             if emit_token_debug {
                 let mut attrs = self.openai_attrs(request.ids);
@@ -517,8 +927,10 @@ impl StageOpenAiBackend {
                         stats,
                     );
                 }
+                speculative_stats.insert_attrs(&mut attrs);
                 self.emit_openai_phase("stage.openai_decode", decode_timer, attrs);
             }
+            cache_stats.speculative_stats = speculative_stats;
             Ok(())
         })();
         let lock_timer = PhaseTimer::start();

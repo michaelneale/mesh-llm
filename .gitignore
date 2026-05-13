@@ -11,6 +11,9 @@ mesh-bundle.tar.gz
 .DS_Store
 crates/mesh-llm-ui/dist/
 evals/results/
+experiments/mtp/models/
+experiments/mtp/work/
+experiments/mtp/mtp-skippy-*/
 .sisyphus/
 .playwright-mcp/
 .envrc

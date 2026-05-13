@@ -20,8 +20,8 @@ use skippy_metrics::{attr, metric};
 
 use crate::{
     model::{
-        Report, RequestRecord, RunRecord, RunStatusResponse, SpanRecord, StageRecord,
-        StageRequestSummary, TelemetryLossReport,
+        Report, RequestRecord, RunRecord, RunStatusResponse, SpanRecord, SpeculationReport,
+        StageRecord, StageRequestSummary, TelemetryLossReport,
     },
     otlp_value::{
         attribute_string, attribute_string_from_value, attributes_to_json, bytes_to_hex,
@@ -281,6 +281,7 @@ impl Store {
             run,
             counts,
             telemetry_loss: telemetry_loss_report(&conn, run_id)?,
+            speculation: speculation_report(&conn, run_id)?,
             requests: request_records(&conn, run_id)?,
             stages: stage_records(&conn, run_id)?,
             stage_request_summaries: stage_request_summary_records(&conn, run_id)?,
@@ -711,6 +712,78 @@ fn telemetry_loss_report(conn: &Connection, run_id: &str) -> Result<TelemetryLos
     })
 }
 
+fn speculation_report(conn: &Connection, run_id: &str) -> Result<SpeculationReport> {
+    let mut stmt = conn.prepare(
+        "SELECT attributes_json FROM spans
+         WHERE run_id = ? AND name = 'stage.openai_generation_summary'",
+    )?;
+    let rows = stmt.query_map(params![run_id], |row| row.get::<_, String>(0))?;
+    let mut report = SpeculationReport::default();
+    for row in rows {
+        let attributes_json = row?;
+        let attributes: Value = serde_json::from_str(&attributes_json).unwrap_or(Value::Null);
+        report.decode_spans += 1;
+        if !attributes
+            .get("llama_stage.spec.enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        report.enabled_decode_spans += 1;
+        report.windows += json_i64(&attributes, "llama_stage.spec.windows");
+        report.proposed_tokens += json_i64(&attributes, "llama_stage.spec.proposed");
+        report.accepted_tokens += json_i64(&attributes, "llama_stage.spec.accepted");
+        report.rejected_tokens += json_i64(&attributes, "llama_stage.spec.rejected");
+        report.full_accept_windows += json_i64(&attributes, "llama_stage.spec.full_accept_windows");
+        report.accepted_stop_windows +=
+            json_i64(&attributes, "llama_stage.spec.accepted_stop_windows");
+        report.rejected_windows += json_i64(&attributes, "llama_stage.spec.rejected_windows");
+        report.early_reject_windows +=
+            json_i64(&attributes, "llama_stage.spec.early_reject_windows");
+        report.tail_reject_windows += json_i64(&attributes, "llama_stage.spec.tail_reject_windows");
+        report.repair_required_windows +=
+            json_i64(&attributes, "llama_stage.spec.repair_required_windows");
+        report.draft_propose_ms += json_f64(&attributes, "llama_stage.spec.draft_propose_ms");
+        report.mtp_propose_ms += json_f64(&attributes, "llama_stage.spec.mtp_propose_ms");
+        report.mtp_ingest_ms += json_f64(&attributes, "llama_stage.spec.mtp_ingest_ms");
+        report.primary_verify_elapsed_ms +=
+            json_f64(&attributes, "llama_stage.spec.primary_verify_elapsed_ms");
+        report.checkpoint_ms += json_f64(&attributes, "llama_stage.spec.checkpoint_ms");
+        report.recovery_ms += json_f64(&attributes, "llama_stage.spec.recovery_ms");
+        report.fused_target_decode_calls +=
+            json_i64(&attributes, "llama_stage.spec.fused_target_decode_calls");
+        report.fused_target_verify_decode_calls += json_i64(
+            &attributes,
+            "llama_stage.spec.fused_target_verify_decode_calls",
+        );
+        report.fused_target_verify_tokens +=
+            json_i64(&attributes, "llama_stage.spec.fused_target_verify_tokens");
+        report.fused_target_repair_decode_calls += json_i64(
+            &attributes,
+            "llama_stage.spec.fused_target_repair_decode_calls",
+        );
+        report.fused_target_repair_tokens +=
+            json_i64(&attributes, "llama_stage.spec.fused_target_repair_tokens");
+        report.fused_mtp_ingest_calls +=
+            json_i64(&attributes, "llama_stage.spec.fused_mtp_ingest_calls");
+        report.fused_mtp_ingest_tokens +=
+            json_i64(&attributes, "llama_stage.spec.fused_mtp_ingest_tokens");
+        report.fused_mtp_draft_calls +=
+            json_i64(&attributes, "llama_stage.spec.fused_mtp_draft_calls");
+        report.fused_mtp_draft_decode_calls +=
+            json_i64(&attributes, "llama_stage.spec.fused_mtp_draft_decode_calls");
+        report.fused_mtp_draft_tokens +=
+            json_i64(&attributes, "llama_stage.spec.fused_mtp_draft_tokens");
+        report.fused_checkpoint_calls +=
+            json_i64(&attributes, "llama_stage.spec.fused_checkpoint_calls");
+        report.fused_restore_calls += json_i64(&attributes, "llama_stage.spec.fused_restore_calls");
+    }
+    report.accept_rate = (report.proposed_tokens > 0)
+        .then_some(report.accepted_tokens as f64 / report.proposed_tokens as f64);
+    Ok(report)
+}
+
 fn max_span_i64_attribute(conn: &Connection, run_id: &str, key: &str) -> Result<i64> {
     let mut stmt = conn.prepare("SELECT attributes_json FROM spans WHERE run_id = ?")?;
     let rows = stmt.query_map(params![run_id], |row| row.get::<_, String>(0))?;
@@ -723,6 +796,23 @@ fn max_span_i64_attribute(conn: &Connection, run_id: &str, key: &str) -> Result<
         }
     }
     Ok(max_value)
+}
+
+fn json_i64(attributes: &Value, key: &str) -> i64 {
+    attributes
+        .get(key)
+        .and_then(Value::as_i64)
+        .or_else(|| {
+            attributes
+                .get(key)
+                .and_then(Value::as_u64)
+                .and_then(|value| i64::try_from(value).ok())
+        })
+        .unwrap_or(0)
+}
+
+fn json_f64(attributes: &Value, key: &str) -> f64 {
+    attributes.get(key).and_then(Value::as_f64).unwrap_or(0.0)
 }
 
 fn collect_rows<T>(

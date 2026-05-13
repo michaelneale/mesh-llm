@@ -1,0 +1,2536 @@
+From 9bca3fdf8529e6417e7aa88bb84157263a82bc55 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Tue, 12 May 2026 19:21:16 +1000
+Subject: [PATCH] Expose Qwen MTP head for Skippy
+
+---
+ convert_hf_to_gguf.py        |  61 ++-
+ gguf-py/gguf/constants.py    |  18 +-
+ include/llama.h              |   3 +
+ include/skippy/mtp.h         | 209 ++++++++
+ src/llama-arch.cpp           |  19 +-
+ src/llama-arch.h             |   2 +
+ src/llama-context.cpp        | 117 ++++-
+ src/llama-context.h          |   9 +
+ src/llama-cparams.h          |   1 +
+ src/llama-ext.h              |  16 +
+ src/llama-graph.cpp          |   4 +
+ src/llama-graph.h            |   3 +
+ src/llama-hparams.cpp        |   6 +
+ src/llama-hparams.h          |   2 +
+ src/llama-model-loader.cpp   |  13 +-
+ src/llama-model-loader.h     |   2 +-
+ src/llama-model.cpp          |  19 +-
+ src/models/models.h          |  26 +
+ src/models/qwen35-mtp.cpp    | 207 ++++++++
+ src/models/qwen35.cpp        |  26 +-
+ src/models/qwen35moe-mtp.cpp | 252 ++++++++++
+ src/models/qwen35moe.cpp     |  26 +-
+ src/skippy.cpp               | 903 +++++++++++++++++++++++++++++++++++
+ tests/test-llama-archs.cpp   |   3 +
+ 24 files changed, 1910 insertions(+), 37 deletions(-)
+ create mode 100644 include/skippy/mtp.h
+ create mode 100644 src/models/qwen35-mtp.cpp
+ create mode 100644 src/models/qwen35moe-mtp.cpp
+
+diff --git a/convert_hf_to_gguf.py b/convert_hf_to_gguf.py
+index e5dea18a..ccfa2e5e 100755
+--- a/convert_hf_to_gguf.py
++++ b/convert_hf_to_gguf.py
+@@ -5521,13 +5521,70 @@ class _Qwen35MRopeMixin:
+             self.gguf_writer.add_rope_dimension_sections(self._QWEN35_DEFAULT_MROPE_SECTION)
+ 
+ 
++class _Qwen35MtpMixin:
++    """Shared MTP wiring for Qwen3.5/3.6 text variants. The HF config carries
++    the MTP block under `mtp_num_hidden_layers` and the tensors under
++    `mtp.*`; we extend block_count, emit the nextn metadata key, and remap
++    `mtp.*` to the standard layer-indexed nextn naming so the existing
++    tensor_map handles them."""
++
++    # Class-level annotations so the type checker understands the attributes
++    # available on the concrete subclasses in the MRO
++    hparams: dict[str, Any]
++    model_arch: gguf.MODEL_ARCH
++    gguf_writer: gguf.GGUFWriter
++    block_count: int
++    tensor_map: gguf.TensorNameMap
++
++    def __init__(self, *args, **kwargs):
++        super().__init__(*args, **kwargs)
++        self.block_count = self.hparams["num_hidden_layers"] + self.hparams.get("mtp_num_hidden_layers", 0)
++        self.tensor_map = gguf.get_tensor_name_map(self.model_arch, self.block_count)
++
++    def set_gguf_parameters(self):
++        super().set_gguf_parameters()  # ty: ignore[unresolved-attribute]
++        if (n := self.hparams.get("mtp_num_hidden_layers", 0)) > 0:
++            self.gguf_writer.add_nextn_predict_layers(n)
++
++    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
++        # Multimodal Qwen3.5/3.6 wrap the text model under `model.language_model.*`.
++        if name.startswith("model.language_model."):
++            name = "model." + name[len("model.language_model."):]
++        elif name.startswith("language_model."):
++            name = name[len("language_model."):]
++
++        # Remap MTP block tensors to llama.cpp's layer-indexed nextn naming.
++        # HF: mtp.layers.0.*  (transformer block at MTP slot 0)
++        #     mtp.fc / mtp.pre_fc_norm_embedding / mtp.pre_fc_norm_hidden / mtp.norm
++        if name.startswith("mtp."):
++            n_layer = self.hparams["num_hidden_layers"]
++            if name.find("layers.") != -1:
++                assert bid is not None
++                name = name.replace(f"mtp.layers.{bid}", f"model.layers.{bid + n_layer}")
++            else:
++                remapper = {
++                    "mtp.fc":                    "model.layers.{bid}.eh_proj",
++                    "mtp.pre_fc_norm_embedding": "model.layers.{bid}.enorm",
++                    "mtp.pre_fc_norm_hidden":    "model.layers.{bid}.hnorm",
++                    "mtp.norm":                  "model.layers.{bid}.shared_head.norm",
++                }
++                stem   = Path(name).stem
++                suffix = Path(name).suffix
++                tmpl   = remapper[stem] + suffix
++                for b in range(n_layer, self.block_count):
++                    yield from super().modify_tensors(data_torch, tmpl.format(bid=b), b)  # ty: ignore[unresolved-attribute]
++                return
++
++        yield from super().modify_tensors(data_torch, name, bid)  # ty: ignore[unresolved-attribute]
++
++
+ @ModelBase.register("Qwen3_5ForConditionalGeneration", "Qwen3_5ForCausalLM")
+-class Qwen3_5TextModel(_Qwen35MRopeMixin, _LinearAttentionVReorderBase):
++class Qwen3_5TextModel(_Qwen35MtpMixin, _Qwen35MRopeMixin, _LinearAttentionVReorderBase):
+     model_arch = gguf.MODEL_ARCH.QWEN35
+ 
+ 
+ @ModelBase.register("Qwen3_5MoeForConditionalGeneration", "Qwen3_5MoeForCausalLM")
+-class Qwen3_5MoeTextModel(_Qwen35MRopeMixin, _LinearAttentionVReorderBase):
++class Qwen3_5MoeTextModel(_Qwen35MtpMixin, _Qwen35MRopeMixin, _LinearAttentionVReorderBase):
+     model_arch = gguf.MODEL_ARCH.QWEN35MOE
+ 
+ 
+diff --git a/gguf-py/gguf/constants.py b/gguf-py/gguf/constants.py
+index 617cbc49..4ef66c2d 100644
+--- a/gguf-py/gguf/constants.py
++++ b/gguf-py/gguf/constants.py
+@@ -2109,7 +2109,14 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
+         MODEL_TENSOR.SSM_NORM,
+         MODEL_TENSOR.SSM_BETA,
+         MODEL_TENSOR.SSM_ALPHA,
+-        MODEL_TENSOR.SSM_OUT
++        MODEL_TENSOR.SSM_OUT,
++        # NextN/MTP tensors - preserved but unused
++        MODEL_TENSOR.NEXTN_EH_PROJ,
++        MODEL_TENSOR.NEXTN_EMBED_TOKENS,
++        MODEL_TENSOR.NEXTN_ENORM,
++        MODEL_TENSOR.NEXTN_HNORM,
++        MODEL_TENSOR.NEXTN_SHARED_HEAD_HEAD,
++        MODEL_TENSOR.NEXTN_SHARED_HEAD_NORM,
+     ],
+     MODEL_ARCH.QWEN35MOE: [
+         MODEL_TENSOR.TOKEN_EMBD,
+@@ -2140,7 +2147,14 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
+         MODEL_TENSOR.SSM_NORM,
+         MODEL_TENSOR.SSM_BETA,
+         MODEL_TENSOR.SSM_ALPHA,
+-        MODEL_TENSOR.SSM_OUT
++        MODEL_TENSOR.SSM_OUT,
++        # NextN/MTP tensors - preserved but unused
++        MODEL_TENSOR.NEXTN_EH_PROJ,
++        MODEL_TENSOR.NEXTN_EMBED_TOKENS,
++        MODEL_TENSOR.NEXTN_ENORM,
++        MODEL_TENSOR.NEXTN_HNORM,
++        MODEL_TENSOR.NEXTN_SHARED_HEAD_HEAD,
++        MODEL_TENSOR.NEXTN_SHARED_HEAD_NORM,
+     ],
+     MODEL_ARCH.PLAMO: [
+         MODEL_TENSOR.TOKEN_EMBD,
+diff --git a/include/llama.h b/include/llama.h
+index 111f569e..22f4c5b4 100644
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -310,6 +310,9 @@ extern "C" {
+         // override key-value pairs of the model meta data
+         const struct llama_model_kv_override * kv_overrides;
+ 
++        // override architecture from GGUF (e.g. load the MTP head of a Qwen3.5 GGUF as "qwen35_mtp")
++        const char * override_arch;
++
+         // Keep the booleans together to avoid misalignment during copy-by-value.
+         bool vocab_only;      // only load the vocabulary, no weights
+         bool use_mmap;        // use mmap if possible
+diff --git a/include/skippy/mtp.h b/include/skippy/mtp.h
+new file mode 100644
+index 00000000..5c47c961
+--- /dev/null
++++ b/include/skippy/mtp.h
+@@ -0,0 +1,209 @@
++#ifndef SKIPPY_MTP_ABI_H
++#define SKIPPY_MTP_ABI_H
++
++#include "skippy.h"
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++// Experimental ABI for Skippy-owned MTP integration.
++//
++// The MTP head is loaded from the same GGUF as the target trunk and consumes
++// target hidden state before the final output norm. Keep this surface separate
++// from skippy.h so staged serving can feature-probe and evolve MTP without
++// changing the core stage ABI.
++
++#define SKIPPY_MTP_ABI_VERSION_MAJOR 0
++#define SKIPPY_MTP_ABI_VERSION_MINOR 1
++#define SKIPPY_MTP_ABI_VERSION_PATCH 0
++
++struct skippy_mtp_abi_version {
++    uint32_t major;
++    uint32_t minor;
++    uint32_t patch;
++};
++
++struct skippy_mtp_head;
++struct skippy_mtp_session;
++
++struct skippy_mtp_params {
++    uint32_t version;
++    uint32_t n_min;
++    uint32_t n_max;
++    uint32_t top_k;
++    float p_min;
++};
++
++struct skippy_mtp_draft_result {
++    uint32_t version;
++    uint32_t token_count;
++    uint32_t accepted_floor;
++    uint32_t reserved;
++};
++
++struct skippy_mtp_decode_result {
++    uint32_t version;
++    uint32_t committed_count;
++    uint32_t proposed_tokens;
++    uint32_t accepted_tokens;
++    uint32_t rejected_tokens;
++    uint32_t windows;
++    uint32_t full_accept_windows;
++    uint32_t tail_reject_windows;
++    uint32_t early_reject_windows;
++    uint32_t repair_required_windows;
++    uint32_t rejected_windows;
++    uint32_t mtp_disabled;
++    uint32_t target_decode_calls;
++    uint32_t target_verify_decode_calls;
++    uint32_t target_verify_tokens;
++    uint32_t target_repair_decode_calls;
++    uint32_t target_repair_tokens;
++    uint32_t mtp_ingest_calls;
++    uint32_t mtp_ingest_tokens;
++    uint32_t mtp_draft_calls;
++    uint32_t mtp_draft_decode_calls;
++    uint32_t mtp_draft_tokens;
++    uint32_t checkpoint_calls;
++    uint32_t restore_calls;
++    uint32_t reserved[2];
++    double target_decode_ms;
++    double mtp_ingest_ms;
++    double mtp_propose_ms;
++    double primary_verify_ms;
++    double repair_ms;
++    double checkpoint_ms;
++    double restore_ms;
++};
++
++LLAMA_API struct skippy_mtp_abi_version skippy_mtp_abi_version(void);
++
++// Returns true when the loaded target model advertises a Qwen3.5/3.6 MTP head
++// that the patched llama.cpp backend can load as a sibling architecture.
++LLAMA_API bool skippy_mtp_model_supports_head(const struct skippy_model * model);
++
++// Enable or disable extraction of trunk h_pre_norm rows from a final-stage
++// session. This must be enabled before the decode call whose hidden rows will
++// be copied.
++LLAMA_API enum skippy_status skippy_mtp_session_set_capture_pre_norm(
++        struct skippy_session * session,
++        bool enabled,
++        struct skippy_error ** out_error);
++
++// Copy the most recent h_pre_norm output rows from a final-stage session.
++// The output buffer is F32 token-major with token_count * n_embd floats.
++LLAMA_API enum skippy_status skippy_mtp_session_copy_pre_norm(
++        struct skippy_session * session,
++        uint32_t token_count,
++        void * output_payload,
++        size_t output_capacity,
++        size_t * out_output_bytes,
++        struct skippy_error ** out_error);
++
++// Open the sibling MTP head from the same GGUF as the target trunk. The caller
++// owns the returned head and must free it with skippy_mtp_head_free.
++LLAMA_API enum skippy_status skippy_mtp_head_open(
++        const char * path,
++        const struct skippy_runtime_config * target_config,
++        const struct skippy_mtp_params * params,
++        struct skippy_mtp_head ** out_head,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_mtp_head_free(
++        struct skippy_mtp_head * head,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_mtp_session_create(
++        struct skippy_mtp_head * head,
++        struct skippy_mtp_session ** out_session,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_mtp_session_free(
++        struct skippy_mtp_session * session,
++        struct skippy_error ** out_error);
++
++// Reset the sibling MTP context before synchronizing a new request.
++LLAMA_API enum skippy_status skippy_mtp_session_reset(
++        struct skippy_mtp_session * session,
++        struct skippy_error ** out_error);
++
++// Synchronize the sibling MTP context with target-model execution. The hidden
++// rows are F32 token-major h_pre_norm rows captured from the target context for
++// the same token batch. The MTP context consumes each token with the previous
++// token's hidden row, matching llama.cpp's common_speculative_state_mtp hook.
++LLAMA_API enum skippy_status skippy_mtp_session_ingest(
++        struct skippy_mtp_session * session,
++        const llama_token * token_ids,
++        size_t token_count,
++        const void * h_pre_norm_f32,
++        size_t h_pre_norm_bytes,
++        llama_pos pos_start,
++        struct skippy_error ** out_error);
++
++// Draft future tokens from a trunk h_pre_norm row plus the last accepted token.
++// This function is intentionally shaped for final-stage-local use: callers pass
++// the F32 hidden row that was captured from the target session.
++LLAMA_API enum skippy_status skippy_mtp_session_draft(
++        struct skippy_mtp_session * session,
++        const void * h_pre_norm_f32,
++        size_t h_pre_norm_bytes,
++        llama_token last_token,
++        llama_pos position,
++        llama_token * output_tokens,
++        size_t output_token_capacity,
++        struct skippy_mtp_draft_result * out_result,
++        struct skippy_error ** out_error);
++
++// Draft future tokens from an already synchronized MTP context.
++LLAMA_API enum skippy_status skippy_mtp_session_draft_synced(
++        struct skippy_mtp_session * session,
++        llama_token last_token,
++        llama_pos position,
++        llama_token * output_tokens,
++        size_t output_token_capacity,
++        struct skippy_mtp_draft_result * out_result,
++        struct skippy_error ** out_error);
++
++// Decode one target token, optionally run a local in-process MTP speculative
++// window, verify proposals on the target context, and return committed tokens.
++// This is the fast path for final-stage-local serving; distributed serving can
++// continue to use the explicit draft/verify ABI above.
++LLAMA_API enum skippy_status skippy_mtp_decode_step(
++        struct skippy_session * target_session,
++        struct skippy_mtp_session * mtp_session,
++        llama_token input_token,
++        const struct skippy_sampling_config * sampling,
++        size_t max_new_tokens,
++        size_t max_speculative_tokens,
++        bool mtp_enabled,
++        llama_token * output_tokens,
++        size_t output_token_capacity,
++        struct skippy_mtp_decode_result * out_result,
++        struct skippy_error ** out_error);
++
++// Decode a contiguous local MTP span in one native call. This repeatedly runs
++// the fused decode-step contract above, feeding each committed token back into
++// the target session, and accumulates counters/timers into out_result.
++LLAMA_API enum skippy_status skippy_mtp_generate_span(
++        struct skippy_session * target_session,
++        struct skippy_mtp_session * mtp_session,
++        llama_token input_token,
++        const struct skippy_sampling_config * sampling,
++        size_t max_new_tokens,
++        size_t max_speculative_tokens,
++        bool mtp_enabled,
++        llama_token * output_tokens,
++        size_t output_token_capacity,
++        struct skippy_mtp_decode_result * out_result,
++        struct skippy_error ** out_error);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
+diff --git a/src/llama-arch.cpp b/src/llama-arch.cpp
+index 59dde99e..794666d0 100644
+--- a/src/llama-arch.cpp
++++ b/src/llama-arch.cpp
+@@ -41,6 +41,8 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
+     { LLM_ARCH_QWEN3VLMOE,       "qwen3vlmoe"       },
+     { LLM_ARCH_QWEN35,           "qwen35"           },
+     { LLM_ARCH_QWEN35MOE,        "qwen35moe"        },
++    { LLM_ARCH_QWEN35_MTP,       "qwen35_mtp"       },
++    { LLM_ARCH_QWEN35MOE_MTP,    "qwen35moe_mtp"    },
+     { LLM_ARCH_PHI2,             "phi2"             },
+     { LLM_ARCH_PHI3,             "phi3"             },
+     { LLM_ARCH_PHIMOE,           "phimoe"           },
+@@ -757,14 +759,15 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
+     {LLM_TENSOR_INDEXER_PROJ,               {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+     {LLM_TENSOR_INDEXER_ATTN_K,             {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+     {LLM_TENSOR_INDEXER_ATTN_Q_B,           {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+-    // NextN/MTP tensors are currently ignored (reserved for future MTP support)
+-    // These tensors only exist in the last layer(s) and are treated as output tensors
+-    {LLM_TENSOR_NEXTN_EH_PROJ,              {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT}},
+-    {LLM_TENSOR_NEXTN_EMBED_TOKENS,         {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_GET_ROWS}},
+-    {LLM_TENSOR_NEXTN_ENORM,                {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_GET_ROWS}},
+-    {LLM_TENSOR_NEXTN_HNORM,                {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL}},
+-    {LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD,     {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT}},
+-    {LLM_TENSOR_NEXTN_SHARED_HEAD_NORM,     {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL}},
++    // NextN/MTP tensors are stored per-block (blk.%d.nextn.*) even though only the
++    // last nextn_predict_layers blocks carry them. Classify as LAYER_REPEATING so
++    // the model loader doesn't fault on the block index.
++    {LLM_TENSOR_NEXTN_EH_PROJ,              {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
++    {LLM_TENSOR_NEXTN_EMBED_TOKENS,         {LLM_TENSOR_LAYER_REPEATING, GGML_OP_GET_ROWS}},
++    {LLM_TENSOR_NEXTN_ENORM,                {LLM_TENSOR_LAYER_REPEATING, GGML_OP_GET_ROWS}},
++    {LLM_TENSOR_NEXTN_HNORM,                {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
++    {LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD,     {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
++    {LLM_TENSOR_NEXTN_SHARED_HEAD_NORM,     {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+     // Nemotron 3 Super
+     {LLM_TENSOR_FFN_LATENT_DOWN,            {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+     {LLM_TENSOR_FFN_LATENT_UP,              {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+diff --git a/src/llama-arch.h b/src/llama-arch.h
+index e37d548c..71c2ca6e 100644
+--- a/src/llama-arch.h
++++ b/src/llama-arch.h
+@@ -45,6 +45,8 @@ enum llm_arch {
+     LLM_ARCH_QWEN3VLMOE,
+     LLM_ARCH_QWEN35,
+     LLM_ARCH_QWEN35MOE,
++    LLM_ARCH_QWEN35_MTP,
++    LLM_ARCH_QWEN35MOE_MTP,
+     LLM_ARCH_PHI2,
+     LLM_ARCH_PHI3,
+     LLM_ARCH_PHIMOE,
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index a4d2d788..6a6f7412 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -49,6 +49,7 @@ llama_context::llama_context(
+     cparams.yarn_beta_fast   = params.yarn_beta_fast   >= 0.0f ? params.yarn_beta_fast   : hparams.yarn_beta_fast;
+     cparams.yarn_beta_slow   = params.yarn_beta_slow   >= 0.0f ? params.yarn_beta_slow   : hparams.yarn_beta_slow;
+     cparams.embeddings       = params.embeddings;
++    cparams.embeddings_pre_norm = false;
+     cparams.offload_kqv      = params.offload_kqv;
+     cparams.no_perf          = params.no_perf;
+     cparams.pooling_type     = params.pooling_type;
+@@ -860,6 +861,33 @@ float * llama_context::get_embeddings_seq(llama_seq_id seq_id) {
+     return it->second.data();
+ }
+ 
++float * llama_context::get_embeddings_pre_norm() {
++    output_reorder();
++
++    return embd_pre_norm.data;
++}
++
++float * llama_context::get_embeddings_pre_norm_ith(int32_t i) {
++    output_reorder();
++
++    try {
++        if (embd_pre_norm.data == nullptr) {
++            throw std::runtime_error("no pre-norm embeddings");
++        }
++
++        const int64_t j = output_resolve_row(i);
++        const uint32_t n_embd = model.hparams.n_embd;
++        return embd_pre_norm.data + j*n_embd;
++    } catch (const std::exception & err) {
++        LLAMA_LOG_ERROR("%s: invalid pre-norm embeddings id %d, reason: %s\n", __func__, i, err.what());
++#ifndef NDEBUG
++        GGML_ABORT("fatal error");
++#else
++        return nullptr;
++#endif
++    }
++}
++
+ llama_token llama_context::get_sampled_token_ith(int32_t idx) {
+     output_reorder();
+ 
+@@ -1040,6 +1068,12 @@ void llama_context::set_embeddings(bool value) {
+     //sched_need_reserve = true;
+ }
+ 
++void llama_context::set_embeddings_pre_norm(bool value) {
++    LLAMA_LOG_DEBUG("%s: value = %d\n", __func__, value);
++
++    cparams.embeddings_pre_norm = value;
++}
++
+ void llama_context::set_causal_attn(bool value) {
+     LLAMA_LOG_DEBUG("%s: value = %d\n", __func__, value);
+ 
+@@ -1241,7 +1275,9 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+ }
+ 
+ int llama_context::encode(const llama_batch & batch_inp) {
+-    GGML_ASSERT((!batch_inp.token && batch_inp.embd) || (batch_inp.token && !batch_inp.embd)); // NOLINT
++    // MTP hook batches carry both token (next-token id) and embd (h_pre_norm row),
++    // so accept either present rather than requiring exactly one.
++    GGML_ASSERT(batch_inp.token || batch_inp.embd);
+ 
+     if (batch_inp.n_tokens == 0) {
+         LLAMA_LOG_ERROR("%s: n_tokens == 0\n", __func__);
+@@ -1312,8 +1348,9 @@ int llama_context::encode(const llama_batch & batch_inp) {
+         }
+     }
+ 
+-    auto * t_logits = res->get_logits();
+-    auto * t_embd = res->get_embd_pooled() ? res->get_embd_pooled() : res->get_embd();
++    auto * t_logits        = res->get_logits();
++    auto * t_embd          = res->get_embd_pooled() ? res->get_embd_pooled() : res->get_embd();
++    auto * t_h_pre_norm    = cparams.embeddings_pre_norm ? res->get_h_pre_norm() : nullptr;
+ 
+     // extract logits
+     if (logits.data && t_logits) {
+@@ -1379,6 +1416,16 @@ int llama_context::encode(const llama_batch & batch_inp) {
+         }
+     }
+ 
++    // extract pre-norm embeddings (hidden state before the final output norm)
++    if (embd_pre_norm.data && t_h_pre_norm && cparams.pooling_type == LLAMA_POOLING_TYPE_NONE) {
++        ggml_backend_t backend_h = ggml_backend_sched_get_tensor_backend(sched.get(), t_h_pre_norm);
++        GGML_ASSERT(backend_h != nullptr);
++
++        const uint32_t n_embd = hparams.n_embd;
++        GGML_ASSERT(n_tokens*n_embd <= (int64_t) embd_pre_norm.size);
++        ggml_backend_tensor_get_async(backend_h, t_h_pre_norm, embd_pre_norm.data, 0, n_tokens*n_embd*sizeof(float));
++    }
++
+     // TODO: hacky solution
+     if (model.arch == LLM_ARCH_T5 && t_embd) {
+         //cross.t_embd = t_embd;
+@@ -1531,7 +1578,9 @@ static bool needs_raw_logits(const llama_ubatch & ubatch, const std::map<llama_s
+ }
+ 
+ int llama_context::decode(const llama_batch & batch_inp) {
+-    GGML_ASSERT((!batch_inp.token && batch_inp.embd) || (batch_inp.token && !batch_inp.embd)); // NOLINT
++    // MTP hook batches carry both token (next-token id) and embd (h_pre_norm row),
++    // so accept either present rather than requiring exactly one.
++    GGML_ASSERT(batch_inp.token || batch_inp.embd);
+ 
+     if (!memory) {
+         LLAMA_LOG_DEBUG("%s: cannot decode batches with this context (calling encode() instead)\n", __func__);
+@@ -1727,8 +1776,9 @@ int llama_context::decode(const llama_batch & batch_inp) {
+         //    ggml_graph_dump_dot(gf, NULL, "llama.dot");
+         //}
+ 
+-        auto * t_logits = res->get_logits();
+-        auto * t_embd   = cparams.embeddings ? res->get_embd() : nullptr;
++        auto * t_logits        = res->get_logits();
++        auto * t_embd          = cparams.embeddings          ? res->get_embd()        : nullptr;
++        auto * t_h_pre_norm    = cparams.embeddings_pre_norm ? res->get_h_pre_norm()  : nullptr;
+ 
+         if (t_embd && res->get_embd_pooled()) {
+             t_embd = res->get_embd_pooled();
+@@ -1809,6 +1859,20 @@ int llama_context::decode(const llama_batch & batch_inp) {
+             }
+         }
+ 
++        // extract pre-norm embeddings (hidden state before the final output norm)
++        // only meaningful in LLAMA_POOLING_TYPE_NONE (per-token); other pooling modes are ignored.
++        if (embd_pre_norm.data && t_h_pre_norm && n_outputs > 0 && cparams.pooling_type == LLAMA_POOLING_TYPE_NONE) {
++            ggml_backend_t backend_h = ggml_backend_sched_get_tensor_backend(sched.get(), t_h_pre_norm);
++            GGML_ASSERT(backend_h != nullptr);
++
++            const uint32_t n_embd = hparams.n_embd;
++            float * embd_pre_norm_out = embd_pre_norm.data + n_outputs_prev*n_embd;
++
++            GGML_ASSERT( n_outputs_prev + n_outputs <= n_outputs_all);
++            GGML_ASSERT((n_outputs_prev + n_outputs)*n_embd <= (int64_t) embd_pre_norm.size);
++            ggml_backend_tensor_get_async(backend_h, t_h_pre_norm, embd_pre_norm_out, 0, n_outputs*n_embd*sizeof(float));
++        }
++
+         // Copy backend sampling output if this ubatch produced any sampling tensors.
+         if (has_samplers && (!res->t_sampled.empty() || !res->t_sampled_probs.empty() || !res->t_sampled_logits.empty())) {
+             const auto seq_to_output_row = build_seq_to_output_row(ubatch, n_outputs_prev);
+@@ -1893,10 +1957,12 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
+ 
+     const auto n_batch    = cparams.n_batch;
+     const auto n_vocab    = vocab.n_tokens();
++    const auto n_embd     = hparams.n_embd;
+     const auto n_embd_out = hparams.n_embd_out();
+ 
+-    bool has_logits = true;
+-    bool has_embd   = cparams.embeddings;
++    bool has_logits        = true;
++    bool has_embd          = cparams.embeddings;
++    bool has_embd_pre_norm = cparams.embeddings_pre_norm;
+ 
+     // TODO: hacky enc-dec support
+     if (model.arch == LLM_ARCH_T5) {
+@@ -1908,8 +1974,9 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
+     size_t backend_float_count = 0;
+     size_t backend_token_count = 0;
+ 
+-    logits.size = has_logits ? n_vocab*n_outputs_max : 0;
+-    embd.size   = has_embd ? n_embd_out*n_outputs_max : 0;
++    logits.size        = has_logits        ? n_vocab*n_outputs_max     : 0;
++    embd.size          = has_embd          ? n_embd_out*n_outputs_max  : 0;
++    embd_pre_norm.size = has_embd_pre_norm ? n_embd*n_outputs_max      : 0;
+ 
+     // Allocate backend sampling output buffers if there are backend samplers configured.
+     const bool has_sampling = !sampling.samplers.empty();
+@@ -1925,8 +1992,8 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
+ 
+     const size_t prev_size = buf_output ? ggml_backend_buffer_get_size(buf_output.get()) : 0;
+     const size_t new_size  =
+-        (logits.size + embd.size + backend_float_count) * sizeof(float) +
+-        (                          backend_token_count) * sizeof(llama_token);
++        (logits.size + embd.size + embd_pre_norm.size + backend_float_count) * sizeof(float) +
++        (                                               backend_token_count) * sizeof(llama_token);
+ 
+     // alloc only when more than the current capacity is required
+     // TODO: also consider shrinking the buffer
+@@ -1942,6 +2009,7 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
+             buf_output = nullptr;
+             logits.data = nullptr;
+             embd.data = nullptr;
++            embd_pre_norm.data = nullptr;
+         }
+ 
+         auto * buft = ggml_backend_cpu_buffer_type();
+@@ -1970,6 +2038,9 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
+     embd = has_embd ? buffer_view<float>{(float *) (base + offset), embd.size} : buffer_view<float>{nullptr, 0};
+     offset += embd.size * sizeof(float);
+ 
++    embd_pre_norm = has_embd_pre_norm ? buffer_view<float>{(float *) (base + offset), embd_pre_norm.size} : buffer_view<float>{nullptr, 0};
++    offset += embd_pre_norm.size * sizeof(float);
++
+     if (has_sampling) {
+         sampling.logits = {(float *) (base + offset), (size_t)(n_vocab*n_outputs_max)};
+         offset += sampling.logits.size * sizeof(float);
+@@ -2034,6 +2105,12 @@ void llama_context::output_reorder() {
+             }
+         }
+ 
++        if (embd_pre_norm.size > 0) {
++            for (uint64_t k = 0; k < n_embd; k++) {
++                std::swap(embd_pre_norm.data[i0*n_embd + k], embd_pre_norm.data[i1*n_embd + k]);
++            }
++        }
++
+         if (!sampling.samplers.empty()) {
+             assert(sampling.logits.size > 0);
+             assert(sampling.probs.size > 0);
+@@ -3423,6 +3500,22 @@ float * llama_get_embeddings_seq(llama_context * ctx, llama_seq_id seq_id) {
+     return ctx->get_embeddings_seq(seq_id);
+ }
+ 
++void llama_set_embeddings_pre_norm(llama_context * ctx, bool value) {
++    ctx->set_embeddings_pre_norm(value);
++}
++
++float * llama_get_embeddings_pre_norm(llama_context * ctx) {
++    ctx->synchronize();
++
++    return ctx->get_embeddings_pre_norm();
++}
++
++float * llama_get_embeddings_pre_norm_ith(llama_context * ctx, int32_t i) {
++    ctx->synchronize();
++
++    return ctx->get_embeddings_pre_norm_ith(i);
++}
++
+ bool llama_set_sampler(llama_context * ctx, llama_seq_id seq_id, llama_sampler * smpl) {
+     return ctx->set_sampler(seq_id, smpl);
+ }
+diff --git a/src/llama-context.h b/src/llama-context.h
+index 61a7fce6..ddec2834 100644
+--- a/src/llama-context.h
++++ b/src/llama-context.h
+@@ -84,6 +84,9 @@ struct llama_context {
+     float * get_embeddings_ith(int32_t i);
+     float * get_embeddings_seq(llama_seq_id seq_id);
+ 
++    float * get_embeddings_pre_norm();
++    float * get_embeddings_pre_norm_ith(int32_t i);
++
+     llama_token * get_sampled_tokens() const;
+     llama_token   get_sampled_token_ith(int32_t idx);
+ 
+@@ -107,6 +110,7 @@ struct llama_context {
+     void set_abort_callback(bool (*abort_callback)(void * data), void * abort_callback_data);
+ 
+     void set_embeddings (bool value);
++    void set_embeddings_pre_norm(bool value);
+     void set_causal_attn(bool value);
+     void set_warmup(bool value);
+ 
+@@ -279,6 +283,11 @@ private:
+     // populated only when pooling_type == LLAMA_POOLING_TYPE_NONE
+     buffer_view<float> embd = {nullptr, 0};
+ 
++    // hidden state before the final output norm (2-dimensional array: [n_outputs][n_embd])
++    // populated only when cparams.embeddings_pre_norm is enabled and the model graph
++    // sets llm_graph_result::t_h_pre_norm
++    buffer_view<float> embd_pre_norm = {nullptr, 0};
++
+     struct sampling_info {
+         // !samplers.empty() to check if any samplers are active
+         std::map<llama_seq_id, llama_sampler *> samplers;
+diff --git a/src/llama-cparams.h b/src/llama-cparams.h
+index 9d359474..1e4e9e29 100644
+--- a/src/llama-cparams.h
++++ b/src/llama-cparams.h
+@@ -27,6 +27,7 @@ struct llama_cparams {
+     float yarn_beta_slow;
+ 
+     bool embeddings;
++    bool embeddings_pre_norm; // also extract the hidden state before the final output norm
+     bool causal_attn;
+     bool offload_kqv;
+     bool flash_attn;
+diff --git a/src/llama-ext.h b/src/llama-ext.h
+index 8ce29d21..11f19866 100644
+--- a/src/llama-ext.h
++++ b/src/llama-ext.h
+@@ -88,3 +88,19 @@ LLAMA_API int32_t llama_model_n_devices(const struct llama_model * model);
+ LLAMA_API ggml_backend_dev_t llama_model_get_device(const struct llama_model * model, int i);
+ 
+ LLAMA_API llama_memory_breakdown llama_get_memory_breakdown(const struct llama_context * ctx);
++
++//
++// pre-norm embeddings (hidden state before the final output norm)
++//
++
++// mirrors:
++// LLAMA_API void llama_set_embeddings(struct llama_context * ctx, bool embeddings);
++LLAMA_API void llama_set_embeddings_pre_norm(struct llama_context * ctx, bool value);
++
++// mirrors:
++// LLAMA_API float * llama_get_embeddings(struct llama_context * ctx);
++LLAMA_API float * llama_get_embeddings_pre_norm(struct llama_context * ctx);
++
++// mirrors:
++// LLAMA_API float * llama_get_embeddings_ith(struct llama_context * ctx, int32_t i);
++LLAMA_API float * llama_get_embeddings_pre_norm_ith(struct llama_context * ctx, int32_t i);
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index 7d9b8ea9..4ecaf100 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -934,6 +934,7 @@ void llm_graph_result::reset() {
+     t_logits      = nullptr;
+     t_embd        = nullptr;
+     t_embd_pooled = nullptr;
++    t_h_pre_norm  = nullptr;
+     t_skippy_rwkv7_v_first = nullptr;
+     t_skippy_gemma3n_altup = nullptr;
+     t_sampled.clear();
+@@ -974,6 +975,9 @@ void llm_graph_result::set_outputs() {
+     if (t_embd_pooled != nullptr) {
+         ggml_set_output(t_embd_pooled);
+     }
++    if (t_h_pre_norm != nullptr) {
++        ggml_set_output(t_h_pre_norm);
++    }
+     if (t_skippy_rwkv7_v_first != nullptr) {
+         ggml_set_output(t_skippy_rwkv7_v_first);
+     }
+diff --git a/src/llama-graph.h b/src/llama-graph.h
+index df2f039a..0f96afeb 100644
+--- a/src/llama-graph.h
++++ b/src/llama-graph.h
+@@ -707,6 +707,7 @@ struct llm_graph_params {
+ 
+         return
+             cparams.embeddings  == other.cparams.embeddings  &&
++            cparams.embeddings_pre_norm == other.cparams.embeddings_pre_norm &&
+             cparams.causal_attn == other.cparams.causal_attn &&
+             arch  == other.arch  &&
+             gtype == other.gtype &&
+@@ -726,6 +727,7 @@ public:
+     ggml_tensor * get_logits()      const { return t_logits; }
+     ggml_tensor * get_embd()        const { return t_embd; }
+     ggml_tensor * get_embd_pooled() const { return t_embd_pooled; }
++    ggml_tensor * get_h_pre_norm()  const { return t_h_pre_norm; }
+     ggml_tensor * get_skippy_rwkv7_v_first() const { return t_skippy_rwkv7_v_first; }
+     ggml_tensor * get_skippy_gemma3n_altup() const { return t_skippy_gemma3n_altup; }
+ 
+@@ -756,6 +758,7 @@ public:
+     ggml_tensor * t_logits      = nullptr;
+     ggml_tensor * t_embd        = nullptr;
+     ggml_tensor * t_embd_pooled = nullptr;
++    ggml_tensor * t_h_pre_norm  = nullptr; // [n_embd, n_outputs] hidden state before final output norm
+     ggml_tensor * t_skippy_rwkv7_v_first = nullptr;
+     ggml_tensor * t_skippy_gemma3n_altup = nullptr;
+ 
+diff --git a/src/llama-hparams.cpp b/src/llama-hparams.cpp
+index 002d15d4..2239309c 100644
+--- a/src/llama-hparams.cpp
++++ b/src/llama-hparams.cpp
+@@ -229,6 +229,12 @@ uint32_t llama_hparams::n_embd_head_v_mla() const {
+ }
+ 
+ bool llama_hparams::has_kv(uint32_t il) const {
++    if (kv_only_nextn) {
++        // MTP head: only the trailing nextn_predict_layers blocks own a KV cache;
++        // the leading trunk blocks are not executed in this graph.
++        return nextn_predict_layers > 0 && il >= (n_layer - nextn_predict_layers);
++    }
++
+     if (n_layer_kv_from_start >= 0) {
+         if (il < (uint32_t) n_layer_kv_from_start) {
+             return true;
+diff --git a/src/llama-hparams.h b/src/llama-hparams.h
+index 0160a89c..e2d051ed 100644
+--- a/src/llama-hparams.h
++++ b/src/llama-hparams.h
+@@ -92,6 +92,8 @@ struct llama_hparams {
+     uint32_t moe_latent_size      = 0;
+     uint32_t nextn_predict_layers = 0;
+ 
++    bool kv_only_nextn = false; // if true, only the last nextn_predict_layers blocks have a KV cache (MTP head arches)
++
+     float f_norm_eps;
+     float f_norm_rms_eps;
+     float f_norm_group_eps;
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index 206f1438..6beadf7b 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -1445,9 +1445,16 @@ struct ggml_tensor * llama_model_loader::create_tensor_as_view(struct ggml_conte
+     return tensor;
+ }
+ 
+-void llama_model_loader::done_getting_tensors() const {
+-    if (n_created != n_tensors) {
+-        throw std::runtime_error(format("%s: wrong number of tensors; expected %d, got %d", __func__, n_tensors, n_created));
++void llama_model_loader::done_getting_tensors(bool partial) const {
++    if (n_created > n_tensors) {
++        throw std::runtime_error(format("%s: too many tensors created; expected %d, got %d", __func__, n_tensors, n_created));
++    }
++    if (n_created < n_tensors) {
++        if (!partial) {
++            throw std::runtime_error(format("%s: wrong number of tensors; expected %d, got %d", __func__, n_tensors, n_created));
++        }
++        LLAMA_LOG_INFO("%s: partial load — used %d of %d tensors in the file (rest belong to a sibling model on the same .gguf)\n",
++                __func__, n_created, n_tensors);
+     }
+     if (n_tensors_moved > 0) {
+         LLAMA_LOG_DEBUG("%s: tensor '%s' (%s) (and %zu others) cannot be used with preferred buffer type %s, using %s instead\n",
+diff --git a/src/llama-model-loader.h b/src/llama-model-loader.h
+index 2969e818..6876262d 100644
+--- a/src/llama-model-loader.h
++++ b/src/llama-model-loader.h
+@@ -199,7 +199,7 @@ struct llama_model_loader {
+ 
+     struct ggml_tensor * create_tensor_as_view(struct ggml_context * ctx, struct ggml_tensor * base, const std::string & name, const std::initializer_list<int64_t> & ne, size_t offset, bool required = true);
+ 
+-    void done_getting_tensors() const;
++    void done_getting_tensors(bool partial = false) const;
+ 
+     void init_mappings(bool prefetch = true, llama_mlocks * mlock_mmaps = nullptr);
+ 
+diff --git a/src/llama-model.cpp b/src/llama-model.cpp
+index f5399168..5203a553 100644
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -276,6 +276,10 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
+             return new llama_model_qwen35(params);
+         case LLM_ARCH_QWEN35MOE:
+             return new llama_model_qwen35moe(params);
++        case LLM_ARCH_QWEN35_MTP:
++            return new llama_model_qwen35_mtp(params);
++        case LLM_ARCH_QWEN35MOE_MTP:
++            return new llama_model_qwen35moe_mtp(params);
+         case LLM_ARCH_MISTRAL3:
+             return new llama_model_mistral3(params);
+         case LLM_ARCH_MIMO2:
+@@ -309,6 +313,15 @@ llama_model * llama_model_create(llama_model_loader & ml, const llama_model_para
+     if (arch == LLM_ARCH_UNKNOWN) {
+         throw std::runtime_error("unknown model architecture: '" + ml.get_arch_name() + "'");
+     }
++    if (params.override_arch != nullptr && params.override_arch[0] != '\0') {
++        const llm_arch override = llm_arch_from_string(params.override_arch);
++        if (override == LLM_ARCH_UNKNOWN) {
++            throw std::runtime_error(std::string("unknown override architecture: '") + params.override_arch + "'");
++        }
++        LLAMA_LOG_INFO("%s: overriding architecture %s -> %s\n",
++                __func__, llm_arch_name(arch), llm_arch_name(override));
++        arch = override;
++    }
+ 
+     return llama_model_create(arch, params);
+ }
+@@ -1396,7 +1409,8 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
+         }
+     }
+ 
+-    ml.done_getting_tensors();
++    const bool partial_load = (arch == LLM_ARCH_QWEN35_MTP || arch == LLM_ARCH_QWEN35MOE_MTP);
++    ml.done_getting_tensors(partial_load);
+ 
+     // populate tensors_by_name
+     for (auto & [_, ctx_ptr] : ml.ctx_map) {
+@@ -2089,6 +2103,7 @@ llama_model_params llama_model_default_params() {
+         /*.progress_callback           =*/ nullptr,
+         /*.progress_callback_user_data =*/ nullptr,
+         /*.kv_overrides                =*/ nullptr,
++        /*.override_arch               =*/ nullptr,
+         /*.vocab_only                  =*/ false,
+         /*.use_mmap                    =*/ true,
+         /*.use_direct_io               =*/ false,
+@@ -2313,6 +2328,8 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
+         case LLM_ARCH_QWEN3VLMOE:
+         case LLM_ARCH_QWEN35:
+         case LLM_ARCH_QWEN35MOE:
++        case LLM_ARCH_QWEN35_MTP:
++        case LLM_ARCH_QWEN35MOE_MTP:
+             return LLAMA_ROPE_TYPE_IMROPE;
+ 
+         case LLM_ARCH_GLM4:
+diff --git a/src/models/models.h b/src/models/models.h
+index 6d5f18a8..1f04d313 100644
+--- a/src/models/models.h
++++ b/src/models/models.h
+@@ -1785,6 +1785,32 @@ struct llama_model_qwen35moe : public llama_model_base {
+ };
+ 
+ 
++struct llama_model_qwen35_mtp : public llama_model_base {
++    llama_model_qwen35_mtp(const struct llama_model_params & params) : llama_model_base(params) {}
++    void load_arch_hparams(llama_model_loader & ml) override;
++    void load_arch_tensors(llama_model_loader & ml) override;
++
++    struct graph : public llm_graph_context {
++        graph(const llama_model & model, const llm_graph_params & params);
++    };
++
++    std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
++};
++
++
++struct llama_model_qwen35moe_mtp : public llama_model_base {
++    llama_model_qwen35moe_mtp(const struct llama_model_params & params) : llama_model_base(params) {}
++    void load_arch_hparams(llama_model_loader & ml) override;
++    void load_arch_tensors(llama_model_loader & ml) override;
++
++    struct graph : public llm_graph_context {
++        graph(const llama_model & model, const llm_graph_params & params);
++    };
++
++    std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
++};
++
++
+ struct llama_model_mistral3 : public llama_model_base {
+     llama_model_mistral3(const struct llama_model_params & params) : llama_model_base(params) {}
+     void load_arch_hparams(llama_model_loader & ml) override;
+diff --git a/src/models/qwen35-mtp.cpp b/src/models/qwen35-mtp.cpp
+new file mode 100644
+index 00000000..83039e98
+--- /dev/null
++++ b/src/models/qwen35-mtp.cpp
+@@ -0,0 +1,207 @@
++#include "models.h"
++
++void llama_model_qwen35_mtp::load_arch_hparams(llama_model_loader & ml) {
++    ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS,       hparams.f_norm_rms_eps);
++    ml.get_key_or_arr(LLM_KV_ROPE_DIMENSION_SECTIONS,    hparams.rope_sections, 4, true);
++
++    ml.get_key(LLM_KV_NEXTN_PREDICT_LAYERS, hparams.nextn_predict_layers, false);
++    GGML_ASSERT(hparams.nextn_predict_layers > 0   && "QWEN35_MTP requires nextn_predict_layers > 0");
++    GGML_ASSERT(hparams.nextn_predict_layers <= hparams.n_layer);
++
++    // only the MTP layers get a KV cache, trunk layers are skipped.
++    hparams.kv_only_nextn         = true;
++    hparams.n_layer_kv_from_start = -1;
++    for (uint32_t i = 0; i < hparams.n_layer; ++i) {
++        hparams.recurrent_layer_arr[i] = false;
++    }
++
++    type = LLM_TYPE_UNKNOWN;
++}
++
++void llama_model_qwen35_mtp::load_arch_tensors(llama_model_loader &) {
++    LLAMA_LOAD_LOCALS;
++
++    tok_embd    = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD,  "weight"), { n_embd, n_vocab }, 0);
++    output_norm = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM, "weight"), { n_embd },          TENSOR_NOT_REQUIRED);
++    output      = create_tensor(tn(LLM_TENSOR_OUTPUT,      "weight"), { n_embd, n_vocab }, TENSOR_NOT_REQUIRED);
++    if (output == nullptr) {
++        output  = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD,  "weight"), { n_embd, n_vocab }, TENSOR_DUPLICATED);
++    }
++
++    const uint32_t n_main = n_layer - hparams.nextn_predict_layers;
++    for (int i = 0; i < n_layer; ++i) {
++        if (static_cast<uint32_t>(i) < n_main) {
++            continue;  // trunk layer — owned by the sibling QWEN35 model
++        }
++
++        auto & layer = layers[i];
++
++        // MTP block looks like a full-attention Qwen3.5 decoder block.
++        layer.attn_norm      = create_tensor(tn(LLM_TENSOR_ATTN_NORM,      "weight", i), { n_embd }, 0);
++        layer.attn_post_norm = create_tensor(tn(LLM_TENSOR_ATTN_POST_NORM, "weight", i), { n_embd }, 0);
++
++        create_tensor_qkv(layer, i, n_embd, n_embd_head_k * n_head * 2, n_embd_k_gqa, n_embd_v_gqa, 0);
++        layer.wo          = create_tensor(tn(LLM_TENSOR_ATTN_OUT,    "weight", i), { n_embd_head_k * n_head, n_embd }, 0);
++        layer.attn_q_norm = create_tensor(tn(LLM_TENSOR_ATTN_Q_NORM, "weight", i), { n_embd_head_k }, 0);
++        layer.attn_k_norm = create_tensor(tn(LLM_TENSOR_ATTN_K_NORM, "weight", i), { n_embd_head_k }, 0);
++
++        layer.ffn_gate = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight", i), {n_embd,   n_ff}, 0);
++        layer.ffn_down = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", i), {  n_ff, n_embd}, 0);
++        layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", i), {n_embd,   n_ff}, 0);
++
++        // NextN-specific tensors that define the MTP block.
++        layer.nextn.eh_proj          = create_tensor(tn(LLM_TENSOR_NEXTN_EH_PROJ,          "weight", i), { 2 * n_embd, n_embd }, 0);
++        layer.nextn.enorm            = create_tensor(tn(LLM_TENSOR_NEXTN_ENORM,            "weight", i), { n_embd },              0);
++        layer.nextn.hnorm            = create_tensor(tn(LLM_TENSOR_NEXTN_HNORM,            "weight", i), { n_embd },              0);
++        layer.nextn.embed_tokens     = create_tensor(tn(LLM_TENSOR_NEXTN_EMBED_TOKENS,     "weight", i), { n_embd, n_vocab },     TENSOR_NOT_REQUIRED);
++        layer.nextn.shared_head_head = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD, "weight", i), { n_embd, n_vocab },     TENSOR_NOT_REQUIRED);
++        layer.nextn.shared_head_norm = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_NORM, "weight", i), { n_embd },              TENSOR_NOT_REQUIRED);
++    }
++}
++
++std::unique_ptr<llm_graph_context> llama_model_qwen35_mtp::build_arch_graph(const llm_graph_params & params) const {
++    return std::make_unique<graph>(*this, params);
++}
++
++// LLM_ARCH_QWEN35_MTP draft head for Qwen3.5/3.6 dense series
++llama_model_qwen35_mtp::graph::graph(const llama_model & model, const llm_graph_params & params)
++    : llm_graph_context(params) {
++    GGML_ASSERT(hparams.nextn_predict_layers > 0 && "QWEN35_MTP requires nextn_predict_layers > 0");
++    GGML_ASSERT(hparams.nextn_predict_layers == 1 && "QWEN35_MTP currently only supports a single MTP block");
++
++    const int64_t n_embd_head = hparams.n_embd_head_v();
++    GGML_ASSERT(n_embd_head == hparams.n_embd_head_k());
++
++    // The MTP block lives at the source file's original layer index.
++    const int il = (int) hparams.n_layer - (int) hparams.nextn_predict_layers;
++    const auto & layer = model.layers[il];
++
++    GGML_ASSERT(layer.nextn.eh_proj && "MTP block missing nextn.eh_proj");
++    GGML_ASSERT(layer.nextn.enorm   && "MTP block missing nextn.enorm");
++    GGML_ASSERT(layer.nextn.hnorm   && "MTP block missing nextn.hnorm");
++
++    int sections[4];
++    std::copy(std::begin(hparams.rope_sections), std::begin(hparams.rope_sections) + 4, sections);
++
++    auto inp = std::make_unique<llm_graph_input_embd>(hparams.n_embd);
++
++    inp->tokens = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens);
++    ggml_set_input(inp->tokens);
++
++    inp->embd = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, hparams.n_embd, n_tokens);
++    ggml_set_input(inp->embd);
++    ggml_set_name(inp->embd, "mtp_h_input");
++
++    ggml_tensor * tok_embd_w = layer.nextn.embed_tokens ? layer.nextn.embed_tokens : model.tok_embd;
++
++    ggml_tensor * h_input  = inp->embd;
++    ggml_tensor * tok_embd = ggml_get_rows(ctx0, tok_embd_w, inp->tokens);
++    cb(tok_embd, "mtp_tok_embd", il);
++
++    res->add_input(std::move(inp));
++
++    ggml_tensor * inp_pos = build_inp_pos();
++    auto * inp_attn       = build_attn_inp_kv();
++
++    ggml_tensor * h_norm = build_norm(h_input, layer.nextn.hnorm, nullptr, LLM_NORM_RMS, il);
++    cb(h_norm, "mtp_hnorm", il);
++
++    ggml_tensor * e_norm = build_norm(tok_embd, layer.nextn.enorm, nullptr, LLM_NORM_RMS, il);
++    cb(e_norm, "mtp_enorm", il);
++
++    ggml_tensor * concat = ggml_concat(ctx0, e_norm, h_norm, /*dim=*/ 0);
++    cb(concat, "mtp_concat", il);
++
++    ggml_tensor * cur = build_lora_mm(layer.nextn.eh_proj, concat);
++    cb(cur, "mtp_eh_proj", il);
++
++    ggml_tensor * inpSA = cur;
++
++    cur = build_norm(cur, layer.attn_norm, nullptr, LLM_NORM_RMS, il);
++    cb(cur, "mtp_attn_norm", il);
++
++    ggml_tensor * Qcur_full = build_lora_mm(layer.wq, cur, layer.wq_s);
++    cb(Qcur_full, "mtp_Qcur_full", il);
++
++    ggml_tensor * Qcur = ggml_view_3d(ctx0, Qcur_full,
++            n_embd_head, n_head, n_tokens,
++            ggml_element_size(Qcur_full) * n_embd_head * 2,
++            ggml_element_size(Qcur_full) * n_embd_head * 2 * n_head,
++            0);
++    Qcur = build_norm(Qcur, layer.attn_q_norm, nullptr, LLM_NORM_RMS, il);
++    cb(Qcur, "mtp_Qcur_normed", il);
++
++    ggml_tensor * gate = ggml_view_3d(ctx0, Qcur_full,
++            n_embd_head, n_head, n_tokens,
++            ggml_element_size(Qcur_full) * n_embd_head * 2,
++            ggml_element_size(Qcur_full) * n_embd_head * 2 * n_head,
++            ggml_element_size(Qcur_full) * n_embd_head);
++    gate = ggml_cont_2d(ctx0, gate, n_embd_head * n_head, n_tokens);
++    cb(gate, "mtp_gate", il);
++
++    ggml_tensor * Kcur = build_lora_mm(layer.wk, cur, layer.wk_s);
++    Kcur = ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tokens);
++    Kcur = build_norm(Kcur, layer.attn_k_norm, nullptr, LLM_NORM_RMS, il);
++    cb(Kcur, "mtp_Kcur_normed", il);
++
++    ggml_tensor * Vcur = build_lora_mm(layer.wv, cur, layer.wv_s);
++    Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head, n_head_kv, n_tokens);
++    cb(Vcur, "mtp_Vcur", il);
++
++    Qcur = ggml_rope_multi(ctx0, Qcur, inp_pos, nullptr,
++            n_rot, sections, rope_type, n_ctx_orig, freq_base, freq_scale,
++            ext_factor, attn_factor, beta_fast, beta_slow);
++    Kcur = ggml_rope_multi(ctx0, Kcur, inp_pos, nullptr,
++            n_rot, sections, rope_type, n_ctx_orig, freq_base, freq_scale,
++            ext_factor, attn_factor, beta_fast, beta_slow);
++
++    const float kq_scale = hparams.f_attention_scale == 0.0f
++            ? 1.0f / sqrtf(float(n_embd_head)) : hparams.f_attention_scale;
++
++    cur = build_attn(inp_attn,
++            nullptr, nullptr, nullptr,
++            Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, kq_scale, il);
++    cb(cur, "mtp_attn_pregate", il);
++
++    cur = ggml_mul(ctx0, cur, ggml_sigmoid(ctx0, gate));
++    cur = build_lora_mm(layer.wo, cur, layer.wo_s);
++    cb(cur, "mtp_attn_out", il);
++
++    cur = ggml_add(ctx0, cur, inpSA);
++    cb(cur, "mtp_attn_residual", il);
++
++    ggml_tensor * ffn_residual = cur;
++    cur = build_norm(cur, layer.attn_post_norm, nullptr, LLM_NORM_RMS, il);
++    cb(cur, "mtp_attn_post_norm", il);
++
++    cur = build_ffn(cur,
++            layer.ffn_up,   nullptr, layer.ffn_up_s,
++            layer.ffn_gate, nullptr, layer.ffn_gate_s,
++            layer.ffn_down, nullptr, layer.ffn_down_s,
++            nullptr,
++            LLM_FFN_SILU, LLM_FFN_PAR, il);
++    cb(cur, "mtp_ffn_out", il);
++
++    cur = ggml_add(ctx0, cur, ffn_residual);
++    cb(cur, "mtp_post_ffn", il);
++
++    // Pre-norm hidden state: used by the AR draft loop to seed the next MTP step.
++    // (In the trunk graph this is `t_h_pre_norm`; the MTP head reuses the same slot.)
++    cb(cur, "h_pre_norm", -1);
++    res->t_h_pre_norm = cur;
++
++    ggml_tensor * head_norm_w = layer.nextn.shared_head_norm
++            ? layer.nextn.shared_head_norm
++            : model.output_norm;
++    GGML_ASSERT(head_norm_w && "QWEN35_MTP: missing both nextn.shared_head_norm and output_norm");
++    cur = build_norm(cur, head_norm_w, nullptr, LLM_NORM_RMS, -1);
++    cb(cur, "mtp_shared_head_norm", -1);
++
++    ggml_tensor * head_w = layer.nextn.shared_head_head ? layer.nextn.shared_head_head : model.output;
++    GGML_ASSERT(head_w && "QWEN35_MTP: missing LM head (nextn.shared_head_head or model.output)");
++    cur = build_lora_mm(head_w, cur);
++    cb(cur, "result_output", -1);
++
++    res->t_logits = cur;
++    ggml_build_forward_expand(gf, cur);
++}
+diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
+index 1557ec15..55c6326e 100644
+--- a/src/models/qwen35.cpp
++++ b/src/models/qwen35.cpp
+@@ -11,17 +11,23 @@ void llama_model_qwen35::load_arch_hparams(llama_model_loader & ml) {
+     ml.get_key(LLM_KV_SSM_STATE_SIZE,     hparams.ssm_d_state);
+     ml.get_key(LLM_KV_SSM_TIME_STEP_RANK, hparams.ssm_dt_rank);
+     ml.get_key(LLM_KV_SSM_GROUP_COUNT,    hparams.ssm_n_group);
++    ml.get_key(LLM_KV_NEXTN_PREDICT_LAYERS, hparams.nextn_predict_layers, false);
++    hparams.n_layer_kv_from_start = hparams.n_layer - hparams.nextn_predict_layers;
+ 
+     // Mark recurrent layers (linear attention layers)
+     {
+         uint32_t full_attn_interval = 4;
+         ml.get_key(LLM_KV_FULL_ATTENTION_INTERVAL, full_attn_interval, false);
+-        for (uint32_t i = 0; i < hparams.n_layer; ++i) {
++        const uint32_t n_main = hparams.n_layer - hparams.nextn_predict_layers;
++        for (uint32_t i = 0; i < n_main; ++i) {
+             hparams.recurrent_layer_arr[i] = ((i + 1) % full_attn_interval != 0);
+         }
++        for (uint32_t i = n_main; i < hparams.n_layer; ++i) {
++            hparams.recurrent_layer_arr[i] = false;
++        }
+     }
+ 
+-    switch (hparams.n_layer) {
++    switch (hparams.n_layer - hparams.nextn_predict_layers) {
+         case 24: type = hparams.n_embd == 1024 ? LLM_TYPE_0_8B : LLM_TYPE_2B; break;
+         case 32: type = hparams.n_embd == 2560 ? LLM_TYPE_4B : LLM_TYPE_9B; break;
+         case 64: type = LLM_TYPE_27B; break;
+@@ -83,6 +89,15 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader &) {
+         layer.ffn_gate = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight", i), {n_embd,   n_ff}, 0);
+         layer.ffn_down = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", i), {  n_ff, n_embd}, 0);
+         layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", i), {n_embd,   n_ff}, 0);
++
++        if (static_cast<uint32_t>(i) >= hparams.n_layer - hparams.nextn_predict_layers) {
++            layer.nextn.eh_proj          = create_tensor(tn(LLM_TENSOR_NEXTN_EH_PROJ,          "weight", i), { 2 * n_embd, n_embd }, 0);
++            layer.nextn.enorm            = create_tensor(tn(LLM_TENSOR_NEXTN_ENORM,            "weight", i), { n_embd },              0);
++            layer.nextn.hnorm            = create_tensor(tn(LLM_TENSOR_NEXTN_HNORM,            "weight", i), { n_embd },              0);
++            layer.nextn.embed_tokens     = create_tensor(tn(LLM_TENSOR_NEXTN_EMBED_TOKENS,     "weight", i), { n_embd, n_vocab },     TENSOR_NOT_REQUIRED);
++            layer.nextn.shared_head_head = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD, "weight", i), { n_embd, n_vocab },     TENSOR_NOT_REQUIRED);
++            layer.nextn.shared_head_norm = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_NORM, "weight", i), { n_embd },              TENSOR_NOT_REQUIRED);
++        }
+     }
+ }
+ 
+@@ -104,8 +119,9 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
+ 
+     const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
+     const bool stage_filtered = stage_filter.enabled;
++    const int n_transformer_layers = n_layer - hparams.nextn_predict_layers;
+     const int il_start = stage_filtered ? stage_filter.layer_start : 0;
+-    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
++    const int il_end   = std::min(stage_filtered ? stage_filter.layer_end : n_transformer_layers, n_transformer_layers);
+     bool has_attention_layer = false;
+     for (int il = il_start; il < il_end; ++il) {
+         if (!hparams.is_recurrent(il)) {
+@@ -140,7 +156,7 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
+             cur = build_layer_attn(inp->get_attn(), cur, inp_pos, sections, il);
+         }
+ 
+-        if (il == n_layer - 1 && inp_out_ids) {
++        if (il == n_transformer_layers - 1 && inp_out_ids) {
+             cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
+             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
+         }
+@@ -180,6 +196,8 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
+     }
+ 
+     // Final norm
++    cb(cur, "h_pre_norm", -1);
++    res->t_h_pre_norm = cur;
+     cur = build_norm(cur, model.output_norm, nullptr, LLM_NORM_RMS, -1);
+ 
+     cb(cur, "result_norm", -1);
+diff --git a/src/models/qwen35moe-mtp.cpp b/src/models/qwen35moe-mtp.cpp
+new file mode 100644
+index 00000000..9f662213
+--- /dev/null
++++ b/src/models/qwen35moe-mtp.cpp
+@@ -0,0 +1,252 @@
++#include "models.h"
++
++void llama_model_qwen35moe_mtp::load_arch_hparams(llama_model_loader & ml) {
++    ml.get_key(LLM_KV_EXPERT_FEED_FORWARD_LENGTH,        hparams.n_ff_exp,      false);
++    ml.get_key(LLM_KV_EXPERT_SHARED_FEED_FORWARD_LENGTH, hparams.n_ff_shexp,    false);
++    ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS,       hparams.f_norm_rms_eps);
++    ml.get_key_or_arr(LLM_KV_ROPE_DIMENSION_SECTIONS,    hparams.rope_sections, 4, true);
++
++    ml.get_key(LLM_KV_NEXTN_PREDICT_LAYERS, hparams.nextn_predict_layers, false);
++    GGML_ASSERT(hparams.nextn_predict_layers > 0   && "QWEN35MOE_MTP requires nextn_predict_layers > 0");
++    GGML_ASSERT(hparams.nextn_predict_layers <= hparams.n_layer);
++    GGML_ASSERT(hparams.n_expert > 0 && "QWEN35MOE_MTP requires n_expert > 0");
++
++    // only the MTP layers get a KV cache, trunk layers are skipped.
++    hparams.kv_only_nextn         = true;
++    hparams.n_layer_kv_from_start = -1;
++    for (uint32_t i = 0; i < hparams.n_layer; ++i) {
++        hparams.recurrent_layer_arr[i] = false;
++    }
++
++    type = LLM_TYPE_UNKNOWN;
++}
++
++void llama_model_qwen35moe_mtp::load_arch_tensors(llama_model_loader &) {
++    LLAMA_LOAD_LOCALS;
++
++    tok_embd    = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD,  "weight"), { n_embd, n_vocab }, 0);
++    output_norm = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM, "weight"), { n_embd },          TENSOR_NOT_REQUIRED);
++    output      = create_tensor(tn(LLM_TENSOR_OUTPUT,      "weight"), { n_embd, n_vocab }, TENSOR_NOT_REQUIRED);
++    if (output == nullptr) {
++        output  = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD,  "weight"), { n_embd, n_vocab }, TENSOR_DUPLICATED);
++    }
++
++    const int64_t n_ff_exp   = hparams.n_ff_exp ? hparams.n_ff_exp : n_ff / n_expert_used;
++    const int64_t n_ff_shexp = hparams.n_ff_shexp ? hparams.n_ff_shexp : n_ff;
++
++    const uint32_t n_main = n_layer - hparams.nextn_predict_layers;
++    for (int i = 0; i < n_layer; ++i) {
++        if (static_cast<uint32_t>(i) < n_main) {
++            continue;  // trunk layer — owned by the sibling QWEN35MOE model
++        }
++
++        auto & layer = layers[i];
++
++        // MTP block looks like a full-attention Qwen3.5 decoder block with MoE FFN.
++        layer.attn_norm      = create_tensor(tn(LLM_TENSOR_ATTN_NORM,      "weight", i), { n_embd }, 0);
++        layer.attn_post_norm = create_tensor(tn(LLM_TENSOR_ATTN_POST_NORM, "weight", i), { n_embd }, 0);
++
++        create_tensor_qkv(layer, i, n_embd, n_embd_head_k * n_head * 2, n_embd_k_gqa, n_embd_v_gqa, 0);
++        layer.wo          = create_tensor(tn(LLM_TENSOR_ATTN_OUT,    "weight", i), { n_embd_head_k * n_head, n_embd }, 0);
++        layer.attn_q_norm = create_tensor(tn(LLM_TENSOR_ATTN_Q_NORM, "weight", i), { n_embd_head_k }, 0);
++        layer.attn_k_norm = create_tensor(tn(LLM_TENSOR_ATTN_K_NORM, "weight", i), { n_embd_head_k }, 0);
++
++        // Routed experts
++        layer.ffn_gate_inp  = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP,  "weight", i), { n_embd, n_expert }, 0);
++        layer.ffn_down_exps = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i), { n_ff_exp, n_embd, n_expert }, 0);
++        create_tensor_gate_up_exps(layer, i, n_embd, n_ff_exp, n_expert, 0);
++
++        // Shared experts
++        layer.ffn_gate_inp_shexp = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP_SHEXP, "weight", i), { n_embd }, 0);
++        layer.ffn_gate_shexp     = create_tensor(tn(LLM_TENSOR_FFN_GATE_SHEXP,     "weight", i), { n_embd, n_ff_shexp }, 0);
++        layer.ffn_up_shexp       = create_tensor(tn(LLM_TENSOR_FFN_UP_SHEXP,       "weight", i), { n_embd, n_ff_shexp }, 0);
++        layer.ffn_down_shexp     = create_tensor(tn(LLM_TENSOR_FFN_DOWN_SHEXP,     "weight", i), { n_ff_shexp, n_embd }, 0);
++
++        // NextN-specific tensors that define the MTP block.
++        layer.nextn.eh_proj          = create_tensor(tn(LLM_TENSOR_NEXTN_EH_PROJ,          "weight", i), { 2 * n_embd, n_embd }, 0);
++        layer.nextn.enorm            = create_tensor(tn(LLM_TENSOR_NEXTN_ENORM,            "weight", i), { n_embd },              0);
++        layer.nextn.hnorm            = create_tensor(tn(LLM_TENSOR_NEXTN_HNORM,            "weight", i), { n_embd },              0);
++        layer.nextn.embed_tokens     = create_tensor(tn(LLM_TENSOR_NEXTN_EMBED_TOKENS,     "weight", i), { n_embd, n_vocab },     TENSOR_NOT_REQUIRED);
++        layer.nextn.shared_head_head = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD, "weight", i), { n_embd, n_vocab },     TENSOR_NOT_REQUIRED);
++        layer.nextn.shared_head_norm = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_NORM, "weight", i), { n_embd },              TENSOR_NOT_REQUIRED);
++    }
++}
++
++std::unique_ptr<llm_graph_context> llama_model_qwen35moe_mtp::build_arch_graph(const llm_graph_params & params) const {
++    return std::make_unique<graph>(*this, params);
++}
++
++// LLM_ARCH_QWEN35MOE_MTP draft head for Qwen3.5/3.6 MoE
++llama_model_qwen35moe_mtp::graph::graph(const llama_model & model, const llm_graph_params & params)
++    : llm_graph_context(params) {
++    GGML_ASSERT(hparams.nextn_predict_layers > 0 && "QWEN35MOE_MTP requires nextn_predict_layers > 0");
++    GGML_ASSERT(hparams.nextn_predict_layers == 1 && "QWEN35MOE_MTP currently only supports a single MTP block");
++
++    const int64_t n_embd_head = hparams.n_embd_head_v();
++    GGML_ASSERT(n_embd_head == hparams.n_embd_head_k());
++
++    const int il = (int) hparams.n_layer - (int) hparams.nextn_predict_layers;
++    const auto & layer = model.layers[il];
++
++    GGML_ASSERT(layer.nextn.eh_proj    && "MTP block missing nextn.eh_proj");
++    GGML_ASSERT(layer.nextn.enorm      && "MTP block missing nextn.enorm");
++    GGML_ASSERT(layer.nextn.hnorm      && "MTP block missing nextn.hnorm");
++    GGML_ASSERT(layer.ffn_gate_inp     && "MTP block missing ffn_gate_inp");
++
++    int sections[4];
++    std::copy(std::begin(hparams.rope_sections), std::begin(hparams.rope_sections) + 4, sections);
++
++    auto inp = std::make_unique<llm_graph_input_embd>(hparams.n_embd);
++
++    inp->tokens = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens);
++    ggml_set_input(inp->tokens);
++
++    inp->embd = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, hparams.n_embd, n_tokens);
++    ggml_set_input(inp->embd);
++    ggml_set_name(inp->embd, "mtp_h_input");
++
++    ggml_tensor * tok_embd_w = layer.nextn.embed_tokens ? layer.nextn.embed_tokens : model.tok_embd;
++
++    ggml_tensor * h_input  = inp->embd;
++    ggml_tensor * tok_embd = ggml_get_rows(ctx0, tok_embd_w, inp->tokens);
++    cb(tok_embd, "mtp_tok_embd", il);
++
++    res->add_input(std::move(inp));
++
++    ggml_tensor * inp_pos = build_inp_pos();
++    auto * inp_attn       = build_attn_inp_kv();
++
++    ggml_tensor * h_norm = build_norm(h_input, layer.nextn.hnorm, nullptr, LLM_NORM_RMS, il);
++    cb(h_norm, "mtp_hnorm", il);
++
++    ggml_tensor * e_norm = build_norm(tok_embd, layer.nextn.enorm, nullptr, LLM_NORM_RMS, il);
++    cb(e_norm, "mtp_enorm", il);
++
++    ggml_tensor * concat = ggml_concat(ctx0, e_norm, h_norm, /*dim=*/ 0);
++    cb(concat, "mtp_concat", il);
++
++    ggml_tensor * cur = build_lora_mm(layer.nextn.eh_proj, concat);
++    cb(cur, "mtp_eh_proj", il);
++
++    ggml_tensor * inpSA = cur;
++
++    cur = build_norm(cur, layer.attn_norm, nullptr, LLM_NORM_RMS, il);
++    cb(cur, "mtp_attn_norm", il);
++
++    ggml_tensor * Qcur_full = build_lora_mm(layer.wq, cur, layer.wq_s);
++    cb(Qcur_full, "mtp_Qcur_full", il);
++
++    ggml_tensor * Qcur = ggml_view_3d(ctx0, Qcur_full,
++            n_embd_head, n_head, n_tokens,
++            ggml_element_size(Qcur_full) * n_embd_head * 2,
++            ggml_element_size(Qcur_full) * n_embd_head * 2 * n_head,
++            0);
++    Qcur = build_norm(Qcur, layer.attn_q_norm, nullptr, LLM_NORM_RMS, il);
++    cb(Qcur, "mtp_Qcur_normed", il);
++
++    ggml_tensor * gate = ggml_view_3d(ctx0, Qcur_full,
++            n_embd_head, n_head, n_tokens,
++            ggml_element_size(Qcur_full) * n_embd_head * 2,
++            ggml_element_size(Qcur_full) * n_embd_head * 2 * n_head,
++            ggml_element_size(Qcur_full) * n_embd_head);
++    gate = ggml_cont_2d(ctx0, gate, n_embd_head * n_head, n_tokens);
++    cb(gate, "mtp_gate", il);
++
++    ggml_tensor * Kcur = build_lora_mm(layer.wk, cur, layer.wk_s);
++    Kcur = ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tokens);
++    Kcur = build_norm(Kcur, layer.attn_k_norm, nullptr, LLM_NORM_RMS, il);
++    cb(Kcur, "mtp_Kcur_normed", il);
++
++    ggml_tensor * Vcur = build_lora_mm(layer.wv, cur, layer.wv_s);
++    Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head, n_head_kv, n_tokens);
++    cb(Vcur, "mtp_Vcur", il);
++
++    Qcur = ggml_rope_multi(ctx0, Qcur, inp_pos, nullptr,
++            n_rot, sections, rope_type, n_ctx_orig, freq_base, freq_scale,
++            ext_factor, attn_factor, beta_fast, beta_slow);
++    Kcur = ggml_rope_multi(ctx0, Kcur, inp_pos, nullptr,
++            n_rot, sections, rope_type, n_ctx_orig, freq_base, freq_scale,
++            ext_factor, attn_factor, beta_fast, beta_slow);
++
++    const float kq_scale = hparams.f_attention_scale == 0.0f
++            ? 1.0f / sqrtf(float(n_embd_head)) : hparams.f_attention_scale;
++
++    cur = build_attn(inp_attn,
++            nullptr, nullptr, nullptr,
++            Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, kq_scale, il);
++    cb(cur, "mtp_attn_pregate", il);
++
++    cur = ggml_mul(ctx0, cur, ggml_sigmoid(ctx0, gate));
++    cur = build_lora_mm(layer.wo, cur, layer.wo_s);
++    cb(cur, "mtp_attn_out", il);
++
++    cur = ggml_add(ctx0, cur, inpSA);
++    cb(cur, "mtp_attn_residual", il);
++
++    ggml_tensor * ffn_residual = cur;
++    cur = build_norm(cur, layer.attn_post_norm, nullptr, LLM_NORM_RMS, il);
++    cb(cur, "mtp_attn_post_norm", il);
++
++    // MoE FFN — routed experts plus gated shared expert (mirrors qwen35moe).
++    ggml_tensor * moe_out =
++        build_moe_ffn(cur,
++            layer.ffn_gate_inp,
++            layer.ffn_up_exps,
++            layer.ffn_gate_exps,
++            layer.ffn_down_exps,
++            nullptr,
++            n_expert, n_expert_used,
++            LLM_FFN_SILU, true,
++            hparams.expert_weights_scale,
++            LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, il,
++            nullptr, layer.ffn_gate_up_exps,
++            layer.ffn_up_exps_s,
++            layer.ffn_gate_exps_s,
++            layer.ffn_down_exps_s);
++    cb(moe_out, "mtp_ffn_moe_out", il);
++
++    if (layer.ffn_up_shexp != nullptr) {
++        ggml_tensor * ffn_shexp =
++            build_ffn(cur,
++                layer.ffn_up_shexp,   nullptr, layer.ffn_up_shexp_s,
++                layer.ffn_gate_shexp, nullptr, layer.ffn_gate_shexp_s,
++                layer.ffn_down_shexp, nullptr, layer.ffn_down_shexp_s,
++                nullptr,
++                LLM_FFN_SILU, LLM_FFN_PAR, il);
++        cb(ffn_shexp, "mtp_ffn_shexp", il);
++
++        ggml_tensor * shared_gate = build_lora_mm(layer.ffn_gate_inp_shexp, cur);
++        shared_gate = ggml_sigmoid(ctx0, shared_gate);
++        cb(shared_gate, "mtp_shared_expert_gate_sigmoid", il);
++
++        ffn_shexp = ggml_mul(ctx0, ffn_shexp, shared_gate);
++        cb(ffn_shexp, "mtp_ffn_shexp_gated", il);
++
++        cur = ggml_add(ctx0, moe_out, ffn_shexp);
++    } else {
++        cur = moe_out;
++    }
++    cb(cur, "mtp_ffn_out", il);
++
++    cur = ggml_add(ctx0, cur, ffn_residual);
++    cb(cur, "mtp_post_ffn", il);
++
++    // Pre-norm hidden state: used by the AR draft loop to seed the next MTP step.
++    cb(cur, "h_pre_norm", -1);
++    res->t_h_pre_norm = cur;
++
++    ggml_tensor * head_norm_w = layer.nextn.shared_head_norm
++            ? layer.nextn.shared_head_norm
++            : model.output_norm;
++    GGML_ASSERT(head_norm_w && "QWEN35MOE_MTP: missing both nextn.shared_head_norm and output_norm");
++    cur = build_norm(cur, head_norm_w, nullptr, LLM_NORM_RMS, -1);
++    cb(cur, "mtp_shared_head_norm", -1);
++
++    ggml_tensor * head_w = layer.nextn.shared_head_head ? layer.nextn.shared_head_head : model.output;
++    GGML_ASSERT(head_w && "QWEN35MOE_MTP: missing LM head (nextn.shared_head_head or model.output)");
++    cur = build_lora_mm(head_w, cur);
++    cb(cur, "result_output", -1);
++
++    res->t_logits = cur;
++    ggml_build_forward_expand(gf, cur);
++}
+diff --git a/src/models/qwen35moe.cpp b/src/models/qwen35moe.cpp
+index dda3ec90..0231eb2f 100644
+--- a/src/models/qwen35moe.cpp
++++ b/src/models/qwen35moe.cpp
+@@ -14,17 +14,23 @@ void llama_model_qwen35moe::load_arch_hparams(llama_model_loader & ml) {
+     ml.get_key(LLM_KV_SSM_STATE_SIZE,     hparams.ssm_d_state);
+     ml.get_key(LLM_KV_SSM_TIME_STEP_RANK, hparams.ssm_dt_rank);
+     ml.get_key(LLM_KV_SSM_GROUP_COUNT,    hparams.ssm_n_group);
++    ml.get_key(LLM_KV_NEXTN_PREDICT_LAYERS, hparams.nextn_predict_layers, false);
++    hparams.n_layer_kv_from_start = hparams.n_layer - hparams.nextn_predict_layers;
+ 
+     // Mark recurrent layers (linear attention layers)
+     {
+         uint32_t full_attn_interval = 4;
+         ml.get_key(LLM_KV_FULL_ATTENTION_INTERVAL, full_attn_interval, false);
+-        for (uint32_t i = 0; i < hparams.n_layer; ++i) {
++        const uint32_t n_main = hparams.n_layer - hparams.nextn_predict_layers;
++        for (uint32_t i = 0; i < n_main; ++i) {
+             hparams.recurrent_layer_arr[i] = ((i + 1) % full_attn_interval != 0);
+         }
++        for (uint32_t i = n_main; i < hparams.n_layer; ++i) {
++            hparams.recurrent_layer_arr[i] = false;
++        }
+     }
+ 
+-    switch (hparams.n_layer) {
++    switch (hparams.n_layer - hparams.nextn_predict_layers) {
+         case 40: type = LLM_TYPE_35B_A3B; break;
+         case 48: type = LLM_TYPE_122B_A10B; break;
+         case 60: type = LLM_TYPE_397B_A17B; break;
+@@ -96,6 +102,15 @@ void llama_model_qwen35moe::load_arch_tensors(llama_model_loader &) {
+         layer.ffn_gate_shexp     = create_tensor(tn(LLM_TENSOR_FFN_GATE_SHEXP,     "weight", i), { n_embd, n_ff_shexp }, 0);
+         layer.ffn_up_shexp       = create_tensor(tn(LLM_TENSOR_FFN_UP_SHEXP,       "weight", i), { n_embd, n_ff_shexp }, 0);
+         layer.ffn_down_shexp     = create_tensor(tn(LLM_TENSOR_FFN_DOWN_SHEXP,     "weight", i), { n_ff_shexp, n_embd }, 0);
++
++        if (static_cast<uint32_t>(i) >= hparams.n_layer - hparams.nextn_predict_layers) {
++            layer.nextn.eh_proj          = create_tensor(tn(LLM_TENSOR_NEXTN_EH_PROJ,          "weight", i), { 2 * n_embd, n_embd }, 0);
++            layer.nextn.enorm            = create_tensor(tn(LLM_TENSOR_NEXTN_ENORM,            "weight", i), { n_embd },              0);
++            layer.nextn.hnorm            = create_tensor(tn(LLM_TENSOR_NEXTN_HNORM,            "weight", i), { n_embd },              0);
++            layer.nextn.embed_tokens     = create_tensor(tn(LLM_TENSOR_NEXTN_EMBED_TOKENS,     "weight", i), { n_embd, n_vocab },     TENSOR_NOT_REQUIRED);
++            layer.nextn.shared_head_head = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD, "weight", i), { n_embd, n_vocab },     TENSOR_NOT_REQUIRED);
++            layer.nextn.shared_head_norm = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_NORM, "weight", i), { n_embd },              TENSOR_NOT_REQUIRED);
++        }
+     }
+ }
+ 
+@@ -117,8 +132,9 @@ llama_model_qwen35moe::graph::graph(const llama_model & model, const llm_graph_p
+ 
+     const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
+     const bool stage_filtered = stage_filter.enabled;
++    const int n_transformer_layers = n_layer - hparams.nextn_predict_layers;
+     const int il_start = stage_filtered ? stage_filter.layer_start : 0;
+-    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
++    const int il_end   = std::min(stage_filtered ? stage_filter.layer_end : n_transformer_layers, n_transformer_layers);
+     bool has_attention_layer = false;
+     for (int il = il_start; il < il_end; ++il) {
+         if (!hparams.is_recurrent(il)) {
+@@ -153,7 +169,7 @@ llama_model_qwen35moe::graph::graph(const llama_model & model, const llm_graph_p
+             cur = build_layer_attn(inp->get_attn(), cur, inp_pos, sections, il);
+         }
+ 
+-        if (il == n_layer - 1 && inp_out_ids) {
++        if (il == n_transformer_layers - 1 && inp_out_ids) {
+             cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
+             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
+         }
+@@ -193,6 +209,8 @@ llama_model_qwen35moe::graph::graph(const llama_model & model, const llm_graph_p
+     }
+ 
+     // Final norm
++    cb(cur, "h_pre_norm", -1);
++    res->t_h_pre_norm = cur;
+     cur = build_norm(cur, model.output_norm, nullptr, LLM_NORM_RMS, -1);
+ 
+     cb(cur, "result_norm", -1);
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index f25da57e..0d0e7472 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -1,11 +1,13 @@
+ #include "skippy.h"
+ #include "skippy/devices.h"
++#include "skippy/mtp.h"
+ #include "skippy-signals.h"
+ 
+ #include <mutex>
+ #include "gguf.h"
+ #include "llama-arch.h"
+ #include "llama-context.h"
++#include "llama-ext.h"
+ #include "llama-graph.h"
+ #include "llama-kv-cache.h"
+ #include "llama-memory-hybrid.h"
+@@ -24,6 +26,7 @@
+ #include <cstring>
+ #include <exception>
+ #include <fstream>
++#include <functional>
+ #include <cstdio>
+ #include <limits>
+ #include <regex>
+@@ -75,6 +78,21 @@ struct skippy_session {
+     size_t sampling_accepted_token_count = 0;
+ };
+ 
++struct skippy_mtp_head {
++    llama_model * model = nullptr;
++    llama_context * ctx = nullptr;
++    skippy_mtp_params params = {};
++    int32_t n_embd = 0;
++};
++
++struct skippy_mtp_session {
++    skippy_mtp_head * head = nullptr;
++    int32_t n_past = 0;
++    std::vector<float> h_work;
++    std::vector<float> h_pending;
++    bool has_pending = false;
++};
++
+ struct skippy_tensor_meta {
+     std::string name;
+     int32_t layer_index = -1;
+@@ -626,6 +644,94 @@ static enum skippy_status skippy_apply_selected_backend_device(
+     return SKIPPY_STATUS_OK;
+ }
+ 
++static std::string skippy_mtp_arch_for_path(const char * path) {
++    if (path == nullptr) {
++        return {};
++    }
++
++    gguf_init_params params = {
++        /*.no_alloc =*/ true,
++        /*.ctx      =*/ nullptr,
++    };
++    gguf_context * ctx = gguf_init_from_file(path, params);
++    if (ctx == nullptr) {
++        return {};
++    }
++
++    auto cleanup = [&]() {
++        gguf_free(ctx);
++    };
++
++    const int arch_idx = gguf_find_key(ctx, "general.architecture");
++    if (arch_idx < 0 || gguf_get_kv_type(ctx, arch_idx) != GGUF_TYPE_STRING) {
++        cleanup();
++        return {};
++    }
++    const std::string arch = gguf_get_val_str(ctx, arch_idx);
++    const int nextn_idx = gguf_find_key(ctx, (arch + ".nextn_predict_layers").c_str());
++    if (nextn_idx < 0 || gguf_get_kv_type(ctx, nextn_idx) != GGUF_TYPE_UINT32 || gguf_get_val_u32(ctx, nextn_idx) == 0) {
++        cleanup();
++        return {};
++    }
++
++    cleanup();
++    if (arch == "qwen35") {
++        return "qwen35_mtp";
++    }
++    if (arch == "qwen35moe") {
++        return "qwen35moe_mtp";
++    }
++    return {};
++}
++
++static float skippy_mtp_top_probability(const float * logits, int32_t n_vocab, llama_token top_id, uint32_t top_k) {
++    if (logits == nullptr || n_vocab <= 0 || top_id < 0 || top_id >= n_vocab) {
++        return 0.0f;
++    }
++    if (top_k == 0 || top_k >= static_cast<uint32_t>(n_vocab)) {
++        float max_logit = logits[0];
++        for (int32_t i = 1; i < n_vocab; ++i) {
++            max_logit = std::max(max_logit, logits[i]);
++        }
++        double denom = 0.0;
++        for (int32_t i = 0; i < n_vocab; ++i) {
++            denom += std::exp(static_cast<double>(logits[i] - max_logit));
++        }
++        if (denom <= 0.0) {
++            return 0.0f;
++        }
++        return static_cast<float>(std::exp(static_cast<double>(logits[top_id] - max_logit)) / denom);
++    }
++
++    const int32_t k = static_cast<int32_t>(std::min<uint32_t>(top_k, static_cast<uint32_t>(n_vocab)));
++    std::vector<float> top_logits;
++    top_logits.reserve(static_cast<size_t>(k));
++    for (int32_t i = 0; i < n_vocab; ++i) {
++        const float logit = logits[i];
++        if (static_cast<int32_t>(top_logits.size()) < k) {
++            top_logits.push_back(logit);
++            if (static_cast<int32_t>(top_logits.size()) == k) {
++                std::make_heap(top_logits.begin(), top_logits.end(), std::greater<float>());
++            }
++            continue;
++        }
++        if (logit > top_logits.front()) {
++            std::pop_heap(top_logits.begin(), top_logits.end(), std::greater<float>());
++            top_logits.back() = logit;
++            std::push_heap(top_logits.begin(), top_logits.end(), std::greater<float>());
++        }
++    }
++    const float max_logit = *std::max_element(top_logits.begin(), top_logits.end());
++    double denom = 0.0;
++    for (float logit : top_logits) {
++        denom += std::exp(static_cast<double>(logit - max_logit));
++    }
++    if (denom <= 0.0) {
++        return 0.0f;
++    }
++    return static_cast<float>(std::exp(static_cast<double>(logits[top_id] - max_logit)) / denom);
++}
++
+ struct skippy_filter_scope {
+     explicit skippy_filter_scope(const skippy_runtime_config * config) {
+         if (config != nullptr && config->filter_tensors_on_load) {
+@@ -1762,6 +1868,426 @@ uint64_t skippy_abi_features(void) {
+            SKIPPY_FEATURE_BACKEND_DEVICES;
+ }
+ 
++struct skippy_mtp_abi_version skippy_mtp_abi_version(void) {
++    return {
++        SKIPPY_MTP_ABI_VERSION_MAJOR,
++        SKIPPY_MTP_ABI_VERSION_MINOR,
++        SKIPPY_MTP_ABI_VERSION_PATCH,
++    };
++}
++
++bool skippy_mtp_model_supports_head(const struct skippy_model * model) {
++    if (model == nullptr || model->model == nullptr) {
++        return false;
++    }
++    char arch[64] = {0};
++    if (llama_model_meta_val_str(model->model, "general.architecture", arch, sizeof(arch)) < 0) {
++        return false;
++    }
++    char nextn[32] = {0};
++    const std::string nextn_key = std::string(arch) + ".nextn_predict_layers";
++    if (llama_model_meta_val_str(model->model, nextn_key.c_str(), nextn, sizeof(nextn)) < 0) {
++        return false;
++    }
++    const int n = atoi(nextn);
++    return n > 0 && (strcmp(arch, "qwen35") == 0 || strcmp(arch, "qwen35moe") == 0);
++}
++
++enum skippy_status skippy_mtp_session_set_capture_pre_norm(
++        struct skippy_session * session,
++        bool enabled,
++        struct skippy_error ** out_error) {
++    if (session == nullptr || session->ctx == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "session is required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    llama_set_embeddings_pre_norm(session->ctx, enabled);
++    return skippy_success(out_error);
++}
++
++enum skippy_status skippy_mtp_session_copy_pre_norm(
++        struct skippy_session * session,
++        uint32_t token_count,
++        void * output_payload,
++        size_t output_capacity,
++        size_t * out_output_bytes,
++        struct skippy_error ** out_error) {
++    if (out_output_bytes != nullptr) {
++        *out_output_bytes = 0;
++    }
++    if (session == nullptr || session->ctx == nullptr || session->stage_model == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "session is required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    const int32_t n_embd = llama_model_n_embd(session->stage_model->model);
++    const size_t bytes = static_cast<size_t>(token_count) * static_cast<size_t>(n_embd) * sizeof(float);
++    if (out_output_bytes != nullptr) {
++        *out_output_bytes = bytes;
++    }
++    if (output_payload == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_BUFFER_TOO_SMALL, "pre-norm output buffer is required");
++        return SKIPPY_STATUS_BUFFER_TOO_SMALL;
++    }
++    if (output_capacity < bytes) {
++        skippy_set_error(out_error, SKIPPY_STATUS_BUFFER_TOO_SMALL, "pre-norm output buffer is too small");
++        return SKIPPY_STATUS_BUFFER_TOO_SMALL;
++    }
++    float * h = llama_get_embeddings_pre_norm(session->ctx);
++    if (h == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "pre-norm embeddings were not captured");
++        return SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++    memcpy(output_payload, h, bytes);
++    return skippy_success(out_error);
++}
++
++enum skippy_status skippy_mtp_head_open(
++        const char * path,
++        const struct skippy_runtime_config * target_config,
++        const struct skippy_mtp_params * params_in,
++        struct skippy_mtp_head ** out_head,
++        struct skippy_error ** out_error) {
++    if (path == nullptr || out_head == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "path and out_head are required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    *out_head = nullptr;
++
++    const std::string mtp_arch = skippy_mtp_arch_for_path(path);
++    if (mtp_arch.empty()) {
++        skippy_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, "GGUF does not advertise a supported MTP head");
++        return SKIPPY_STATUS_UNSUPPORTED;
++    }
++
++    llama_model_params mparams = llama_model_default_params();
++    mparams.override_arch = mtp_arch.c_str();
++    if (target_config != nullptr) {
++        mparams.n_gpu_layers = target_config->n_gpu_layers;
++        if (target_config->disable_repack || target_config->filter_tensors_on_load) {
++            mparams.use_extra_bufts = false;
++        }
++    }
++
++    llama_backend_init();
++    std::vector<ggml_backend_dev_t> selected_devices;
++    enum skippy_status device_status = skippy_apply_selected_backend_device(target_config, mparams, selected_devices, out_error);
++    if (device_status != SKIPPY_STATUS_OK) {
++        return device_status;
++    }
++
++    llama_model * model = llama_model_load_from_file(path, mparams);
++    if (model == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_MODEL_ERROR, "failed to load MTP head");
++        return SKIPPY_STATUS_MODEL_ERROR;
++    }
++
++    llama_context_params cparams = llama_context_default_params();
++    cparams.n_ctx = target_config != nullptr && target_config->ctx_size > 0 ? static_cast<uint32_t>(target_config->ctx_size) : 512;
++    cparams.n_batch = target_config != nullptr && target_config->n_batch > 0 ? static_cast<uint32_t>(target_config->n_batch) : cparams.n_ctx;
++    cparams.n_ubatch = target_config != nullptr && target_config->n_ubatch > 0 ? static_cast<uint32_t>(target_config->n_ubatch) : 0u;
++    cparams.n_threads = target_config != nullptr && target_config->n_threads > 0 ? target_config->n_threads : skippy_default_thread_count();
++    cparams.n_threads_batch = target_config != nullptr && target_config->n_threads_batch > 0 ? target_config->n_threads_batch : cparams.n_threads;
++    cparams.n_seq_max = 1;
++    cparams.type_k = target_config != nullptr && target_config->cache_type_k > 0 ? static_cast<ggml_type>(target_config->cache_type_k) : GGML_TYPE_F16;
++    cparams.type_v = target_config != nullptr && target_config->cache_type_v > 0 ? static_cast<ggml_type>(target_config->cache_type_v) : GGML_TYPE_F16;
++    cparams.flash_attn_type = target_config != nullptr ? static_cast<llama_flash_attn_type>(target_config->flash_attn_type) : LLAMA_FLASH_ATTN_TYPE_AUTO;
++
++    llama_context * ctx = llama_init_from_model(model, cparams);
++    if (ctx == nullptr) {
++        llama_model_free(model);
++        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to create MTP context");
++        return SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++    llama_set_embeddings_pre_norm(ctx, true);
++
++    skippy_mtp_head * head = new skippy_mtp_head{};
++    head->model = model;
++    head->ctx = ctx;
++    head->n_embd = llama_model_n_embd(model);
++    head->params = params_in != nullptr ? *params_in : skippy_mtp_params{};
++    if (head->params.n_max == 0) {
++        head->params.n_max = 3;
++    }
++    if (head->params.top_k == 0) {
++        head->params.top_k = 10;
++    }
++    if (head->params.p_min <= 0.0f) {
++        head->params.p_min = 0.5f;
++    }
++    *out_head = head;
++    return skippy_success(out_error);
++}
++
++enum skippy_status skippy_mtp_head_free(
++        struct skippy_mtp_head * head,
++        struct skippy_error ** out_error) {
++    if (head != nullptr) {
++        if (head->ctx != nullptr) {
++            llama_free(head->ctx);
++        }
++        if (head->model != nullptr) {
++            llama_model_free(head->model);
++        }
++        delete head;
++    }
++    return skippy_success(out_error);
++}
++
++enum skippy_status skippy_mtp_session_create(
++        struct skippy_mtp_head * head,
++        struct skippy_mtp_session ** out_session,
++        struct skippy_error ** out_error) {
++    if (head == nullptr || out_session == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "head and out_session are required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    skippy_mtp_session * session = new skippy_mtp_session{};
++    session->head = head;
++    session->h_work.assign(static_cast<size_t>(head->n_embd), 0.0f);
++    session->h_pending.assign(static_cast<size_t>(head->n_embd), 0.0f);
++    *out_session = session;
++    return skippy_success(out_error);
++}
++
++enum skippy_status skippy_mtp_session_free(
++        struct skippy_mtp_session * session,
++        struct skippy_error ** out_error) {
++    delete session;
++    return skippy_success(out_error);
++}
++
++enum skippy_status skippy_mtp_session_reset(
++        struct skippy_mtp_session * session,
++        struct skippy_error ** out_error) {
++    if (session == nullptr || session->head == nullptr || session->head->ctx == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "valid MTP session is required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    llama_memory_clear(llama_get_memory(session->head->ctx), true);
++    session->n_past = 0;
++    std::fill(session->h_pending.begin(), session->h_pending.end(), 0.0f);
++    session->has_pending = false;
++    return skippy_success(out_error);
++}
++
++enum skippy_status skippy_mtp_session_ingest(
++        struct skippy_mtp_session * session,
++        const llama_token * token_ids,
++        size_t token_count,
++        const void * h_pre_norm_f32,
++        size_t h_pre_norm_bytes,
++        llama_pos pos_start,
++        struct skippy_error ** out_error) {
++    if (session == nullptr || session->head == nullptr || session->head->ctx == nullptr || token_ids == nullptr || h_pre_norm_f32 == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "session, token_ids, and h_pre_norm_f32 are required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    skippy_mtp_head * head = session->head;
++    const size_t row_bytes = static_cast<size_t>(head->n_embd) * sizeof(float);
++    if (token_count == 0 || h_pre_norm_bytes != token_count * row_bytes) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "invalid MTP ingest token count or hidden rows");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    const float * h_rows = static_cast<const float *>(h_pre_norm_f32);
++    llama_batch batch = llama_batch_init(static_cast<int32_t>(token_count), head->n_embd, 1);
++    if (batch.token == nullptr) {
++        batch.token = (llama_token *) malloc(sizeof(llama_token) * token_count);
++    }
++    batch.n_tokens = static_cast<int32_t>(token_count);
++    for (int32_t i = 0; i < batch.n_tokens; ++i) {
++        batch.token[i] = token_ids[i];
++        batch.pos[i] = pos_start + i;
++        batch.n_seq_id[i] = 1;
++        batch.seq_id[i][0] = 0;
++        batch.logits[i] = 0;
++        const float * h_src = nullptr;
++        if (i == 0) {
++            h_src = session->has_pending ? session->h_pending.data() : session->h_work.data();
++        } else {
++            h_src = h_rows + static_cast<size_t>(i - 1) * head->n_embd;
++        }
++        memcpy(batch.embd + static_cast<size_t>(i) * head->n_embd, h_src, row_bytes);
++    }
++    const int rc = llama_decode(head->ctx, batch);
++    llama_batch_free(batch);
++    if (rc != 0) {
++        char message[256];
++        const llama_pos pos_max = llama_memory_seq_pos_max(llama_get_memory(head->ctx), 0);
++        snprintf(
++                message,
++                sizeof(message),
++                "MTP ingest decode failed: rc=%d pos_start=%d token_count=%zu session_n_past=%d mem_pos_max=%d",
++                rc,
++                static_cast<int>(pos_start),
++                token_count,
++                session->n_past,
++                static_cast<int>(pos_max));
++        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, message);
++        return SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++    memcpy(session->h_pending.data(), h_rows + (token_count - 1) * static_cast<size_t>(head->n_embd), row_bytes);
++    session->has_pending = true;
++    session->n_past = static_cast<int32_t>(pos_start + static_cast<llama_pos>(token_count));
++    return skippy_success(out_error);
++}
++
++enum skippy_status skippy_mtp_session_draft(
++        struct skippy_mtp_session * session,
++        const void * h_pre_norm_f32,
++        size_t h_pre_norm_bytes,
++        llama_token last_token,
++        llama_pos position,
++        llama_token * output_tokens,
++        size_t output_token_capacity,
++        struct skippy_mtp_draft_result * out_result,
++        struct skippy_error ** out_error) {
++    if (out_result != nullptr) {
++        *out_result = {};
++        out_result->version = 1;
++    }
++    if (session == nullptr || session->head == nullptr || h_pre_norm_f32 == nullptr || output_tokens == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "session, h_pre_norm_f32, and output_tokens are required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    skippy_mtp_head * head = session->head;
++    const size_t row_bytes = static_cast<size_t>(head->n_embd) * sizeof(float);
++    if (h_pre_norm_bytes != row_bytes || output_token_capacity == 0) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "invalid MTP hidden row or output capacity");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    memcpy(session->h_work.data(), h_pre_norm_f32, row_bytes);
++    enum skippy_status reset_status = skippy_mtp_session_reset(session, out_error);
++    if (reset_status != SKIPPY_STATUS_OK) {
++        return reset_status;
++    }
++    memcpy(session->h_pending.data(), h_pre_norm_f32, row_bytes);
++    session->has_pending = true;
++    return skippy_mtp_session_draft_synced(
++            session,
++            last_token,
++            position,
++            output_tokens,
++            output_token_capacity,
++            out_result,
++            out_error);
++}
++
++enum skippy_status skippy_mtp_session_draft_synced(
++        struct skippy_mtp_session * session,
++        llama_token last_token,
++        llama_pos position,
++        llama_token * output_tokens,
++        size_t output_token_capacity,
++        struct skippy_mtp_draft_result * out_result,
++        struct skippy_error ** out_error) {
++    if (out_result != nullptr) {
++        *out_result = {};
++        out_result->version = 1;
++    }
++    if (session == nullptr || session->head == nullptr || output_tokens == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "session and output_tokens are required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if (!session->has_pending) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "MTP session has not been synchronized");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    skippy_mtp_head * head = session->head;
++    const size_t row_bytes = static_cast<size_t>(head->n_embd) * sizeof(float);
++    if (output_token_capacity == 0) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "invalid MTP output capacity");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    const int32_t checkpoint_n_past = session->n_past;
++    const std::vector<float> checkpoint_pending = session->h_pending;
++
++    const size_t n_max = std::min<size_t>(output_token_capacity, head->params.n_max);
++    const int32_t n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(head->model));
++    uint32_t drafted = 0;
++    llama_token token = last_token;
++    for (; drafted < n_max; ++drafted) {
++        llama_batch batch = llama_batch_init(1, head->n_embd, 1);
++        if (batch.token == nullptr) {
++            batch.token = (llama_token *) malloc(sizeof(llama_token));
++        }
++        batch.n_tokens = 1;
++        batch.token[0] = token;
++        memcpy(batch.embd, session->h_work.data(), row_bytes);
++        memcpy(batch.embd, session->h_pending.data(), row_bytes);
++        batch.pos[0] = position + static_cast<llama_pos>(drafted);
++        batch.n_seq_id[0] = 1;
++        batch.seq_id[0][0] = 0;
++        batch.logits[0] = 1;
++
++        const int rc = llama_decode(head->ctx, batch);
++        llama_batch_free(batch);
++        if (rc != 0) {
++            char message[256];
++            const llama_pos pos_max = llama_memory_seq_pos_max(llama_get_memory(head->ctx), 0);
++            snprintf(
++                    message,
++                    sizeof(message),
++                    "MTP decode failed: rc=%d draft_index=%u position=%d checkpoint_n_past=%d session_n_past=%d mem_pos_max=%d",
++                    rc,
++                    drafted,
++                    static_cast<int>(position + static_cast<llama_pos>(drafted)),
++                    checkpoint_n_past,
++                    session->n_past,
++                    static_cast<int>(pos_max));
++            skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, message);
++            return SKIPPY_STATUS_RUNTIME_ERROR;
++        }
++
++        const float * logits = llama_get_logits_ith(head->ctx, 0);
++        if (logits == nullptr) {
++            skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "MTP logits were not available");
++            return SKIPPY_STATUS_RUNTIME_ERROR;
++        }
++        llama_token best = 0;
++        float best_logit = logits[0];
++        for (int32_t i = 1; i < n_vocab; ++i) {
++            if (logits[i] > best_logit) {
++                best = i;
++                best_logit = logits[i];
++            }
++        }
++        if (skippy_mtp_top_probability(logits, n_vocab, best, head->params.top_k) < head->params.p_min) {
++            break;
++        }
++        output_tokens[drafted] = best;
++        token = best;
++        float * h_next = llama_get_embeddings_pre_norm_ith(head->ctx, 0);
++        if (h_next == nullptr) {
++            skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "MTP pre-norm output was not available");
++            return SKIPPY_STATUS_RUNTIME_ERROR;
++        }
++        memcpy(session->h_pending.data(), h_next, row_bytes);
++    }
++
++    if (!llama_memory_seq_rm(llama_get_memory(head->ctx), 0, checkpoint_n_past, -1)) {
++        char message[256];
++        const llama_pos pos_max = llama_memory_seq_pos_max(llama_get_memory(head->ctx), 0);
++        snprintf(
++                message,
++                sizeof(message),
++                "failed to trim MTP draft context: checkpoint_n_past=%d mem_pos_max=%d",
++                checkpoint_n_past,
++                static_cast<int>(pos_max));
++        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, message);
++        return SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++    session->n_past = checkpoint_n_past;
++    session->h_pending = checkpoint_pending;
++    session->has_pending = true;
++
++    if (out_result != nullptr) {
++        out_result->token_count = drafted;
++        out_result->accepted_floor = std::min<uint32_t>(drafted, head->params.n_min);
++    }
++    return skippy_success(out_error);
++}
++
+ const char * skippy_status_string(enum skippy_status status) {
+     switch (status) {
+         case SKIPPY_STATUS_OK:               return "ok";
+@@ -3861,6 +4387,383 @@ enum skippy_status skippy_restore_session_checkpoint(
+     return skippy_success(out_error);
+ }
+ 
++enum skippy_status skippy_mtp_decode_step(
++        struct skippy_session * target_session,
++        struct skippy_mtp_session * mtp_session,
++        llama_token input_token,
++        const struct skippy_sampling_config * sampling,
++        size_t max_new_tokens,
++        size_t max_speculative_tokens,
++        bool mtp_enabled,
++        llama_token * output_tokens,
++        size_t output_token_capacity,
++        struct skippy_mtp_decode_result * out_result,
++        struct skippy_error ** out_error) {
++    if (out_result != nullptr) {
++        *out_result = {};
++        out_result->version = 1;
++    }
++    if (target_session == nullptr || target_session->ctx == nullptr || output_tokens == nullptr || out_result == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "target_session, output_tokens, and out_result are required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if (max_new_tokens == 0 || output_token_capacity == 0) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "max_new_tokens and output capacity must be non-zero");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    const llama_vocab * vocab = llama_model_get_vocab(target_session->stage_model->model);
++
++    const int64_t decode_start_us = ggml_time_us();
++    enum skippy_status status = skippy_decode_tokens(target_session, &input_token, 1, true, out_error);
++    if (status != SKIPPY_STATUS_OK) {
++        return status;
++    }
++    out_result->target_decode_calls += 1;
++    const llama_token current = skippy_sample_token(target_session, sampling);
++    out_result->target_decode_ms += static_cast<double>(ggml_time_us() - decode_start_us) / 1000.0;
++    output_tokens[0] = current;
++    out_result->committed_count = 1;
++
++    if (!mtp_enabled || mtp_session == nullptr || max_new_tokens <= 1 || max_speculative_tokens == 0 || llama_vocab_is_eog(vocab, current)) {
++        if (!mtp_enabled) {
++            out_result->mtp_disabled = 1;
++        }
++        return skippy_success(out_error);
++    }
++    if (mtp_session->head == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "MTP session head is required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    const int64_t ingest_start_us = ggml_time_us();
++    float * h_decode = llama_get_embeddings_pre_norm(target_session->ctx);
++    if (h_decode == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "target pre-norm embeddings were not captured for fused MTP decode");
++        return SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++    const llama_pos input_pos = target_session->n_past - 1;
++    status = skippy_mtp_session_ingest(
++            mtp_session,
++            &input_token,
++            1,
++            h_decode,
++            static_cast<size_t>(mtp_session->head->n_embd) * sizeof(float),
++            input_pos,
++            out_error);
++    out_result->mtp_ingest_ms += static_cast<double>(ggml_time_us() - ingest_start_us) / 1000.0;
++    if (status != SKIPPY_STATUS_OK) {
++        return status;
++    }
++    out_result->mtp_ingest_calls += 1;
++    out_result->mtp_ingest_tokens += 1;
++
++    const size_t proposal_limit = max_new_tokens > 2 ? std::min(max_speculative_tokens, max_new_tokens - 2) : 0;
++    if (proposal_limit == 0) {
++        return skippy_success(out_error);
++    }
++    std::vector<llama_token> draft_tokens(proposal_limit);
++    skippy_mtp_draft_result draft_result{};
++    const int64_t propose_start_us = ggml_time_us();
++    out_result->mtp_draft_calls += 1;
++    status = skippy_mtp_session_draft_synced(
++            mtp_session,
++            current,
++            target_session->n_past,
++            draft_tokens.data(),
++            draft_tokens.size(),
++            &draft_result,
++            out_error);
++    out_result->mtp_propose_ms += static_cast<double>(ggml_time_us() - propose_start_us) / 1000.0;
++    if (status != SKIPPY_STATUS_OK) {
++        return status;
++    }
++    draft_tokens.resize(draft_result.token_count);
++    out_result->mtp_draft_decode_calls += draft_result.token_count;
++    out_result->mtp_draft_tokens += draft_result.token_count;
++
++    if (draft_tokens.empty()) {
++        return skippy_success(out_error);
++    }
++    out_result->proposed_tokens = draft_result.token_count;
++    const bool verify_extra_sample = max_speculative_tokens > 1;
++    const size_t max_output_tokens = 1 + draft_tokens.size() + (verify_extra_sample ? 1 : 0);
++    if (output_token_capacity < max_output_tokens) {
++        skippy_set_error(out_error, SKIPPY_STATUS_BUFFER_TOO_SMALL, "fused MTP output token buffer is too small");
++        return SKIPPY_STATUS_BUFFER_TOO_SMALL;
++    }
++
++    std::vector<llama_token> verify_inputs;
++    verify_inputs.reserve(1 + draft_tokens.size());
++    verify_inputs.push_back(current);
++    if (verify_extra_sample) {
++        verify_inputs.insert(verify_inputs.end(), draft_tokens.begin(), draft_tokens.end());
++    } else {
++        verify_inputs.insert(verify_inputs.end(), draft_tokens.begin(), draft_tokens.end() - 1);
++    }
++
++    uint64_t checkpoint_tokens = 0;
++    const int64_t checkpoint_start_us = ggml_time_us();
++    status = skippy_checkpoint_session(target_session, &checkpoint_tokens, out_error);
++    out_result->checkpoint_ms += static_cast<double>(ggml_time_us() - checkpoint_start_us) / 1000.0;
++    if (status != SKIPPY_STATUS_OK) {
++        return status;
++    }
++    out_result->checkpoint_calls += 1;
++
++    std::vector<llama_token> predicted_tokens(verify_inputs.size());
++    size_t predicted_count = 0;
++    const int64_t verify_start_us = ggml_time_us();
++    status = skippy_verify_tokens(
++            target_session,
++            verify_inputs.data(),
++            verify_inputs.size(),
++            predicted_tokens.data(),
++            predicted_tokens.size(),
++            &predicted_count,
++            out_error);
++    out_result->primary_verify_ms += static_cast<double>(ggml_time_us() - verify_start_us) / 1000.0;
++    if (status != SKIPPY_STATUS_OK) {
++        return status;
++    }
++    out_result->target_verify_decode_calls += 1;
++    out_result->target_verify_tokens += static_cast<uint32_t>(verify_inputs.size());
++    predicted_tokens.resize(predicted_count);
++    const size_t expected_predictions = draft_tokens.size() + (verify_extra_sample ? 1 : 0);
++    if (predicted_tokens.size() < expected_predictions) {
++        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "fused MTP verify returned too few tokens");
++        return SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++
++    out_result->windows = 1;
++    size_t accepted_before_reject = 0;
++    bool rejected = false;
++    bool accepted_stop = false;
++    for (size_t i = 0; i < draft_tokens.size(); ++i) {
++        const bool accepted = predicted_tokens[i] == draft_tokens[i];
++        const bool reached_eog = llama_vocab_is_eog(vocab, predicted_tokens[i]);
++        const bool reached_limit = 1 + i + (verify_extra_sample ? 1 : 0) >= max_new_tokens;
++        if (accepted) {
++            accepted_before_reject++;
++            if (reached_eog || reached_limit) {
++                accepted_stop = true;
++                break;
++            }
++            continue;
++        }
++        rejected = true;
++        break;
++    }
++
++    out_result->accepted_tokens = static_cast<uint32_t>(accepted_before_reject);
++    if (rejected) {
++        out_result->rejected_tokens = 1;
++        out_result->rejected_windows = 1;
++        if (accepted_before_reject + 1 < draft_tokens.size()) {
++            out_result->early_reject_windows = 1;
++        } else {
++            out_result->tail_reject_windows = 1;
++        }
++        out_result->repair_required_windows = 1;
++    } else if (!accepted_stop) {
++        out_result->full_accept_windows = 1;
++    }
++
++    if (!rejected) {
++        const int64_t verify_ingest_start_us = ggml_time_us();
++        float * h_verify = llama_get_embeddings_pre_norm(target_session->ctx);
++        if (h_verify == nullptr) {
++            skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "target pre-norm embeddings were not captured for fused MTP verify");
++            return SKIPPY_STATUS_RUNTIME_ERROR;
++        }
++        status = skippy_mtp_session_ingest(
++                mtp_session,
++                verify_inputs.data(),
++                verify_inputs.size(),
++                h_verify,
++                verify_inputs.size() * static_cast<size_t>(mtp_session->head->n_embd) * sizeof(float),
++                static_cast<llama_pos>(checkpoint_tokens),
++                out_error);
++        out_result->mtp_ingest_ms += static_cast<double>(ggml_time_us() - verify_ingest_start_us) / 1000.0;
++        if (status != SKIPPY_STATUS_OK) {
++            return status;
++        }
++        out_result->mtp_ingest_calls += 1;
++        out_result->mtp_ingest_tokens += static_cast<uint32_t>(verify_inputs.size());
++        const size_t append_count = verify_extra_sample && !accepted_stop ?
++                std::min(predicted_tokens.size(), max_new_tokens - 1) :
++                std::min(accepted_before_reject, max_new_tokens - 1);
++        for (size_t i = 0; i < append_count; ++i) {
++            output_tokens[1 + i] = predicted_tokens[i];
++        }
++        out_result->committed_count = static_cast<uint32_t>(1 + append_count);
++        return skippy_success(out_error);
++    }
++
++    const int64_t repair_start_us = ggml_time_us();
++    const int64_t restore_start_us = ggml_time_us();
++    status = skippy_restore_session_checkpoint(target_session, checkpoint_tokens, out_error);
++    out_result->restore_ms += static_cast<double>(ggml_time_us() - restore_start_us) / 1000.0;
++    if (status != SKIPPY_STATUS_OK) {
++        return status;
++    }
++    out_result->restore_calls += 1;
++    const size_t repair_input_count = accepted_before_reject + 1;
++    if (repair_input_count == 1) {
++        status = skippy_decode_tokens(target_session, &current, 1, true, out_error);
++        if (status != SKIPPY_STATUS_OK) {
++            return status;
++        }
++        out_result->target_repair_decode_calls += 1;
++        out_result->target_repair_tokens += 1;
++        output_tokens[1] = skippy_sample_token(target_session, sampling);
++        out_result->committed_count = 2;
++    } else {
++        std::vector<llama_token> repaired_predictions(repair_input_count);
++        size_t repaired_count = 0;
++        status = skippy_verify_tokens(
++                target_session,
++                verify_inputs.data(),
++                repair_input_count,
++                repaired_predictions.data(),
++                repaired_predictions.size(),
++                &repaired_count,
++                out_error);
++        if (status != SKIPPY_STATUS_OK) {
++            return status;
++        }
++        out_result->target_repair_decode_calls += 1;
++        out_result->target_repair_tokens += static_cast<uint32_t>(repair_input_count);
++        if (repaired_count < repair_input_count) {
++            skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "fused MTP repair returned too few tokens");
++            return SKIPPY_STATUS_RUNTIME_ERROR;
++        }
++        for (size_t i = 0; i < repair_input_count; ++i) {
++            output_tokens[1 + i] = repaired_predictions[i];
++        }
++        out_result->committed_count = static_cast<uint32_t>(1 + repair_input_count);
++    }
++    const int64_t repair_ingest_start_us = ggml_time_us();
++    float * h_repair = llama_get_embeddings_pre_norm(target_session->ctx);
++    if (h_repair == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "target pre-norm embeddings were not captured for fused MTP repair");
++        return SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++    status = skippy_mtp_session_ingest(
++            mtp_session,
++            verify_inputs.data(),
++            repair_input_count,
++            h_repair,
++            repair_input_count * static_cast<size_t>(mtp_session->head->n_embd) * sizeof(float),
++            static_cast<llama_pos>(checkpoint_tokens),
++            out_error);
++    out_result->mtp_ingest_ms += static_cast<double>(ggml_time_us() - repair_ingest_start_us) / 1000.0;
++    if (status != SKIPPY_STATUS_OK) {
++        return status;
++    }
++    out_result->mtp_ingest_calls += 1;
++    out_result->mtp_ingest_tokens += static_cast<uint32_t>(repair_input_count);
++    out_result->repair_ms += static_cast<double>(ggml_time_us() - repair_start_us) / 1000.0;
++    return skippy_success(out_error);
++}
++
++static void skippy_mtp_accumulate_decode_result(
++        skippy_mtp_decode_result * dst,
++        const skippy_mtp_decode_result & src) {
++    dst->committed_count += src.committed_count;
++    dst->proposed_tokens += src.proposed_tokens;
++    dst->accepted_tokens += src.accepted_tokens;
++    dst->rejected_tokens += src.rejected_tokens;
++    dst->windows += src.windows;
++    dst->full_accept_windows += src.full_accept_windows;
++    dst->tail_reject_windows += src.tail_reject_windows;
++    dst->early_reject_windows += src.early_reject_windows;
++    dst->repair_required_windows += src.repair_required_windows;
++    dst->rejected_windows += src.rejected_windows;
++    dst->mtp_disabled = dst->mtp_disabled || src.mtp_disabled;
++    dst->target_decode_calls += src.target_decode_calls;
++    dst->target_verify_decode_calls += src.target_verify_decode_calls;
++    dst->target_verify_tokens += src.target_verify_tokens;
++    dst->target_repair_decode_calls += src.target_repair_decode_calls;
++    dst->target_repair_tokens += src.target_repair_tokens;
++    dst->mtp_ingest_calls += src.mtp_ingest_calls;
++    dst->mtp_ingest_tokens += src.mtp_ingest_tokens;
++    dst->mtp_draft_calls += src.mtp_draft_calls;
++    dst->mtp_draft_decode_calls += src.mtp_draft_decode_calls;
++    dst->mtp_draft_tokens += src.mtp_draft_tokens;
++    dst->checkpoint_calls += src.checkpoint_calls;
++    dst->restore_calls += src.restore_calls;
++    dst->target_decode_ms += src.target_decode_ms;
++    dst->mtp_ingest_ms += src.mtp_ingest_ms;
++    dst->mtp_propose_ms += src.mtp_propose_ms;
++    dst->primary_verify_ms += src.primary_verify_ms;
++    dst->repair_ms += src.repair_ms;
++    dst->checkpoint_ms += src.checkpoint_ms;
++    dst->restore_ms += src.restore_ms;
++}
++
++enum skippy_status skippy_mtp_generate_span(
++        struct skippy_session * target_session,
++        struct skippy_mtp_session * mtp_session,
++        llama_token input_token,
++        const struct skippy_sampling_config * sampling,
++        size_t max_new_tokens,
++        size_t max_speculative_tokens,
++        bool mtp_enabled,
++        llama_token * output_tokens,
++        size_t output_token_capacity,
++        struct skippy_mtp_decode_result * out_result,
++        struct skippy_error ** out_error) {
++    if (out_result != nullptr) {
++        *out_result = {};
++        out_result->version = 1;
++    }
++    if (target_session == nullptr || target_session->ctx == nullptr || output_tokens == nullptr || out_result == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "target_session, output_tokens, and out_result are required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if (max_new_tokens == 0 || output_token_capacity == 0) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "max_new_tokens and output capacity must be non-zero");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    const size_t capacity = std::min(max_new_tokens, output_token_capacity);
++    llama_token current_input = input_token;
++    bool step_mtp_enabled = mtp_enabled;
++    size_t generated = 0;
++    while (generated < capacity) {
++        skippy_mtp_decode_result step_result{};
++        const size_t remaining = capacity - generated;
++        enum skippy_status status = skippy_mtp_decode_step(
++                target_session,
++                mtp_session,
++                current_input,
++                sampling,
++                remaining,
++                max_speculative_tokens,
++                step_mtp_enabled,
++                output_tokens + generated,
++                remaining,
++                &step_result,
++                out_error);
++        if (status != SKIPPY_STATUS_OK) {
++            return status;
++        }
++        skippy_mtp_accumulate_decode_result(out_result, step_result);
++        const size_t committed = static_cast<size_t>(step_result.committed_count);
++        if (committed == 0) {
++            break;
++        }
++        generated += committed;
++        current_input = output_tokens[generated - 1];
++        if (step_result.mtp_disabled) {
++            step_mtp_enabled = false;
++        }
++    }
++    out_result->committed_count = static_cast<uint32_t>(generated);
++    return skippy_success(out_error);
++}
++
+ enum skippy_status skippy_tokenize(
+         struct skippy_model * model,
+         const char * text,
+diff --git a/tests/test-llama-archs.cpp b/tests/test-llama-archs.cpp
+index 16af11a2..fd0d3696 100644
+--- a/tests/test-llama-archs.cpp
++++ b/tests/test-llama-archs.cpp
+@@ -406,6 +406,9 @@ static bool arch_supported(const llm_arch arch) {
+     if (arch == LLM_ARCH_DEEPSEEK2OCR) {
+         return false;
+     }
++    if (arch == LLM_ARCH_QWEN35_MTP || arch == LLM_ARCH_QWEN35MOE_MTP) {
++        return false; // MTP-only arch; requires a sibling trunk model and cannot run standalone.
++    }
+ 
+     // FIXME some models are segfaulting with WebGPU:
+ #ifdef GGML_USE_WEBGPU
+-- 
+2.50.1 (Apple Git-155)
+

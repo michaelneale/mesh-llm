@@ -412,6 +412,7 @@ impl StageOpenAiBackend {
                 },
             )?;
             let output = run_binary_stage_message(
+                request.config,
                 &mut runtime,
                 session_key,
                 &decode_message,

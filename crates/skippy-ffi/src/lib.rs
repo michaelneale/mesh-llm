@@ -157,6 +157,16 @@ pub struct MtmdInputChunks {
 }
 
 #[repr(C)]
+pub struct MtpHead {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+pub struct MtpSession {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MtmdInputChunkType {
     Text = 0,
@@ -250,6 +260,70 @@ pub struct SamplingConfig {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
+pub struct MtpAbiVersion {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MtpParams {
+    pub version: u32,
+    pub n_min: u32,
+    pub n_max: u32,
+    pub top_k: u32,
+    pub p_min: f32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MtpDraftResult {
+    pub version: u32,
+    pub token_count: u32,
+    pub accepted_floor: u32,
+    pub reserved: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MtpDecodeResult {
+    pub version: u32,
+    pub committed_count: u32,
+    pub proposed_tokens: u32,
+    pub accepted_tokens: u32,
+    pub rejected_tokens: u32,
+    pub windows: u32,
+    pub full_accept_windows: u32,
+    pub tail_reject_windows: u32,
+    pub early_reject_windows: u32,
+    pub repair_required_windows: u32,
+    pub rejected_windows: u32,
+    pub mtp_disabled: u32,
+    pub target_decode_calls: u32,
+    pub target_verify_decode_calls: u32,
+    pub target_verify_tokens: u32,
+    pub target_repair_decode_calls: u32,
+    pub target_repair_tokens: u32,
+    pub mtp_ingest_calls: u32,
+    pub mtp_ingest_tokens: u32,
+    pub mtp_draft_calls: u32,
+    pub mtp_draft_decode_calls: u32,
+    pub mtp_draft_tokens: u32,
+    pub checkpoint_calls: u32,
+    pub restore_calls: u32,
+    pub reserved: [u32; 2],
+    pub target_decode_ms: f64,
+    pub mtp_ingest_ms: f64,
+    pub mtp_propose_ms: f64,
+    pub primary_verify_ms: f64,
+    pub repair_ms: f64,
+    pub checkpoint_ms: f64,
+    pub restore_ms: f64,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct KvPageDesc {
     pub version: u32,
     pub layer_start: i32,
@@ -322,6 +396,106 @@ extern "C" {
     pub fn skippy_model_free(model: *mut Model, out_error: *mut *mut Error) -> Status;
 
     pub fn skippy_model_llama_model(model: *const Model) -> *const Opaque;
+
+    pub fn skippy_mtp_abi_version() -> MtpAbiVersion;
+
+    pub fn skippy_mtp_model_supports_head(model: *const Model) -> bool;
+
+    pub fn skippy_mtp_session_set_capture_pre_norm(
+        session: *mut Session,
+        enabled: bool,
+        out_error: *mut *mut Error,
+    ) -> Status;
+
+    pub fn skippy_mtp_session_copy_pre_norm(
+        session: *mut Session,
+        token_count: u32,
+        output_payload: *mut c_void,
+        output_capacity: usize,
+        out_output_bytes: *mut usize,
+        out_error: *mut *mut Error,
+    ) -> Status;
+
+    pub fn skippy_mtp_head_open(
+        path: *const c_char,
+        target_config: *const RuntimeConfig,
+        params: *const MtpParams,
+        out_head: *mut *mut MtpHead,
+        out_error: *mut *mut Error,
+    ) -> Status;
+
+    pub fn skippy_mtp_head_free(head: *mut MtpHead, out_error: *mut *mut Error) -> Status;
+
+    pub fn skippy_mtp_session_create(
+        head: *mut MtpHead,
+        out_session: *mut *mut MtpSession,
+        out_error: *mut *mut Error,
+    ) -> Status;
+
+    pub fn skippy_mtp_session_free(session: *mut MtpSession, out_error: *mut *mut Error) -> Status;
+
+    pub fn skippy_mtp_session_reset(session: *mut MtpSession, out_error: *mut *mut Error)
+        -> Status;
+
+    pub fn skippy_mtp_session_ingest(
+        session: *mut MtpSession,
+        token_ids: *const i32,
+        token_count: usize,
+        h_pre_norm_f32: *const c_void,
+        h_pre_norm_bytes: usize,
+        pos_start: i32,
+        out_error: *mut *mut Error,
+    ) -> Status;
+
+    pub fn skippy_mtp_session_draft(
+        session: *mut MtpSession,
+        h_pre_norm_f32: *const c_void,
+        h_pre_norm_bytes: usize,
+        last_token: i32,
+        position: i32,
+        output_tokens: *mut i32,
+        output_token_capacity: usize,
+        out_result: *mut MtpDraftResult,
+        out_error: *mut *mut Error,
+    ) -> Status;
+
+    pub fn skippy_mtp_session_draft_synced(
+        session: *mut MtpSession,
+        last_token: i32,
+        position: i32,
+        output_tokens: *mut i32,
+        output_token_capacity: usize,
+        out_result: *mut MtpDraftResult,
+        out_error: *mut *mut Error,
+    ) -> Status;
+
+    pub fn skippy_mtp_decode_step(
+        target_session: *mut Session,
+        mtp_session: *mut MtpSession,
+        input_token: i32,
+        sampling: *const SamplingConfig,
+        max_new_tokens: usize,
+        max_speculative_tokens: usize,
+        mtp_enabled: bool,
+        output_tokens: *mut i32,
+        output_token_capacity: usize,
+        out_result: *mut MtpDecodeResult,
+        out_error: *mut *mut Error,
+    ) -> Status;
+
+    pub fn skippy_mtp_generate_span(
+        target_session: *mut Session,
+        mtp_session: *mut MtpSession,
+        input_token: i32,
+        sampling: *const SamplingConfig,
+        max_new_tokens: usize,
+        max_speculative_tokens: usize,
+        mtp_enabled: bool,
+        output_tokens: *mut i32,
+        output_token_capacity: usize,
+        out_result: *mut MtpDecodeResult,
+        out_error: *mut *mut Error,
+    ) -> Status;
 
     pub fn skippy_session_create(
         model: *mut Model,

@@ -1,0 +1,273 @@
+{
+  "run_id": "mtp-skippy-one-stage-mtp-20260512T103511Z",
+  "mode": "one-stage-mtp",
+  "status": "complete",
+  "metrics_report": {
+    "run": {
+      "run_id": "mtp-skippy-one-stage-mtp-20260512T103511Z",
+      "status": "completed",
+      "started_at_unix_nanos": 1778582115962351000,
+      "finished_at_unix_nanos": 1778582133884043000,
+      "config": {
+        "config": {
+          "experiment": "mtp-skippy-local",
+          "layer_count": 65,
+          "mode": "one-stage-mtp",
+          "model_id": "unsloth/Qwen3.6-27B-MTP-GGUF:IQ4_XS",
+          "model_path": "/Users/jdumay/.codex/worktrees/abc9/mesh-llm/experiments/mtp/models/Qwen3.6-27B-IQ4_XS.gguf",
+          "mtp_enabled": true,
+          "split_layer": 33,
+          "stage_count": 1
+        }
+      }
+    },
+    "counts": {
+      "log_exports": 0,
+      "metric_exports": 0,
+      "requests": 0,
+      "span_events": 0,
+      "spans": 6,
+      "stages": 1
+    },
+    "telemetry_loss": {
+      "dropped_events": 0,
+      "export_errors": 0
+    },
+    "requests": [],
+    "stages": [
+      {
+        "run_id": "mtp-skippy-one-stage-mtp-20260512T103511Z",
+        "stage_id": "stage-0",
+        "first_seen_unix_nanos": 1778582116019324000,
+        "attributes": {
+          "skippy.layer_end": 65,
+          "skippy.layer_start": 0,
+          "skippy.load_mode": "runtime-slice",
+          "skippy.model_id": "unsloth/Qwen3.6-27B-MTP-GGUF:IQ4_XS",
+          "skippy.otel_dropped_events": 0,
+          "skippy.otel_export_errors": 0,
+          "skippy.run_id": "mtp-skippy-one-stage-mtp-20260512T103511Z",
+          "skippy.stage_id": "stage-0",
+          "skippy.stage_index": 0,
+          "skippy.topology_id": "mtp-skippy-local"
+        }
+      }
+    ],
+    "stage_request_summaries": [],
+    "spans": [
+      {
+        "run_id": "mtp-skippy-one-stage-mtp-20260512T103511Z",
+        "request_id": null,
+        "session_id": null,
+        "stage_id": "stage-0",
+        "trace_id": "18aecb02dcda84700000000000000001",
+        "span_id": "0000000000000001",
+        "parent_span_id": null,
+        "name": "stage.binary_server_start",
+        "kind": 1,
+        "start_time_unix_nanos": 1778582116013606000,
+        "end_time_unix_nanos": 1778582116013606001,
+        "attributes": {
+          "skippy.layer_end": 65,
+          "skippy.layer_start": 0,
+          "skippy.load_mode": "runtime-slice",
+          "skippy.model_id": "unsloth/Qwen3.6-27B-MTP-GGUF:IQ4_XS",
+          "skippy.otel_dropped_events": 0,
+          "skippy.otel_export_errors": 0,
+          "skippy.run_id": "mtp-skippy-one-stage-mtp-20260512T103511Z",
+          "skippy.stage_id": "stage-0",
+          "skippy.stage_index": 0,
+          "skippy.topology_id": "mtp-skippy-local"
+        }
+      },
+      {
+        "run_id": "mtp-skippy-one-stage-mtp-20260512T103511Z",
+        "request_id": null,
+        "session_id": null,
+        "stage_id": "stage-0",
+        "trace_id": "18aecb04c32c7ce80000000000000002",
+        "span_id": "0000000000000002",
+        "parent_span_id": null,
+        "name": "stage.binary_runtime_prewarm",
+        "kind": 1,
+        "start_time_unix_nanos": 1778582124172705000,
+        "end_time_unix_nanos": 1778582124172705001,
+        "attributes": {
+          "llama_stage.elapsed_ms": 37.165,
+          "llama_stage.lane_count": 1,
+          "llama_stage.max_inflight": 1,
+          "llama_stage.runtime_sessions_active": 0,
+          "llama_stage.runtime_sessions_idle": 1,
+          "skippy.layer_end": 65,
+          "skippy.layer_start": 0,
+          "skippy.load_mode": "runtime-slice",
+          "skippy.model_id": "unsloth/Qwen3.6-27B-MTP-GGUF:IQ4_XS",
+          "skippy.otel_dropped_events": 0,
+          "skippy.otel_export_errors": 0,
+          "skippy.run_id": "mtp-skippy-one-stage-mtp-20260512T103511Z",
+          "skippy.stage_id": "stage-0",
+          "skippy.stage_index": 0,
+          "skippy.topology_id": "mtp-skippy-local"
+        }
+      },
+      {
+        "run_id": "mtp-skippy-one-stage-mtp-20260512T103511Z",
+        "request_id": null,
+        "session_id": null,
+        "stage_id": "stage-0",
+        "trace_id": "18aecb04c4d347480000000000000003",
+        "span_id": "0000000000000003",
+        "parent_span_id": null,
+        "name": "stage.openai_server_start",
+        "kind": 1,
+        "start_time_unix_nanos": 1778582124200413000,
+        "end_time_unix_nanos": 1778582124200413001,
+        "attributes": {
+          "skippy.layer_end": 65,
+          "skippy.layer_start": 0,
+          "skippy.load_mode": "runtime-slice",
+          "skippy.model_id": "unsloth/Qwen3.6-27B-MTP-GGUF:IQ4_XS",
+          "skippy.otel_dropped_events": 0,
+          "skippy.otel_export_errors": 0,
+          "skippy.run_id": "mtp-skippy-one-stage-mtp-20260512T103511Z",
+          "skippy.stage_id": "stage-0",
+          "skippy.stage_index": 0,
+          "skippy.topology_id": "mtp-skippy-local"
+        }
+      },
+      {
+        "run_id": "mtp-skippy-one-stage-mtp-20260512T103511Z",
+        "request_id": null,
+        "session_id": null,
+        "stage_id": "stage-0",
+        "trace_id": "18aecb04c4d362a00000000000000004",
+        "span_id": "0000000000000004",
+        "parent_span_id": null,
+        "name": "stage.openai_runtime_prewarm",
+        "kind": 1,
+        "start_time_unix_nanos": 1778582124200420000,
+        "end_time_unix_nanos": 1778582124200503000,
+        "attributes": {
+          "llama_stage.elapsed_ms": 0.080791,
+          "llama_stage.generation_concurrency": 1,
+          "llama_stage.lane_count": 1,
+          "llama_stage.runtime_sessions_active": 0,
+          "llama_stage.runtime_sessions_idle": 1,
+          "skippy.layer_end": 65,
+          "skippy.layer_start": 0,
+          "skippy.load_mode": "runtime-slice",
+          "skippy.model_id": "unsloth/Qwen3.6-27B-MTP-GGUF:IQ4_XS",
+          "skippy.otel_dropped_events": 0,
+          "skippy.otel_export_errors": 0,
+          "skippy.run_id": "mtp-skippy-one-stage-mtp-20260512T103511Z",
+          "skippy.stage_id": "stage-0",
+          "skippy.stage_index": 0,
+          "skippy.topology_id": "mtp-skippy-local"
+        }
+      },
+      {
+        "run_id": "mtp-skippy-one-stage-mtp-20260512T103511Z",
+        "request_id": null,
+        "session_id": null,
+        "stage_id": "stage-0",
+        "trace_id": "18aecb04c939e5580000000000000005",
+        "span_id": "0000000000000005",
+        "parent_span_id": null,
+        "name": "stage.openai_http_request",
+        "kind": 1,
+        "start_time_unix_nanos": 1778582124274247000,
+        "end_time_unix_nanos": 1778582124275669000,
+        "attributes": {
+          "llama_stage.elapsed_ms": 1.419542,
+          "llama_stage.http_method": "GET",
+          "llama_stage.http_path": "/v1/models",
+          "llama_stage.http_status": 200,
+          "skippy.otel_dropped_events": 0,
+          "skippy.otel_export_errors": 0,
+          "skippy.run_id": "mtp-skippy-one-stage-mtp-20260512T103511Z",
+          "skippy.stage_id": "stage-0"
+        }
+      },
+      {
+        "run_id": "mtp-skippy-one-stage-mtp-20260512T103511Z",
+        "request_id": null,
+        "session_id": null,
+        "stage_id": "stage-0",
+        "trace_id": "18aecb04e62602780000000000000006",
+        "span_id": "0000000000000006",
+        "parent_span_id": null,
+        "name": "stage.openai_http_request",
+        "kind": 1,
+        "start_time_unix_nanos": 1778582124759483000,
+        "end_time_unix_nanos": 1778582124806489000,
+        "attributes": {
+          "llama_stage.elapsed_ms": 47.0045,
+          "llama_stage.http_method": "POST",
+          "llama_stage.http_path": "/v1/chat/completions",
+          "llama_stage.http_status": 200,
+          "skippy.otel_dropped_events": 0,
+          "skippy.otel_export_errors": 0,
+          "skippy.run_id": "mtp-skippy-one-stage-mtp-20260512T103511Z",
+          "skippy.stage_id": "stage-0"
+        }
+      }
+    ]
+  },
+  "driver_result": {
+    "base_url": "http://127.0.0.1:31631/v1",
+    "model": "unsloth/Qwen3.6-27B-MTP-GGUF:IQ4_XS",
+    "endpoint": "/v1/chat/completions",
+    "stream": true,
+    "include_usage": true,
+    "max_tokens": 8,
+    "concurrency_depth": 1,
+    "request_timeout_secs": 600,
+    "request_count": 1,
+    "prompt_corpus": "/Users/jdumay/.codex/worktrees/abc9/mesh-llm/crates/skippy-bench/corpora/speculative_coding_prompts.jsonl",
+    "prompt_limit": 1,
+    "sampling": {
+      "temperature": null,
+      "top_p": null,
+      "top_k": null,
+      "seed": null,
+      "enable_thinking": false,
+      "reasoning_effort": null
+    },
+    "results": [
+      {
+        "sequence": 0,
+        "prompt_id": "spec-code-001",
+        "category": "rust_edit",
+        "length_bucket": null,
+        "session_id": "chat-corpus-session-0",
+        "prompt_chars": 97,
+        "elapsed_ms": 7383.179834,
+        "ttft_ms": 2590.792709,
+        "completion_tokens": null,
+        "prompt_tokens": null,
+        "total_tokens": null,
+        "finish_reason": null,
+        "output_chars": 3,
+        "error": "chat completions stream error: {\"error\":{\"code\":\"service_unavailable\",\"message\":\"skippy ABI call failed: RuntimeError: llama_decode failed\",\"param\":null,\"type\":\"server_error\"}}",
+        "api_error_code": "service_unavailable"
+      }
+    ],
+    "summary": {
+      "count": 1,
+      "errors": 1,
+      "elapsed_ms_min": null,
+      "elapsed_ms_mean": null,
+      "elapsed_ms_p50": null,
+      "elapsed_ms_p95": null,
+      "elapsed_ms_p99": null,
+      "ttft_ms_p50": null,
+      "ttft_ms_p95": null,
+      "ttft_ms_p99": null,
+      "completion_tokens": 0,
+      "total_tokens": 0,
+      "total_wall_ms": 7402.956458000001,
+      "completion_tok_s": null,
+      "total_tok_s": null
+    }
+  }
+}

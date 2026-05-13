@@ -45,6 +45,7 @@ pub(crate) struct Report {
     pub(crate) run: RunRecord,
     pub(crate) counts: BTreeMap<String, i64>,
     pub(crate) telemetry_loss: TelemetryLossReport,
+    pub(crate) speculation: SpeculationReport,
     pub(crate) requests: Vec<RequestRecord>,
     pub(crate) stages: Vec<StageRecord>,
     pub(crate) stage_request_summaries: Vec<StageRequestSummary>,
@@ -55,6 +56,41 @@ pub(crate) struct Report {
 pub(crate) struct TelemetryLossReport {
     pub(crate) dropped_events: i64,
     pub(crate) export_errors: i64,
+}
+
+#[derive(Serialize, Default)]
+pub(crate) struct SpeculationReport {
+    pub(crate) decode_spans: i64,
+    pub(crate) enabled_decode_spans: i64,
+    pub(crate) windows: i64,
+    pub(crate) proposed_tokens: i64,
+    pub(crate) accepted_tokens: i64,
+    pub(crate) rejected_tokens: i64,
+    pub(crate) accept_rate: Option<f64>,
+    pub(crate) full_accept_windows: i64,
+    pub(crate) accepted_stop_windows: i64,
+    pub(crate) rejected_windows: i64,
+    pub(crate) early_reject_windows: i64,
+    pub(crate) tail_reject_windows: i64,
+    pub(crate) repair_required_windows: i64,
+    pub(crate) draft_propose_ms: f64,
+    pub(crate) mtp_propose_ms: f64,
+    pub(crate) mtp_ingest_ms: f64,
+    pub(crate) primary_verify_elapsed_ms: f64,
+    pub(crate) checkpoint_ms: f64,
+    pub(crate) recovery_ms: f64,
+    pub(crate) fused_target_decode_calls: i64,
+    pub(crate) fused_target_verify_decode_calls: i64,
+    pub(crate) fused_target_verify_tokens: i64,
+    pub(crate) fused_target_repair_decode_calls: i64,
+    pub(crate) fused_target_repair_tokens: i64,
+    pub(crate) fused_mtp_ingest_calls: i64,
+    pub(crate) fused_mtp_ingest_tokens: i64,
+    pub(crate) fused_mtp_draft_calls: i64,
+    pub(crate) fused_mtp_draft_decode_calls: i64,
+    pub(crate) fused_mtp_draft_tokens: i64,
+    pub(crate) fused_checkpoint_calls: i64,
+    pub(crate) fused_restore_calls: i64,
 }
 
 #[derive(Serialize)]

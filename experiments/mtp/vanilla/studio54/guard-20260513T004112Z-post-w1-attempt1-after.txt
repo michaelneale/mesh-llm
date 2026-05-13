@@ -1,0 +1,51 @@
+=== post-w1-attempt1-after ===
+Wed May 13 00:49:38 UTC 2026
+10:49  up 1 day,  2:05, 3 users, load averages: 4.10 3.42 4.65
+--- top cpu ---
+ 1003  95.6  0.1 /System/Library/PrivateFrameworks/IMDPersistence.framework/XPCServices/IMDPersistenceAgent.xpc/Contents/MacOS/IMDPersistenceAgent
+ 1103  44.3  0.6 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/corespotlightd
+ 1006  14.2  0.1 /System/Library/PrivateFrameworks/CoreSuggestions.framework/Versions/A/Support/suggestd
+59687  10.8  0.0 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mdworker_shared -s mdworker -c MDSImporterWorker -m com.apple.mdworker.shared
+  602   7.0  0.0 /usr/sbin/bluetoothd
+  987   4.4  0.1 /usr/libexec/sharingd
+  999   4.2  0.1 /System/Library/PrivateFrameworks/IMCore.framework/imagent.app/Contents/MacOS/imagent
+  844   3.9  0.4 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mds_stores
+  930   3.1  0.0 /usr/sbin/cfprefsd agent
+ 1025   2.6  0.0 /usr/libexec/nearbyd
+  967   2.5  0.1 /usr/libexec/rapportd
+  725   1.7  0.0 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN com.apple.bcmwlan 0x1000015ac com.apple.DriverKit-AppleBCMWLAN
+ 8108   1.5  0.2 /Applications/Tailscale.app/Contents/PlugIns/IPNExtension.appex/Contents/MacOS/IPNExtension -AppleLanguages ("en-US")
+  635   1.1  0.1 /usr/libexec/airportd
+--- vm_stat ---
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                  4602255.
+Pages active:                                1645285.
+Pages inactive:                              1534010.
+Pages speculative:                            264484.
+Pages throttled:                                   0.
+Pages wired down:                             217174.
+Pages purgeable:                              109085.
+"Translation faults":                      755500558.
+Pages copy-on-write:                        12318584.
+Pages zero filled:                         350227852.
+Pages reactivated:                           1955203.
+Pages purged:                                2353123.
+File-backed pages:                           2348558.
+Anonymous pages:                             1095221.
+Pages stored in compressor:                   195417.
+Pages occupied by compressor:                  70564.
+Decompressions:                               358198.
+Compressions:                                4945937.
+Pageins:                                    18304635.
+Pageouts:                                      40395.
+Swapins:                                           0.
+Swapouts:                                          0.
+--- memory_pressure ---
+The system has 137438953472 (8388608 pages with a page size of 16384).
+System-wide memory free percentage: 96%
+--- pmset therm ---
+Note: No thermal warning level has been recorded
+Note: No performance warning level has been recorded
+Note: No CPU power status has been recorded
+--- pmset batt ---
+Now drawing from 'AC Power'

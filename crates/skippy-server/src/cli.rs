@@ -123,6 +123,13 @@ pub struct ServeBinaryArgs {
     pub openai_adaptive_speculative_window: bool,
     #[arg(
         long,
+        help = "Enable native llama.cpp MTP/NextN speculative proposals for the embedded OpenAI surface."
+    )]
+    pub openai_mtp: bool,
+    #[arg(long, default_value_t = 4)]
+    pub openai_mtp_window: usize,
+    #[arg(
+        long,
         help = "Override n_gpu_layers for the embedded OpenAI draft model. Defaults to the stage config n_gpu_layers."
     )]
     pub openai_draft_n_gpu_layers: Option<i32>,
@@ -183,4 +190,11 @@ pub struct ServeOpenAiArgs {
     pub telemetry_queue_capacity: usize,
     #[arg(long, value_enum, default_value_t = TelemetryLevel::Summary)]
     pub telemetry_level: TelemetryLevel,
+    #[arg(
+        long,
+        help = "Enable native llama.cpp MTP/NextN speculative proposals."
+    )]
+    pub mtp: bool,
+    #[arg(long, default_value_t = 4)]
+    pub mtp_window: usize,
 }

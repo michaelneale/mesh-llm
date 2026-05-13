@@ -1,0 +1,13 @@
+{
+  "run_id": "mtp-skippy-one-stage-mtp-20260512T151802Z",
+  "config": {
+    "experiment": "mtp-skippy-local",
+    "mode": "one-stage-mtp",
+    "model_id": "unsloth/Qwen3.6-27B-MTP-GGUF:IQ4_XS",
+    "model_path": "/Users/jdumay/tmp/mesh-llm-mtp/experiments/mtp/models/Qwen3.6-27B-IQ4_XS.gguf",
+    "mtp_enabled": true,
+    "stage_count": 1,
+    "layer_count": 65,
+    "split_layer": 33
+  }
+}

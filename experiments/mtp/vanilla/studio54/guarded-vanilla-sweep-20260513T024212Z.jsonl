@@ -1,0 +1,11 @@
+{
+  "run_tag": "20260513T024212Z",
+  "type": "baseline_guard",
+  "phase": "pre",
+  "window": 3,
+  "attempt": 1,
+  "artifact": "/Users/jdumay/tmp/mesh-llm-mtp/experiments/mtp/vanilla/llama-server-baseline_warm-20260513T024213Z.json",
+  "tok_s": 10.100132980965475,
+  "threshold": 17.3,
+  "accepted": false
+}

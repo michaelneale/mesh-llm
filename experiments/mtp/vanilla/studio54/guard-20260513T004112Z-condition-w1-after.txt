@@ -1,0 +1,51 @@
+=== condition-w1-after ===
+Wed May 13 00:45:00 UTC 2026
+10:45  up 1 day, 2 hrs, 3 users, load averages: 1.70 2.97 4.95
+--- top cpu ---
+  701  40.1  0.0 /usr/libexec/findmybeaconingd
+35709   4.5  0.0 /usr/libexec/PerfPowerServices
+  602   4.1  0.0 /usr/sbin/bluetoothd
+  635   2.4  0.1 /usr/libexec/airportd
+  987   1.9  0.1 /usr/libexec/sharingd
+ 1025   1.3  0.0 /usr/libexec/nearbyd
+  967   0.9  0.1 /usr/libexec/rapportd
+  536   0.9  0.1 /usr/libexec/logd
+  629   0.8  0.0 /usr/sbin/mDNSResponder
+  725   0.7  0.0 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN com.apple.bcmwlan 0x1000015ac com.apple.DriverKit-AppleBCMWLAN
+  619   0.5  0.0 /usr/libexec/runningboardd
+  610   0.5  0.2 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer -daemon
+45824   0.4  0.0 /System/Library/ExtensionKit/Extensions/VPN.appex/Contents/MacOS/VPN -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6Miwic2VydmljZU5hbWUiOiJjb20uYXBwbGUuTmV0d29ya0V4dGVuc2lvblNldHRpbmdzVUkuTkVTZXR0aW5nc1VJRXh0ZW5zaW9uIn0=
+ 1063   0.3  0.1 /System/Library/CoreServices/ControlCenter.app/Contents/MacOS/ControlCenter
+--- vm_stat ---
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                  4613484.
+Pages active:                                1581473.
+Pages inactive:                              1579138.
+Pages speculative:                            263669.
+Pages throttled:                                   0.
+Pages wired down:                             225598.
+Pages purgeable:                              106034.
+"Translation faults":                      754019376.
+Pages copy-on-write:                        12303369.
+Pages zero filled:                         349812242.
+Pages reactivated:                           1954838.
+Pages purged:                                2348571.
+File-backed pages:                           2347463.
+Anonymous pages:                             1076817.
+Pages stored in compressor:                   195443.
+Pages occupied by compressor:                  70573.
+Decompressions:                               358177.
+Compressions:                                4945937.
+Pageins:                                    18304348.
+Pageouts:                                      40395.
+Swapins:                                           0.
+Swapouts:                                          0.
+--- memory_pressure ---
+The system has 137438953472 (8388608 pages with a page size of 16384).
+System-wide memory free percentage: 96%
+--- pmset therm ---
+Note: No thermal warning level has been recorded
+Note: No performance warning level has been recorded
+Note: No CPU power status has been recorded
+--- pmset batt ---
+Now drawing from 'AC Power'

@@ -280,6 +280,39 @@ pub(super) fn embedded_restore_prefill_decode_message(
     })
 }
 
+pub(super) fn embedded_mtp_draft_message(
+    wire_dtype: WireActivationDType,
+    request_id: u64,
+    session_id: u64,
+    position: usize,
+    last_token: i32,
+    output_capacity: usize,
+) -> OpenAiResult<StageWireMessage> {
+    if output_capacity == 0 {
+        return Err(OpenAiError::backend("MTP draft requires a non-zero window"));
+    }
+    let mut state = StageStateHeader::new(WireMessageKind::MtpDraft, wire_dtype);
+    state.seq_id = 0;
+    state.current_token = last_token;
+    state.source_stage_index = -1;
+    Ok(StageWireMessage {
+        kind: WireMessageKind::MtpDraft,
+        pos_start: i32::try_from(position)
+            .map_err(|_| OpenAiError::backend("MTP draft position exceeds i32"))?,
+        token_count: i32::try_from(output_capacity)
+            .map_err(|_| OpenAiError::backend("MTP draft window exceeds i32"))?,
+        state,
+        request_id,
+        session_id,
+        sampling: None,
+        chat_sampling_metadata: None,
+        tokens: vec![last_token],
+        positions: Vec::new(),
+        activation: Vec::new(),
+        raw_bytes: Vec::new(),
+    })
+}
+
 pub(super) fn openai_stage_mask(stage_index: u32) -> i64 {
     if stage_index < 63 {
         1_i64 << stage_index

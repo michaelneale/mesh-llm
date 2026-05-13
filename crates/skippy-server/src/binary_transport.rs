@@ -247,6 +247,8 @@ fn run_binary_stage(options: BinaryStageOptions, shutdown: Arc<AtomicBool>) -> R
                 draft_model_path: openai_options.draft_model_path,
                 speculative_window: openai_options.speculative_window,
                 adaptive_speculative_window: openai_options.adaptive_speculative_window,
+                mtp: openai_options.mtp,
+                mtp_window: openai_options.mtp_window,
                 draft_n_gpu_layers: openai_options.draft_n_gpu_layers,
                 activation_width,
                 wire_dtype,
@@ -621,6 +623,16 @@ fn handle_binary_connection(
                         sampling.as_ref(),
                     )
                     .context("configure binary stage generation")?;
+                if (message.state.flags & state_flags::MTP_CAPTURE) != 0 {
+                    runtime
+                        .configure_mtp_capture(&session_key, true)
+                        .context("configure binary stage MTP capture")?;
+                }
+            } else if (message.state.flags & state_flags::MTP_CAPTURE) != 0 {
+                let mut runtime = runtime.lock().expect("runtime lock poisoned");
+                runtime
+                    .configure_mtp_capture(&session_key, true)
+                    .context("configure binary stage MTP capture")?;
             }
             send_reply_ack_with_stats(&mut *upstream, generation_stats)
                 .context("generation config ack")?;
@@ -717,6 +729,42 @@ fn handle_binary_connection(
 
         if message.kind == WireMessageKind::StateExport {
             bail!("binary state export is no longer supported by the skippy runtime ABI");
+        }
+
+        if message.kind == WireMessageKind::MtpDraft {
+            let mut draft_stats = std::mem::take(&mut pending_reply_stats);
+            if let Some(forwarder) = async_forwarder.as_mut() {
+                forwarder
+                    .flush()
+                    .context("flush async forwards before MTP draft")?;
+            }
+            drain_deferred_prefill_replies(
+                downstream.as_mut(),
+                &mut pending_prefill_replies,
+                &mut draft_stats,
+            )
+            .context("drain deferred replies before MTP draft")?;
+            if let Some(downstream) = downstream.as_mut() {
+                write_stage_message_conditioned(
+                    &mut *downstream,
+                    &message,
+                    wire_dtype,
+                    downstream_wire_condition,
+                )
+                .context("forward MTP draft")?;
+                let reply = recv_reply(&mut *downstream).context("MTP draft downstream reply")?;
+                if reply.kind != WireReplyKind::PredictedTokens {
+                    bail!("MTP draft expected downstream predicted-tokens reply");
+                }
+                draft_stats.merge(reply.stats);
+                send_reply_predicted_tokens_with_stats(
+                    &mut *upstream,
+                    &reply.predicted_tokens,
+                    draft_stats,
+                )
+                .context("relay MTP predicted tokens")?;
+                continue;
+            }
         }
 
         if !message.state.matches_kind(message.kind) {
@@ -833,6 +881,7 @@ fn handle_binary_connection(
                 let lock_hold_started = Instant::now();
                 runtime_sessions_before = Some(runtime.session_stats());
                 let result = run_binary_stage_message(
+                    config,
                     &mut runtime,
                     &session_key,
                     &message,
@@ -1079,7 +1128,10 @@ fn handle_binary_connection(
                 let reply = recv_reply(&mut *downstream).context("downstream predicted reply")?;
                 downstream_wait_end_unix_nanos = Some(now_unix_nanos() as u64);
                 downstream_wait_ms += elapsed_ms(wait_started);
-                if message.kind == WireMessageKind::VerifySpan {
+                if matches!(
+                    message.kind,
+                    WireMessageKind::VerifySpan | WireMessageKind::MtpDraft
+                ) {
                     if reply.kind != WireReplyKind::PredictedTokens {
                         bail!("expected downstream predicted-tokens reply");
                     }
@@ -1099,7 +1151,10 @@ fn handle_binary_connection(
                 let reply_start_unix_nanos = now_unix_nanos() as u64;
                 upstream_reply_start_unix_nanos.get_or_insert(reply_start_unix_nanos);
                 let reply_started = Instant::now();
-                if message.kind == WireMessageKind::VerifySpan {
+                if matches!(
+                    message.kind,
+                    WireMessageKind::VerifySpan | WireMessageKind::MtpDraft
+                ) {
                     send_reply_predicted_tokens_with_stats(
                         &mut *upstream,
                         &reply.predicted_tokens,
@@ -1226,7 +1281,10 @@ fn handle_binary_connection(
             let reply_start_unix_nanos = now_unix_nanos() as u64;
             upstream_reply_start_unix_nanos.get_or_insert(reply_start_unix_nanos);
             let reply_started = Instant::now();
-            if message.kind == WireMessageKind::VerifySpan {
+            if matches!(
+                message.kind,
+                WireMessageKind::VerifySpan | WireMessageKind::MtpDraft
+            ) {
                 send_reply_predicted_tokens_with_stats(
                     &mut *upstream,
                     &predicted_tokens,
@@ -2032,6 +2090,7 @@ fn handle_binary_restore_prefill_decode_control(
                 .context("configure restore-decode chat sampling")?;
         }
         let (predicted, _, output) = run_binary_stage_message(
+            config,
             &mut runtime,
             session_id,
             &decode_message,
@@ -3091,6 +3150,7 @@ pub(crate) fn connect_binary_downstream(
 }
 
 pub(crate) fn run_binary_stage_message(
+    config: &StageConfig,
     runtime: &mut RuntimeState,
     session_id: &str,
     message: &StageWireMessage,
@@ -3146,6 +3206,24 @@ pub(crate) fn run_binary_stage_message(
             let (predicted_tokens, output) = runtime.verify_frame(session_id, token_ids, input)?;
             let predicted = predicted_tokens.first().copied().unwrap_or(0);
             Ok((predicted, predicted_tokens, output))
+        }
+        WireMessageKind::MtpDraft => {
+            let token_id = token_ids
+                .first()
+                .copied()
+                .unwrap_or(message.state.current_token);
+            let output_capacity = usize::try_from(message.token_count.max(0))
+                .context("MTP draft token count exceeds usize")?;
+            let position = u32::try_from(message.pos_start.max(0))
+                .context("MTP draft position exceeds u32")?;
+            let predicted_tokens =
+                runtime.mtp_draft(session_id, token_id, position, output_capacity)?;
+            let predicted = predicted_tokens.first().copied().unwrap_or(0);
+            Ok((
+                predicted,
+                predicted_tokens,
+                empty_activation_frame(config, message),
+            ))
         }
         WireMessageKind::Stop
         | WireMessageKind::StateImport
