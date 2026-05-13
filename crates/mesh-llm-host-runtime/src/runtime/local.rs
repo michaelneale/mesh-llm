@@ -2604,10 +2604,15 @@ async fn start_runtime_skippy_model(
         model: model_name.clone(),
         source: None,
     });
-    let skippy_model = skippy::SkippyModelHandle::load_with_hooks(
-        options,
-        Some(skippy::MeshAutoHookPolicy::new(spec.node.clone())),
-    )?;
+    let node_for_hook = spec.node.clone();
+    let skippy_model = tokio::task::spawn_blocking(move || {
+        skippy::SkippyModelHandle::load_with_hooks(
+            options,
+            Some(skippy::MeshAutoHookPolicy::new(node_for_hook)),
+        )
+    })
+    .await
+    .context("join load skippy direct GGUF task")??;
     let _ = emit_event(OutputEvent::ModelLoaded {
         model: model_name.clone(),
         bytes: None,
