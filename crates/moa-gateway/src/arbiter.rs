@@ -166,6 +166,108 @@ pub fn arbitrate(outputs: &[WorkerOutput], has_tools: bool) -> Decision {
     }
 }
 
+/// Try to decide early with a partial set of worker outputs.
+///
+/// Returns `Some(decision)` if we can confidently resolve without waiting
+/// for more workers.  Returns `None` if we need to keep waiting.
+///
+/// `total_workers` is how many workers were dispatched (so we know how
+/// many are still outstanding).
+pub fn try_early_decision(
+    outputs: &[WorkerOutput],
+    total_workers: usize,
+    has_tools: bool,
+) -> Option<Decision> {
+    if outputs.is_empty() {
+        return None;
+    }
+
+    let remaining = total_workers.saturating_sub(outputs.len());
+
+    // ── Single high-confidence answer when others are still pending ──
+    // If we have 1 response out of 2+, don't commit yet — wait for at
+    // least one more so we have a chance to detect disagreement.
+    if outputs.len() < 2 && remaining > 0 {
+        return None;
+    }
+
+    // ── 2+ outputs: check for consensus ─────────────────────────────
+
+    let answers: Vec<&WorkerOutput> = outputs
+        .iter()
+        .filter(|o| o.kind == OutputKind::Answer)
+        .collect();
+    let tool_proposals: Vec<&WorkerOutput> = outputs
+        .iter()
+        .filter(|o| o.kind == OutputKind::ToolProposal)
+        .collect();
+
+    // All agree on an answer — no need to wait for stragglers
+    if answers.len() >= 2 && tool_proposals.is_empty() {
+        let best = answers
+            .iter()
+            .max_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap())
+            .unwrap();
+        if best.confidence >= 0.5 {
+            tracing::info!(
+                "moa: early exit — {} workers agree on answer (conf={:.2}), {} still pending",
+                answers.len(),
+                best.confidence,
+                remaining,
+            );
+            return Some(Decision::Answer(best.payload.clone()));
+        }
+    }
+
+    // All agree on the same tool call
+    if has_tools && tool_proposals.len() >= 2 && answers.is_empty() {
+        let tool_names: Vec<&str> = tool_proposals
+            .iter()
+            .filter_map(|o| o.tool_name.as_deref())
+            .collect();
+        if !tool_names.is_empty() {
+            let first = tool_names[0];
+            let unanimous = tool_names.iter().all(|n| *n == first);
+            if unanimous {
+                let best = tool_proposals
+                    .iter()
+                    .max_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap())
+                    .unwrap();
+                tracing::info!(
+                    "moa: early exit — {} workers agree on tool '{}', {} still pending",
+                    tool_proposals.len(),
+                    first,
+                    remaining,
+                );
+                return Some(Decision::ToolCall {
+                    name: first.to_string(),
+                    arguments: best
+                        .tool_arguments
+                        .clone()
+                        .unwrap_or(serde_json::Value::Object(Default::default())),
+                });
+            }
+        }
+    }
+
+    // Conflict detected early — some say tool, some say answer.
+    // Escalate to reducer now, don't wait for more conflicting opinions.
+    if !tool_proposals.is_empty() && !answers.is_empty() {
+        tracing::info!(
+            "moa: early escalation — {} tool proposals vs {} answers, {} still pending",
+            tool_proposals.len(),
+            answers.len(),
+            remaining,
+        );
+        return Some(Decision::NeedsReducer {
+            reason: "some workers propose tools, others answer directly".into(),
+        });
+    }
+
+    // Not enough signal yet — keep waiting
+    None
+}
+
 fn single_output_decision(output: &WorkerOutput, has_tools: bool) -> Decision {
     match output.kind {
         OutputKind::ToolProposal if has_tools => {
@@ -265,6 +367,62 @@ mod tests {
             Decision::NeedsReducer { reason } => assert!(reason.contains("some workers")),
             other => panic!("expected NeedsReducer, got {other:?}"),
         }
+    }
+
+    // ── Early decision tests ────────────────────────────────────
+
+    #[test]
+    fn early_decision_none_with_one_of_three() {
+        let outputs = vec![make_output(OutputKind::Answer, 0.9, "Paris")];
+        // 1 of 3 — too early to decide
+        assert!(try_early_decision(&outputs, 3, false).is_none());
+    }
+
+    #[test]
+    fn early_decision_consensus_two_of_three() {
+        let outputs = vec![
+            make_output(OutputKind::Answer, 0.8, "Paris"),
+            make_output(OutputKind::Answer, 0.9, "Paris is the capital"),
+        ];
+        // 2 of 3 agree — early exit
+        match try_early_decision(&outputs, 3, false) {
+            Some(Decision::Answer(text)) => assert!(text.contains("Paris")),
+            other => panic!("expected early Answer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn early_decision_tool_consensus() {
+        let outputs = vec![
+            make_tool_output(0.8, "read_file", serde_json::json!({"path": "a.rs"})),
+            make_tool_output(0.7, "read_file", serde_json::json!({"path": "a.rs"})),
+        ];
+        match try_early_decision(&outputs, 3, true) {
+            Some(Decision::ToolCall { name, .. }) => assert_eq!(name, "read_file"),
+            other => panic!("expected early ToolCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn early_decision_conflict_escalates() {
+        let outputs = vec![
+            make_tool_output(0.7, "read_file", serde_json::json!({})),
+            make_output(OutputKind::Answer, 0.8, "I know the answer"),
+        ];
+        match try_early_decision(&outputs, 3, true) {
+            Some(Decision::NeedsReducer { .. }) => {}
+            other => panic!("expected early NeedsReducer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn early_decision_low_confidence_waits() {
+        let outputs = vec![
+            make_output(OutputKind::Answer, 0.3, "maybe Paris"),
+            make_output(OutputKind::Answer, 0.4, "could be Paris"),
+        ];
+        // Both answers but low confidence — should wait for more
+        assert!(try_early_decision(&outputs, 3, false).is_none());
     }
 
     #[test]

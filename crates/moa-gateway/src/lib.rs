@@ -222,7 +222,9 @@ impl Gateway {
             });
         }
 
-        let (outputs, summaries) = gather_workers(&mut join_set).await;
+        let total_workers = join_set.len();
+        let (outputs, summaries, early_decision) =
+            gather_workers_incremental(&mut join_set, total_workers, has_tools).await;
 
         if outputs.is_empty() {
             return TurnResult {
@@ -233,7 +235,8 @@ impl Gateway {
             };
         }
 
-        let decision = arbiter::arbitrate(&outputs, has_tools);
+        // Use the early decision if we got one, otherwise run full arbitration
+        let decision = early_decision.unwrap_or_else(|| arbiter::arbitrate(&outputs, has_tools));
         let (response_body, reducer_used) =
             self.resolve_decision(decision, &outputs, has_tools).await;
 
@@ -489,9 +492,19 @@ impl Gateway {
 
 // ─── Worker gathering ────────────────────────────────────────────────
 
-async fn gather_workers(
+/// Gather worker results incrementally, checking for early exit after each arrival.
+///
+/// Returns the collected outputs, summaries, and optionally an early decision
+/// (if consensus was reached before all workers finished).
+async fn gather_workers_incremental(
     join_set: &mut tokio::task::JoinSet<(String, WorkerRole, Result<String, String>, u64)>,
-) -> (Vec<WorkerOutput>, Vec<WorkerSummary>) {
+    total_workers: usize,
+    has_tools: bool,
+) -> (
+    Vec<WorkerOutput>,
+    Vec<WorkerSummary>,
+    Option<arbiter::Decision>,
+) {
     let mut outputs = Vec::new();
     let mut summaries = Vec::new();
 
@@ -517,6 +530,29 @@ async fn gather_workers(
                     confidence: Some(normalized.confidence),
                 });
                 outputs.push(normalized);
+
+                // ── Early exit check ─────────────────────────────
+                // After each arrival, see if we can already decide.
+                if let Some(decision) =
+                    arbiter::try_early_decision(&outputs, total_workers, has_tools)
+                {
+                    // Abort remaining workers — we don't need them
+                    join_set.abort_all();
+                    // Drain any already-completed results for summaries
+                    while let Some(leftover) = join_set.join_next().await {
+                        if let Ok((m, r, result, el)) = leftover {
+                            summaries.push(WorkerSummary {
+                                model: m,
+                                role: r,
+                                succeeded: result.is_ok(),
+                                elapsed_ms: el,
+                                output_kind: None,
+                                confidence: None,
+                            });
+                        }
+                    }
+                    return (outputs, summaries, Some(decision));
+                }
             }
             Ok((model, role, Err(e), elapsed)) => {
                 tracing::warn!(
@@ -541,7 +577,7 @@ async fn gather_workers(
         }
     }
 
-    (outputs, summaries)
+    (outputs, summaries, None)
 }
 
 // ─── Response builders ───────────────────────────────────────────────
