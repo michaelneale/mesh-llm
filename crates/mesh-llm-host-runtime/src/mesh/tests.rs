@@ -1680,6 +1680,59 @@ async fn control_plane_apply_rejects_stale_revision() -> Result<()> {
 }
 
 #[tokio::test]
+async fn owner_control_client_reuses_connection_for_sequential_requests() -> Result<()> {
+    use mesh_client::{
+        ClientBuilder, ControlPlaneBootstrapOptions, ControlPlaneConnection, InviteToken,
+    };
+    use std::str::FromStr;
+
+    let owner_keypair = test_owner_keypair(0x89, 0x8a);
+    let tmp = std::env::temp_dir().join(format!(
+        "mesh-llm-control-client-reuse-{}",
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&tmp).ok();
+    let (server, _secret_key, _config_path) =
+        start_owner_control_test_server(&owner_keypair, &tmp).await?;
+    let endpoint_token = server
+        .control_endpoint()
+        .await
+        .expect("control endpoint should be available for owner-control client test");
+    let client = ClientBuilder::new(
+        owner_keypair.clone(),
+        InviteToken::from_str("mesh-test:owner-control-client-reuse")
+            .map_err(|error| anyhow::anyhow!(error))?,
+    )
+    .build()?;
+    let connection = client
+        .connect_control_plane(
+            ControlPlaneBootstrapOptions::new().with_control_endpoint(endpoint_token),
+        )
+        .await?;
+    let ControlPlaneConnection::OwnerControl(control_client) = connection else {
+        panic!("explicit endpoint should select owner-control transport");
+    };
+
+    let snapshot = control_client.get_config().await?;
+    let config = snapshot
+        .config
+        .clone()
+        .expect("get-config snapshot should include config");
+    let apply = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        control_client.apply_config(snapshot.revision, config),
+    )
+    .await??;
+
+    assert!(apply.success);
+    assert_eq!(apply.current_revision, snapshot.revision + 1);
+
+    server.shutdown_control_listener().await;
+    std::fs::remove_dir_all(&tmp).ok();
+    Ok(())
+}
+
+#[tokio::test]
 #[serial]
 async fn control_plane_refresh_inventory() -> Result<()> {
     use crate::proto::node::OwnerControlRequest;

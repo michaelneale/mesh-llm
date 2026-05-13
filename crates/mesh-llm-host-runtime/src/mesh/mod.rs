@@ -4100,9 +4100,40 @@ impl Node {
         );
         let conn = accepting.await?;
         let remote = conn.remote_id();
-        let (mut send, mut recv) = conn.accept_bi().await?;
+        loop {
+            let (mut send, mut recv) = match conn.accept_bi().await {
+                Ok(streams) => streams,
+                Err(error) => {
+                    tracing::debug!(
+                        "Control-plane connection from {} closed: {error}",
+                        remote.fmt_short()
+                    );
+                    break;
+                }
+            };
+            let node = self.clone();
+            tokio::spawn(async move {
+                if let Err(error) = node
+                    .handle_control_stream(remote, &mut send, &mut recv)
+                    .await
+                {
+                    tracing::debug!(
+                        "Control-plane stream from {} failed: {error}",
+                        remote.fmt_short()
+                    );
+                }
+            });
+        }
+        Ok(())
+    }
 
-        let handshake_bytes = match read_len_prefixed(&mut recv).await {
+    async fn handle_control_stream(
+        &self,
+        remote: EndpointId,
+        send: &mut iroh::endpoint::SendStream,
+        recv: &mut iroh::endpoint::RecvStream,
+    ) -> Result<()> {
+        let handshake_bytes = match read_len_prefixed(recv).await {
             Ok(bytes) => bytes,
             Err(error) => {
                 tracing::debug!(
@@ -4125,7 +4156,7 @@ impl Node {
                         };
                     let _ = self
                         .send_owner_control_terminal_envelope(
-                            &mut send,
+                            send,
                             owner_control_error_envelope(code, None, None, error.to_string()),
                         )
                         .await;
@@ -4135,7 +4166,7 @@ impl Node {
         if handshake_envelope.validate_frame().is_err() {
             let _ = self
                 .send_owner_control_terminal_envelope(
-                    &mut send,
+                    send,
                     owner_control_error_envelope(
                         crate::proto::node::OwnerControlErrorCode::InvalidHandshake,
                         None,
@@ -4150,7 +4181,7 @@ impl Node {
         let Some(handshake) = handshake_envelope.handshake else {
             let _ = self
                 .send_owner_control_terminal_envelope(
-                    &mut send,
+                    send,
                     owner_control_error_envelope(
                         crate::proto::node::OwnerControlErrorCode::InvalidHandshake,
                         None,
@@ -4174,7 +4205,7 @@ impl Node {
         ) {
             let _ = self
                 .send_owner_control_terminal_envelope(
-                    &mut send,
+                    send,
                     self.owner_control_auth_error_envelope(&error),
                 )
                 .await;
@@ -4182,7 +4213,7 @@ impl Node {
         }
 
         loop {
-            let request_bytes = match read_len_prefixed(&mut recv).await {
+            let request_bytes = match read_len_prefixed(recv).await {
                 Ok(bytes) => bytes,
                 Err(_) => break,
             };
@@ -4199,7 +4230,7 @@ impl Node {
                         };
                         let _ = self
                             .send_owner_control_terminal_envelope(
-                                &mut send,
+                                send,
                                 owner_control_error_envelope(code, None, None, error.to_string()),
                             )
                             .await;
@@ -4209,7 +4240,7 @@ impl Node {
             if envelope.validate_frame().is_err() {
                 let _ = self
                     .send_owner_control_terminal_envelope(
-                        &mut send,
+                        send,
                         owner_control_error_envelope(
                             crate::proto::node::OwnerControlErrorCode::BadRequest,
                             None,
@@ -4223,7 +4254,7 @@ impl Node {
             let Some(request) = envelope.request else {
                 let _ = self
                     .send_owner_control_terminal_envelope(
-                        &mut send,
+                        send,
                         owner_control_error_envelope(
                             crate::proto::node::OwnerControlErrorCode::BadRequest,
                             None,
@@ -4235,7 +4266,7 @@ impl Node {
                 break;
             };
             let watch_request = request.watch_config.is_some();
-            self.handle_owner_control_request(remote, &mut send, &mut recv, request)
+            self.handle_owner_control_request(remote, send, recv, request)
                 .await?;
             if watch_request {
                 break;

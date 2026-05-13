@@ -25,6 +25,10 @@ const NODE_OWNERSHIP_VERSION: u32 = 1;
 const SIGNING_DOMAIN_TAG: &[u8] = b"mesh-llm-node-ownership-v1:";
 const OWNER_CONTROL_CONNECT_TIMEOUT_SECS: u64 = 8;
 
+fn owner_control_client_bind_addr() -> std::net::SocketAddr {
+    std::net::SocketAddr::from(([0, 0, 0, 0], 0))
+}
+
 /// Explicit owner-control bootstrap policy for new config clients.
 ///
 /// Negotiation matrix:
@@ -260,7 +264,7 @@ impl OwnerControlClient {
         let mut builder = Endpoint::builder(iroh::endpoint::presets::Minimal)
             .secret_key(iroh::SecretKey::generate())
             .alpns(vec![ALPN_CONTROL_V1.to_vec()])
-            .bind_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+            .bind_addr(owner_control_client_bind_addr())
             .map_err(|error| ControlPlaneClientError::Transport(error.to_string()))?;
         if let Some(relay_map) = relay_map_from_endpoint_addr(&control_addr) {
             builder = builder.relay_mode(iroh::endpoint::RelayMode::Custom(relay_map));
@@ -655,6 +659,22 @@ fn relay_map_from_endpoint_addr(addr: &EndpointAddr) -> Option<iroh::RelayMap> {
         None
     } else {
         Some(iroh::RelayMap::from_iter(configs))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn owner_control_client_binds_wildcard_for_direct_remote_endpoints() {
+        let bind_addr = owner_control_client_bind_addr();
+
+        assert_eq!(bind_addr.port(), 0);
+        assert!(
+            bind_addr.ip().is_unspecified(),
+            "owner-control clients must not be loopback-bound when dialing explicit remote endpoints"
+        );
     }
 }
 
