@@ -138,6 +138,102 @@ pub async fn call_raw_with_tools(
     Ok(resp_body)
 }
 
+/// Call a worker endpoint with native tool schemas.
+///
+/// Like `call()` but forwards tool definitions so the model can produce
+/// native `tool_calls` in the response.  Returns text — either the content
+/// or a KV-formatted tool proposal that the normalizer can parse.
+pub async fn call_with_tools(
+    http: &reqwest::Client,
+    endpoint: &Endpoint,
+    messages: &[Value],
+    tools: Option<&Value>,
+    max_tokens: u32,
+    timeout: Duration,
+) -> Result<String, String> {
+    let url = format!("{}/chat/completions", endpoint.base_url);
+
+    let mut body = json!({
+        "model": endpoint.model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": 0.3,
+        "stream": false,
+    });
+
+    if let Some(tools) = tools {
+        body.as_object_mut()
+            .unwrap()
+            .insert("tools".to_string(), tools.clone());
+    }
+
+    let resp = http
+        .post(&url)
+        .json(&body)
+        .timeout(timeout)
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("HTTP {}: {}", status, &body[..body.len().min(200)]));
+    }
+
+    let resp_body: Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("response parse failed: {e}"))?;
+
+    // Extract — handle native tool_calls the same way as call()
+    let message = &resp_body["choices"][0]["message"];
+
+    if let Some(tool_calls) = message.get("tool_calls").and_then(|tc| tc.as_array()) {
+        if !tool_calls.is_empty() {
+            let tc = &tool_calls[0];
+            let name = tc
+                .pointer("/function/name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("unknown");
+            let args = tc
+                .pointer("/function/arguments")
+                .and_then(|a| a.as_str())
+                .unwrap_or("{}");
+            return Ok(format!(
+                "kind: tool_proposal\ntool: {name}\narguments: {args}\nconfidence: 0.9\npayload: calling {name}",
+            ));
+        }
+    }
+
+    let content = message
+        .get("content")
+        .and_then(|c| c.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let stripped = strip_thinking(&content);
+    if !stripped.is_empty() {
+        return Ok(stripped);
+    }
+
+    let thinking = extract_thinking(&content);
+    if !thinking.is_empty() {
+        return Ok(thinking);
+    }
+
+    let reasoning = message
+        .get("reasoning")
+        .and_then(|r| r.as_str())
+        .unwrap_or("")
+        .to_string();
+    if !reasoning.is_empty() {
+        return Ok(reasoning);
+    }
+
+    Err("empty response".into())
+}
+
 /// Call a worker endpoint.  Returns the raw assistant text content.
 pub async fn call(
     http: &reqwest::Client,

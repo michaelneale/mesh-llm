@@ -174,18 +174,12 @@ impl Gateway {
     }
 
     /// Full fan-out: dispatch to all workers, gather, arbitrate.
+    ///
+    /// Workers get role-shaped context packets with a compact tool catalogue
+    /// (not the full request). They respond through the normal normalize →
+    /// arbitrate pipeline. The gateway decides whether to answer directly or
+    /// emit a tool_call.
     async fn handle_query(&mut self, has_tools: bool, start: Instant) -> TurnResult {
-        // ── Passthrough mode ─────────────────────────────────────
-        // When tools are present (agentic use), pass the original messages
-        // to workers and return the first successful raw response.  The MoA
-        // envelope (normalize → arbitrate → reduce) actively harms tool-use
-        // because it replaces the client's system prompt and tools, confusing
-        // small models.  In passthrough mode MoA still provides redundancy:
-        // if the first worker fails, the next one answers.
-        if has_tools {
-            return self.handle_passthrough(start).await;
-        }
-
         let assignments = worker::assign_roles(&self.config.endpoints, has_tools);
 
         tracing::info!(
@@ -209,14 +203,29 @@ impl Gateway {
 
             join_set.spawn(async move {
                 let t0 = Instant::now();
-                let result = worker::call(
-                    &http,
-                    &endpoint,
-                    &packed.messages,
-                    packed.max_tokens,
-                    timeout,
-                )
-                .await;
+                // Strong workers get native tool schemas forwarded so they
+                // can produce real tool_calls.  Fast/specialist workers only
+                // have tool names/summaries in their system prompt.
+                let result = if packed.tools.is_some() {
+                    worker::call_with_tools(
+                        &http,
+                        &endpoint,
+                        &packed.messages,
+                        packed.tools.as_ref(),
+                        packed.max_tokens,
+                        timeout,
+                    )
+                    .await
+                } else {
+                    worker::call(
+                        &http,
+                        &endpoint,
+                        &packed.messages,
+                        packed.max_tokens,
+                        timeout,
+                    )
+                    .await
+                };
                 let elapsed = t0.elapsed().as_millis() as u64;
                 (endpoint.model.clone(), role, result, elapsed)
             });
@@ -253,105 +262,6 @@ impl Gateway {
         }
     }
 
-    /// Passthrough mode: fan out with original messages, return the first
-    /// successful raw response.  Used when tools are present so native
-    /// tool_call format is preserved.
-    async fn handle_passthrough(&mut self, start: Instant) -> TurnResult {
-        let messages = self.session.all_messages();
-        let tools = self.session.tools().cloned();
-        let mut join_set = tokio::task::JoinSet::new();
-
-        tracing::info!(
-            "moa: passthrough mode (tools present), {} endpoints",
-            self.config.endpoints.len(),
-        );
-
-        for endpoint in &self.config.endpoints {
-            let ep = endpoint.clone();
-            let msgs = messages.clone();
-            let t = tools.clone();
-            let http = self.http.clone();
-            let timeout = self.config.worker_timeout;
-
-            join_set.spawn(async move {
-                let t0 = Instant::now();
-                let result =
-                    worker::call_raw_with_tools(&http, &ep, &msgs, t.as_ref(), 4096, timeout).await;
-                let elapsed = t0.elapsed().as_millis() as u64;
-                (ep.model.clone(), result, elapsed)
-            });
-        }
-
-        let mut summaries = Vec::new();
-        let mut best_response: Option<Value> = None;
-
-        while let Some(join_result) = join_set.join_next().await {
-            match join_result {
-                Ok((model, Ok(resp), elapsed)) => {
-                    tracing::info!(
-                        "moa: passthrough worker {} succeeded ({}ms)",
-                        model,
-                        elapsed,
-                    );
-                    summaries.push(WorkerSummary {
-                        model,
-                        role: WorkerRole::Generalist,
-                        succeeded: true,
-                        elapsed_ms: elapsed,
-                        output_kind: None,
-                        confidence: None,
-                    });
-                    // Take the first successful response
-                    if best_response.is_none() {
-                        best_response = Some(resp);
-                    }
-                }
-                Ok((model, Err(e), elapsed)) => {
-                    tracing::warn!(
-                        "moa: passthrough worker {} failed ({}ms): {}",
-                        model,
-                        elapsed,
-                        e,
-                    );
-                    summaries.push(WorkerSummary {
-                        model,
-                        role: WorkerRole::Generalist,
-                        succeeded: false,
-                        elapsed_ms: elapsed,
-                        output_kind: None,
-                        confidence: None,
-                    });
-                }
-                Err(e) => {
-                    tracing::warn!("moa: passthrough task panicked: {e}");
-                }
-            }
-        }
-
-        let response_body =
-            best_response.unwrap_or_else(|| error_response("All MoA workers failed"));
-
-        // Clean up the passthrough response:
-        // - Rewrite model field to "moa"
-        // - Strip <think>...</think> tags from content
-        let mut response_body = response_body;
-        if let Some(obj) = response_body.as_object_mut() {
-            obj.insert("model".to_string(), json!("moa"));
-        }
-        clean_passthrough_content(&mut response_body);
-
-        self.session.record_assistant_response(&response_body);
-        let outcome = extract_turn_outcome(&response_body);
-        self.session.record_turn_outcome(&outcome);
-
-        TurnResult {
-            response_body,
-            worker_summaries: summaries,
-            reducer_used: false,
-            elapsed_ms: start.elapsed().as_millis() as u64,
-        }
-    }
-
     /// Tool result turn — send to reducer only, don't re-broadcast.
     async fn handle_tool_result(&mut self, has_tools: bool, start: Instant) -> TurnResult {
         let reducer_endpoint = self.pick_reducer_endpoint();
@@ -361,12 +271,14 @@ impl Gateway {
             reducer_endpoint.model,
         );
 
-        let reducer_messages = context::pack_for_tool_result_turn(&self.session, has_tools);
+        let (reducer_messages, reducer_tools) =
+            context::pack_for_tool_result_turn(&self.session, has_tools);
 
-        let result = worker::call(
+        let result = worker::call_with_tools(
             &self.http,
             &reducer_endpoint,
             &reducer_messages,
+            reducer_tools.as_ref(),
             2048,
             self.config.reducer_timeout,
         )
@@ -434,13 +346,14 @@ impl Gateway {
             arbiter::Decision::NeedsReducer { reason } => {
                 tracing::info!("moa: invoking reducer — {reason}");
                 let endpoint = self.pick_reducer_endpoint();
-                let messages =
+                let (messages, tools) =
                     context::pack_for_reducer(&self.session, outputs, &reason, has_tools);
 
-                match worker::call(
+                match worker::call_with_tools(
                     &self.http,
                     &endpoint,
                     &messages,
+                    tools.as_ref(),
                     2048,
                     self.config.reducer_timeout,
                 )
@@ -507,10 +420,12 @@ async fn gather_workers_incremental(
 ) {
     let mut outputs = Vec::new();
     let mut summaries = Vec::new();
+    let mut total_finished: usize = 0;
 
     while let Some(join_result) = join_set.join_next().await {
         match join_result {
             Ok((model, role, Ok(text), elapsed)) => {
+                total_finished += 1;
                 let normalized = normalize::normalize_worker_output(&text, &model, role, elapsed);
                 tracing::info!(
                     "moa: worker {} ({}) → {:?} conf={:.2} ({}ms, {} chars)",
@@ -534,7 +449,7 @@ async fn gather_workers_incremental(
                 // ── Early exit check ─────────────────────────────
                 // After each arrival, see if we can already decide.
                 if let Some(decision) =
-                    arbiter::try_early_decision(&outputs, total_workers, has_tools)
+                    arbiter::try_early_decision(&outputs, total_workers, total_finished, has_tools)
                 {
                     // Abort remaining workers — we don't need them
                     join_set.abort_all();
@@ -555,6 +470,7 @@ async fn gather_workers_incremental(
                 }
             }
             Ok((model, role, Err(e), elapsed)) => {
+                total_finished += 1;
                 tracing::warn!(
                     "moa: worker {} ({}) failed after {}ms: {}",
                     model,
@@ -570,8 +486,29 @@ async fn gather_workers_incremental(
                     output_kind: None,
                     confidence: None,
                 });
+
+                // Check if we can decide with what we have (some workers failed)
+                if let Some(decision) =
+                    arbiter::try_early_decision(&outputs, total_workers, total_finished, has_tools)
+                {
+                    join_set.abort_all();
+                    while let Some(leftover) = join_set.join_next().await {
+                        if let Ok((m, r, result, el)) = leftover {
+                            summaries.push(WorkerSummary {
+                                model: m,
+                                role: r,
+                                succeeded: result.is_ok(),
+                                elapsed_ms: el,
+                                output_kind: None,
+                                confidence: None,
+                            });
+                        }
+                    }
+                    return (outputs, summaries, Some(decision));
+                }
             }
             Err(e) => {
+                total_finished += 1;
                 tracing::warn!("moa: worker task panicked: {e}");
             }
         }
@@ -741,22 +678,6 @@ pub async fn discover_endpoints(base_url: &str) -> Result<Vec<Endpoint>, String>
         });
     }
     Ok(endpoints)
-}
-
-/// Clean up a passthrough response: strip think tags from content,
-/// remove stray KV envelope lines (kind:/confidence:/payload:).
-fn clean_passthrough_content(response: &mut Value) {
-    if let Some(content) = response
-        .pointer_mut("/choices/0/message/content")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-    {
-        let cleaned = normalize::strip_passthrough_content(&content);
-        if let Some(msg) = response.pointer_mut("/choices/0/message") {
-            msg.as_object_mut()
-                .map(|o| o.insert("content".to_string(), json!(cleaned)));
-        }
-    }
 }
 
 fn short_id() -> String {

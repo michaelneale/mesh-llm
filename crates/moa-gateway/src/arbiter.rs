@@ -171,22 +171,34 @@ pub fn arbitrate(outputs: &[WorkerOutput], has_tools: bool) -> Decision {
 /// Returns `Some(decision)` if we can confidently resolve without waiting
 /// for more workers.  Returns `None` if we need to keep waiting.
 ///
-/// `total_workers` is how many workers were dispatched (so we know how
-/// many are still outstanding).
+/// `total_workers` is how many were dispatched.
+/// `total_finished` includes both successful outputs AND failed workers,
+/// so we know when there's no point waiting for more.
 pub fn try_early_decision(
     outputs: &[WorkerOutput],
     total_workers: usize,
+    total_finished: usize,
     has_tools: bool,
 ) -> Option<Decision> {
     if outputs.is_empty() {
+        // All workers finished but none succeeded
+        if total_finished >= total_workers {
+            return None; // Let the caller handle the empty-outputs case
+        }
         return None;
     }
 
-    let remaining = total_workers.saturating_sub(outputs.len());
+    let remaining = total_workers.saturating_sub(total_finished);
 
-    // ── Single high-confidence answer when others are still pending ──
-    // If we have 1 response out of 2+, don't commit yet — wait for at
-    // least one more so we have a chance to detect disagreement.
+    // ── Only one worker will ever respond ───────────────────────────
+    // If we have 1 successful output and no more workers are coming,
+    // return it immediately — no point waiting.
+    if outputs.len() == 1 && remaining == 0 {
+        return Some(single_output_decision(&outputs[0], has_tools));
+    }
+
+    // ── Single output with others still pending ─────────────────────
+    // Wait for at least one more so we have a chance to detect disagreement.
     if outputs.len() < 2 && remaining > 0 {
         return None;
     }
@@ -375,7 +387,7 @@ mod tests {
     fn early_decision_none_with_one_of_three() {
         let outputs = vec![make_output(OutputKind::Answer, 0.9, "Paris")];
         // 1 of 3 — too early to decide
-        assert!(try_early_decision(&outputs, 3, false).is_none());
+        assert!(try_early_decision(&outputs, 3, outputs.len(), false).is_none());
     }
 
     #[test]
@@ -385,7 +397,7 @@ mod tests {
             make_output(OutputKind::Answer, 0.9, "Paris is the capital"),
         ];
         // 2 of 3 agree — early exit
-        match try_early_decision(&outputs, 3, false) {
+        match try_early_decision(&outputs, 3, outputs.len(), false) {
             Some(Decision::Answer(text)) => assert!(text.contains("Paris")),
             other => panic!("expected early Answer, got {other:?}"),
         }
@@ -397,7 +409,7 @@ mod tests {
             make_tool_output(0.8, "read_file", serde_json::json!({"path": "a.rs"})),
             make_tool_output(0.7, "read_file", serde_json::json!({"path": "a.rs"})),
         ];
-        match try_early_decision(&outputs, 3, true) {
+        match try_early_decision(&outputs, 3, outputs.len(), true) {
             Some(Decision::ToolCall { name, .. }) => assert_eq!(name, "read_file"),
             other => panic!("expected early ToolCall, got {other:?}"),
         }
@@ -409,9 +421,20 @@ mod tests {
             make_tool_output(0.7, "read_file", serde_json::json!({})),
             make_output(OutputKind::Answer, 0.8, "I know the answer"),
         ];
-        match try_early_decision(&outputs, 3, true) {
+        match try_early_decision(&outputs, 3, outputs.len(), true) {
             Some(Decision::NeedsReducer { .. }) => {}
             other => panic!("expected early NeedsReducer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn early_decision_single_survivor() {
+        // 1 success out of 3, other 2 failed — should return the single answer
+        let outputs = vec![make_output(OutputKind::Answer, 0.8, "Paris")];
+        // total_workers=3, total_finished=3 (1 success + 2 failures), remaining=0
+        match try_early_decision(&outputs, 3, 3, false) {
+            Some(Decision::Answer(text)) => assert!(text.contains("Paris")),
+            other => panic!("expected early Answer for sole survivor, got {other:?}"),
         }
     }
 
@@ -422,7 +445,7 @@ mod tests {
             make_output(OutputKind::Answer, 0.4, "could be Paris"),
         ];
         // Both answers but low confidence — should wait for more
-        assert!(try_early_decision(&outputs, 3, false).is_none());
+        assert!(try_early_decision(&outputs, 3, outputs.len(), false).is_none());
     }
 
     #[test]
