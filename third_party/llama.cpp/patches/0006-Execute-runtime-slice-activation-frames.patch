@@ -1,7 +1,7 @@
-From fe40c492d38ba9279225a6e06fccc3e2d044d707 Mon Sep 17 00:00:00 2001
+From aeed55734dbe4c0361ce83ff8ee00413d49ca727 Mon Sep 17 00:00:00 2001
 From: James Dumay <jameswdumay@gmail.com>
 Date: Sat, 25 Apr 2026 12:33:30 +1000
-Subject: [PATCH 06/45] Execute runtime-slice activation frames
+Subject: [PATCH 06/80] Execute runtime-slice activation frames
 
 ---
  src/llama-graph.cpp  |  52 ++++---
@@ -109,10 +109,10 @@ index 5cb1756c..e7fd09fd 100644
  enum llm_graph_type {
      LLM_GRAPH_TYPE_DEFAULT,
 diff --git a/src/models/llama.cpp b/src/models/llama.cpp
-index 10523117..bca8ea63 100644
+index 8ddb5936..796171d5 100644
 --- a/src/models/llama.cpp
 +++ b/src/models/llama.cpp
-@@ -104,7 +104,12 @@ llama_model_llama::graph<embed>::graph(const llama_model & model, const llm_grap
+@@ -105,7 +105,12 @@ llama_model_llama::graph<embed>::graph(const llama_model & model, const llm_grap
      ggml_tensor * cur;
      ggml_tensor * inpL;
  
@@ -126,7 +126,7 @@ index 10523117..bca8ea63 100644
  
      // inp_pos - contains the positions
      ggml_tensor * inp_pos = build_inp_pos();
-@@ -120,9 +125,9 @@ llama_model_llama::graph<embed>::graph(const llama_model & model, const llm_grap
+@@ -121,9 +126,9 @@ llama_model_llama::graph<embed>::graph(const llama_model & model, const llm_grap
  
      const float kq_scale = hparams.f_attention_scale == 0.0f ? 1.0f/sqrtf(float(n_embd_head)) : hparams.f_attention_scale;
  
@@ -138,7 +138,7 @@ index 10523117..bca8ea63 100644
          ggml_tensor * inpSA = inpL;
  
          // norm
-@@ -225,6 +230,13 @@ llama_model_llama::graph<embed>::graph(const llama_model & model, const llm_grap
+@@ -226,6 +231,13 @@ llama_model_llama::graph<embed>::graph(const llama_model & model, const llm_grap
      }
      cur = inpL;
  

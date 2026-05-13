@@ -2,8 +2,8 @@
 
 Status: draft runbook for the node owner identity design
 
-This document describes the expected operator workflow when a **node identity**
-or **owner identity** is suspected to be compromised.
+Use this operator workflow when a **node identity** or **owner identity** is
+suspected to be compromised.
 
 It assumes the design in [NODE_OWNER_IDENTITY.md](NODE_OWNER_IDENTITY.md):
 

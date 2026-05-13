@@ -1,0 +1,426 @@
+From d415123692810ac3ce941cb18db333599e034193 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Mon, 11 May 2026 05:38:23 +1000
+Subject: [PATCH 80/80] Expose skippy backend device enumeration ABI
+
+---
+ include/skippy.h         | 81 ++------------------------------
+ include/skippy/common.h  | 92 +++++++++++++++++++++++++++++++++++++
+ include/skippy/devices.h | 49 ++++++++++++++++++++
+ src/skippy.cpp           | 101 ++++++++++++++++++++++++++++++++++++++++-
+ 4 files changed, 244 insertions(+), 79 deletions(-)
+ create mode 100644 include/skippy/common.h
+ create mode 100644 include/skippy/devices.h
+
+diff --git a/include/skippy.h b/include/skippy.h
+index f1ff7852..486e95dc 100644
+--- a/include/skippy.h
++++ b/include/skippy.h
+@@ -1,76 +1,18 @@
+ #ifndef SKIPPY_ABI_H
+ #define SKIPPY_ABI_H
+ 
+-#include "llama.h"
+-
+-#include <stddef.h>
+-#include <stdint.h>
+-#include <stdbool.h>
++#include "skippy/common.h"
+ 
+ #ifdef __cplusplus
+ extern "C" {
+ #endif
+ 
+-// Experimental ABI for layer-range staged inference.
+-//
+-// This header is intentionally a capability boundary. It exposes opaque handles
+-// and plain C structs so Rust orchestration code can use llama.cpp model
+-// execution, tokenization, GGUF metadata, and GGUF writing without depending on
+-// private C++ layouts.
+-//
+-// Stability note:
+-// - ABI version 0 is experimental.
+-// - Callers must feature-probe before use.
+-// - Names, structs, and ownership rules may change until cross-family staged
+-//   runtime validation has completed.
+-
+-#define SKIPPY_ABI_VERSION_MAJOR 0
+-#define SKIPPY_ABI_VERSION_MINOR 1
+-#define SKIPPY_ABI_VERSION_PATCH 22
+-
+ #define SKIPPY_MAX_LOGIT_BIAS 256
+ 
+-enum skippy_feature {
+-    SKIPPY_FEATURE_RUNTIME_SLICE          = 1 << 0,
+-    SKIPPY_FEATURE_LAYER_PACKAGE          = 1 << 1,
+-    SKIPPY_FEATURE_ARTIFACT_SLICE         = 1 << 2,
+-    SKIPPY_FEATURE_MODEL_INTROSPECTION    = 1 << 3,
+-    SKIPPY_FEATURE_GGUF_SLICE_WRITE       = 1 << 4,
+-    SKIPPY_FEATURE_STATE_IMPORT_EXPORT    = 1 << 5,
+-    SKIPPY_FEATURE_TOKENIZE_DETOKENIZE    = 1 << 6,
+-    SKIPPY_FEATURE_ACTIVATION_FRAME       = 1 << 7,
+-    SKIPPY_FEATURE_NATIVE_KV_PAGE         = 1 << 8,
+-    SKIPPY_FEATURE_SESSION_RESET          = 1 << 9,
+-    SKIPPY_FEATURE_BATCH_VERIFY           = 1 << 10,
+-    SKIPPY_FEATURE_CHAT_TEMPLATE          = 1 << 11,
+-    SKIPPY_FEATURE_SAMPLING_CONFIG        = 1 << 12,
+-    SKIPPY_FEATURE_BATCH_VERIFY_FRAME     = 1 << 13,
+-    SKIPPY_FEATURE_RECURRENT_STATE        = 1 << 14,
+-    SKIPPY_FEATURE_LOGIT_BIAS             = 1 << 15,
+-    SKIPPY_FEATURE_SESSION_TRIM           = 1 << 16,
+-    SKIPPY_FEATURE_SESSION_CHECKPOINT     = 1 << 17,
+-    SKIPPY_FEATURE_PACKAGE_PART_LOAD      = 1 << 18,
+-    SKIPPY_FEATURE_GENERATION_SIGNALS     = 1 << 19,
+-    SKIPPY_FEATURE_EXTERNAL_MEDIA_PREFILL = 1 << 20,
+-    SKIPPY_FEATURE_CHAT_TEMPLATE_TOOLS    = 1 << 21,
+-    SKIPPY_FEATURE_CHAT_SAMPLING_GRAMMAR  = 1 << 22,
+-};
+-
+ enum skippy_kv_page_flag {
+     SKIPPY_KV_PAGE_FLAG_V_TRANSPOSED      = 1 << 0,
+ };
+ 
+-enum skippy_status {
+-    SKIPPY_STATUS_OK                      = 0,
+-    SKIPPY_STATUS_ERROR                   = 1,
+-    SKIPPY_STATUS_INVALID_ARGUMENT        = 2,
+-    SKIPPY_STATUS_UNSUPPORTED             = 3,
+-    SKIPPY_STATUS_BUFFER_TOO_SMALL        = 4,
+-    SKIPPY_STATUS_IO_ERROR                = 5,
+-    SKIPPY_STATUS_MODEL_ERROR             = 6,
+-    SKIPPY_STATUS_RUNTIME_ERROR           = 7,
+-};
+-
+ enum skippy_load_mode {
+     SKIPPY_LOAD_MODE_RUNTIME_SLICE        = 0,
+     SKIPPY_LOAD_MODE_LAYER_PACKAGE        = 1,
+@@ -107,11 +49,6 @@ struct skippy_session;
+ struct skippy_model_info;
+ struct skippy_slice_plan;
+ 
+-struct skippy_error {
+-    enum skippy_status status;
+-    const char * message;
+-};
+-
+ struct skippy_runtime_config {
+     int32_t stage_index;
+     int32_t layer_start;
+@@ -194,20 +131,6 @@ struct skippy_kv_page_desc {
+     uint64_t flags;
+ };
+ 
+-struct skippy_abi_version {
+-    uint32_t major;
+-    uint32_t minor;
+-    uint32_t patch;
+-};
+-
+-LLAMA_API struct skippy_abi_version skippy_abi_version(void);
+-
+-LLAMA_API uint64_t skippy_abi_features(void);
+-
+-LLAMA_API const char * skippy_status_string(enum skippy_status status);
+-
+-LLAMA_API void skippy_error_free(struct skippy_error * error);
+-
+ LLAMA_API enum skippy_status skippy_model_open(
+         const char * path,
+         const struct skippy_runtime_config * config,
+@@ -654,4 +577,6 @@ LLAMA_API enum skippy_status skippy_write_gguf_from_parts(
+ }
+ #endif
+ 
++#include "skippy/devices.h"
++
+ #endif // SKIPPY_ABI_H
+diff --git a/include/skippy/common.h b/include/skippy/common.h
+new file mode 100644
+index 00000000..afef2749
+--- /dev/null
++++ b/include/skippy/common.h
+@@ -0,0 +1,92 @@
++#ifndef SKIPPY_COMMON_H
++#define SKIPPY_COMMON_H
++
++#include "../llama.h"
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++// Experimental ABI for layer-range staged inference.
++//
++// This header is intentionally a capability boundary. It exposes opaque handles
++// and plain C structs so Rust orchestration code can use llama.cpp model
++// execution, tokenization, GGUF metadata, and GGUF writing without depending on
++// private C++ layouts.
++//
++// Stability note:
++// - ABI version 0 is experimental.
++// - Callers must feature-probe before use.
++// - Names, structs, and ownership rules may change until cross-family staged
++//   runtime validation has completed.
++
++#define SKIPPY_ABI_VERSION_MAJOR 0
++#define SKIPPY_ABI_VERSION_MINOR 1
++#define SKIPPY_ABI_VERSION_PATCH 23
++
++enum skippy_feature {
++    SKIPPY_FEATURE_RUNTIME_SLICE          = 1 << 0,
++    SKIPPY_FEATURE_LAYER_PACKAGE          = 1 << 1,
++    SKIPPY_FEATURE_ARTIFACT_SLICE         = 1 << 2,
++    SKIPPY_FEATURE_MODEL_INTROSPECTION    = 1 << 3,
++    SKIPPY_FEATURE_GGUF_SLICE_WRITE       = 1 << 4,
++    SKIPPY_FEATURE_STATE_IMPORT_EXPORT    = 1 << 5,
++    SKIPPY_FEATURE_TOKENIZE_DETOKENIZE    = 1 << 6,
++    SKIPPY_FEATURE_ACTIVATION_FRAME       = 1 << 7,
++    SKIPPY_FEATURE_NATIVE_KV_PAGE         = 1 << 8,
++    SKIPPY_FEATURE_SESSION_RESET          = 1 << 9,
++    SKIPPY_FEATURE_BATCH_VERIFY           = 1 << 10,
++    SKIPPY_FEATURE_CHAT_TEMPLATE          = 1 << 11,
++    SKIPPY_FEATURE_SAMPLING_CONFIG        = 1 << 12,
++    SKIPPY_FEATURE_BATCH_VERIFY_FRAME     = 1 << 13,
++    SKIPPY_FEATURE_RECURRENT_STATE        = 1 << 14,
++    SKIPPY_FEATURE_LOGIT_BIAS             = 1 << 15,
++    SKIPPY_FEATURE_SESSION_TRIM           = 1 << 16,
++    SKIPPY_FEATURE_SESSION_CHECKPOINT     = 1 << 17,
++    SKIPPY_FEATURE_PACKAGE_PART_LOAD      = 1 << 18,
++    SKIPPY_FEATURE_GENERATION_SIGNALS     = 1 << 19,
++    SKIPPY_FEATURE_EXTERNAL_MEDIA_PREFILL = 1 << 20,
++    SKIPPY_FEATURE_CHAT_TEMPLATE_TOOLS    = 1 << 21,
++    SKIPPY_FEATURE_CHAT_SAMPLING_GRAMMAR  = 1 << 22,
++    SKIPPY_FEATURE_BACKEND_DEVICES        = 1 << 23,
++};
++
++enum skippy_status {
++    SKIPPY_STATUS_OK                      = 0,
++    SKIPPY_STATUS_ERROR                   = 1,
++    SKIPPY_STATUS_INVALID_ARGUMENT        = 2,
++    SKIPPY_STATUS_UNSUPPORTED             = 3,
++    SKIPPY_STATUS_BUFFER_TOO_SMALL        = 4,
++    SKIPPY_STATUS_IO_ERROR                = 5,
++    SKIPPY_STATUS_MODEL_ERROR             = 6,
++    SKIPPY_STATUS_RUNTIME_ERROR           = 7,
++};
++
++struct skippy_error {
++    enum skippy_status status;
++    const char * message;
++};
++
++struct skippy_abi_version {
++    uint32_t major;
++    uint32_t minor;
++    uint32_t patch;
++};
++
++LLAMA_API struct skippy_abi_version skippy_abi_version(void);
++
++LLAMA_API uint64_t skippy_abi_features(void);
++
++LLAMA_API const char * skippy_status_string(enum skippy_status status);
++
++LLAMA_API void skippy_error_free(struct skippy_error * error);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
+diff --git a/include/skippy/devices.h b/include/skippy/devices.h
+new file mode 100644
+index 00000000..382f1e69
+--- /dev/null
++++ b/include/skippy/devices.h
+@@ -0,0 +1,49 @@
++#ifndef SKIPPY_DEVICES_H
++#define SKIPPY_DEVICES_H
++
++#include "common.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++enum skippy_backend_device_type {
++    SKIPPY_BACKEND_DEVICE_TYPE_CPU         = 0,
++    SKIPPY_BACKEND_DEVICE_TYPE_GPU         = 1,
++    SKIPPY_BACKEND_DEVICE_TYPE_IGPU        = 2,
++    SKIPPY_BACKEND_DEVICE_TYPE_ACCEL       = 3,
++    SKIPPY_BACKEND_DEVICE_TYPE_META        = 4,
++};
++
++enum skippy_backend_device_cap {
++    SKIPPY_BACKEND_DEVICE_CAP_ASYNC                 = UINT64_C(1) << 0,
++    SKIPPY_BACKEND_DEVICE_CAP_HOST_BUFFER           = UINT64_C(1) << 1,
++    SKIPPY_BACKEND_DEVICE_CAP_BUFFER_FROM_HOST_PTR  = UINT64_C(1) << 2,
++    SKIPPY_BACKEND_DEVICE_CAP_EVENTS                = UINT64_C(1) << 3,
++};
++
++struct skippy_backend_device {
++    uint32_t version;
++    const char * name;
++    const char * description;
++    const char * device_id;
++    uint64_t memory_free;
++    uint64_t memory_total;
++    enum skippy_backend_device_type type;
++    uint64_t caps;
++};
++
++LLAMA_API enum skippy_status skippy_backend_device_count(
++        size_t * out_count,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_backend_device_at(
++        size_t index,
++        struct skippy_backend_device * out_device,
++        struct skippy_error ** out_error);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index 083d59ac..7585abe1 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -1,4 +1,6 @@
+ #include "skippy.h"
++#include "skippy/devices.h"
+ #include "skippy-signals.h"
+ 
++#include <mutex>
+ #include "gguf.h"
+@@ -169,6 +171,40 @@ static enum skippy_status skippy_success(skippy_error ** out_error) {
+     return SKIPPY_STATUS_OK;
+ }
+ 
++static enum skippy_backend_device_type skippy_backend_device_type_from_ggml(
++        enum ggml_backend_dev_type type) {
++    switch (type) {
++        case GGML_BACKEND_DEVICE_TYPE_CPU:
++            return SKIPPY_BACKEND_DEVICE_TYPE_CPU;
++        case GGML_BACKEND_DEVICE_TYPE_GPU:
++            return SKIPPY_BACKEND_DEVICE_TYPE_GPU;
++        case GGML_BACKEND_DEVICE_TYPE_IGPU:
++            return SKIPPY_BACKEND_DEVICE_TYPE_IGPU;
++        case GGML_BACKEND_DEVICE_TYPE_ACCEL:
++            return SKIPPY_BACKEND_DEVICE_TYPE_ACCEL;
++        case GGML_BACKEND_DEVICE_TYPE_META:
++            return SKIPPY_BACKEND_DEVICE_TYPE_META;
++    }
++    return SKIPPY_BACKEND_DEVICE_TYPE_ACCEL;
++}
++
++static uint64_t skippy_backend_device_caps_from_ggml(const ggml_backend_dev_caps & caps) {
++    uint64_t out = 0;
++    if (caps.async) {
++        out |= SKIPPY_BACKEND_DEVICE_CAP_ASYNC;
++    }
++    if (caps.host_buffer) {
++        out |= SKIPPY_BACKEND_DEVICE_CAP_HOST_BUFFER;
++    }
++    if (caps.buffer_from_host_ptr) {
++        out |= SKIPPY_BACKEND_DEVICE_CAP_BUFFER_FROM_HOST_PTR;
++    }
++    if (caps.events) {
++        out |= SKIPPY_BACKEND_DEVICE_CAP_EVENTS;
++    }
++    return out;
++}
++
+ static int32_t skippy_layer_from_name(const char * name) {
+     if (name == nullptr) {
+         return -1;
+@@ -1722,7 +1757,8 @@ uint64_t skippy_abi_features(void) {
+            SKIPPY_FEATURE_SESSION_CHECKPOINT |
+            SKIPPY_FEATURE_PACKAGE_PART_LOAD |
+            SKIPPY_FEATURE_GENERATION_SIGNALS |
+-           SKIPPY_FEATURE_EXTERNAL_MEDIA_PREFILL;
++           SKIPPY_FEATURE_EXTERNAL_MEDIA_PREFILL |
++           SKIPPY_FEATURE_BACKEND_DEVICES;
+ }
+ 
+ const char * skippy_status_string(enum skippy_status status) {
+@@ -1749,6 +1786,72 @@ void skippy_error_free(struct skippy_error * error) {
+     delete error;
+ }
+ 
++static void skippy_silent_log_callback(enum ggml_log_level level, const char * text, void * user_data) {
++    (void) level;
++    (void) text;
++    (void) user_data;
++}
++
++static void skippy_load_backends_for_device_query() {
++    static std::once_flag once;
++    std::call_once(once, []() {
++        ggml_log_callback previous_callback = nullptr;
++        void * previous_user_data = nullptr;
++        llama_log_get(&previous_callback, &previous_user_data);
++
++        llama_log_set(skippy_silent_log_callback, nullptr);
++        llama_backend_init();
++        if (!ggml_backend_reg_count()) {
++            ggml_backend_load_all();
++        }
++        llama_log_set(previous_callback, previous_user_data);
++    });
++}
++
++enum skippy_status skippy_backend_device_count(
++        size_t * out_count,
++        struct skippy_error ** out_error) {
++    if (out_count == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "out_count is required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    skippy_load_backends_for_device_query();
++    *out_count = ggml_backend_dev_count();
++    return skippy_success(out_error);
++}
++
++enum skippy_status skippy_backend_device_at(
++        size_t index,
++        struct skippy_backend_device * out_device,
++        struct skippy_error ** out_error) {
++    if (out_device == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "out_device is required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    skippy_load_backends_for_device_query();
++    const size_t device_count = ggml_backend_dev_count();
++    if (index >= device_count) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "backend device index is out of range");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    ggml_backend_dev_t device = ggml_backend_dev_get(index);
++    ggml_backend_dev_props props = {};
++    ggml_backend_dev_get_props(device, &props);
++
++    out_device->version = 1;
++    out_device->name = props.name;
++    out_device->description = props.description;
++    out_device->device_id = props.device_id;
++    out_device->memory_free = static_cast<uint64_t>(props.memory_free);
++    out_device->memory_total = static_cast<uint64_t>(props.memory_total);
++    out_device->type = skippy_backend_device_type_from_ggml(props.type);
++    out_device->caps = skippy_backend_device_caps_from_ggml(props.caps);
++    return skippy_success(out_error);
++}
++
+ static enum skippy_status skippy_finish_model_open(
+         llama_model * model,
+         const struct skippy_runtime_config * config,
+-- 
+2.50.1 (Apple Git-155)

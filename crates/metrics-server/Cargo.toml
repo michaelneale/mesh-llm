@@ -8,7 +8,7 @@ version.workspace = true
 anyhow.workspace = true
 axum = "0.8"
 clap.workspace = true
-duckdb = { version = "1.10502", features = ["bundled"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
 skippy-metrics = { path = "../skippy-metrics" }
 opentelemetry-proto = "0.31.0"
 prost = "0.14"

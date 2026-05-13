@@ -31,7 +31,6 @@ mod tests {
         util::now_unix_nanos,
     };
     use axum::{body::Bytes, extract::State, http::StatusCode, response::IntoResponse};
-    use duckdb::{params, Connection};
     use opentelemetry_proto::tonic::metrics::v1::{
         Gauge, ResourceMetrics, ScopeMetrics as MetricScopeMetrics,
     };
@@ -45,6 +44,7 @@ mod tests {
         trace::v1::{span, ResourceSpans, ScopeSpans, Span},
     };
     use prost::Message;
+    use rusqlite::{params, Connection};
     use serde_json::json;
     use skippy_metrics::{attr, metric};
 

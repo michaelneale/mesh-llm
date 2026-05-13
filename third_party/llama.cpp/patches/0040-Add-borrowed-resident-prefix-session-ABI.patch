@@ -1,7 +1,7 @@
-From 82cb23f3e71b900e50f673aa4e573c029bd5ab33 Mon Sep 17 00:00:00 2001
+From 922aae9f49ad7c750f3910facb609b019e90c4f7 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Tue, 5 May 2026 19:20:00 +1000
-Subject: [PATCH 40/45] Add borrowed resident prefix session ABI
+Subject: [PATCH 40/80] Add borrowed resident prefix session ABI
 
 ---
  include/skippy.h |  10 ++++-

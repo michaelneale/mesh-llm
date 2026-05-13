@@ -1,7 +1,7 @@
-From 58acfe520f1ebebbbfb72f467c235d26eef5c595 Mon Sep 17 00:00:00 2001
+From 5c46f091c0f7c11f71879fefae381b9a5d9c1903 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Thu, 7 May 2026 18:45:41 +1000
-Subject: [PATCH] Carry activation frame position sideband
+Subject: [PATCH 75/80] Carry activation frame position sideband
 
 ---
  include/skippy.h |  30 +++++++++++

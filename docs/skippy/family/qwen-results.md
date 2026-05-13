@@ -1,7 +1,7 @@
 # Qwen3.6 Results
 
-This file holds concise promoted summaries. Raw logs, corpora, metrics
-databases, model artifacts, and materialized GGUFs stay outside git.
+Keep concise promoted summaries here. Raw logs, corpora, metrics databases,
+model artifacts, and materialized GGUFs stay outside git.
 
 ## M2 Correctness: m2-correctness-20260429-112147
 
@@ -3214,8 +3214,7 @@ Interpretation:
   shared-prefix plus unrelated-alpha reuse stay hot.
 - Remote hosts were memory-tight throughout, but no new swapins or swapouts
   were observed on `build` or `black`.
-- Package docs now live in
-  [`qwen-package-manifest.json`](qwen-package-manifest.json) and
+- Package reference files: `qwen-package-manifest.json` and
   [`qwen-package-runbook.md`](qwen-package-runbook.md).
 
 ### Package Depth-2 and Arbitrary-Traffic Gate: qwen-lan-package-depth2-arbitrary-20260502-175643

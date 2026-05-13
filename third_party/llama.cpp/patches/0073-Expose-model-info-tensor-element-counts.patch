@@ -1,7 +1,7 @@
-From cf7e0bebf2bd895517bab5862bd47fafe819b887 Mon Sep 17 00:00:00 2001
+From 4f4161eb6729faff8f474dcdcb3eb0ab4f0b171b Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Thu, 7 May 2026 18:20:30 +1000
-Subject: [PATCH] Expose model info tensor element counts
+Subject: [PATCH 73/80] Expose model info tensor element counts
 
 ---
  src/skippy.cpp | 14 +++++++++++++-

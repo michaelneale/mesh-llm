@@ -1,6 +1,7 @@
 # CI guidance
 
-This document captures the repo's CI design rules and workflow responsibilities.
+Use these CI design rules to keep workflow responsibilities clear across the
+repo.
 
 The core rule is to keep ordinary pull request CI fast and targeted, while keeping release-grade artifact production and publish gating in the release workflow.
 

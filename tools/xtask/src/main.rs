@@ -501,7 +501,7 @@ fn check_docs_and_workflow_invariants(repo_root: &Path) -> DynResult<()> {
         "mesh-llm-aarch64-unknown-linux-gnu.tar.gz",
         "RELEASE Linux ARM64 asset note",
     )?;
-    ensure_contains(
+    ensure_contains_normalized(
         &readme,
         "Windows CPU, Windows CUDA, Windows ROCm, and Windows Vulkan bundles",
         "README Windows publish note",
@@ -703,4 +703,18 @@ fn ensure_contains(haystack: &str, needle: &str, context: &str) -> DynResult<()>
     } else {
         Err(format!("{context}: missing `{needle}`").into())
     }
+}
+
+fn ensure_contains_normalized(haystack: &str, needle: &str, context: &str) -> DynResult<()> {
+    let normalized_haystack = normalize_whitespace(haystack);
+    let normalized_needle = normalize_whitespace(needle);
+    if normalized_haystack.contains(&normalized_needle) {
+        Ok(())
+    } else {
+        Err(format!("{context}: missing `{needle}`").into())
+    }
+}
+
+fn normalize_whitespace(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
 }

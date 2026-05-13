@@ -1,7 +1,7 @@
-From c38cc1e3e29b3fd164a6b2af18308623483e1dbe Mon Sep 17 00:00:00 2001
+From 22723c29aeaff3ef10bc31051dc9681c19391c40 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Tue, 5 May 2026 19:45:00 +1000
-Subject: [PATCH 42/45] Avoid heap batch allocation for single-token decode
+Subject: [PATCH 42/80] Avoid heap batch allocation for single-token decode
 
 ---
  src/skippy.cpp | 23 +++++++++++++++++++++++

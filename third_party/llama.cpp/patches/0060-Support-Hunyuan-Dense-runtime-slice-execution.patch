@@ -1,12 +1,12 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 5739f20d6f4090ca89b1bfe6b829c28428241cdc Mon Sep 17 00:00:00 2001
 From: mesh-llm <mesh-llm@example.com>
 Date: Wed, 6 May 2026 00:00:00 +1000
-Subject: [PATCH] Support Hunyuan-Dense runtime-slice execution
+Subject: [PATCH 60/80] Support Hunyuan-Dense runtime-slice execution
 
 ---
- src/models/hunyuan-vl.cpp | 19 +++++++++++++++----
+ src/models/hunyuan-vl.cpp | 20 ++++++++++++++++----
  src/skippy.cpp            |  1 +
- 2 files changed, 16 insertions(+), 4 deletions(-)
+ 2 files changed, 17 insertions(+), 4 deletions(-)
 
 diff --git a/src/models/hunyuan-vl.cpp b/src/models/hunyuan-vl.cpp
 index 5fb9154b..0daa6668 100644
@@ -62,7 +62,7 @@ index 5fb9154b..0daa6668 100644
              model.output_norm, NULL,
              LLM_NORM_RMS, -1);
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 87ac41e4..4cc5a009 100644
+index 64faa7c8..73a66680 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -1588,6 +1588,7 @@ static enum skippy_status skippy_finish_model_open(

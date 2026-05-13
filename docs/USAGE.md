@@ -1,6 +1,7 @@
 # Usage Guide
 
-This page keeps the longer operational reference out of the top-level README.
+Use this operational reference for installation details, service mode, model
+storage, and runtime control.
 
 For command-by-command CLI usage, model resolution rules, and JSON automation examples, see [CLI.md](./CLI.md).
 
@@ -26,13 +27,13 @@ For a non-interactive install, set the flavor explicitly:
 curl -fsSL https://raw.githubusercontent.com/Mesh-LLM/mesh-llm/main/install.sh | MESH_LLM_INSTALL_FLAVOR=vulkan bash
 ```
 
-Release bundles install flavor-specific llama.cpp binaries:
+Release bundles install the `mesh-llm` host binary plus the flavor-specific
+native runtime libraries it embeds. Normal serving runs inside the `mesh-llm`
+host process, which loads the Skippy/llama.cpp stage runtime directly.
 
-- macOS: `rpc-server-metal`, `llama-server-metal`
-- Linux CPU: `rpc-server-cpu`, `llama-server-cpu`
-- Linux CUDA: `rpc-server-cuda`, `llama-server-cuda`
-- Linux ROCm: `rpc-server-rocm`, `llama-server-rocm`
-- Linux Vulkan: `rpc-server-vulkan`, `llama-server-vulkan`
+Published bundle flavors include macOS, Linux CPU, Linux ARM64 CPU, Linux CUDA,
+Linux CUDA Blackwell, Linux ROCm, Linux Vulkan, Windows CPU, Windows CUDA,
+Windows ROCm, and Windows Vulkan. Metal remains macOS-only.
 
 If you keep more than one flavor in the same `bin` directory, choose one explicitly:
 
@@ -77,6 +78,9 @@ mesh-llm discover
 mesh-llm discover --name "my-mesh"
 ```
 
+Mesh workflow details live in [MESHES.md](MESHES.md). Big-model split serving
+lives in [SKIPPY_SPLITS.md](SKIPPY_SPLITS.md).
+
 If you run `mesh-llm` with no arguments, it prints `--help` and exits. It does not start the console or bind ports until you choose a mode.
 Bare `mesh-llm serve` loads startup models from `[[models]]` in `~/.mesh-llm/config.toml`.
 
@@ -100,7 +104,7 @@ Platform behavior:
 - macOS loads `service.env` and then executes `mesh-llm serve`
 - Linux writes `mesh-llm serve` directly into `ExecStart=`
 
-The background service no longer stores custom startup args. Configure startup models in `~/.mesh-llm/config.toml` instead.
+The background service reads startup models from `~/.mesh-llm/config.toml`.
 
 Optional shared environment file example:
 
@@ -256,16 +260,21 @@ mesh-llm models search qwen 8b
 mesh-llm models search --catalog qwen
 mesh-llm models show Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf
 mesh-llm models download Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf
+mesh-llm models package unsloth/Qwen3-8B-GGUF:Q4_K_M --dry-run
 mesh-llm models updates --check
 mesh-llm models updates --all
 mesh-llm models updates Qwen/Qwen3-8B-GGUF
+mesh-llm models cleanup
+mesh-llm models prune
 ```
 
 ## Model storage
 
 - Hugging Face repo snapshots are the canonical managed model store.
-- Flat `~/.models/` storage is no longer scanned for managed models.
+- Managed model scans use Hugging Face repo snapshots.
 - Arbitrary local GGUF files still work through `mesh-llm serve --gguf`.
+- Skippy materialized stage GGUFs are derived cache and can be preview-pruned
+  with `mesh-llm models prune`.
 
 ## Inspect local GPUs
 

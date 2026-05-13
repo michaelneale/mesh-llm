@@ -713,6 +713,9 @@ pub fn load_runtime(config: &StageConfig) -> Result<Option<Arc<Mutex<RuntimeStat
     let mut runtime_config = runtime_config_from_stage_config(config)?;
 
     let model = match config.load_mode {
+        _ if std::env::var("MESH_LLM_BYPASS_SKIPPY_MODEL_LOAD").is_ok() => {
+            skippy_runtime::StageModel::new_dummy()
+        }
         LoadMode::LayerPackage => {
             let selected =
                 select_package_parts(config).context("select layer package parts for stage")?;

@@ -1,7 +1,7 @@
 # Experiments
 
-This file is the running experiment log for `skippy-runtime`. It records
-what we tried, what happened, and what we should do next.
+Keep the running `skippy-runtime` experiment log here: what we tried, what
+happened, and what we should do next.
 
 ## Performance Experiment Card Format
 
