@@ -266,11 +266,7 @@ impl OwnerControlClient {
             .alpns(vec![ALPN_CONTROL_V1.to_vec()])
             .bind_addr(owner_control_client_bind_addr())
             .map_err(|error| ControlPlaneClientError::Transport(error.to_string()))?;
-        if let Some(relay_map) = relay_map_from_endpoint_addr(&control_addr) {
-            builder = builder.relay_mode(iroh::endpoint::RelayMode::Custom(relay_map));
-        } else {
-            builder = builder.relay_mode(iroh::endpoint::RelayMode::Disabled);
-        }
+        builder = builder.relay_mode(relay_mode_from_endpoint_addr(&control_addr));
         let endpoint = builder
             .bind()
             .await
@@ -613,14 +609,18 @@ async fn legacy_mesh_probe(_endpoint: &Endpoint, control_addr: EndpointAddr) -> 
     let Ok(probe_endpoint) = Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::generate())
         .alpns(vec![ALPN_V1.to_vec()])
-        .relay_mode(iroh::endpoint::RelayMode::Disabled)
-        .bind_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+        .relay_mode(relay_mode_from_endpoint_addr(&control_addr))
+        .bind_addr(owner_control_client_bind_addr())
     else {
         return false;
     };
     let Ok(probe_endpoint) = probe_endpoint.bind().await else {
         return false;
     };
+    if control_addr.relay_urls().next().is_some() {
+        let _ =
+            tokio::time::timeout(std::time::Duration::from_secs(3), probe_endpoint.online()).await;
+    }
     match tokio::time::timeout(
         std::time::Duration::from_secs(3),
         probe_endpoint.connect(control_addr, ALPN_V1),
@@ -632,6 +632,13 @@ async fn legacy_mesh_probe(_endpoint: &Endpoint, control_addr: EndpointAddr) -> 
             true
         }
         _ => false,
+    }
+}
+
+fn relay_mode_from_endpoint_addr(addr: &EndpointAddr) -> iroh::endpoint::RelayMode {
+    match relay_map_from_endpoint_addr(addr) {
+        Some(relay_map) => iroh::endpoint::RelayMode::Custom(relay_map),
+        None => iroh::endpoint::RelayMode::Disabled,
     }
 }
 
@@ -665,6 +672,7 @@ fn relay_map_from_endpoint_addr(addr: &EndpointAddr) -> Option<iroh::RelayMap> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
 
     #[test]
     fn owner_control_client_binds_wildcard_for_direct_remote_endpoints() {
@@ -675,6 +683,28 @@ mod tests {
             bind_addr.ip().is_unspecified(),
             "owner-control clients must not be loopback-bound when dialing explicit remote endpoints"
         );
+    }
+
+    #[test]
+    fn relay_mode_uses_custom_relays_from_endpoint_addr() {
+        let addr = EndpointAddr::new(iroh::SecretKey::generate().public()).with_relay_url(
+            iroh::RelayUrl::from_str("https://relay.example.com").expect("relay URL parses"),
+        );
+
+        assert!(matches!(
+            relay_mode_from_endpoint_addr(&addr),
+            iroh::endpoint::RelayMode::Custom(_)
+        ));
+    }
+
+    #[test]
+    fn relay_mode_is_disabled_without_endpoint_relays() {
+        let addr = EndpointAddr::new(iroh::SecretKey::generate().public());
+
+        assert!(matches!(
+            relay_mode_from_endpoint_addr(&addr),
+            iroh::endpoint::RelayMode::Disabled
+        ));
     }
 }
 

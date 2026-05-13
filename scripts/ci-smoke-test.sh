@@ -40,6 +40,7 @@ fi
 
 ARGS=(
     serve
+    --log-format json
     --model "$MODEL"
     --no-draft
     --device CPU
