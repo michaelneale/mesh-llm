@@ -249,8 +249,9 @@ fn required_control_endpoint(endpoint: Option<String>) -> Result<String, LocalCo
 }
 
 async fn ensure_loopback_control_caller(stream: &mut TcpStream) -> anyhow::Result<bool> {
-    if let Ok(addr) = stream.peer_addr() {
-        if !addr.ip().is_loopback() {
+    match stream.peer_addr() {
+        Ok(addr) if addr.ip().is_loopback() => Ok(true),
+        Ok(addr) => {
             tracing::warn!("runtime control: rejected non-loopback caller {addr}");
             respond_json(
                 stream,
@@ -258,10 +259,19 @@ async fn ensure_loopback_control_caller(stream: &mut TcpStream) -> anyhow::Resul
                 &serde_json::json!({"error": "runtime control endpoints only accept localhost connections"}),
             )
             .await?;
-            return Ok(false);
+            Ok(false)
+        }
+        Err(error) => {
+            tracing::warn!("runtime control: could not determine caller address: {error}");
+            respond_json(
+                stream,
+                403,
+                &serde_json::json!({"error": "runtime control endpoints require a localhost caller"}),
+            )
+            .await?;
+            Ok(false)
         }
     }
-    Ok(true)
 }
 
 fn local_control_snapshot_payload(
