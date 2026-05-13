@@ -1488,6 +1488,23 @@ describe('ChatPage', () => {
     expect(screen.queryByRole('tablist', { name: 'Chat sidebar views' })).not.toBeInTheDocument()
   })
 
+  it('does not show the floating sidebar control when the sidebar is hidden', () => {
+    render(
+      <ChatLayout
+        actions={null}
+        composer={<textarea aria-label="Prompt" />}
+        hideSidebar
+        sidebar={<div role="tablist" aria-label="Chat sidebar views" />}
+        sidebarMode="compact"
+        title="Chat"
+      >
+        <div data-testid="message-content">Messages</div>
+      </ChatLayout>
+    )
+
+    expect(screen.queryByRole('button', { name: 'Open chat sidebar' })).not.toBeInTheDocument()
+  })
+
   it('hides route disclosure text by default', () => {
     renderChatPage()
 
