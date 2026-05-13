@@ -2686,10 +2686,10 @@ impl Node {
         let task_shutdown_requested = shutdown_requested.clone();
         let task_shutdown = shutdown.clone();
         let node = self.clone();
-        let task = tokio::spawn(async move {
+        let task = tokio::spawn(Box::pin(async move {
             node.control_accept_loop(task_endpoint, task_shutdown_requested, task_shutdown)
                 .await;
-        });
+        }));
         *self.control_listener.lock().await = Some(ControlListenerLifecycle {
             endpoint,
             token,
@@ -4048,11 +4048,11 @@ impl Node {
                         break;
                     };
                     let node = self.clone();
-                    tokio::spawn(async move {
+                    tokio::spawn(Box::pin(async move {
                         if let Err(error) = node.handle_control_incoming(incoming).await {
                             tracing::debug!("Control-plane incoming connection error: {error}");
                         }
-                    });
+                    }));
                 }
             }
         }
@@ -4127,7 +4127,7 @@ impl Node {
                 }
             };
             let node = self.clone();
-            tokio::spawn(async move {
+            tokio::spawn(Box::pin(async move {
                 if let Err(error) = node
                     .handle_control_stream(remote, &mut send, &mut recv)
                     .await
@@ -4137,7 +4137,7 @@ impl Node {
                         remote.fmt_short()
                     );
                 }
-            });
+            }));
         }
         Ok(())
     }

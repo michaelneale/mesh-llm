@@ -108,8 +108,14 @@ jobs:
             "$HOME/.models/$MODEL_FILE"
 
       - name: Constrained-stack smoke (detect oversized spawned futures)
+        # Canary that detects pathologically oversized spawned futures by
+        # running the smoke under a reduced tokio worker stack. The default
+        # at runtime is 8 MiB (see crates/mesh-llm/src/main.rs); the canary
+        # currently allows 2 MiB, which gives normal owner-control,
+        # mesh, and inference startup state machines headroom while still
+        # catching multi-megabyte regressions in spawn sites.
         env:
-          MESH_TOKIO_STACK_SIZE: "1048576"
+          MESH_TOKIO_STACK_SIZE: "2097152"
           MESH_CI_API_PORT: "9347"
           MESH_CI_CONSOLE_PORT: "3141"
           MESH_CI_LOG: /tmp/mesh-llm-ci-constrained-stack.log
