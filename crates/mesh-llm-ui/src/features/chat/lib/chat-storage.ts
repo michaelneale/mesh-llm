@@ -1,13 +1,14 @@
 import type { Conversation, ThreadMessage } from '@/features/app-tabs/types'
-import type { ChatConversation, ChatMessage, ChatState } from '@/features/chat/lib/chat-types'
-export type { ChatState as ChatStateExported } from '@/features/chat/lib/chat-types'
-export {
+import {
   MAX_CHAT_CONVERSATIONS,
   loadChatState,
   saveChatState,
   trimThreadMessages,
   type ChatStorageScope
 } from '@/features/chat/api/chat-storage'
+import type { ChatConversation, ChatMessage, ChatState } from '@/features/chat/lib/chat-types'
+export type { ChatState as ChatStateExported } from '@/features/chat/lib/chat-types'
+export { MAX_CHAT_CONVERSATIONS, loadChatState, saveChatState, trimThreadMessages, type ChatStorageScope }
 
 /** Convert a full ChatConversation to a lightweight Conversation record. */
 export function chatToConversation(chat: {
@@ -49,6 +50,5 @@ export function findLastUserMessageIndex(messages: ThreadMessage[] | ChatMessage
 }
 
 export async function loadPersistedChatState(): Promise<ChatState | undefined> {
-  const { loadChatState: load } = await import('@/features/chat/api/chat-storage')
-  return await load('live')
+  return await loadChatState('live')
 }

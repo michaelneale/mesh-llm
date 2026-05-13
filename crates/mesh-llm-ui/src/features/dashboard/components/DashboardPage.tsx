@@ -771,7 +771,6 @@ export function DashboardPage({
         >
           Models
         </a>
-
       </div>
     </div>
   )

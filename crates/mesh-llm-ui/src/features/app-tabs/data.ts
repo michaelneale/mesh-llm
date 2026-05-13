@@ -998,9 +998,7 @@ export const DASHBOARD_HARNESS: DashboardHarnessData = {
 export const SHELL_HARNESS: ShellHarnessData = {
   productName: 'mesh-llm',
   brand: { primary: 'mesh', accent: 'llm' },
-  footerLinks: [
-    { label: 'Docs', href: 'https://docs.meshllm.cloud/' }
-  ],
+  footerLinks: [{ label: 'Docs', href: 'https://docs.meshllm.cloud/' }],
   footerTrailingLink: { label: 'GitHub', href: 'https://github.com/Mesh-LLM/mesh-llm' },
   topNavApiAccessLinks: [
     { href: 'https://docs.meshllm.cloud/', label: 'Docs' },

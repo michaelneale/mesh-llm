@@ -353,7 +353,9 @@ function saveLocalChatState(scope: ChatStorageScope, envelope: StoredChatStateEn
     try {
       storage.setItem(
         LOCAL_STORAGE_KEYS[scope],
-        JSON.stringify(createStoredChatStateEnvelope(createLocalRecoveryState(envelope.state), envelope.savedAt, { recovery: true }))
+        JSON.stringify(
+          createStoredChatStateEnvelope(createLocalRecoveryState(envelope.state), envelope.savedAt, { recovery: true })
+        )
       )
     } catch (recoveryError) {
       void recoveryError
@@ -446,8 +448,11 @@ async function openChatDBOnce(): Promise<IDBPDatabase<ChatDB>> {
   const migratedState = await readV1ChatState()
 
   const db = await openDB<ChatDB>(DB_NAME, DB_VERSION, {
-    upgrade(database, oldVersion) {
-      if (oldVersion < 2 && database.objectStoreNames.contains(STORE_NAME)) {
+    upgrade(database, oldVersion, _newVersion, transaction) {
+      const hasExistingStore = oldVersion < 2 && database.objectStoreNames.contains(STORE_NAME)
+      const shouldRecreateLegacyStore = hasExistingStore && transaction.objectStore(STORE_NAME).keyPath !== null
+
+      if (shouldRecreateLegacyStore) {
         database.deleteObjectStore(STORE_NAME)
       }
       if (!database.objectStoreNames.contains(STORE_NAME)) {
@@ -459,7 +464,6 @@ async function openChatDBOnce(): Promise<IDBPDatabase<ChatDB>> {
   if (migratedState) {
     try {
       await db.put(STORE_NAME, migratedState, STATE_KEYS.live)
-      saveLocalChatState('live', migratedState)
     } catch (error) {
       void error
     }
