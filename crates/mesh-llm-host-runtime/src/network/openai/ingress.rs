@@ -866,20 +866,12 @@ async fn build_moa_config(
         }
 
         // Try remote
-        let remote_peer = targets
-            .targets
-            .get(name.as_str())
-            .and_then(|tv| {
-                tv.iter().find_map(|t| match t {
-                    election::InferenceTarget::Remote(id) => Some(*id),
-                    _ => None,
-                })
+        let remote_peer = targets.targets.get(name.as_str()).and_then(|tv| {
+            tv.iter().find_map(|t| match t {
+                election::InferenceTarget::Remote(id) => Some(*id),
+                _ => None,
             })
-            .or_else(|| {
-                // Not in targets — check mesh peers
-                // Use blocking approach since we're already in async context
-                None
-            });
+        });
 
         if let Some(peer_id) = remote_peer {
             let backend_idx = backends.len();
