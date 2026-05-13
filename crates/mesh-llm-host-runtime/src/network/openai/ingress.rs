@@ -673,18 +673,35 @@ async fn handle_moa_request(
     body: serde_json::Value,
 ) -> serde_json::Value {
     let base_url = format!("http://localhost:{api_port}/v1");
-    let endpoints: Vec<moa_gateway::Endpoint> = model_names
-        .iter()
-        .map(|m| moa_gateway::Endpoint {
-            base_url: base_url.clone(),
-            model: m.clone(),
-        })
-        .collect();
+
+    // Dedup model aliases — e.g. "unsloth/GLM-4.7-Flash-GGUF" and
+    // "unsloth/GLM-4.7-Flash-GGUF@main:Q4_K_M" are the same model.
+    // Keep the shorter name (canonical) and skip aliases.
+    let mut seen_bases = std::collections::HashSet::new();
+    let mut endpoints = Vec::new();
+    let mut sorted_names = model_names.to_vec();
+    sorted_names.sort_by_key(|n| n.len());
+    for name in &sorted_names {
+        let base = name
+            .split('@')
+            .next()
+            .unwrap_or(name)
+            .to_lowercase()
+            .replace("-gguf", "")
+            .replace("unsloth/", "")
+            .replace("meshllm/", "");
+        if seen_bases.insert(base) {
+            endpoints.push(moa_gateway::Endpoint {
+                base_url: base_url.clone(),
+                model: name.clone(),
+            });
+        }
+    }
 
     let config = moa_gateway::GatewayConfig {
         endpoints,
-        worker_timeout: std::time::Duration::from_secs(120),
-        reducer_timeout: std::time::Duration::from_secs(180),
+        worker_timeout: std::time::Duration::from_secs(30),
+        reducer_timeout: std::time::Duration::from_secs(45),
     };
 
     let mut gateway = moa_gateway::Gateway::new(config);
