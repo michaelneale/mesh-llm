@@ -3729,7 +3729,7 @@ dependencies = [
  "mesh-llm-system",
  "mesh-llm-types",
  "mesh-llm-ui",
- "moa-gateway",
+ "mesh-mixture-of-agents",
  "model-artifact",
  "model-package",
  "model-ref",
@@ -3870,6 +3870,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "mesh-mixture-of-agents"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "regex",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "metrics-server"
 version = "0.1.0"
 dependencies = [
@@ -3928,19 +3942,6 @@ dependencies = [
  "log",
  "wasi 0.11.1+wasi-snapshot-preview1",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "moa-gateway"
-version = "0.1.0"
-dependencies = [
- "regex",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

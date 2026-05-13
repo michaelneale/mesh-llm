@@ -5,6 +5,7 @@ use crate::mesh;
 use crate::network::affinity;
 use crate::network::openai::transport as proxy;
 use crate::network::router;
+use mesh_mixture_of_agents as moa;
 
 /// Model-aware API proxy. Parses the "model" field from POST request bodies
 /// and routes to the correct host. Falls back to the first available target
@@ -64,10 +65,12 @@ pub(crate) async fn api_proxy(
                         }
                         models.sort();
                         models.dedup();
-                        // Offer "moa" virtual model when ≥2 distinct models
+                        // Offer "mesh" virtual model when ≥2 distinct models
                         // are available for mixture-of-agents fan-out.
-                        if models.len() >= 2 && !models.contains(&"moa".to_string()) {
-                            models.push("moa".to_string());
+                        if models.len() >= 2
+                            && !models.contains(&moa::VIRTUAL_MODEL_NAME.to_string())
+                        {
+                            models.push(moa::VIRTUAL_MODEL_NAME.to_string());
                         }
                         let descriptors = node.served_model_descriptors().await;
                         let _ = proxy::send_models_list_with_descriptors(
@@ -249,22 +252,15 @@ pub(crate) async fn api_proxy(
                     }
 
                     // ── MoA intercept ─────────────────────────────────
-                    // When model == "moa", fan out to all available models
-                    // via the MoA gateway and return the arbitrated result.
-                    // Uses the `callable` list which includes both local
-                    // targets and mesh-served models.
-                    if effective_model.as_deref() == Some("moa") {
+                    // When model == "mesh", fan out to all available models
+                    // via the MoA gateway.  Local models are called directly
+                    // on their skippy port.  Remote models go through the
+                    // QUIC tunnel.
+                    if effective_model.as_deref() == Some(moa::VIRTUAL_MODEL_NAME) {
                         request.ensure_body_json();
                         if let Some(body_json) = request.body_json.clone() {
-                            let moa_models: Vec<String> = callable
-                                .iter()
-                                .filter(|m| m.as_str() != "moa")
-                                .cloned()
-                                .collect();
-                            if moa_models.len() >= 2 {
-                                // Strip stream flag — MoA workers are non-streaming;
-                                // we synthesize SSE frames from the final response
-                                // when the client asked for streaming.
+                            if let Some(config) = build_moa_config(&targets, &node, &callable).await
+                            {
                                 let was_streaming = body_json
                                     .get("stream")
                                     .and_then(|v| v.as_bool())
@@ -272,18 +268,31 @@ pub(crate) async fn api_proxy(
                                 let mut moa_body = body_json;
                                 moa_body.as_object_mut().map(|o| o.remove("stream"));
 
-                                let moa_result =
-                                    handle_moa_request(port, &moa_models, moa_body).await;
+                                let moa_result = moa::handle_turn(&config, &moa_body).await;
+
+                                tracing::info!(
+                                    "moa: {}ms, {}/{} workers, reducer={}",
+                                    moa_result.elapsed_ms,
+                                    moa_result
+                                        .worker_summaries
+                                        .iter()
+                                        .filter(|w| w.succeeded)
+                                        .count(),
+                                    moa_result.worker_summaries.len(),
+                                    moa_result.reducer_used,
+                                );
 
                                 if was_streaming {
-                                    let _ = send_moa_as_sse(tcp_stream, &moa_result).await;
+                                    let _ = send_moa_as_sse(tcp_stream, &moa_result.response_body)
+                                        .await;
                                 } else {
-                                    let _ = proxy::send_json_ok(tcp_stream, &moa_result).await;
+                                    let _ =
+                                        proxy::send_json_ok(tcp_stream, &moa_result.response_body)
+                                            .await;
                                 }
                                 return;
                             }
                         }
-                        // Fallback: not enough models or no body
                         let _ = proxy::send_503(
                             tcp_stream,
                             "MoA requires ≥2 models available in the mesh",
@@ -576,11 +585,11 @@ async fn send_moa_as_sse(
     let id = response
         .get("id")
         .and_then(|v| v.as_str())
-        .unwrap_or("chatcmpl-moa");
+        .unwrap_or("chatcmpl-mesh");
     let model = response
         .get("model")
         .and_then(|v| v.as_str())
-        .unwrap_or("moa");
+        .unwrap_or(moa::VIRTUAL_MODEL_NAME);
     let raw_content = response
         .pointer("/choices/0/message/content")
         .and_then(|v| v.as_str())
@@ -677,28 +686,155 @@ fn strip_think_from_content(text: &str) -> String {
     result.trim().to_string()
 }
 
-/// Handle a MoA (mixture-of-agents) request by fanning out to all available
-/// models through the local API proxy and arbitrating the responses.
-///
-/// Each worker endpoint points back at `localhost:{api_port}/v1` with a
-/// different model name — the existing proxy handles routing each one to
-/// the correct local or remote backend.  This avoids duplicating any
-/// routing/tunnel logic.
-async fn handle_moa_request(
-    api_port: u16,
-    model_names: &[String],
-    body: serde_json::Value,
-) -> serde_json::Value {
-    let base_url = format!("http://localhost:{api_port}/v1");
+/// Backend that calls a local model directly on its skippy HTTP port.
+struct LocalModelBackend {
+    port: u16,
+    http: reqwest::Client,
+}
 
-    // Dedup model aliases — e.g. "unsloth/GLM-4.7-Flash-GGUF" and
-    // "unsloth/GLM-4.7-Flash-GGUF@main:Q4_K_M" are the same model.
-    // Keep the shorter name (canonical) and skip aliases.
+#[async_trait::async_trait]
+impl moa::ModelBackend for LocalModelBackend {
+    async fn chat_completion(
+        &self,
+        model: &str,
+        messages: &[serde_json::Value],
+        tools: Option<&serde_json::Value>,
+        max_tokens: u32,
+        timeout: std::time::Duration,
+    ) -> Result<serde_json::Value, String> {
+        let url = format!("http://127.0.0.1:{}/v1/chat/completions", self.port);
+        let mut body = serde_json::json!({
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": 0.3,
+            "stream": false,
+            "mesh_hooks": false,
+        });
+        if let Some(tools) = tools {
+            body.as_object_mut()
+                .unwrap()
+                .insert("tools".to_string(), tools.clone());
+        }
+        let resp = self
+            .http
+            .post(&url)
+            .json(&body)
+            .timeout(timeout)
+            .send()
+            .await
+            .map_err(|e| format!("local:{} failed: {e}", self.port))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("HTTP {status}: {}", &text[..text.len().min(200)]));
+        }
+        resp.json::<serde_json::Value>()
+            .await
+            .map_err(|e| format!("parse: {e}"))
+    }
+}
+
+/// Backend that calls a remote model over the QUIC tunnel.
+struct RemoteModelBackend {
+    node: mesh::Node,
+    peer_id: iroh::EndpointId,
+}
+
+#[async_trait::async_trait]
+impl moa::ModelBackend for RemoteModelBackend {
+    async fn chat_completion(
+        &self,
+        model: &str,
+        messages: &[serde_json::Value],
+        tools: Option<&serde_json::Value>,
+        max_tokens: u32,
+        timeout: std::time::Duration,
+    ) -> Result<serde_json::Value, String> {
+        let mut body = serde_json::json!({
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": 0.3,
+            "stream": false,
+            "mesh_hooks": false,
+        });
+        if let Some(tools) = tools {
+            body.as_object_mut()
+                .unwrap()
+                .insert("tools".to_string(), tools.clone());
+        }
+        let body_bytes = serde_json::to_vec(&body).map_err(|e| format!("serialize: {e}"))?;
+        let http_request = format!(
+            "POST /v1/chat/completions HTTP/1.1\r\n\
+             Host: localhost\r\n\
+             Content-Type: application/json\r\n\
+             Content-Length: {}\r\n\
+             \r\n",
+            body_bytes.len()
+        );
+        let mut raw = http_request.into_bytes();
+        raw.extend_from_slice(&body_bytes);
+
+        let result = tokio::time::timeout(timeout, async {
+            let (mut send, mut recv) = self
+                .node
+                .open_http_tunnel(self.peer_id)
+                .await
+                .map_err(|e| format!("tunnel: {e}"))?;
+            send.write_all(&raw)
+                .await
+                .map_err(|e| format!("send: {e}"))?;
+            send.finish().map_err(|e| format!("finish: {e}"))?;
+            let response = recv
+                .read_to_end(256 * 1024)
+                .await
+                .map_err(|e| format!("recv: {e}"))?;
+            parse_quic_http_response(&response)
+        })
+        .await
+        .map_err(|_| format!("remote timeout after {}s", timeout.as_secs()))?;
+        result
+    }
+}
+
+fn parse_quic_http_response(response: &[u8]) -> Result<serde_json::Value, String> {
+    let s = String::from_utf8_lossy(response);
+    let header_end = s
+        .find("\r\n\r\n")
+        .ok_or_else(|| "malformed HTTP response".to_string())?;
+    let status_line = s[..header_end].lines().next().unwrap_or("");
+    let status: u16 = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    if status != 200 {
+        return Err(format!("HTTP {status}: {}", &s[..s.len().min(200)]));
+    }
+    let body = &s[header_end + 4..];
+    serde_json::from_str(body).map_err(|e| format!("parse: {e}"))
+}
+
+/// Build MoA config with mesh-native backends.  Returns None if <2 models.
+async fn build_moa_config(
+    targets: &election::ModelTargets,
+    node: &mesh::Node,
+    callable: &[String],
+) -> Option<moa::GatewayConfig> {
+    let http = reqwest::Client::new();
     let mut seen_bases = std::collections::HashSet::new();
-    let mut endpoints = Vec::new();
-    let mut sorted_names = model_names.to_vec();
-    sorted_names.sort_by_key(|n| n.len());
-    for name in &sorted_names {
+    let mut backends: Vec<std::sync::Arc<dyn moa::ModelBackend>> = Vec::new();
+    let mut models: Vec<moa::ModelEntry> = Vec::new();
+
+    // Sort by name length so shorter (canonical) names win dedup
+    let mut sorted: Vec<&String> = callable.iter().collect();
+    sorted.sort_by_key(|n| n.len());
+
+    for name in sorted {
+        if name == moa::VIRTUAL_MODEL_NAME {
+            continue;
+        }
         let base = name
             .split('@')
             .next()
@@ -707,36 +843,85 @@ async fn handle_moa_request(
             .replace("-gguf", "")
             .replace("unsloth/", "")
             .replace("meshllm/", "");
-        if seen_bases.insert(base) {
-            endpoints.push(moa_gateway::Endpoint {
-                base_url: base_url.clone(),
-                model: name.clone(),
+        if !seen_bases.insert(base) {
+            continue;
+        }
+
+        // Try local target first
+        let local_port = targets.targets.get(name.as_str()).and_then(|tv| {
+            tv.iter().find_map(|t| match t {
+                election::InferenceTarget::Local(p) => Some(*p),
+                _ => None,
+            })
+        });
+
+        if let Some(port) = local_port {
+            let backend_idx = backends.len();
+            backends.push(std::sync::Arc::new(LocalModelBackend {
+                port,
+                http: http.clone(),
+            }));
+            models.push(moa::ModelEntry {
+                name: name.clone(),
+                backend_index: backend_idx,
+            });
+            continue;
+        }
+
+        // Try remote
+        let remote_peer = targets
+            .targets
+            .get(name.as_str())
+            .and_then(|tv| {
+                tv.iter().find_map(|t| match t {
+                    election::InferenceTarget::Remote(id) => Some(*id),
+                    _ => None,
+                })
+            })
+            .or_else(|| {
+                // Not in targets — check mesh peers
+                // Use blocking approach since we're already in async context
+                None
+            });
+
+        if let Some(peer_id) = remote_peer {
+            let backend_idx = backends.len();
+            backends.push(std::sync::Arc::new(RemoteModelBackend {
+                node: node.clone(),
+                peer_id,
+            }));
+            models.push(moa::ModelEntry {
+                name: name.clone(),
+                backend_index: backend_idx,
+            });
+            continue;
+        }
+
+        // Also check hosts_for_model for models not yet in the routing table
+        let remote_hosts = node.hosts_for_model(name).await;
+        if let Some(peer_id) = remote_hosts.into_iter().next() {
+            let backend_idx = backends.len();
+            backends.push(std::sync::Arc::new(RemoteModelBackend {
+                node: node.clone(),
+                peer_id,
+            }));
+            models.push(moa::ModelEntry {
+                name: name.clone(),
+                backend_index: backend_idx,
             });
         }
     }
 
-    let config = moa_gateway::GatewayConfig {
-        endpoints,
+    if models.len() < 2 {
+        return None;
+    }
+
+    Some(moa::GatewayConfig {
+        backends,
+        models,
         worker_timeout: std::time::Duration::from_secs(30),
         reducer_timeout: std::time::Duration::from_secs(45),
-    };
-
-    let mut gateway = moa_gateway::Gateway::new(config);
-    let result = gateway.turn(&body).await;
-
-    tracing::info!(
-        "moa: {}ms, {}/{} workers, reducer={}",
-        result.elapsed_ms,
-        result
-            .worker_summaries
-            .iter()
-            .filter(|w| w.succeeded)
-            .count(),
-        result.worker_summaries.len(),
-        result.reducer_used,
-    );
-
-    result.response_body
+    })
 }
 
 pub(crate) fn callable_models(targets: &election::ModelTargets) -> Vec<String> {
