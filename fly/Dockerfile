@@ -62,6 +62,7 @@ COPY crates/skippy-correctness/ crates/skippy-correctness/
 COPY crates/llama-spec-bench/ crates/llama-spec-bench/
 COPY crates/skippy-bench/ crates/skippy-bench/
 COPY crates/skippy-prompt/ crates/skippy-prompt/
+COPY crates/moa-gateway/ crates/moa-gateway/
 COPY tools/xtask/ tools/xtask/
 COPY scripts/prepare-llama.sh scripts/build-llama.sh scripts/
 COPY third_party/llama.cpp/upstream.txt third_party/llama.cpp/upstream.txt
