@@ -1,0 +1,133 @@
+x-stage-env: &stage-env
+  MODEL_PACKAGE_REF: ${MODEL_PACKAGE_REF:-hf://meshllm/gemma-4-26B-A4B-it-UD-Q4_K_M-layers}
+  MODEL_PATH: ${CONTAINER_MODEL_PATH:-/models/model.gguf}
+  MODEL_ID: ${MODEL_ID:-skippy-wan-lab/model}
+  RUN_ID: ${RUN_ID:-skippy-docker-wan}
+  STAGE_COUNT: ${STAGE_COUNT:-4}
+  LAYER_COUNT: ${LAYER_COUNT:-}
+  ACTIVATION_WIDTH: ${ACTIVATION_WIDTH:-}
+  ACTIVATION_WIRE_DTYPE: ${ACTIVATION_WIRE_DTYPE:-f16}
+  CTX_SIZE: ${CTX_SIZE:-512}
+  STAGE_LANES: ${STAGE_LANES:-1}
+  STAGE_MAX_INFLIGHT: ${STAGE_MAX_INFLIGHT:-1}
+  CACHE_TYPE_K: ${CACHE_TYPE_K:-f16}
+  CACHE_TYPE_V: ${CACHE_TYPE_V:-f16}
+  LOAD_MODE: ${LOAD_MODE:-layer-package}
+  HF_CACHE_ROOT: /hf-cache
+  HF_PACKAGE_SOURCE: host-cache
+  METRICS_OTLP_GRPC: http://metrics:14317
+  TELEMETRY_LEVEL: ${TELEMETRY_LEVEL:-debug}
+  TELEMETRY_QUEUE_CAPACITY: ${TELEMETRY_QUEUE_CAPACITY:-4096}
+  WAN_ENABLE: ${WAN_ENABLE:-1}
+  WAN_DELAY_MS: ${WAN_DELAY_MS:-}
+  WAN_RTT_MS: ${WAN_RTT_MS:-}
+  WAN_JITTER_MS: ${WAN_JITTER_MS:-0}
+  WAN_RATE_MBIT: ${WAN_RATE_MBIT:-}
+  WAN_LOSS_PERCENT: ${WAN_LOSS_PERCENT:-0}
+  ASYNC_PREFILL_FORWARD: ${ASYNC_PREFILL_FORWARD:-0}
+  REPLY_CREDIT_LIMIT: ${REPLY_CREDIT_LIMIT:-}
+  OPENAI_DEFAULT_MAX_TOKENS: ${OPENAI_DEFAULT_MAX_TOKENS:-32}
+  OPENAI_GENERATION_CONCURRENCY: ${OPENAI_GENERATION_CONCURRENCY:-1}
+  OPENAI_PREFILL_CHUNK_SIZE: ${OPENAI_PREFILL_CHUNK_SIZE:-256}
+  OPENAI_PREFILL_CHUNK_POLICY: ${OPENAI_PREFILL_CHUNK_POLICY:-adaptive-ramp}
+  OPENAI_PREFILL_ADAPTIVE_START: ${OPENAI_PREFILL_ADAPTIVE_START:-128}
+  OPENAI_PREFILL_ADAPTIVE_STEP: ${OPENAI_PREFILL_ADAPTIVE_STEP:-128}
+  OPENAI_PREFILL_ADAPTIVE_MAX: ${OPENAI_PREFILL_ADAPTIVE_MAX:-512}
+
+x-stage-service: &stage-service
+  build:
+    context: ../..
+    dockerfile: docker/skippy-wan-lab/Dockerfile
+  image: mesh-llm/skippy-wan-lab:local
+  command: ["stage"]
+  cap_add:
+    - NET_ADMIN
+  security_opt:
+    - no-new-privileges:false
+  volumes:
+    - ${HF_CACHE_MOUNT:?run docker/skippy-wan-lab/up.sh so HF_CACHE_MOUNT is set}:/hf-cache:ro
+  networks:
+    - stage_net
+    - metrics_net
+  healthcheck:
+    test: ["CMD", "/usr/local/bin/skippy-wan-lab", "healthcheck", "19000"]
+    interval: 5s
+    timeout: 2s
+    retries: 120
+    start_period: 10s
+  restart: "no"
+
+services:
+  metrics:
+    build:
+      context: ../..
+      dockerfile: docker/skippy-wan-lab/Dockerfile
+    image: mesh-llm/skippy-wan-lab:local
+    command: ["metrics"]
+    volumes:
+      - metrics_data:/data
+    networks:
+      - metrics_net
+    ports:
+      - "${METRICS_HTTP_PORT:-18080}:18080"
+      - "${METRICS_OTLP_GRPC_PORT:-14317}:14317"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/skippy-wan-lab", "metrics-healthcheck", "18080"]
+      interval: 5s
+      timeout: 2s
+      retries: 60
+      start_period: 5s
+    restart: "no"
+
+  stage3:
+    <<: *stage-service
+    environment:
+      <<: *stage-env
+      STAGE_INDEX: 3
+    depends_on:
+      metrics:
+        condition: service_healthy
+
+  stage2:
+    <<: *stage-service
+    environment:
+      <<: *stage-env
+      STAGE_INDEX: 2
+    depends_on:
+      metrics:
+        condition: service_healthy
+      stage3:
+        condition: service_healthy
+
+  stage1:
+    <<: *stage-service
+    environment:
+      <<: *stage-env
+      STAGE_INDEX: 1
+    depends_on:
+      metrics:
+        condition: service_healthy
+      stage2:
+        condition: service_healthy
+
+  stage0:
+    <<: *stage-service
+    environment:
+      <<: *stage-env
+      STAGE_INDEX: 0
+    ports:
+      - "${OPENAI_PORT:-9337}:9337"
+    depends_on:
+      metrics:
+        condition: service_healthy
+      stage1:
+        condition: service_healthy
+
+networks:
+  stage_net:
+    driver: bridge
+  metrics_net:
+    driver: bridge
+
+volumes:
+  metrics_data:

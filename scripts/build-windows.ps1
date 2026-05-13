@@ -918,17 +918,22 @@ Invoke-InRepo {
 
     Write-Host "Building mesh-llm..."
     $env:LLAMA_STAGE_BUILD_DIR = $buildDir
+    $cargoFeatureArgs = @()
+    switch ($backendName) {
+        "cuda" { $cargoFeatureArgs = @("--features", "gpu-bench-cuda") }
+        "rocm" { $cargoFeatureArgs = @("--features", "gpu-bench-hip") }
+    }
     switch ($buildProfile) {
         "dev" {
-            Invoke-NativeCommand "cargo" @("build", "-p", "mesh-llm", "--bin", "mesh-llm")
+            Invoke-NativeCommand "cargo" (@("build", "-p", "mesh-llm", "--bin", "mesh-llm") + $cargoFeatureArgs)
             Write-Host "Mesh binary: target\debug\mesh-llm.exe"
         }
         "debug" {
-            Invoke-NativeCommand "cargo" @("build", "-p", "mesh-llm", "--bin", "mesh-llm")
+            Invoke-NativeCommand "cargo" (@("build", "-p", "mesh-llm", "--bin", "mesh-llm") + $cargoFeatureArgs)
             Write-Host "Mesh binary: target\debug\mesh-llm.exe"
         }
         "release" {
-            Invoke-NativeCommand "cargo" @("build", "--release", "--locked", "-p", "mesh-llm")
+            Invoke-NativeCommand "cargo" (@("build", "--release", "--locked", "-p", "mesh-llm") + $cargoFeatureArgs)
             Write-Host "Mesh binary: target\release\mesh-llm.exe"
         }
         default {

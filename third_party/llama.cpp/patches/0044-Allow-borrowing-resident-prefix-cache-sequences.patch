@@ -1,7 +1,7 @@
-From b236f3da260719b8613febf69a29d7ba9c48b4db Mon Sep 17 00:00:00 2001
+From 20258d6ccbc38b7b610ee19e004d3671c3fc10fd Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Tue, 5 May 2026 22:34:00 +1000
-Subject: [PATCH 44/45] Allow borrowing resident prefix cache sequences
+Subject: [PATCH 44/80] Allow borrowing resident prefix cache sequences
 
 ---
  src/skippy.cpp | 40 +++++++++++++++++++++++++++++++---------

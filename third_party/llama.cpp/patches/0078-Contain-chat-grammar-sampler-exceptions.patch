@@ -1,7 +1,7 @@
-From 0e97eb7cd891a876f7e68a22f9efcc219554c349 Mon Sep 17 00:00:00 2001
+From 4d483a1fa9d950c50e42e25edb2a43c39f1b5660 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Sat, 9 May 2026 13:23:46 +1000
-Subject: [PATCH] Contain chat grammar sampler exceptions
+Subject: [PATCH 78/80] Contain chat grammar sampler exceptions
 
 ---
  src/skippy.cpp | 42 ++++++++++++++++++++++++++++++++++++++----

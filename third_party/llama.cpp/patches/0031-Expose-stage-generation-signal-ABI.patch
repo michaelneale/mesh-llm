@@ -1,7 +1,7 @@
-From 8f5d5ca3be8a7a8fcc448e3c9d0f9a32182b0a88 Mon Sep 17 00:00:00 2001
+From 7bf2543bc0a0f9b25a2237fd8f2fb07c9531241c Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Sat, 2 May 2026 11:53:03 +1000
-Subject: [PATCH 31/45] Expose stage generation signal ABI
+Subject: [PATCH 31/80] Expose stage generation signal ABI
 
 ---
  include/skippy-signals.h |  44 ++++++++++

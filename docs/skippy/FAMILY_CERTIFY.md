@@ -1,7 +1,7 @@
 # Family Certification Runbook
 
-This document explains how to certify a model family for the stage-split
-runtime. It is intentionally a runbook, not the customer-facing support matrix.
+Use this runbook to certify a model family for the stage-split runtime. Keep it
+operator-facing; the customer-facing support matrix lives elsewhere.
 
 Current supported families, recommended artifacts, and shipping settings live in
 `docs/FAMILY_STATUS.md`.

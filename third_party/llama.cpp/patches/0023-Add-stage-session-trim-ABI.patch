@@ -1,7 +1,7 @@
-From 217923dd1c1fa739fbf8aa7d5ebb140b1e42b23e Mon Sep 17 00:00:00 2001
+From f8e30b93cf5bc6c07dc5438a98f3a6d4d9e8a55c Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 15:42:15 +1000
-Subject: [PATCH 23/45] Add stage session trim ABI
+Subject: [PATCH 23/80] Add stage session trim ABI
 
 ---
  include/skippy.h |  8 ++++++-

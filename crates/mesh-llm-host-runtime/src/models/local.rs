@@ -481,29 +481,35 @@ fn scan_hf_cache_models(names: &mut Vec<String>, seen: &mut HashSet<String>, min
         push_model_name(&path, names, seen, min_size_bytes);
     }
 
-    let Some(cache_info) = scan_hf_cache_info(&cache_root) else {
-        return;
-    };
-    for repo in &cache_info.repos {
-        if repo.repo_type != RepoType::Model {
-            continue;
-        }
-        for revision in &repo.revisions {
-            let mut files = revision.files.iter().collect::<Vec<_>>();
-            files.sort_by(|left, right| {
-                let left_relative = cached_relative_file(revision, left);
-                let right_relative = cached_relative_file(revision, right);
-                layered_package_relative_preference(&left_relative)
-                    .cmp(&layered_package_relative_preference(&right_relative))
-                    .then_with(|| left_relative.cmp(&right_relative))
-            });
-            for file in files {
-                if !file.file_name.ends_with(".gguf") {
-                    continue;
-                }
-                let path = cache_scanned_file_path(&cache_root, repo, revision, file);
-                push_model_name(&path, names, seen, min_size_bytes);
+    if std::env::var("MESH_LLM_ALLOW_FULL_HF_CACHE_SCAN").unwrap_or_default() == "1" {
+        let Some(cache_info) = scan_hf_cache_info(&cache_root) else {
+            return;
+        };
+        for repo in &cache_info.repos {
+            if repo.repo_type != RepoType::Model {
+                continue;
             }
+            for revision in &repo.revisions {
+                let mut files = revision.files.iter().collect::<Vec<_>>();
+                files.sort_by(|left, right| {
+                    let left_relative = cached_relative_file(revision, left);
+                    let right_relative = cached_relative_file(revision, right);
+                    layered_package_relative_preference(&left_relative)
+                        .cmp(&layered_package_relative_preference(&right_relative))
+                        .then_with(|| left_relative.cmp(&right_relative))
+                });
+                for file in files {
+                    if !file.file_name.ends_with(".gguf") {
+                        continue;
+                    }
+                    let path = cache_scanned_file_path(&cache_root, repo, revision, file);
+                    push_model_name(&path, names, seen, min_size_bytes);
+                }
+            }
+        }
+    } else {
+        for path in scan_hf_cache_fast(&cache_root) {
+            push_model_name(&path, names, seen, min_size_bytes);
         }
     }
 }
@@ -1539,4 +1545,21 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&temp);
     }
+}
+
+pub(crate) fn scan_hf_cache_fast(cache_root: &Path) -> Vec<PathBuf> {
+    let mut gguf_paths = Vec::new();
+    let Ok(entries) = std::fs::read_dir(cache_root) else {
+        return gguf_paths;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let snapshots = path.join("snapshots");
+            if snapshots.exists() {
+                collect_gguf_paths_recursive(&snapshots, &mut gguf_paths);
+            }
+        }
+    }
+    gguf_paths
 }

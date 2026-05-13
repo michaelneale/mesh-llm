@@ -462,7 +462,7 @@ Suggested flags:
 ```bash
 mesh-llm --owner-key ~/.mesh-llm/owner-keystore.json
 mesh-llm --owner-required
-mesh-llm --owner-label studio-mac
+mesh-llm --node-label studio-mac
 mesh-llm --trust-owner <owner_id>
 mesh-llm --trust-policy off|prefer-owned|require-owned|allowlist
 ```
@@ -473,7 +473,7 @@ Behavior:
   - load the existing owner keystore and attach ownership to this node
 - `--owner-required`
   - fail startup if the owner keystore cannot be loaded or cannot sign
-- `--owner-label`
+- `--node-label`
   - human-friendly label embedded in the attestation and shown in the UI
 - `--trust-owner`
   - add one or more trusted owner IDs for allowlist policy
@@ -521,9 +521,9 @@ Single owner, two trusted nodes:
 ```bash
 mesh-llm auth init
 
-mesh-llm --model Qwen3-14B --owner-key ~/.mesh-llm/owner-keystore.json --owner-label studio
+mesh-llm --model Qwen3-14B --owner-key ~/.mesh-llm/owner-keystore.json --node-label studio
 
-mesh-llm --join <TOKEN> --owner-key ~/.mesh-llm/owner-keystore.json --owner-label mini
+mesh-llm --join <TOKEN> --owner-key ~/.mesh-llm/owner-keystore.json --node-label mini
 ```
 
 Strict private mesh:

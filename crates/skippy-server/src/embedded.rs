@@ -11,8 +11,8 @@ use tokio::{sync::oneshot, task::JoinHandle};
 use crate::{
     binary_transport::{serve_binary_stage_with_shutdown, BinaryStageOptions},
     config::validate_config,
+    frontend::{serve_embedded_openai_with_shutdown, EmbeddedOpenAiArgs},
     http::{serve_stage_http_with_shutdown, StageHttpOptions},
-    openai::{serve_embedded_openai_with_shutdown, EmbeddedOpenAiArgs},
     runtime_state::{load_runtime, RuntimeSessionStats, RuntimeState},
     telemetry::{lifecycle_attrs, now_unix_nanos, Telemetry, TelemetryLevel, TelemetryStats},
 };

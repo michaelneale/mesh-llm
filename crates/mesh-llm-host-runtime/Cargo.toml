@@ -3,13 +3,18 @@ name = "mesh-llm-host-runtime"
 version = "0.65.1"
 edition = "2021"
 
+[features]
+gpu-bench-cuda = ["mesh-llm-system/gpu-bench-cuda"]
+gpu-bench-hip = ["mesh-llm-system/gpu-bench-hip"]
+gpu-bench-intel = ["mesh-llm-system/gpu-bench-intel"]
+
 [dependencies]
 ansi-to-tui = "8"
 mesh-llm-plugin = { path = "../mesh-llm-plugin" }
 mesh-llm-identity = { path = "../mesh-llm-identity" }
 mesh-llm-protocol = { path = "../mesh-llm-protocol" }
 mesh-llm-routing = { path = "../mesh-llm-routing" }
-mesh-llm-system = { path = "../mesh-llm-system" }
+mesh-llm-system = { path = "../mesh-llm-system", features = ["skippy-devices"] }
 mesh-llm-types = { path = "../mesh-llm-types" }
 mesh-llm-ui = { path = "../mesh-llm-ui" }
 mesh-client = { package = "mesh-llm-client", path = "../mesh-client", features = ["host-io"] }

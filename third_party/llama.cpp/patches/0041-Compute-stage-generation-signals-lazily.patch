@@ -1,7 +1,7 @@
-From e97983ff2478ba0e2d47c6a531d856517789b9e8 Mon Sep 17 00:00:00 2001
+From 395ef307172d9cc3f1f0f7ca10c7ef0dd2d4f854 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Tue, 5 May 2026 19:35:00 +1000
-Subject: [PATCH 41/45] Compute stage generation signals lazily
+Subject: [PATCH 41/80] Compute stage generation signals lazily
 
 ---
  src/skippy.cpp | 6 +++---

@@ -5,16 +5,21 @@ pub fn binary_repl(args: BinaryReplArgs) -> Result<()> {
         suppress_native_logs();
     }
     let wire_dtype = parse_wire_dtype(&args.activation_wire_dtype)?;
-    let tokenizer_path = args
+    let requested_tokenizer_path = args
         .tokenizer_model_path
         .as_deref()
         .unwrap_or(args.model_path.as_path());
+    let materialized_tokenizer =
+        materialize_tokenizer_package_if_needed(&args, requested_tokenizer_path)?;
+    let tokenizer_path = materialized_tokenizer
+        .as_deref()
+        .unwrap_or(requested_tokenizer_path);
     let tokenizer = StageModel::open(
         tokenizer_path,
         &RuntimeConfig {
             stage_index: 0,
-            layer_start: args.tokenizer_layer_start,
-            layer_end: args.tokenizer_layer_end,
+            layer_start: tokenizer_layer_start(&args, materialized_tokenizer.is_some()),
+            layer_end: tokenizer_layer_end(&args, materialized_tokenizer.is_some()),
             ctx_size: args.ctx_size,
             lane_count: 1,
             n_batch: None,
@@ -26,7 +31,7 @@ pub fn binary_repl(args: BinaryReplArgs) -> Result<()> {
             cache_type_k: GGML_TYPE_F16,
             cache_type_v: GGML_TYPE_F16,
             flash_attn_type: skippy_runtime::FlashAttentionType::Auto,
-            load_mode: args.tokenizer_load_mode.into(),
+            load_mode: tokenizer_load_mode(&args, materialized_tokenizer.is_some()),
             projector_path: None,
             include_embeddings: true,
             include_output: false,
@@ -35,9 +40,9 @@ pub fn binary_repl(args: BinaryReplArgs) -> Result<()> {
     )
     .with_context(|| format!("open tokenizer model {}", tokenizer_path.display()))?;
     eprintln!(
-        "tokenizer model: {} load_mode={:?} n_gpu_layers={}",
+        "tokenizer model: {} load_mode={} n_gpu_layers={}",
         tokenizer_path.display(),
-        args.tokenizer_load_mode,
+        tokenizer_load_mode_label(&args, materialized_tokenizer.is_some()),
         args.tokenizer_n_gpu_layers
     );
     let thinking_override = prompt_thinking_override(&args)?;
@@ -47,6 +52,7 @@ pub fn binary_repl(args: BinaryReplArgs) -> Result<()> {
         .is_some_and(|s| s.starts_with("hf://"));
     let chat_template_model = if !args.raw_prompt
         && !hf_repl
+        && materialized_tokenizer.is_none()
         && args
             .tokenizer_model_path
             .as_deref()
@@ -300,4 +306,66 @@ pub fn binary_repl(args: BinaryReplArgs) -> Result<()> {
     )?;
 
     Ok(())
+}
+
+fn materialize_tokenizer_package_if_needed(
+    args: &BinaryReplArgs,
+    tokenizer_path: &Path,
+) -> Result<Option<PathBuf>> {
+    if args.tokenizer_load_mode != ReplLoadMode::LayerPackage
+        || !tokenizer_path.join("model-package.json").is_file()
+    {
+        return Ok(None);
+    }
+
+    let package_ref = tokenizer_path.to_string_lossy();
+    let package = inspect_layer_package(&package_ref)
+        .with_context(|| format!("inspect tokenizer package {}", tokenizer_path.display()))?;
+    eprintln!(
+        "materializing tokenizer model from package: {} layers=0..1",
+        tokenizer_path.display()
+    );
+    let tokenizer_gguf = materialize_layer_package(&PackageStageRequest {
+        model_id: package.model_id,
+        topology_id: "binary-repl-tokenizer".to_string(),
+        package_ref: package_ref.into_owned(),
+        stage_id: "tokenizer".to_string(),
+        layer_start: 0,
+        layer_end: 1,
+        include_embeddings: true,
+        include_output: true,
+    })?;
+    Ok(Some(tokenizer_gguf))
+}
+
+fn tokenizer_load_mode(args: &BinaryReplArgs, materialized_package: bool) -> RuntimeLoadMode {
+    if materialized_package {
+        RuntimeLoadMode::ArtifactSlice
+    } else {
+        args.tokenizer_load_mode.into()
+    }
+}
+
+fn tokenizer_load_mode_label(args: &BinaryReplArgs, materialized_package: bool) -> String {
+    if materialized_package {
+        "artifact-slice(materialized layer package)".to_string()
+    } else {
+        format!("{:?}", args.tokenizer_load_mode)
+    }
+}
+
+fn tokenizer_layer_start(args: &BinaryReplArgs, materialized_package: bool) -> u32 {
+    if materialized_package {
+        0
+    } else {
+        args.tokenizer_layer_start
+    }
+}
+
+fn tokenizer_layer_end(args: &BinaryReplArgs, materialized_package: bool) -> u32 {
+    if materialized_package {
+        1
+    } else {
+        args.tokenizer_layer_end
+    }
 }

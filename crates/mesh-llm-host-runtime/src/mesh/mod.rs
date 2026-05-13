@@ -276,7 +276,7 @@ fn preflight_pushed_config_for_current_node_with_gpus(
     }
 
     for model in &config.models {
-        let gpu = crate::system::hardware::resolve_pinned_gpu(model.gpu_id.as_deref(), gpus)
+        let gpu = crate::system::hardware::resolve_pinned_gpu_strict(model.gpu_id.as_deref(), gpus)
             .map_err(anyhow::Error::new)
             .with_context(|| {
                 format!(

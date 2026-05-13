@@ -1,7 +1,7 @@
-From 47ba95c8730a0ebe65df0c6a7f797db56804b2bd Mon Sep 17 00:00:00 2001
+From da8c1e7d385e781c280199c07954ee06c827a706 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 13:47:51 +1000
-Subject: [PATCH 20/45] Add staged batched verification frame ABI
+Subject: [PATCH 20/80] Add staged batched verification frame ABI
 
 ---
  include/skippy.h |  18 ++++-

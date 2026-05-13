@@ -6,6 +6,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LLAMA_WORKDIR="${LLAMA_WORKDIR:-$ROOT/.deps/llama.cpp}"
 LLAMA_BUILD_ROOT="${MESH_LLM_LLAMA_BUILD_ROOT:-$ROOT/.deps/llama-build}"
 LLAMA_BACKEND="${LLAMA_STAGE_BACKEND:-${SKIPPY_LLAMA_BACKEND:-${LLAMA_BACKEND:-cpu}}}"
+PRINT_BUILD_DIR=0
+
+if [[ "${1:-}" == "--print-build-dir" ]]; then
+  PRINT_BUILD_DIR=1
+  shift
+fi
 
 case "$LLAMA_BACKEND" in
   cpu|cuda|rocm|hip|vulkan|metal) ;;
@@ -74,9 +80,14 @@ if [[ -z "${LLAMA_BUILD_DIR:-}" ]]; then
   fi
 fi
 
+if [[ "$PRINT_BUILD_DIR" == "1" ]]; then
+  printf '%s\n' "$LLAMA_BUILD_DIR"
+  exit 0
+fi
+
 if [[ ! -d "$LLAMA_WORKDIR/.git" ]]; then
   echo "llama checkout not found: $LLAMA_WORKDIR" >&2
-    echo "run: just llama-prepare" >&2
+  echo "run: just llama-prepare" >&2
   exit 1
 fi
 

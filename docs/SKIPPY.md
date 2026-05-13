@@ -1,8 +1,7 @@
 # Skippy Integration Plan
 
-This document captures the migration plan for fully replacing mesh-llm's
-current `llama-server` + `rpc-server` serving path with the skippy staged
-runtime.
+Track the migration plan here for fully replacing mesh-llm's current
+`llama-server` + `rpc-server` serving path with the skippy staged runtime.
 
 The goal is to make skippy the only model-serving runtime inside mesh-llm.
 Mesh-llm remains responsible for the public product surface: mesh membership,
@@ -594,28 +593,26 @@ Current branch status:
 - `.agents/skills/metrics-server` documents the run/debug workflow for agents;
 - raw OTLP retention remains an explicit debug mode via
   `--debug-retain-raw-otlp`.
-- `docs/SKIPPY_RUNTIME_README.md` preserves the standalone skippy README as
-  background context, with a mesh-specific note that standalone `kv-server` and
-  `ngram-pool` remain outside this replacement scope.
+- Mesh-specific Skippy user workflows are documented in
+  `docs/SKIPPY_SPLITS.md`.
 
-## PR Readiness Notes
+## Runtime Integration Notes
 
-This branch has moved from planning into an integration branch for replacing
-mesh's old llama-server/rpc-server serving path with the embedded skippy
-runtime. It imports the skippy runtime/protocol/topology crates, introduces
-`openai-frontend`, adds the metrics workflow, and routes mesh serving through
-the embedded runtime.
+Skippy mesh serving uses the skippy runtime/protocol/topology crates,
+`openai-frontend`, the metrics workflow, and the embedded runtime route.
 
-Mergeability notes:
+Current serving path:
 
-- `origin/main` has been merged into this branch during PR preparation.
-- Conflict resolution preserved the skippy-owned workspace crates and the
-  `openai-frontend` request/response adapter shims over the older mesh-local
-  OpenAI compatibility code.
-- Main's shell/runtime updates were retained where they do not conflict with
-  the skippy backend selector and runtime lifecycle.
+- direct GGUFs route through the embedded skippy runtime as single-stage fake
+  packages;
+- stage splits route through topology planning, downstream `LoadStage`
+  readiness, and stage-0 route publication;
+- `mesh_hook` routes and `inference::virtual_llm` are the Rust-owned hook policy
+  surface used by the embedded runtime;
+- no standalone `kv-server`, `ngram-pool`, or `ngram-pool-server` crates are
+  present in the mesh serving path.
 
-Local burn-in checklist for this branch:
+Local burn-in checklist:
 
 - `cargo test -p skippy-server --lib`
 - `cargo test -p skippy-protocol --lib`
@@ -626,25 +623,10 @@ Local burn-in checklist for this branch:
 - `cargo test -p mesh-llm --lib`
 - metrics-server fixture ingest/finalize/report export
 
-Legacy reachability audit:
-
-- the `--serving-backend` selector has been removed;
-- legacy `rpc-server` startup and direct RPC tunnel/rewrite paths have been
-  removed;
-- direct GGUFs route through the embedded skippy runtime as single-stage fake
-  packages;
-- stage splits route through topology planning, downstream `LoadStage`
-  readiness, and stage-0 route publication;
-- `mesh_hook` routes and `inference::virtual_llm` remain as the Rust-owned hook
-  policy surface used by the embedded runtime.
-- No standalone `kv-server`, `ngram-pool`, or `ngram-pool-server` crates are
-  present in mesh. Mentions in `SKIPPY_RUNTIME_README.md` are imported
-  standalone-skippy background, not planned mesh runtime components.
-
 ## Stage Failure Recovery
 
 If a stage fails during an active topology, mesh should replan the topology.
-The failed topology/run is no longer considered routable.
+The failed topology/run is not routable.
 
 Required behavior:
 

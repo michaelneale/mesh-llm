@@ -1,7 +1,7 @@
-From 2665f0e96eecdc094f3d9c72dfbeb069febbf88d Mon Sep 17 00:00:00 2001
+From 50a0a9498353c9ddaf8ec967da2dda13147be237 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Wed, 6 May 2026 20:26:18 +1000
-Subject: [PATCH] Support broad llama family runtime slices
+Subject: [PATCH 65/80] Support broad llama family runtime slices
 
 ---
  src/models/afmoe.cpp        | 18 ++++++++++---
@@ -59,7 +59,7 @@ index 602e3176..3956b2cb 100644
 @@ -113,7 +113,12 @@ llama_model_afmoe::graph::graph(const llama_model & model, const llm_graph_param
      ggml_tensor * cur;
      ggml_tensor * inpL;
-
+ 
 -    inpL = build_inp_embd(model.tok_embd);
 +    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
 +    const bool stage_filtered = stage_filter.enabled;
@@ -67,7 +67,7 @@ index 602e3176..3956b2cb 100644
 +    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
 +
 +    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
-
+ 
      // MuP scaling: embeddings * sqrt(hidden_size)
      // mup_enabled = true, hidden_size = 1024, scale = 32.0
 @@ -123,11 +128,11 @@ llama_model_afmoe::graph::graph(const llama_model & model, const llm_graph_param
@@ -2143,3 +2143,4 @@ index beb30637..f3a92718 100644
              return SKIPPY_STATUS_UNSUPPORTED;
 -- 
 2.50.1 (Apple Git-155)
+

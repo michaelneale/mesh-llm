@@ -510,8 +510,9 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
             generated.iter().take(16).collect::<Vec<_>>()
         );
     }
+    let mut live_rematerialize_failed = false;
     if live_enabled {
-        rematerialize_live_transcript(
+        if let Err(error) = rematerialize_live_transcript(
             stream,
             tokenizer,
             chat_template_model,
@@ -525,7 +526,13 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
             &generated,
             &assistant_raw_text,
             generation_reached_eog,
-        )?;
+        ) {
+            live_rematerialize_failed = true;
+            eprintln!(
+                "warning: live transcript rematerialization failed after generation; \
+                 the next prompt will reset the live session: {error:#}"
+            );
+        }
     }
 
     if !live_enabled {
@@ -546,6 +553,9 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
     };
     let mut resident_tokens_after = 0usize;
     if let Some(live) = live_session {
+        if live_rematerialize_failed {
+            live.stream = None;
+        }
         live.messages = live_messages;
         if let Some(last) = live.messages.last_mut() {
             if last.role == "user" {
@@ -555,7 +565,7 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
         }
         live.resident_tokens =
             live_transcript_tokens(tokenizer, chat_template_model, args, &live.messages)?;
-        live.dirty = !generation_reached_eog;
+        live.dirty = !generation_reached_eog || live_rematerialize_failed;
         resident_tokens_after = live.resident_tokens.len();
     }
     session_reuse.resident_tokens_after = resident_tokens_after;
