@@ -1,6 +1,7 @@
 # mesh-llm Message Protocol
 
-This document describes the wire protocol for control-plane communication between mesh-llm nodes over the `meshllm.node.v1` protobuf schema on QUIC ALPN `mesh-llm/1`.
+Use this reference for control-plane communication between mesh-llm nodes over
+the `meshllm.node.v1` protobuf schema on QUIC ALPN `mesh-llm/1`.
 
 ## ALPN
 

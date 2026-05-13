@@ -1,6 +1,6 @@
 # Plugins
 
-This document defines the `mesh-llm` plugin architecture.
+Use this architecture reference to build and review `mesh-llm` plugins.
 
 It describes the target architecture, not just the code as it exists today.
 

@@ -1,6 +1,6 @@
 pub const ABI_VERSION_MAJOR: u32 = 0;
 pub const ABI_VERSION_MINOR: u32 = 1;
-pub const ABI_VERSION_PATCH: u32 = 22;
+pub const ABI_VERSION_PATCH: u32 = 23;
 
 use std::ffi::{c_char, c_int, c_void};
 
@@ -56,6 +56,21 @@ pub enum ActivationLayout {
     TokenMajor = 1,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub enum BackendDeviceType {
+    Cpu = 0,
+    Gpu = 1,
+    IGpu = 2,
+    Accel = 3,
+    Meta = 4,
+}
+
+pub const BACKEND_DEVICE_CAP_ASYNC: u64 = 1 << 0;
+pub const BACKEND_DEVICE_CAP_HOST_BUFFER: u64 = 1 << 1;
+pub const BACKEND_DEVICE_CAP_BUFFER_FROM_HOST_PTR: u64 = 1 << 2;
+pub const BACKEND_DEVICE_CAP_EVENTS: u64 = 1 << 3;
+
 #[repr(C)]
 pub struct Error {
     pub status: Status,
@@ -84,6 +99,19 @@ pub struct RuntimeConfig {
     pub include_embeddings: bool,
     pub include_output: bool,
     pub selected_backend_device: *const c_char,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct BackendDevice {
+    pub version: u32,
+    pub name: *const c_char,
+    pub description: *const c_char,
+    pub device_id: *const c_char,
+    pub memory_free: u64,
+    pub memory_total: u64,
+    pub device_type: BackendDeviceType,
+    pub caps: u64,
 }
 
 #[repr(C)]
@@ -266,6 +294,15 @@ extern "C" {
 
     pub fn skippy_status_string(status: Status) -> *const c_char;
     pub fn skippy_error_free(error: *mut Error);
+
+    pub fn skippy_backend_device_count(out_count: *mut usize, out_error: *mut *mut Error)
+        -> Status;
+
+    pub fn skippy_backend_device_at(
+        index: usize,
+        out_device: *mut BackendDevice,
+        out_error: *mut *mut Error,
+    ) -> Status;
 
     pub fn skippy_model_open(
         path: *const c_char,

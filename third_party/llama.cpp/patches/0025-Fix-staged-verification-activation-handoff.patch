@@ -1,7 +1,7 @@
-From daf9481264c3f4cb1bb90fe092df923e9171abcd Mon Sep 17 00:00:00 2001
+From 426fbd309fcf3b6d9b22115cccda7fe1d995e3af Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 21:35:20 +1000
-Subject: [PATCH 25/45] Fix staged verification activation handoff
+Subject: [PATCH 25/80] Fix staged verification activation handoff
 
 ---
  src/skippy.cpp | 2 +-

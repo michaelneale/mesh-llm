@@ -17,7 +17,7 @@ pub(crate) enum Command {
 
 #[derive(Args)]
 pub(crate) struct ServeArgs {
-    #[arg(long, default_value = "metrics.duckdb")]
+    #[arg(long, default_value = "metrics.sqlite")]
     pub(crate) db: PathBuf,
     #[arg(long, default_value = "127.0.0.1:8080")]
     pub(crate) http_addr: SocketAddr,

@@ -188,49 +188,23 @@ To confirm UI-only changes skip the GPU backend jobs, push a commit touching onl
 
 If you add a new Rust crate, build script, or test directory, add its path to the `rust` filter in `.github/workflows/ci.yml` under the `changes` job so it correctly triggers the build matrix.
 
-## Benchmark Binaries
+## GPU benchmark execution
 
-Memory bandwidth benchmark source files live in `crates/mesh-llm/benchmarks/`. These are optional — they are **not** compiled by `just build`. Each target platform requires its own toolchain.
-
-### Building
+GPU bandwidth benchmarks are launched through the `mesh-llm` binary itself rather than standalone benchmark executables. The public command remains:
 
 ```bash
-just benchmark-build-apple    # macOS Apple Silicon — requires swiftc (ships with Xcode)
-just benchmark-build-cuda     # NVIDIA GPU — requires CUDA toolkit (nvcc)
-just benchmark-build-hip      # AMD GPU — requires ROCm (hipcc)
-just benchmark-build-intel    # Intel Arc GPU — requires Intel oneAPI (icpx) — UNVALIDATED
+mesh-llm gpus benchmark
 ```
 
-On Windows, use the dedicated recipes:
+Internally, mesh-llm runs a hidden `benchmark` subcommand in a narrow subprocess boundary so native backend hangs and stdout capture stay isolated from the main process.
 
-```powershell
-just benchmark-build-cuda-windows
-just benchmark-build-hip-windows
-just benchmark-build-intel-windows
-```
+Standard builds support benchmark execution only for the backends wired into the normal build flow:
 
-These produce `.exe` binaries next to `mesh-llm.exe`.
+- macOS Apple Silicon: Metal
+- Linux / Windows NVIDIA: CUDA
+- Linux / Windows AMD: HIP / ROCm
 
-> **AMD note:** The AMD benchmark (`crates/mesh-llm/benchmarks/membench-fingerprint.hip`) has not been tested on real AMD hardware. The recipe is provided for reference only.
-
-> **Intel Arc note:** The Intel Arc benchmark (`crates/mesh-llm/benchmarks/membench-fingerprint-intel.cpp`) has not been tested on real Intel Arc hardware. The recipe is provided for reference only.
-
-### Output location
-
-All recipes output to `target/release/`, the same directory as the `mesh-llm` binary. The `detect_bin_dir()` function in `mesh-llm` probes that directory at runtime, so benchmark binaries are discovered automatically.
-
-### Including in release bundles (Apple Silicon)
-
-The `just bundle` recipe automatically includes `membench-fingerprint` if it has been built:
-
-```bash
-just benchmark-build-apple && just bundle
-```
-
-If the binary is not present, `just bundle` prints a note and continues without it — the bundle is still valid.
-
-CUDA, HIP, and Intel binaries are **not** included in the Unix tarball bundle; they must be compiled on the target platform.
-On Windows release packaging, any `membench-fingerprint*.exe` binaries present in `target/release/` are included automatically in the generated `.zip`.
+Intel GPU benchmark execution is not currently supported in standard `just build` flows, so runtime benchmark selection intentionally skips Intel GPUs.
 
 ## Protocol Backward Compatibility
 

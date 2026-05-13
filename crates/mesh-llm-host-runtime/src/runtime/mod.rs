@@ -24,10 +24,10 @@ use self::local::{
 use self::proxy::{api_proxy, bootstrap_proxy};
 use crate::api;
 use crate::cli::output::{
-    emit_event, sort_dashboard_endpoint_rows, ConsoleSessionMode, DashboardAcceptedRequestBucket,
-    DashboardEndpointRow, DashboardLaunchPlan, DashboardModelLane, DashboardModelRow,
-    DashboardProcessRow, DashboardSnapshot, DashboardSnapshotFuture, DashboardSnapshotProvider,
-    OutputEvent, RuntimeStatus,
+    emit_event, flush_output, sort_dashboard_endpoint_rows, ConsoleSessionMode,
+    DashboardAcceptedRequestBucket, DashboardEndpointRow, DashboardLaunchPlan, DashboardModelLane,
+    DashboardModelRow, DashboardProcessRow, DashboardSnapshot, DashboardSnapshotFuture,
+    DashboardSnapshotProvider, OutputEvent, RuntimeStatus,
 };
 use crate::cli::{Cli, Command, RuntimeSurface};
 use crate::crypto::{
@@ -1799,13 +1799,37 @@ fn bridge_publication_state(
     });
 }
 
+struct SkippyNativeLogForwardingGuard;
+
+impl Drop for SkippyNativeLogForwardingGuard {
+    fn drop(&mut self) {
+        skippy_runtime::set_filtered_native_logs_enabled(false);
+        skippy_runtime::unregister_filtered_native_logs();
+    }
+}
+
+fn bridge_skippy_native_logs(
+    mut native_log_rx: tokio::sync::mpsc::UnboundedReceiver<skippy_runtime::NativeLogEvent>,
+) {
+    tokio::spawn(async move {
+        while let Some(event) = native_log_rx.recv().await {
+            let _ = emit_event(OutputEvent::LlamaNativeLog {
+                message: event.message,
+                category: event.category,
+                params: event.params,
+            });
+        }
+    });
+}
+
 fn write_stderr_newline() {
     let _ = std::io::stderr().write_all(b"\n");
 }
 
-fn emit_shutdown(reason: Option<String>) {
+async fn emit_shutdown(reason: Option<String>) {
     crate::system::backend::mark_runtime_shutting_down();
     let _ = emit_event(OutputEvent::Shutdown { reason });
+    let _ = flush_output().await;
 }
 
 #[derive(Clone)]
@@ -2041,7 +2065,7 @@ fn owner_runtime_config(cli: &Cli) -> Result<mesh::OwnerRuntimeConfig> {
 
 /// Wait for either SIGINT (ctrl-c) or SIGTERM. Without this, an unhandled
 /// SIGTERM aborts the process before runtime cleanup can run.
-async fn wait_shutdown_signal() {
+async fn wait_shutdown_signal() -> &'static str {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
@@ -2049,17 +2073,18 @@ async fn wait_shutdown_signal() {
             Ok(s) => s,
             Err(_) => {
                 let _ = tokio::signal::ctrl_c().await;
-                return;
+                return "SIGINT";
             }
         };
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {}
-            _ = term.recv() => {}
+            _ = tokio::signal::ctrl_c() => "SIGINT",
+            _ = term.recv() => "SIGTERM",
         }
     }
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
+        "CTRL-C"
     }
 }
 
@@ -2641,9 +2666,6 @@ fn preflight_config_owned_startup_models(
         .and_then(|probe| probe.flavor)
         .or(binary_flavor);
     let mut survey = hardware::query(pinned_startup_preflight_metrics());
-    if binary_flavor == Some(backend::BinaryFlavor::Vulkan) {
-        hardware::augment_gpu_facts_with_vulkan_devices(&mut survey.gpus);
-    }
     apply_backend_devices_for_flavor(&mut survey.gpus, binary_flavor);
     preflight_config_owned_startup_models_with_gpus(
         config,
@@ -2697,7 +2719,7 @@ fn preflight_config_owned_startup_models_with_gpus(
             continue;
         }
 
-        let resolved_gpu = hardware::resolve_pinned_gpu(plan.gpu_id.as_deref(), gpus)
+        let resolved_gpu = hardware::resolve_pinned_gpu_strict(plan.gpu_id.as_deref(), gpus)
             .map_err(anyhow::Error::new)
             .with_context(|| {
                 format!(
@@ -4091,8 +4113,30 @@ async fn run_auto(
     // Must be the console/management port (default 3131), not the proxy port
     // (default 9337), so callbacks do not loop through the OpenAI surface.
     std::env::set_var("MESH_API_PORT", cli.console.to_string());
+
+    let verbose_native_debug = cli.debug
+        && std::env::var("MESH_LLM_DEBUG_NATIVE_VERBOSE")
+            .ok()
+            .as_deref()
+            == Some("1");
+    if verbose_native_debug {
+        skippy_runtime::enable_verbose_native_logs();
+    } else {
+        skippy_runtime::disable_verbose_native_logs();
+    }
+
+    let native_log_rx = skippy_runtime::register_filtered_native_logs();
+    skippy_runtime::set_filtered_native_logs_enabled(true);
+    let _native_log_forwarding = SkippyNativeLogForwardingGuard;
+    bridge_skippy_native_logs(native_log_rx);
+
     skippy::configure_materialized_stage_cache();
     configure_skippy_native_logging(runtime.as_ref().map(|runtime| runtime.dir()));
+    // Embedded native logs are process-global and are redirected to the runtime log
+    // file before model load. We also forward the filtered, aggregated model-loading
+    // summaries through OutputEvent/JSONL so structured startup progress remains visible
+    // without streaming every raw native line through the dashboard.
+
     let console_port = Some(cli.console);
     let is_client = cli.client;
 
@@ -4417,7 +4461,6 @@ async fn run_auto(
             detail: Some("No --model specified, checking local models against mesh...".to_string()),
         });
 
-        // Give gossip a moment to propagate
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
         let assignment = pick_model_assignment(&node, &local_models).await;
@@ -4443,16 +4486,18 @@ async fn run_auto(
             let model_path = models::find_model_path(&model_name);
             if model_path.exists() {
                 model_path
-            } else if let Some(cat) =
-                find_remote_catalog_model_exact_blocking(model_name.clone()).await
-            {
+            } else if let Some(cat) = {
+                let cat = find_remote_catalog_model_exact_blocking(model_name.clone()).await;
+                cat
+            } {
                 // Model not on disk but in the remote catalog — download it.
                 let _ = emit_event(OutputEvent::Info {
                     message: format!("Downloading {model_name} for mesh..."),
                     context: None,
                 });
                 let model_ref = models::remote_catalog_model_ref(&cat);
-                resolve_model(&PathBuf::from(model_ref)).await?
+                let resolved = resolve_model(&PathBuf::from(model_ref)).await?;
+                resolved
             } else {
                 model_path
             }
@@ -5051,9 +5096,11 @@ async fn run_auto(
                     .collect();
                 refresh_dashboard_context_usage_batch(&dashboard_context_usage, updates).await;
             }
-            _ = wait_shutdown_signal() => {
+            signal = wait_shutdown_signal() => {
+                let _ = emit_event(OutputEvent::ShutdownRequested { signal });
                 startup_ready_reporter.mark_shutdown_requested();
-                emit_shutdown(None);
+                let _ = flush_output().await;
+                emit_shutdown(None).await;
                 break;
             }
             Some(cmd) = control_rx.recv() => {
@@ -5349,8 +5396,10 @@ async fn run_auto(
                         let _ = resp.send(result);
                     }
                     api::RuntimeControlRequest::Shutdown => {
+                        let _ = emit_event(OutputEvent::ShutdownRequested { signal: "api" });
                         startup_ready_reporter.mark_shutdown_requested();
-                        emit_shutdown(None);
+                        let _ = flush_output().await;
+                        emit_shutdown(None).await;
                         break;
                     }
                 }
@@ -5477,9 +5526,15 @@ async fn run_auto(
             );
         }
         remove_dashboard_context_usage(&dashboard_context_usage, &name, &handle).await;
+        let _ = emit_event(OutputEvent::ModelUnloading {
+            model: name.clone(),
+        });
         let stopped_payload =
             runtime_process_payload_with_status(&name, Some(&instance_id), &handle, "stopped");
         handle.shutdown().await;
+        let _ = emit_event(OutputEvent::ModelUnloaded {
+            model: name.clone(),
+        });
         upsert_dashboard_process(&dashboard_processes, stopped_payload.clone()).await;
         if let Some(ref cs) = console_state {
             cs.upsert_local_process(stopped_payload).await;
@@ -5489,6 +5544,9 @@ async fn run_auto(
     // Signal each local model loop to stop, then give it a short window to
     // shut down the embedded runtime cleanly.
     for (_, controller) in managed_models.drain() {
+        let _ = emit_event(OutputEvent::ModelUnloading {
+            model: controller.model_name.clone(),
+        });
         let _ = controller.stop_tx.send(true);
         let mut task = controller.task;
         match tokio::time::timeout(std::time::Duration::from_secs(3), &mut task).await {
@@ -5501,6 +5559,9 @@ async fn run_auto(
                 let _ = task.await;
             }
         }
+        let _ = emit_event(OutputEvent::ModelUnloaded {
+            model: controller.model_name,
+        });
     }
 
     node.set_serving_models(Vec::new()).await;
@@ -5784,7 +5845,9 @@ async fn run_passive(
             }
             Some(cmd) = control_rx.recv() => {
                 if let api::RuntimeControlRequest::Shutdown = cmd {
-                    emit_shutdown(None);
+                    let _ = emit_event(OutputEvent::ShutdownRequested { signal: "api" });
+                    let _ = flush_output().await;
+                    emit_shutdown(None).await;
                     plugin_manager.shutdown().await;
                     if let Some(handle) = console_server_handle.take() {
                         handle.abort();
@@ -5794,8 +5857,10 @@ async fn run_passive(
                     return Ok(None);
                 }
             }
-            _ = wait_shutdown_signal() => {
-                emit_shutdown(None);
+            signal = wait_shutdown_signal() => {
+                let _ = emit_event(OutputEvent::ShutdownRequested { signal });
+                let _ = flush_output().await;
+                emit_shutdown(None).await;
                 plugin_manager.shutdown().await;
                 if let Some(handle) = console_server_handle.take() {
                     handle.abort();

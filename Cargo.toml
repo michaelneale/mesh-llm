@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/mesh-llm",
+    "crates/mesh-llm-gpu-bench",
     "crates/mesh-llm-host-runtime",
     "crates/mesh-llm-identity",
     "crates/mesh-llm-protocol",

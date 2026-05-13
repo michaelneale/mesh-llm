@@ -1,7 +1,7 @@
-From 2574346120ff3fbcd9ca074f9ebc476405dd0eff Mon Sep 17 00:00:00 2001
+From 80c446964d2d3773eea39f146a25a34e88a45236 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Tue, 5 May 2026 22:20:00 +1000
-Subject: [PATCH 43/45] Default stage threads like llama-server
+Subject: [PATCH 43/80] Default stage threads like llama-server
 
 ---
  include/skippy.h |  4 +++-

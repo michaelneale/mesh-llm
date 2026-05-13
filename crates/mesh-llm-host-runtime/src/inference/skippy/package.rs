@@ -57,14 +57,18 @@ pub(crate) fn synthetic_direct_gguf_package(
     model_path: &Path,
 ) -> Result<SkippyPackageIdentity> {
     let source_files = direct_gguf_source_files(model_path)?;
+
     let source_model_path = source_files
         .first()
         .map(|file| file.path.clone())
         .context("direct GGUF source file list is empty")?;
+
     let compact = crate::models::gguf::scan_gguf_compact_meta(&source_model_path)
         .with_context(|| format!("read GGUF metadata {}", source_model_path.display()))?;
+
     let tensor_count = gguf_tensor_count(&source_model_path)
         .with_context(|| format!("read GGUF tensor count {}", source_model_path.display()))?;
+
     anyhow::ensure!(
         compact.layer_count > 0,
         "GGUF metadata for {} does not contain a positive layer count",
@@ -76,8 +80,11 @@ pub(crate) fn synthetic_direct_gguf_package(
         source_model_path.display()
     );
     let source_model_bytes = source_files.iter().map(|file| file.bytes).sum();
+
     let source_model_sha256 = aggregate_source_sha256(&source_files);
+
     let package_ref = format!("gguf://{}", source_model_path.display());
+
     let manifest_sha256 = synthetic_manifest_sha256(SyntheticManifestInput {
         model_id,
         package_ref: &package_ref,
@@ -156,7 +163,8 @@ fn direct_gguf_source_files(model_path: &Path) -> Result<Vec<SkippyPackageSource
         anyhow::bail!("GGUF path has no UTF-8 filename: {}", canonical.display());
     };
     let Some(shard) = model_ref::split_gguf_shard_info(file_name) else {
-        return Ok(vec![source_file(&canonical)?]);
+        let file = source_file(&canonical)?;
+        return Ok(vec![file]);
     };
     anyhow::ensure!(
         shard.part == "00001",
@@ -200,10 +208,11 @@ fn source_file(path: &Path) -> Result<SkippyPackageSourceFile> {
         "GGUF source is not a file: {}",
         canonical.display()
     );
+    let sha256 = file_sha256(&canonical)?;
     Ok(SkippyPackageSourceFile {
         path: canonical.clone(),
         bytes: metadata.len(),
-        sha256: file_sha256(&canonical)?,
+        sha256,
     })
 }
 

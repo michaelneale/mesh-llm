@@ -1,7 +1,7 @@
-From b13fb45ff0b0b74b0ac932aff7b859364b614422 Mon Sep 17 00:00:00 2001
+From afdb2ceee14a9745d2b796c0deb9c7b4fb75e5ab Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Thu, 7 May 2026 20:29:25 +1000
-Subject: [PATCH] Support Gemma3n runtime slices
+Subject: [PATCH 76/80] Support Gemma3n runtime slices
 
 ---
  include/skippy.h           |   3 +-

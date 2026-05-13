@@ -542,6 +542,7 @@ pub enum TuiControlFlow {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OutputLevel {
+    Debug,
     Info,
     Warn,
     Error,
@@ -550,6 +551,7 @@ pub enum OutputLevel {
 impl OutputLevel {
     fn as_str(&self) -> &'static str {
         match self {
+            OutputLevel::Debug => "debug",
             OutputLevel::Info => "info",
             OutputLevel::Warn => "warn",
             OutputLevel::Error => "error",
@@ -658,6 +660,12 @@ pub enum OutputEvent {
         model: String,
         bytes: Option<u64>,
     },
+    ModelUnloading {
+        model: String,
+    },
+    ModelUnloaded {
+        model: String,
+    },
     HostElected {
         model: String,
         host: String,
@@ -748,8 +756,16 @@ pub enum OutputEvent {
         message: String,
         context: Option<String>,
     },
+    ShutdownRequested {
+        signal: &'static str,
+    },
     Shutdown {
         reason: Option<String>,
+    },
+    LlamaNativeLog {
+        message: String,
+        category: &'static str,
+        params: Vec<(String, Value)>,
     },
 }
 
@@ -772,6 +788,8 @@ impl OutputEvent {
             OutputEvent::ModelQueued { .. } => "model_queued",
             OutputEvent::ModelLoading { .. } => "model_loading",
             OutputEvent::ModelLoaded { .. } => "model_loaded",
+            OutputEvent::ModelUnloading { .. } => "model_unloading",
+            OutputEvent::ModelUnloaded { .. } => "model_unloaded",
             OutputEvent::HostElected { .. } => "host_elected",
             OutputEvent::RpcServerStarting { .. } => "rpc_server_starting",
             OutputEvent::RpcReady { .. } => "rpc_ready",
@@ -790,7 +808,9 @@ impl OutputEvent {
             OutputEvent::RequestRouted { .. } => "request_routed",
             OutputEvent::Warning { .. } => "warning",
             OutputEvent::Error { .. } => "error",
+            OutputEvent::ShutdownRequested { signal } => signal,
             OutputEvent::Shutdown { .. } => "shutdown",
+            OutputEvent::LlamaNativeLog { category, .. } => category,
         }
     }
 
@@ -799,6 +819,7 @@ impl OutputEvent {
             OutputEvent::RpcStartupFailed { .. } | OutputEvent::LlamaStartupFailed { .. } => {
                 OutputLevel::Error
             }
+            OutputEvent::LlamaNativeLog { .. } => OutputLevel::Debug,
             OutputEvent::Warning { .. } => OutputLevel::Warn,
             OutputEvent::Error { .. } => OutputLevel::Error,
             _ => OutputLevel::Info,
@@ -864,6 +885,8 @@ impl OutputEvent {
             OutputEvent::ModelQueued { model } => format!("queued model {model}"),
             OutputEvent::ModelLoading { model, .. } => format!("loading model {model}"),
             OutputEvent::ModelLoaded { model, .. } => format!("loaded model {model}"),
+            OutputEvent::ModelUnloading { model } => format!("unloading model {model}"),
+            OutputEvent::ModelUnloaded { model } => format!("unloaded model {model}"),
             OutputEvent::HostElected {
                 model, host, role, ..
             } => match role {
@@ -979,9 +1002,20 @@ impl OutputEvent {
             }
             OutputEvent::Warning { message, .. } => message.clone(),
             OutputEvent::Error { message, .. } => message.clone(),
+            OutputEvent::ShutdownRequested { signal } => format!("shutdown requested ({signal})"),
             OutputEvent::Shutdown { reason } => reason
                 .clone()
                 .unwrap_or_else(|| "mesh-llm shutting down".to_string()),
+            OutputEvent::LlamaNativeLog { message, .. } => message.clone(),
+        }
+    }
+
+    fn pretty_text(&self) -> String {
+        match self {
+            OutputEvent::LlamaNativeLog {
+                message, params, ..
+            } => format_message_with_params(message, params),
+            _ => self.summary_line(),
         }
     }
 
@@ -1093,6 +1127,8 @@ impl OutputEvent {
                 }
                 line
             }
+            OutputEvent::ModelUnloading { model } => format!("📤 Unloading model: {model}"),
+            OutputEvent::ModelUnloaded { model } => format!("✅ Model unloaded: {model}"),
             OutputEvent::RpcServerStarting { port, device, .. } => {
                 format!("🧵 rpc-server starting: port={port} device={device}")
             }
@@ -1159,6 +1195,7 @@ impl OutputEvent {
                 Some(context) => format!("{context}: {}", strip_leading_severity_icon(message)),
                 None => strip_leading_severity_icon(message).to_string(),
             },
+            OutputEvent::LlamaNativeLog { message, .. } => message.clone(),
             _ => self.message().to_string(),
         }
     }
@@ -1222,6 +1259,8 @@ impl OutputEvent {
                 "model": model,
                 "bytes": bytes,
             }),
+            OutputEvent::ModelUnloading { model } => json!({ "model": model }),
+            OutputEvent::ModelUnloaded { model } => json!({ "model": model }),
             OutputEvent::HostElected {
                 model,
                 host,
@@ -1344,13 +1383,45 @@ impl OutputEvent {
                     "error_type": classify_error_type(message, context.as_deref()),
                 })
             }
+            OutputEvent::ShutdownRequested { signal } => json!({ "signal": signal }),
             OutputEvent::Shutdown { reason } => json!({ "reason": reason }),
+            OutputEvent::LlamaNativeLog { params, .. } => {
+                let mut map = Map::new();
+                for (key, value) in params {
+                    map.insert(key.clone(), value.clone());
+                }
+                Value::Object(map)
+            }
         };
 
         match value {
             Value::Object(map) => map,
             _ => Map::new(),
         }
+    }
+}
+
+fn format_message_with_params(message: &str, params: &[(String, Value)]) -> String {
+    if params.is_empty() {
+        return message.to_string();
+    }
+    let mut rendered = message.to_string();
+    for (key, value) in params {
+        rendered.push_str("\n  ↳ ");
+        rendered.push_str(key);
+        rendered.push('=');
+        rendered.push_str(&format_json_scalar(value));
+    }
+    rendered
+}
+
+fn format_json_scalar(value: &Value) -> String {
+    match value {
+        Value::Null => "null".to_string(),
+        Value::Bool(v) => v.to_string(),
+        Value::Number(v) => v.to_string(),
+        Value::String(v) => v.clone(),
+        _ => value.to_string(),
     }
 }
 
@@ -2590,7 +2661,7 @@ impl DashboardState {
                     .unwrap_or_else(|| message.clone());
                 self.startup_lifecycle.mark_failure(detail);
             }
-            OutputEvent::Shutdown { .. } => {
+            OutputEvent::ShutdownRequested { .. } | OutputEvent::Shutdown { .. } => {
                 self.startup_lifecycle.mark_shutting_down();
             }
             _ => {}
@@ -2637,6 +2708,9 @@ impl DashboardState {
                 self.upsert_model(model, RuntimeStatus::Loading, None, None, None);
                 self.upsert_loading_model_row(model);
                 self.upsert_loading_process_row(model);
+            }
+            OutputEvent::ModelUnloading { model } | OutputEvent::ModelUnloaded { model } => {
+                self.upsert_model(model, RuntimeStatus::Stopped, None, None, None);
             }
             OutputEvent::ModelReady {
                 model,
@@ -2910,7 +2984,7 @@ impl DashboardState {
                     status: status.clone(),
                 });
             }
-            OutputEvent::Shutdown { .. } => {
+            OutputEvent::ShutdownRequested { .. } | OutputEvent::Shutdown { .. } => {
                 self.mark_runtime_shutting_down();
             }
             OutputEvent::Error { .. } => {
@@ -2942,7 +3016,8 @@ impl DashboardState {
             | OutputEvent::DiscoveryJoined { .. }
             | OutputEvent::DiscoveryFailed { .. }
             | OutputEvent::WaitingForPeers { .. }
-            | OutputEvent::RequestRouted { .. } => {}
+            | OutputEvent::RequestRouted { .. }
+            | OutputEvent::LlamaNativeLog { .. } => {}
             OutputEvent::PeerJoined { peer_id, .. } => {
                 self.peer_ids.insert(peer_id.clone());
             }
@@ -3348,7 +3423,7 @@ impl DashboardState {
             .find(|candidate| candidate.model == model)
         {
             if !matches!(existing.status, RuntimeStatus::Ready)
-                || matches!(status, RuntimeStatus::Ready)
+                || matches!(status, RuntimeStatus::Ready | RuntimeStatus::Stopped)
             {
                 existing.status = status;
             }
@@ -7728,6 +7803,11 @@ fn event_severity_badge(event: &MeshEventState) -> (&'static str, Style) {
                 .fg(theme.warning)
                 .add_modifier(Modifier::BOLD),
         )
+    } else if matches!(event.level, OutputLevel::Debug) {
+        (
+            "DBG",
+            Style::default().fg(theme.dim).add_modifier(Modifier::BOLD),
+        )
     } else if summary_lower.contains("ready")
         || summary_lower.contains("elected")
         || summary_lower.contains("joined")
@@ -8044,7 +8124,7 @@ impl InteractiveDashboardFormatter {
             self.dirty = true;
             Ok(None)
         } else {
-            Ok(Some(format!("{}\n", event.summary_line())))
+            Ok(Some(format!("{}\n", event.pretty_text())))
         }
     }
 
@@ -8157,7 +8237,7 @@ pub struct PrettyFormatter;
 
 impl Formatter for PrettyFormatter {
     fn format(&mut self, event: &OutputEvent) -> io::Result<String> {
-        Ok(format!("{}\n", event.summary_line()))
+        Ok(format!("{}\n", event.pretty_text()))
     }
 }
 
@@ -8286,6 +8366,7 @@ pub struct OutputManager {
 enum OutputCommand {
     Event(OutputEvent),
     ActivateReadyPrompt,
+    Flush(tokio::sync::oneshot::Sender<io::Result<()>>),
     EnterTui(tokio::sync::oneshot::Sender<io::Result<()>>),
     ExitTui(tokio::sync::oneshot::Sender<io::Result<()>>),
     TuiEvent {
@@ -8346,6 +8427,14 @@ impl OutputManager {
                                             tracing::warn!("interactive prompt write failed: {err}");
                                         }
                                     }
+                                }
+                                OutputCommand::Flush(response) => {
+                                    let flush_result = if formatter.is_interactive_dashboard() {
+                                        formatter.render_interactive_if_dirty().map(|_| ())
+                                    } else {
+                                        Ok(())
+                                    };
+                                    let _ = response.send(flush_result);
                                 }
                                 OutputCommand::EnterTui(response) => {
                                     let _ = response.send(formatter.enter_tui());
@@ -8435,6 +8524,24 @@ impl OutputManager {
 
     pub fn ready_prompt_active(&self) -> bool {
         self.ready_prompt_active.load(Ordering::Acquire)
+    }
+
+    pub async fn flush(&self) -> io::Result<()> {
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(OutputCommand::Flush(response_tx))
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "output manager worker unavailable",
+                )
+            })?;
+        response_rx.await.map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "output manager worker unavailable",
+            )
+        })?
     }
 
     pub fn mode(&self) -> LogFormat {
@@ -8710,6 +8817,13 @@ fn write_tui_frame_to_writer<W: Write>(writer: &mut W, rendered: &str) -> io::Re
 pub fn emit_event(event: OutputEvent) -> io::Result<()> {
     match GLOBAL_OUTPUT_MANAGER.get() {
         Some(output_manager) => output_manager.emit_event(event),
+        None => Ok(()),
+    }
+}
+
+pub async fn flush_output() -> io::Result<()> {
+    match GLOBAL_OUTPUT_MANAGER.get() {
+        Some(output_manager) => output_manager.flush().await,
         None => Ok(()),
     }
 }
@@ -15583,5 +15697,368 @@ tail line"
         };
         let result = formatter.format(&event).unwrap();
         assert_eq!(result, "test message\n");
+    }
+
+    #[test]
+    fn llama_native_log_event_name_returns_category() {
+        for category in ["backend", "model", "memory", "kv_cache", "tokenizer"] {
+            let event = OutputEvent::LlamaNativeLog {
+                message: format!("{category} init test"),
+                category,
+                params: Vec::new(),
+            };
+            assert_eq!(event.event_name(), category);
+        }
+    }
+
+    #[test]
+    fn llama_native_log_message_preserves_content() {
+        let msg = "VRAM used: 12.4 GB";
+        let event = OutputEvent::LlamaNativeLog {
+            message: msg.to_string(),
+            category: "memory",
+            params: Vec::new(),
+        };
+        assert_eq!(event.message(), msg);
+    }
+
+    #[test]
+    fn llama_native_log_json_fields_serializes_both() {
+        let event = OutputEvent::LlamaNativeLog {
+            message: "KV cache type: f16".to_string(),
+            category: "kv_cache",
+            params: Vec::new(),
+        };
+        let fields = event.json_fields();
+        assert!(fields.get("message").is_none());
+        assert!(fields.get("category").is_none());
+    }
+
+    #[test]
+    fn llama_native_log_level_is_info() {
+        let event = OutputEvent::LlamaNativeLog {
+            message: "backend_init".to_string(),
+            category: "backend",
+            params: Vec::new(),
+        };
+        assert_eq!(event.level(), OutputLevel::Debug);
+    }
+
+    #[test]
+    fn llama_native_log_message_renders_structured_params() {
+        let event = OutputEvent::LlamaNativeLog {
+            message: "Reading model metadata...".to_string(),
+            category: "model",
+            params: vec![
+                (
+                    "architecture".to_string(),
+                    Value::String("qwen35".to_string()),
+                ),
+                ("ctx".to_string(), Value::from(262144_u64)),
+            ],
+        };
+        assert_eq!(event.message(), "Reading model metadata...");
+        assert_eq!(
+            event.pretty_text(),
+            "Reading model metadata...\n  ↳ architecture=qwen35\n  ↳ ctx=262144"
+        );
+        assert_eq!(event.summary_line(), "Reading model metadata...");
+    }
+
+    #[test]
+    fn llama_native_log_json_fields_include_params() {
+        let event = OutputEvent::LlamaNativeLog {
+            message: "Reading tensor groups...".to_string(),
+            category: "model",
+            params: vec![
+                ("f32".to_string(), Value::from(177_u64)),
+                ("q4_K".to_string(), Value::from(74_u64)),
+            ],
+        };
+        let fields = event.json_fields();
+        assert_eq!(fields.get("f32").unwrap().as_u64().unwrap(), 177);
+        assert_eq!(fields.get("q4_K").unwrap().as_u64().unwrap(), 74);
+    }
+
+    #[test]
+    fn json_formatter_keeps_llama_native_log_message_concise() {
+        let event = OutputEvent::LlamaNativeLog {
+            message: "Reading model metadata...".to_string(),
+            category: "model",
+            params: vec![
+                (
+                    "architecture".to_string(),
+                    Value::String("qwen35".to_string()),
+                ),
+                ("ctx".to_string(), Value::from(262144_u64)),
+            ],
+        };
+        let mut formatter = JsonFormatter;
+        let rendered = formatter.format(&event).unwrap();
+        let record: Value = serde_json::from_str(rendered.trim()).unwrap();
+        assert_eq!(
+            record.get("message").and_then(Value::as_str).unwrap(),
+            "Reading model metadata..."
+        );
+        assert_eq!(
+            record.get("architecture").and_then(Value::as_str).unwrap(),
+            "qwen35"
+        );
+        assert_eq!(record.get("ctx").and_then(Value::as_u64).unwrap(), 262144);
+        assert_eq!(
+            record.get("event").and_then(Value::as_str).unwrap(),
+            "model"
+        );
+        assert_eq!(
+            record.get("level").and_then(Value::as_str).unwrap(),
+            "debug"
+        );
+    }
+
+    #[test]
+    fn pretty_formatter_renders_llama_native_log_params_on_followup_lines() {
+        let event = OutputEvent::LlamaNativeLog {
+            message: "Reading tensor groups...".to_string(),
+            category: "model",
+            params: vec![
+                ("f32".to_string(), Value::from(177_u64)),
+                ("q4_K".to_string(), Value::from(74_u64)),
+            ],
+        };
+        let mut formatter = PrettyFormatter;
+        let rendered = formatter.format(&event).unwrap();
+        assert_eq!(
+            rendered,
+            "Reading tensor groups...\n  ↳ f32=177\n  ↳ q4_K=74\n"
+        );
+    }
+
+    #[test]
+    fn shutdown_requested_event_name_returns_signal() {
+        for signal in ["SIGINT", "SIGTERM", "CTRL-C", "api"] {
+            let event = OutputEvent::ShutdownRequested { signal };
+            assert_eq!(event.event_name(), signal);
+        }
+    }
+
+    #[test]
+    fn shutdown_requested_message_includes_signal_type() {
+        for signal in ["SIGINT", "SIGTERM", "CTRL-C", "api"] {
+            let event = OutputEvent::ShutdownRequested { signal };
+            assert!(
+                event.message().contains(signal),
+                "message should contain signal: {}",
+                event.message()
+            );
+        }
+    }
+
+    #[test]
+    fn shutdown_requested_json_fields_serializes_signal() {
+        for signal in ["SIGINT", "SIGTERM"] {
+            let event = OutputEvent::ShutdownRequested { signal };
+            let fields = event.json_fields();
+            assert_eq!(fields.get("signal").unwrap().as_str().unwrap(), signal);
+        }
+    }
+
+    #[test]
+    fn model_unloading_event_serialization() {
+        let event = OutputEvent::ModelUnloading {
+            model: "Qwen3-32B".to_string(),
+        };
+        assert_eq!(event.event_name(), "model_unloading");
+        assert!(event.message().contains("Qwen3-32B"));
+        let fields = event.json_fields();
+        assert_eq!(fields.get("model").unwrap().as_str().unwrap(), "Qwen3-32B");
+    }
+
+    #[test]
+    fn model_unloaded_event_serialization() {
+        let event = OutputEvent::ModelUnloaded {
+            model: "Llama-3.1-8B".to_string(),
+        };
+        assert_eq!(event.event_name(), "model_unloaded");
+        assert!(event.message().contains("Llama-3.1-8B"));
+        let fields = event.json_fields();
+        assert_eq!(
+            fields.get("model").unwrap().as_str().unwrap(),
+            "Llama-3.1-8B"
+        );
+    }
+
+    #[test]
+    fn model_lifecycle_events_have_consistent_model_names() {
+        let name = "Mistral-Nemo-12B".to_string();
+
+        for event in [
+            OutputEvent::ModelLoading {
+                model: name.clone(),
+                source: None,
+            },
+            OutputEvent::ModelLoaded {
+                model: name.clone(),
+                bytes: Some(8_000_000_000),
+            },
+            OutputEvent::ModelUnloading {
+                model: name.clone(),
+            },
+            OutputEvent::ModelUnloaded {
+                model: name.clone(),
+            },
+        ] {
+            assert!(
+                event.message().contains("Mistral-Nemo-12B"),
+                "event {} message should contain model name: {}",
+                event.event_name(),
+                event.message()
+            );
+            let fields = event.json_fields();
+            assert_eq!(
+                fields.get("model").unwrap().as_str().unwrap(),
+                "Mistral-Nemo-12B",
+                "json_fields for {} should have correct model",
+                event.event_name()
+            );
+        }
+    }
+
+    #[test]
+    fn shutdown_requested_marks_runtime_shutting_down() {
+        let mut state = DashboardState::default();
+
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
+            version: "v0.65.0".to_string(),
+            message: None,
+        }));
+
+        state.reduce(DashboardAction::OutputEvent(
+            OutputEvent::ShutdownRequested { signal: "SIGINT" },
+        ));
+
+        assert_eq!(
+            state.startup_lifecycle().phase,
+            StartupLifecyclePhase::ShuttingDown,
+            "ShutdownRequested should mark lifecycle as ShuttingDown"
+        );
+    }
+
+    #[test]
+    fn shutdown_suppresses_subsequent_model_ready_events() {
+        let mut state = DashboardState::default();
+
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
+            version: "v0.65.0".to_string(),
+            message: None,
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::ApiStarting {
+            url: "http://localhost:9337".to_string(),
+        }));
+        state.reduce(DashboardAction::OutputEvent(
+            OutputEvent::ShutdownRequested { signal: "SIGTERM" },
+        ));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::ModelReady {
+            model: "Qwen3-32B".to_string(),
+            internal_port: Some(9338),
+            role: Some("host".to_string()),
+        }));
+
+        assert_eq!(
+            state.startup_lifecycle().phase,
+            StartupLifecyclePhase::ShuttingDown,
+            "Shutdown should suppress late ModelReady"
+        );
+    }
+
+    #[test]
+    fn model_unloading_updates_model_row_status() {
+        let mut state = DashboardState::default();
+
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
+            version: "v0.65.0".to_string(),
+            message: None,
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::ModelLoaded {
+            model: "Qwen3-32B".to_string(),
+            bytes: Some(8_000_000_000),
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::ModelReady {
+            model: "Qwen3-32B".to_string(),
+            internal_port: Some(9338),
+            role: Some("host".to_string()),
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::ModelUnloading {
+            model: "Qwen3-32B".to_string(),
+        }));
+
+        let rendered = render_dashboard_text(&state);
+        assert!(
+            rendered.contains("Qwen3-32B"),
+            "model should still appear in dashboard after unloading"
+        );
+        assert!(
+            rendered.contains("stopped"),
+            "dashboard should show the unloading model as stopped"
+        );
+    }
+
+    #[test]
+    fn llama_native_log_does_not_affect_dashboard_state() {
+        let mut state = DashboardState::default();
+
+        for (category, msg) in [
+            ("backend", "backend_init succeeded"),
+            ("model", "loading model from disk"),
+            ("memory", "VRAM used: 12 GB"),
+            ("kv_cache", "KV cache type: f16"),
+            ("tokenizer", "vocab loaded: 32000 tokens"),
+        ] {
+            state.reduce(DashboardAction::OutputEvent(OutputEvent::LlamaNativeLog {
+                message: msg.to_string(),
+                category,
+                params: Vec::new(),
+            }));
+        }
+
+        assert_eq!(
+            state.startup_lifecycle().phase,
+            StartupLifecyclePhase::Pending,
+            "LlamaNativeLog events should not change startup lifecycle phase"
+        );
+    }
+
+    #[test]
+    fn model_unloaded_preserves_model_in_dashboard() {
+        let mut state = DashboardState::default();
+
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
+            version: "v0.65.0".to_string(),
+            message: None,
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::ModelLoaded {
+            model: "Llama-3.1-8B".to_string(),
+            bytes: Some(4_500_000_000),
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::ModelReady {
+            model: "Llama-3.1-8B".to_string(),
+            internal_port: Some(9338),
+            role: Some("host".to_string()),
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::ModelUnloading {
+            model: "Llama-3.1-8B".to_string(),
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::ModelUnloaded {
+            model: "Llama-3.1-8B".to_string(),
+        }));
+
+        let rendered = render_dashboard_text(&state);
+        assert!(
+            rendered.contains("Llama-3.1-8B"),
+            "model should still be visible in dashboard after full unload cycle"
+        );
+        assert!(
+            rendered.contains("stopped"),
+            "dashboard should keep the unloaded model row stopped"
+        );
     }
 }

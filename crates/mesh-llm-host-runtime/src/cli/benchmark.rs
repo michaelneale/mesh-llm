@@ -19,6 +19,19 @@ pub(crate) enum BenchmarkCommand {
         #[arg(long)]
         output: PathBuf,
     },
+    #[command(name = "run-gpu", hide = true)]
+    RunGpu {
+        #[arg(long, value_enum)]
+        backend: GpuBenchmarkBackend,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum GpuBenchmarkBackend {
+    Metal,
+    Cuda,
+    Hip,
+    Intel,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]

@@ -1,6 +1,7 @@
 # Plugins Plan
 
-This document tracks the implementation plan for the `mesh-llm` plugin architecture defined in [README.md](README.md).
+Track implementation work here for the `mesh-llm` plugin architecture defined
+in [README.md](README.md).
 
 ## Sequencing Principles
 

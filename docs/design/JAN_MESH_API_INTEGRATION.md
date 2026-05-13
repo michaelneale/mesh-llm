@@ -1,7 +1,7 @@
 # Jan Mesh API Integration
 
-This document defines the initial integration contract for using `mesh-api` inside
-Jan as a Tauri-native client SDK.
+Use this initial integration contract when embedding `mesh-api` inside Jan as a
+Tauri-native client SDK.
 
 Scope:
 

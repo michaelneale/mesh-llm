@@ -17,7 +17,7 @@ flowchart LR
     Mesh["mesh-llm<br/>topology, lifecycle, model refs"] -.-> M
     O["openai-frontend<br/>request IDs"] -.-> M
     B["bench / debug launcher<br/>run metadata"] -.-> M
-    M --> D["metrics.duckdb"]
+    M --> D["metrics.sqlite"]
     M --> R["report.json"]
 ```
 
@@ -29,8 +29,8 @@ stage, and model identifiers for report export and post-run debugging.
 ## Commands
 
 ```bash
-metrics-server serve --db metrics.duckdb
-metrics-server serve --db metrics.duckdb --debug-retain-raw-otlp
+metrics-server serve --db metrics.sqlite
+metrics-server serve --db metrics.sqlite --debug-retain-raw-otlp
 metrics-server emit-fixture --run-id fixture
 ```
 
@@ -53,7 +53,7 @@ metrics-server emit-fixture --run-id fixture
 - `server.rs` - Axum and tonic listener orchestration
 - `api.rs` - HTTP route handlers
 - `otlp.rs` - OTLP/gRPC service adapters
-- `store.rs` - DuckDB schema, ingest mutations, lifecycle, and report queries
+- `store.rs` - SQLite schema, ingest mutations, lifecycle, and report queries
 - `model.rs` - HTTP/report DTOs
 - `otlp_value.rs` - OTLP attribute/value conversion helpers
 - `fixture.rs` - fixture telemetry emitter for local workflow checks

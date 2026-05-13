@@ -205,6 +205,10 @@ impl Telemetry {
         self.level != TelemetryLevel::Off
     }
 
+    pub fn is_debug_enabled(&self) -> bool {
+        self.level == TelemetryLevel::Debug
+    }
+
     pub fn stats(&self) -> TelemetryStats {
         TelemetryStats {
             queued: self.stats.queued.load(Ordering::Relaxed),

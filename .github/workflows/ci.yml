@@ -58,7 +58,7 @@ jobs:
             benchmarks:
               - 'crates/skippy-bench/**'
               - 'crates/llama-spec-bench/**'
-              - 'crates/mesh-llm/benchmarks/**'
+              - 'crates/mesh-llm-gpu-bench/**'
               - '.github/workflows/benchmark-smoke.yml'
               - '.github/workflows/ci.yml'
             sdk:
@@ -545,18 +545,8 @@ jobs:
     env:
       LLAMA_STAGE_BACKEND: metal
       LLAMA_STAGE_BUILD_DIR: .deps/llama.cpp/build-stage-abi-metal
-    outputs:
-      benchmark_artifact_ready: ${{ steps.benchmark_gate.outputs.ready }}
     steps:
       - uses: actions/checkout@v5
-      - name: Benchmark gate
-        id: benchmark_gate
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" || "${{ needs.changes.outputs.benchmarks }}" == "true" ]]; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-          fi
       - uses: pnpm/action-setup@v4
         if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
         with:
@@ -624,17 +614,6 @@ jobs:
         run: |
           target/debug/mesh-llm --version
           target/debug/mesh-llm --help | head -5
-      - name: Build Swift benchmark binary
-        if: ${{ steps.benchmark_gate.outputs.ready == 'true' }}
-        run: |
-          mkdir -p target/release
-          swiftc -O crates/mesh-llm/benchmarks/membench-fingerprint.swift -o target/release/membench-fingerprint
-      - name: Upload Swift benchmark artifact
-        if: ${{ steps.benchmark_gate.outputs.ready == 'true' }}
-        uses: actions/upload-artifact@v6
-        with:
-          name: ci-benchmark-swift
-          path: target/release/membench-fingerprint
 
   linux_cuda:
     needs: changes
@@ -652,8 +631,6 @@ jobs:
       # to avoid linking libraries that require the CUDA driver at runtime.
       GGML_CUDA_NO_VMM: "1"
       LLAMA_STAGE_SKIP_NCCL: "1"
-    outputs:
-      benchmark_artifact_ready: ${{ steps.benchmark_gate.outputs.ready }}
     steps:
       - name: Install base packages
         run: |
@@ -668,14 +645,6 @@ jobs:
           done
           rm -rf /var/lib/apt/lists/*
       - uses: actions/checkout@v5
-      - name: Benchmark gate
-        id: benchmark_gate
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" || "${{ needs.changes.outputs.benchmarks }}" == "true" ]]; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-          fi
       - uses: dtolnay/rust-toolchain@stable
       - name: Configure Linux Rust linker
         run: |
@@ -703,15 +672,6 @@ jobs:
           ln -s /usr/local/cuda/lib64/stubs/libcuda.so "$cuda_stub_runtime/libcuda.so.1"
           export LD_LIBRARY_PATH="$cuda_stub_runtime:/usr/local/cuda/lib64/stubs:${LD_LIBRARY_PATH:-}"
           target/release/mesh-llm --version
-      - name: Build CUDA benchmark binary
-        if: ${{ steps.benchmark_gate.outputs.ready == 'true' }}
-        run: nvcc -O3 -o target/release/membench-fingerprint-cuda crates/mesh-llm/benchmarks/membench-fingerprint.cu
-      - name: Upload CUDA benchmark artifact
-        if: ${{ steps.benchmark_gate.outputs.ready == 'true' }}
-        uses: actions/upload-artifact@v6
-        with:
-          name: ci-benchmark-cuda
-          path: target/release/membench-fingerprint-cuda
 
   linux_rocm:
     needs: changes
@@ -725,8 +685,6 @@ jobs:
       LLAMA_STAGE_BACKEND: rocm
       LLAMA_STAGE_AMDGPU_TARGETS: gfx1100
       MESH_LLM_SKIP_UI: "1"
-    outputs:
-      benchmark_artifact_ready: ${{ steps.benchmark_gate.outputs.ready }}
     steps:
       - name: Install base packages
         run: |
@@ -741,14 +699,6 @@ jobs:
           done
           rm -rf /var/lib/apt/lists/*
       - uses: actions/checkout@v5
-      - name: Benchmark gate
-        id: benchmark_gate
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" || "${{ needs.changes.outputs.benchmarks }}" == "true" ]]; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-          fi
       - uses: dtolnay/rust-toolchain@stable
       - name: Configure Linux Rust linker
         run: |
@@ -774,15 +724,6 @@ jobs:
         run: |
           export LD_LIBRARY_PATH="/opt/rocm/lib:${LD_LIBRARY_PATH:-}"
           target/release/mesh-llm --version
-      - name: Build ROCm benchmark binary
-        if: ${{ steps.benchmark_gate.outputs.ready == 'true' }}
-        run: hipcc -O3 -std=c++17 -o target/release/membench-fingerprint-hip crates/mesh-llm/benchmarks/membench-fingerprint.hip
-      - name: Upload ROCm benchmark artifact
-        if: ${{ steps.benchmark_gate.outputs.ready == 'true' }}
-        uses: actions/upload-artifact@v6
-        with:
-          name: ci-benchmark-hip
-          path: target/release/membench-fingerprint-hip
 
   linux_vulkan:
     needs: changes
@@ -831,7 +772,6 @@ jobs:
         run: cargo build --release -p mesh-llm
       - name: CLI smoke test
         run: target/release/mesh-llm --version
-
   windows_cpu:
     needs: changes
     if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}

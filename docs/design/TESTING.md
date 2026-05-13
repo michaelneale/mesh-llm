@@ -94,7 +94,7 @@ Run these manual checks after changes to `runtime/interactive.rs` or `cli/output
 
 For terminal restoration QA:
 
-- Resize during startup, after llama-server readiness, and while the dashboard has focus on different panels.
+- Resize during startup, after embedded runtime readiness, and while the dashboard has focus on different panels.
 - Open the mesh events/log panel full screen and verify long log lines wrap within the panel.
 - Detach and reattach tmux/screen while the dashboard is active.
 - Select visible dashboard text with the terminal mouse selection gesture and verify it can be copied.
@@ -111,7 +111,7 @@ mesh-llm serve --model Qwen2.5-3B --console
 
 - API on `:9337`, console on `:3131`
 - Console: `host=true, peers=0`
-- llama-server has 1 RPC entry (self)
+- Embedded runtime reports one local serving route for the model
 
 ### 1a. Headless mode (API-only, no embedded UI)
 
@@ -148,9 +148,9 @@ mesh-llm serve --model Qwen2.5-32B --bind-port 7842 --split
 mesh-llm serve --model Qwen2.5-32B --join <TOKEN>
 ```
 
-- `--split` forces tensor split even when model fits on host
-- llama-server has 2 RPC entries
-- Tensor split proportional to VRAM (e.g. `0.67,0.33`)
+- `--split` forces staged execution even when the model fits on the host
+- Embedded runtime assigns two participating stage routes
+- Stage placement is proportional to available VRAM (e.g. `0.67,0.33`)
 - Draft model auto-detected and used
 
 ### 4. Two GPU nodes, model too big for one
@@ -315,7 +315,7 @@ mesh-llm serve --model Qwen2.5-3B --join <TOKEN> --port 8091
 ```
 
 - Joiner log: `⚡ API ready (bootstrap): http://localhost:8091`
-- BEFORE `rpc-server` or `llama-server` starts on joiner:
+- BEFORE the joiner finishes its local embedded runtime startup:
   - `curl localhost:8091/v1/models` → lists mesh models
   - `curl localhost:8091/v1/chat/completions` → inference via tunnel to originator
 - Log: `⚡ Bootstrap proxy handing off to full API proxy`
@@ -343,16 +343,16 @@ mesh-llm
 - `curl localhost:3131/api/status` fails to connect
 
 
-### 22. Join via console
+### 22. Join and observe via console
 
 ```bash
 mesh-llm client --auto
-# In browser: http://localhost:3131 → Discover → Join
-# Or via API:
-curl -X POST localhost:3131/api/join -H 'Content-Type: application/json' -d '{"token":"..."}'
+# In browser: http://localhost:3131 → observe status/discovery
+# Or join explicitly from the CLI:
+mesh-llm client --join <token>
 ```
 
-- `/api/join` triggers full flow: connect → gossip → assign model → download → serve
+- CLI join triggers full flow: connect → gossip → assign model → download → serve
 - Console updates: status, peers, model name all reflect new state
 - Inference port starts working after model loads
 
@@ -413,7 +413,7 @@ curl localhost:3131/api/discover # Nostr meshes (current mesh marked by mesh_id)
 
 - Regossip after becoming host should NOT cause restart loops
 - Log should show "still host, no restart needed" on re-check
-- llama-server starts exactly once per election (not 5-9 times)
+- The embedded runtime starts exactly once per election (not 5-9 times)
 - Heartbeat gossip doesn't re-discover dead peers (discover_peers=false)
 
 ## Control-Plane Protocol (Protobuf v1)
@@ -490,8 +490,8 @@ MESH_LLM_EPHEMERAL_KEY=1 mesh-llm serve --model Qwen2.5-3B --join <TOKEN> --port
 ```
 
 - Host starts solo, then re-elects with split when worker joins
-- Worker becomes rpc-server, proxies API to host
-- Tensor split proportional to VRAM (e.g. `0.98,0.02`)
+- Worker receives a stage assignment and proxies API requests to the host
+- Stage placement is proportional to VRAM (e.g. `0.98,0.02`)
 - Kill worker → host detects via heartbeat (~60s), reverts to solo mode
 
 ### 15. Passive client on one machine
@@ -514,8 +514,8 @@ mesh-llm client --join <TOKEN> --port 9338
 ```bash
 just bundle
 # scp, then on remote:
-codesign -s - ~/mesh-bundle/mesh-llm ~/mesh-bundle/rpc-server ~/mesh-bundle/llama-server
-xattr -cr ~/mesh-bundle/mesh-llm ~/mesh-bundle/rpc-server ~/mesh-bundle/llama-server
+codesign -s - ~/mesh-bundle/mesh-llm
+xattr -cr ~/mesh-bundle/mesh-llm
 ```
 
 Must codesign + xattr after every scp or macOS kills the binary (exit 137).
@@ -523,9 +523,9 @@ Must codesign + xattr after every scp or macOS kills the binary (exit 137).
 ## Cleanup
 
 ```bash
-pkill -f mesh-llm; pkill -f rpc-server; pkill -f llama-server
+mesh-llm stop || pkill -f mesh-llm
 ```
 
 Prefer `mesh-llm stop` for tracked local instances. If the runtime is wedged,
-kill any remaining mesh-llm process and then verify no stale backend process is
-still bound to the test ports.
+kill any remaining mesh-llm process and then verify no stale process is still
+bound to the test ports.

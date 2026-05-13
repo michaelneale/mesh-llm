@@ -1,23 +1,13 @@
-# Mesh LLM
+<p align="center">
+  <img src="docs/mesh-llm-wordmark.png" alt="Mesh LLM" width="420">
+</p>
 
-![Mesh LLM logo](docs/mesh-llm-logo.svg)
+![Mesh LLM web console](mesh.png)
 
-![Mesh LLM](mesh.png)
-
-Mesh LLM lets you pool spare GPU capacity across machines and expose the result as one OpenAI-compatible API.
-
-If a model fits on one machine, it runs there. If it does not, Mesh LLM automatically spreads the work across the mesh:
-
-- Dense models use pipeline parallelism.
-- Models collaborate during inference — a text-only model consults a vision peer, an uncertain model gets a second opinion from a different architecture.
-- Every node gets the same local API at `http://localhost:9337/v1`.
-
-## Why people use it
-
-- Run models larger than a single machine can hold.
-- Turn a few uneven boxes into one shared inference pool.
-- Give agents a local OpenAI-compatible endpoint instead of wiring each tool by hand.
-- Keep the setup simple: start one node, add more later.
+Mesh LLM pools GPUs and memory across machines and exposes the result as one
+OpenAI-compatible API at `http://localhost:9337/v1`. Start one node, add more
+nodes later, and let the mesh decide whether a model runs locally, routes to a
+peer, or uses Skippy stage splits for models that are too large for one box.
 
 ## Quick start
 
@@ -27,35 +17,23 @@ Install the latest release:
 curl -fsSL https://raw.githubusercontent.com/Mesh-LLM/mesh-llm/main/install.sh | bash
 ```
 
-Then start a node:
+Join the public mesh and start serving:
 
 ```bash
 mesh-llm serve --auto
 ```
 
-Inspect local GPU identity:
+That command chooses a backend flavor, downloads a suitable model if needed,
+joins the best discovered public mesh, starts the local API on port `9337`, and
+starts the web console on port `3131`.
 
-```bash
-mesh-llm gpus
-```
-
-That command:
-
-- picks a suitable bundled backend for your machine
-- downloads a model if needed
-- joins the best public mesh
-- exposes an OpenAI-compatible API at `http://localhost:9337/v1`
-- starts the web console at `http://localhost:3131`
-
-Use `--headless` to disable the embedded web console while keeping the management API (`/api/*`) available on the `--console` port. This is useful for headless server deployments where the UI is not needed.
-
-Check what is available:
+Check available models:
 
 ```bash
 curl -s http://localhost:9337/v1/models | jq '.data[].id'
 ```
 
-Send a request:
+Send an OpenAI-compatible request:
 
 ```bash
 curl http://localhost:9337/v1/chat/completions \
@@ -63,37 +41,70 @@ curl http://localhost:9337/v1/chat/completions \
   -d '{"model":"GLM-4.7-Flash-Q4_K_M","messages":[{"role":"user","content":"hello"}]}'
 ```
 
+For server deployments, add `--headless` to hide the web UI while keeping the
+management API on the `--console` port:
+
+```bash
+mesh-llm serve --auto --headless
+```
+
+## Pick the workflow you need
+
+| Goal | Command | Full guide |
+|---|---|---|
+| Try the public mesh | `mesh-llm serve --auto` | [docs/MESHES.md](docs/MESHES.md) |
+| Start a private mesh | `mesh-llm serve --model Qwen3-8B-Q4_K_M` | [docs/MESHES.md](docs/MESHES.md) |
+| Publish your own mesh | `mesh-llm serve --model Qwen3-8B-Q4_K_M --publish` | [docs/MESHES.md](docs/MESHES.md) |
+| Join by invite token | `mesh-llm serve --join <token>` | [docs/MESHES.md](docs/MESHES.md) |
+| Run an API-only client | `mesh-llm client --auto` | [docs/MESHES.md](docs/MESHES.md) |
+| Run a big model with splits | `mesh-llm serve --model hf://meshllm/<repo>@<rev> --split` | [docs/SKIPPY_SPLITS.md](docs/SKIPPY_SPLITS.md) |
+| Use Goose, OpenCode, Claude Code, or Pi | `mesh-llm goose`, `mesh-llm opencode`, `mesh-llm claude`, `mesh-llm pi` | [docs/AGENTS.md](docs/AGENTS.md) |
+| Build or contribute | `just build` | [CONTRIBUTING.md](CONTRIBUTING.md) |
+
+## How the mesh works
+
+- **Single-machine fit first.** If one node can host the full model, it serves
+  the model locally without stage traffic.
+- **Mesh routing.** Every node exposes the same `/v1` API. Requests are routed
+  by the `model` field to the peer that can serve that model.
+- **Skippy stage splits.** Large dense models can load as package-backed layer
+  stages. The coordinator plans contiguous layer ranges, starts downstream
+  stages first, waits for readiness, then publishes the stage-0 route.
+- **Layer packages.** Package repositories contain `model-package.json` plus
+  GGUF fragments so peers fetch only the pieces needed for their assigned stage.
+- **Public discovery.** Published meshes advertise through Nostr discovery;
+  private meshes stay invite-token based.
+
+For a deeper operator guide, see [docs/USAGE.md](docs/USAGE.md). For every CLI
+command and switch, see [docs/CLI.md](docs/CLI.md).
+
 ## Supported model families
 
-Mesh LLM's stage runtime tracks llama.cpp family parity with reviewed GGUF representatives per family. The current reviewed support set covers 72 P0/P1 family rows, with 89 certified rows in the full llama.cpp parity inventory:
+Mesh LLM's Skippy runtime tracks llama.cpp family parity with reviewed GGUF
+representatives. The current reviewed support set covers 72 P0/P1 family rows,
+with 89 certified rows in the full parity inventory, including Qwen, Llama,
+Gemma, Mistral, DeepSeek, GLM, MiniMax, Phi, Granite, Hunyuan, EXAONE, Cohere,
+Falcon, RWKV, and many others.
 
-```text
-Arcee, Baichuan, Bloom, ChatGLM, CodeShell, Cohere2, Deci, DeepSeek, DeepSeek2, DeepSeek3, DeepSeek-OCR, EXAONE, EXAONE4, EXAONE-MoE, Falcon, Falcon-H1, Gemma, Gemma2, Gemma3, Gemma3n, Gemma4, GLM4, GLM-4.7 Flash, GLM4-MoE, GPT2, GPT-NeoX, Granite, Granite-Hybrid, Granite-MoE, Hunyuan-Dense, Hunyuan-MoE, Hunyuan-VL/HunyuanOCR, InternLM2, Jamba, Kimi Linear, LFM2, Llama, Maincoder, Mamba, Mamba2, MiniCPM, MiniCPM3, MiniMax M2.7, Mistral, MPT, OLMo, OLMo2, OLMoE, OpenELM, Phi, Phi2, PhiMoE, Plamo3, PLM, Qwen2, Qwen2-MoE, Qwen2-VL, Qwen3 dense, Qwen3-MoE, Qwen3.5 recurrent, Qwen3Next, Qwen3-VL, Qwen3-VL-MoE, Refact, RWKV6, RWKV7, SmallThinker, SmolLM3, StableLM, StarCoder2, XVerse
-```
+Split multimodal serving is certified for Qwen2-VL, Qwen3-VL,
+Qwen3-VL-MoE, HunyuanOCR/Hunyuan-VL, and DeepSeek-OCR using real GGUF plus
+projector fixtures. DeepSeek3 and EXAONE-MoE use package-backed stages because
+the full GGUFs are too large for the cheap local baseline.
 
-Split multimodal serving is certified for Qwen2-VL, Qwen3-VL, Qwen3-VL-MoE, HunyuanOCR/Hunyuan-VL, and DeepSeek-OCR using real GGUF plus projector fixtures. Granite-MoE is layout-parity support from a tiny random GGUF and should be replaced with a real small artifact when one is available. DeepSeek3 and EXAONE-MoE are supported through package-backed stages because the full GGUFs are too large for the cheap local baseline.
+See [docs/skippy/FAMILY_STATUS.md](docs/skippy/FAMILY_STATUS.md) for the full
+artifact, split, wire dtype, cache policy, and exception matrix. See
+[docs/skippy/LLAMA_PARITY.md](docs/skippy/LLAMA_PARITY.md) for the remaining
+llama.cpp parity queue.
 
-See [docs/skippy/FAMILY_STATUS.md](docs/skippy/FAMILY_STATUS.md) for the full artifact, split, wire dtype, cache policy, and exception matrix. See [docs/skippy/LLAMA_PARITY.md](docs/skippy/LLAMA_PARITY.md) for the remaining llama.cpp parity queue.
+## Install and build notes
 
-## Common workflows
+Tagged releases publish macOS bundles plus Linux CPU, Linux ARM64 CPU, Linux
+CUDA, Linux CUDA Blackwell, Linux ROCm, Linux Vulkan, Windows CPU, Windows
+CUDA, Windows ROCm, and Windows Vulkan bundles. Metal is macOS-only. The Linux
+ARM64 artifact is `mesh-llm-aarch64-unknown-linux-gnu.tar.gz`; in install and
+release contexts, `arm64` and `aarch64` mean the same 64-bit ARM target.
 
-### 1. Try the public mesh
-
-```bash
-mesh-llm serve --auto
-```
-
-This is the easiest way to see the system working end to end.
-
-### 2. Start a private mesh
-
-```bash
-mesh-llm serve --model Qwen2.5-32B
-```
-
-This starts serving a model, opens the local API and console, and prints an invite token for other machines.
-
-### 3. Build from source
+Build from source with `just`:
 
 ```bash
 git clone https://github.com/Mesh-LLM/mesh-llm
@@ -101,551 +112,26 @@ cd mesh-llm
 just build
 ```
 
-Requires: `just`, `cmake`, Rust toolchain, Node.js 24 + npm. NVIDIA GPU builds need `nvcc` (CUDA toolkit). AMD GPU builds need ROCm/HIP. Vulkan GPU builds need the Vulkan development files plus `glslc`. CPU-only and Jetson/Tegra also work. For source builds, `just build` auto-detects CUDA vs ROCm vs Vulkan on Linux, or you can force `backend=rocm` or `backend=vulkan`. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
-
-Windows source builds are also supported for `cuda`, `rocm`/`hip`, `vulkan`, and `cpu` via `just build`. Metal remains macOS-only. Tagged stable GitHub releases publish macOS bundles plus Linux CPU, Linux ARM64 CPU, Linux CUDA, Linux CUDA Blackwell, Linux ROCm, Linux Vulkan, Windows CPU, Windows CUDA, Windows ROCm, and Windows Vulkan bundles. Prereleases use the same workflow and can optionally skip the CUDA, CUDA Blackwell, ROCm, and Vulkan bundles. The Linux ARM64 CPU artifact is `mesh-llm-aarch64-unknown-linux-gnu.tar.gz`. In install and release contexts, `arm64` and `aarch64` mean the same 64-bit ARM target, and generic 32-bit ARM is not a published release target.
-
-## Run
-Once installed, you can run:
-
-```bash
-mesh-llm serve --auto                      # join the best public mesh, start serving
-```
-
-That's it. Downloads a model for your hardware, connects to other nodes, and gives you an OpenAI-compatible API at `http://localhost:9337`.
-
-Or start your own:
-```bash
-mesh-llm serve --model Qwen2.5-32B        # downloads model (~20GB), starts API + web console
-mesh-llm serve --model Qwen2.5-3B         # or a small model first (~2GB)
-```
-
-Add another machine:
-```bash
-mesh-llm serve --join <token>              # token printed by the first machine
-```
-
-Or discover and join public meshes:
-```bash
-mesh-llm serve --auto                      # find and join the best mesh
-mesh-llm client --auto                     # join as API-only client (no GPU)
-```
-
-## Output
-
-`mesh-llm` has two terminal output modes:
-
-- `--log-format pretty` renders human-readable output. In `serve` on an interactive TTY, this becomes the full dashboard; otherwise it falls back to line-oriented pretty output.
-- `--log-format json` writes newline-delimited JSON records to `stdout`, which keeps it safe for `jq`, log shippers, and shell pipelines.
-
-JSON mode example:
-
-```json
-{"timestamp":"...","level":"info","event":"llama_ready","model":"Qwen3-32B","port":8001,"ctx_size":8192,"message":"Qwen3-32B ready on internal port 8001"}
-{"timestamp":"...","level":"info","event":"model_ready","model":"Qwen3-32B","port":38373,"internal_port":38373,"role":"host","message":"model Qwen3-32B ready on port 38373"}
-{"timestamp":"...","level":"info","event":"ready","api_url":"http://localhost:9337","console_url":"http://localhost:3131","api_port":9337,"console_port":3131,"models_count":2,"message":"mesh-llm runtime ready"}
-```
-
-Line-oriented pretty sessions accept these commands after startup is ready:
-
-- `h` shows help
-- `i` prints the current mesh status snapshot
-- `q` quits cleanly
-
-For the full event taxonomy and field reference, see [crates/mesh-llm-host-runtime/src/cli/output/EVENTS.md](crates/mesh-llm-host-runtime/src/cli/output/EVENTS.md).
-
-## How it works
-
-Every node gets an OpenAI-compatible API at `http://localhost:9337/v1`. Distribution is automatic — you just say `mesh-llm serve --model X` and the mesh figures out the best strategy:
-
-- **Model fits on one machine?** → runs solo, full speed, no network overhead
-- **Dense model too big?** → pipeline parallelism — layers split across nodes
-
-If a node has enough VRAM, it always runs the full model. Splitting only happens when it has to.
-Mesh serving embeds the skippy stage runtime and uses a pinned `llama.cpp`
-ABI patch queue; see [docs/SKIPPY.md](docs/SKIPPY.md).
-
-**Pipeline parallelism** — for dense models that don't fit on one machine, layers are distributed across nodes proportional to VRAM. The planner chooses peers and layer ranges, sends `LoadStage` downstream-to-upstream, waits for readiness, then publishes the stage-0 route. Latency-aware: peers are selected by lowest RTT first, with an 80ms hard cap — high-latency nodes stay in the mesh as API clients but don't participate in splits.
-
-**Multi-model** — different nodes serve different models simultaneously. The API proxy peeks at the `model` field in each request and routes to the right node via QUIC tunnel. `/v1/models` lists everything available.
-
-**Demand-aware rebalancing** — a unified demand map tracks which models the mesh wants (from `--model` flags, API requests, and gossip). Demand signals propagate infectiously across all nodes and decay naturally via TTL. Standby nodes auto-promote to serve unserved models with active demand, or rebalance when one model is significantly hotter than others. When a model loses its last server, standby nodes detect it within ~60s.
-
-**Inter-model collaboration** — models on the mesh help each other during inference. When a text-only model receives an image, it silently consults a vision model on the mesh for a caption and generates from that. When a small model is uncertain, it races two peers for a second opinion and injects the winner's answer as context. When a model gets stuck in a repetition loop, another model nudges it out. The caller sees one seamless response — they don't know multiple models collaborated. Inspired by [Mixture of Models (NSED)](https://arxiv.org/pdf/2601.16863) — the mesh is the ensemble. See [VIRTUAL_LLM.md](docs/design/VIRTUAL_LLM.md).
-
-**Latency design** — the key insight is that HTTP streaming is latency-tolerant while per-token stage traffic needs explicit topology control. The mesh tunnels HTTP for request routing, and stage transport is used only when the model physically needs a split.
-
-### Network optimizations
-
-- **Direct GGUF packages** — direct `--gguf-file` loads materialize as single-stage fake packages in the runtime.
-- **Stage packages** — split serving loads derived stage artifacts from package materialization instead of launching external worker servers.
-- **Stage transport** — activation frames move between selected stage peers over the mesh stage transport, not through the OpenAI request tunnel.
-- **Speculative decoding** — draft model runs locally on the host, proposes tokens verified in one batched forward pass. +38% throughput on code (75% acceptance).
-
-## Usage
-
-### Start a mesh
-```bash
-mesh-llm serve --model Qwen2.5-32B
-```
-Starts serving a model and prints an invite token. This mesh is **private** — only people you share the token with can join.
-
-To make it **public** (discoverable by others via `--auto`):
-```bash
-mesh-llm serve --model Qwen2.5-32B --publish
-```
-
-### Join a mesh
-```bash
-mesh-llm serve --join <token>              # join with invite token (GPU node)
-mesh-llm client --join <token>             # join as API-only client (no GPU)
-```
-
-### Named mesh (buddy mode)
-```bash
-mesh-llm serve --auto --model GLM-4.7-Flash-Q4_K_M --mesh-name "poker-night" --publish
-```
-Everyone runs the same command. First person creates it, everyone else discovers "poker-night" and joins automatically. Use `--publish` to make your named mesh discoverable on Nostr; without it the mesh is private but still joinable via invite token.
-
-You can also join a named mesh explicitly:
-```bash
-mesh-llm serve --discover "poker-night"    # discover by name, join, and serve
-mesh-llm client --discover "poker-night"   # discover by name, join as client
-```
-
-### Auto-discover
-```bash
-mesh-llm serve --auto                      # discover, join, and serve a model
-mesh-llm client --auto                     # join as API-only client (no GPU)
-mesh-llm serve --discover "my-mesh"        # discover a named mesh and join it
-mesh-llm discover                          # browse available meshes
-mesh-llm discover --name "poker-night"     # search for a specific mesh by name
-mesh-llm gpus                              # inspect local GPUs and stable IDs
-```
-
-### Inspect and clean the shared model cache
-```bash
-mesh-llm models installed
-mesh-llm models cleanup --unused-since 30d
-mesh-llm models cleanup --unused-since 30d --yes
-```
-
-`models installed` now shows whether a cached model is mesh-managed or external plus the last time mesh-llm used it. `models cleanup` only removes model files that mesh-llm explicitly marked as mesh-managed; by default it prints a dry run preview and requires `--yes` to delete anything.
-
-### Multi-model
-```bash
-mesh-llm serve --model Qwen2.5-32B --model GLM-4.7-Flash
-
-# Route by model name
-curl localhost:9337/v1/chat/completions -d '{"model":"GLM-4.7-Flash-Q4_K_M", ...}'
-```
-Different nodes serve different models. The API proxy routes by the `model` field.
-
-### Inspect local GPUs
-```bash
-mesh-llm gpus
-mesh-llm gpus --json
-mesh-llm gpu benchmark --json
-```
-
-`mesh-llm gpus` prints local GPU entries, backend device names, stable IDs, VRAM, unified-memory state, and cached bandwidth when a benchmark fingerprint is already available. Add `--json` for machine-readable inventory output, or run `mesh-llm gpu benchmark --json` to refresh the local fingerprint and print the benchmark result as JSON.
-
-Use only pinnable `Stable ID` / `stable_id` values from `mesh-llm gpus` or `mesh-llm gpus --json` for pinned startup config. Stable-ID fallback values such as `index:*` or backend-device names like `CUDA0` / `HIP0` / `MTL0` can still be printed for inventory purposes, but they are not valid pin targets.
-
-### Startup config
-
-`mesh-llm serve` can now load startup models from `~/.mesh-llm/config.toml`:
-
-```toml
-version = 1
-
-[gpu]
-assignment = "pinned"
-
-[[models]]
-model = "Qwen3-8B-Q4_K_M"
-gpu_id = "pci:0000:65:00.0"
-
-[[models]]
-model = "bartowski/Qwen2.5-VL-7B-Instruct-GGUF/qwen2.5-vl-7b-instruct-q4_k_m.gguf"
-mmproj = "bartowski/Qwen2.5-VL-7B-Instruct-GGUF/mmproj-f16.gguf"
-ctx_size = 8192
-gpu_id = "uuid:GPU-12345678"
-
-[[plugin]]
-name = "blackboard"
-enabled = true
-```
-
-Start with the default config path:
-
-```bash
-mesh-llm serve
-```
-
-If no startup models are configured, `mesh-llm serve` prints a `⚠️` warning, shows help, and exits.
-
-Or point at a different file:
-
-```bash
-mesh-llm serve --config /path/to/config.toml
-```
-
-Precedence rules:
-
-- Explicit `--model` or `--gguf` ignores configured `[[models]]`.
-- Explicit `--ctx-size` overrides configured `ctx_size` for the selected startup models.
-- Plugin entries still live in the same file.
-
-Telemetry metrics export is available through the built-in `telemetry` plugin. Configure a `[telemetry]` endpoint to export metrics; no collector is hard-coded, and the plugin can be opted out with `[[plugin]] name = "telemetry" enabled = false`. See [docs/plugins/telemetry.md](docs/plugins/telemetry.md).
-
-Pinned startup notes:
-
-- `assignment = "pinned"` requires every configured `[[models]]` entry to include a `gpu_id`.
-- Valid `gpu_id` values come from the pinnable stable IDs reported by `mesh-llm gpus` / `mesh-llm gpus --json`, not fallback inventory IDs.
-- Pinned configs fail closed when a configured ID is missing, ambiguous, unsupported on the local backend, or no longer resolves on the current machine.
-- Explicit `--model` / `--gguf` still bypass configured `[[models]]`, so they also bypass config-owned pinned `gpu_id` values.
-
-### No-arg behavior
-```bash
-mesh-llm                                   # no args — prints --help and exits
-```
-Does not start the console or bind any ports. Use the CLI flags shown in `--help` to start or join a mesh.
-
-## Background service
-
-To install it as a per-user background service:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Mesh-LLM/mesh-llm/main/install.sh | bash -s -- --service
-```
-
-Service installs are user-scoped:
-
-- macOS installs a `launchd` agent at `~/Library/LaunchAgents/com.mesh-llm.mesh-llm.plist`
-- Linux installs a `systemd --user` unit at `~/.config/systemd/user/mesh-llm.service`
-- Shared environment config lives in `~/.config/mesh-llm/service.env`
-- Startup models live in `~/.mesh-llm/config.toml`
-
-The two platforms handle launch startup the same way:
-
-- macOS: `launchd` runs `~/.config/mesh-llm/run-service.sh`, which loads `service.env` and executes `mesh-llm serve`.
-- Linux: the installer writes `mesh-llm serve` directly into `ExecStart=` in `~/.config/systemd/user/mesh-llm.service`.
-
-The background service no longer stores custom startup args. Configure startup models in `~/.mesh-llm/config.toml` instead.
-
-`service.env` is optional and shared by both platforms. Use plain `KEY=value` lines, for example:
-
-```text
-MESH_LLM_NO_SELF_UPDATE=1
-```
-
-If you edit the Linux unit manually, reload and restart it:
-
-```bash
-systemctl --user daemon-reload
-systemctl --user restart mesh-llm.service
-```
-
-On Linux this is a user service, so if you want it to keep running after reboot before login, enable lingering once:
-
-```bash
-sudo loginctl enable-linger "$USER"
-```
-
-## Web console
-
-```bash
-mesh-llm serve --model Qwen2.5-32B    # dashboard at http://localhost:3131
-```
-
-Live topology, per-node GPU capacity, model picker, and built-in chat. Live members show only the `Client`, `Standby`, `Loading`, and `Serving` badges. Wakeable provider-backed capacity is shown separately from topology and stays out of routing until it rejoins. Everything comes from `/api/status` (JSON) and `/api/events` (SSE).
-
-## Multimodal Support
-
-mesh-llm supports multimodal requests on:
-
-- `POST /v1/chat/completions`
-- `POST /v1/responses`
-
-The console supports image, audio, and file attachments. Large attachments use request-scoped blob upload rather than permanent storage.
-
-### Current support matrix
-
-| Family / model type | Vision | Audio | Notes |
-|---|---|---|---|
-| `Qwen3-VL`, `Qwen3VL` | yes | no | Split multimodal certified with `Qwen3VL-2B-Instruct-Q4_K_M` plus `mmproj-Qwen3VL-2B-Instruct-Q8_0` |
-| `Qwen2-VL`, `Qwen2.5-VL` | yes | no | Split multimodal certified with `Qwen2-VL-2B-Instruct-Q4_K_M` plus `mmproj-Qwen2-VL-2B-Instruct-f16` |
-| `Qwen3-VL-MoE`, `Qwen3VLMoE` | yes | no | Split multimodal certified with the Qwen3-VL 30B A3B MXFP4 MoE GGUF plus projector |
-| `HunyuanOCR`, `Hunyuan-VL` | yes | no | Split multimodal certified with `HunyuanOCR-Q8_0` plus `mmproj-HunyuanOCR-Q8_0` |
-| `DeepSeek-OCR`, `deepseek2ocr` | yes | no | Split multimodal certified with `DeepSeek-OCR-Q8_0` plus `mmproj-DeepSeek-OCR-Q8_0` |
-| `LLaVA`, `mllama`, `PaliGemma`, `Idefics`, `Molmo`, `InternVL`, `GLM-4V`, `Ovis`, `Florence` | yes | no | Detected as vision-capable families |
-| `Qwen2-Audio` | no | yes | Audio-capable family |
-| `SeaLLM-Audio` | no | yes | Audio-capable family |
-| `Ultravox` | no | yes | Audio-capable family |
-| `Omni` | no or metadata-dependent | yes | Example: `Qwen2.5-Omni-3B-Q4_K_M` |
-| `Whisper` | no | yes | Audio-capable family |
-| Any GGUF with `mmproj` sidecar | yes | depends | Strong local signal for vision support |
-| Any model with `vision_config` / vision token IDs | yes | depends | Promoted by metadata |
-| Any model with `audio_config` / audio token IDs | depends | yes | Promoted by metadata |
-| Generic `multimodal`, `-vl`, `image`, `video`, `voice` naming only | likely | likely | Hint only, not a strong routing guarantee |
-
-Notes:
-
-- `yes` means mesh-llm treats the model as runtime-capable for routing and UI.
-- `likely` means mesh-llm shows a weaker hint but does not rely on it as a hard capability.
-- Mixed image+audio requests work only when the selected model/runtime actually supports both modalities.
-- Non-goals: `POST /v1/audio/transcriptions`, `POST /v1/audio/speech`, and `v1/realtime`.
-
-For the full capability and transport details, see [docs/design/MULTI_MODAL.md](docs/design/MULTI_MODAL.md).
-
-### Development
-
-Build-from-source and UI development instructions are in [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## Using with agents
-
-mesh-llm exposes an OpenAI-compatible API on `localhost:9337`. Any tool that supports custom OpenAI endpoints works. `/v1/models` lists available models; the `model` field in requests routes to the right node.
-
-For built-in launcher integrations (`goose`, `claude`, `opencode`, `pi`):
-
-- Goose and Claude reuse a local mesh on `--port` and auto-start a local client if needed.
-- OpenCode and pi target `--host` (default `127.0.0.1:9337`) and only auto-start a local client for loopback/localhost targets.
-- If `--model` is omitted, the launcher picks the strongest tool-capable model available on the mesh.
-- When the harness exits (e.g. `claude` quits), the auto-started node is cleaned up automatically.
-
-### goose
-
-[Goose](https://github.com/block/goose) is available as both CLI (`goose session`) and desktop app (Goose.app).
-
-```bash
-mesh-llm goose
-```
-
-Use a specific model (example: MiniMax):
-
-```bash
-mesh-llm goose --model MiniMax-M2.5-Q4_K_M
-```
-
-This command writes/updates `~/.config/goose/custom_providers/mesh.json` and launches Goose.
-
-### opencode
-
-OpenCode uses a temporary provider config injected by Mesh, so you don't need to edit local config files by hand. For the full advanced or manual setup, see [docs/AGENTS.md](docs/AGENTS.md).
-
-```bash
-mesh-llm opencode
-```
-
-Point OpenCode at a different mesh host or URL:
-
-```bash
-mesh-llm opencode --host https://mesh.example.com
-```
-
-Use a specific model (example: MiniMax):
-
-```bash
-mesh-llm opencode --host 127.0.0.1:9337 --model MiniMax-M2.5-Q4_K_M
-```
-
-Write or update a merged persistent OpenCode config:
-
-```bash
-mesh-llm opencode --write --host 127.0.0.1:9337
-```
-
-### pi
-
-```bash
-mesh-llm pi
-```
-
-Use a specific model:
-
-```bash
-mesh-llm pi --model MiniMax-M2.5-Q4_K_M
-```
-
-This writes every model from the mesh into `~/.pi/agent/models.json` with model context sizes when available, then launches pi.
-
-Write or update the Pi provider config without launching pi:
-
-```bash
-mesh-llm pi --write
-```
-
-Target a remote mesh host or URL, including a custom port:
-
-```bash
-mesh-llm pi --write --host carrack.patio51.com:9337
-```
-
-### External OpenAI-compatible backends (vLLM, TGI, Ollama, Lemonade, etc.)
-
-The `openai-endpoint` plugin routes inference to any server that speaks the OpenAI `/v1/chat/completions` API. The server does all the inference work — mesh-llm just discovers its models and routes requests to it.
-
-Enable the plugin in `~/.mesh-llm/config.toml` with the URL:
-
-```toml
-# vLLM
-[[plugin]]
-name = "openai-endpoint"
-url = "http://gpu-box:8000/v1"
-
-# Ollama
-[[plugin]]
-name = "openai-endpoint"
-url = "http://localhost:11434/v1"
-
-# Lemonade
-[[plugin]]
-name = "openai-endpoint"
-url = "http://localhost:8000/api/v1"
-```
-
-```bash
-mesh-llm serve
-```
-
-The URL can also be set via `MESH_LLM_OPENAI_ENDPOINT_URL` env var (config takes precedence). Default: `http://localhost:8000/v1`. The plugin health-checks the backend by probing `GET /v1/models` — models appear and disappear automatically as the backend starts and stops.
-
-To use an external backend without loading any llama.cpp models:
-
-```bash
-mesh-llm client
-```
-
-If you want the mesh to be discoverable via `--auto`, publish it:
-
-```bash
-mesh-llm serve --model Qwen2.5-32B --publish
-```
-
-### 3. Add another machine
-
-```bash
-mesh-llm serve --join <token>
-```
-
-Use `mesh-llm client` if the machine should join without serving a model:
-
-```bash
-mesh-llm client --join <token>
-```
-
-### 4. Create a named mesh for a group
-
-```bash
-mesh-llm serve --auto --model GLM-4.7-Flash-Q4_K_M --mesh-name "poker-night" --publish
-```
-
-Everyone runs the same command. The first node creates the mesh, the rest discover and join it automatically. Others can also join with `mesh-llm serve --discover "poker-night"` or `mesh-llm client --discover "poker-night"`. Use `--publish` so your named mesh appears in Nostr discovery; without it you must share the invite token manually.
-
-### 5. Serve more than one model
-
-```bash
-mesh-llm serve --model Qwen2.5-32B --model GLM-4.7-Flash
-```
-
-Requests are routed by the `model` field:
-
-```bash
-curl localhost:9337/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"GLM-4.7-Flash-Q4_K_M","messages":[{"role":"user","content":"hello"}]}'
-```
-
-## How it works
-
-Mesh LLM keeps the user-facing surface simple: talk to `localhost:9337`, pick a model, and let the mesh decide how to serve it.
-
-- If a model fits on one machine, it runs there with no network overhead.
-- If a dense model does not fit, layers are split across low-latency peers.
-- Different nodes can serve different models at the same time.
-
-Each node also exposes a management API and web console on port `3131`.
-
-## Install notes
-
-The installer currently targets macOS and Linux release bundles. Windows coming soon.
-
-To force a specific bundled flavor during install:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Mesh-LLM/mesh-llm/main/install.sh | MESH_LLM_INSTALL_FLAVOR=vulkan bash
-```
-
-Installed release bundles use flavor-specific llama.cpp binaries:
-
-- macOS: `metal`
-- Linux: `cpu`, `cuda` (primary CUDA lane, built on the CUDA 12.6.3 toolkit; compatible with NVIDIA R535+ drivers; sm_75..sm_90 Turing–Hopper), `cuda-blackwell` (Blackwell lane, built on the CUDA 12.8 toolkit; requires R550+ drivers; adds sm_100/120 — sm_103 is a later CUDA release), `rocm`, `vulkan`
-- Linux ARM64 CPU: `cpu` (asset triple: `aarch64-unknown-linux-gnu`)
-
-For release and install naming, `arm64` and `aarch64` both refer to the same 64-bit ARM target. Generic 32-bit ARM is not a published release target.
-
-To update a bundle install to the latest release:
-
-```bash
-mesh-llm update
-```
-
-To install a specific bundled release tag:
-
-```bash
-mesh-llm update --version v0.X.Y
-```
-
-If you build from source, always use `just`:
-
-```bash
-git clone https://github.com/Mesh-LLM/mesh-llm
-cd mesh-llm
-just build
-```
-
-Requirements and backend-specific build notes are in [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## Web console
-
-When a node is running, open:
-
-```text
-http://localhost:3131
-```
-
-The console shows live topology with only `Client`, `Standby`, `Loading`, and `Serving` badges for live members, plus separate wakeable capacity, VRAM usage, loaded models, and built-in chat. Wakeable inventory is not part of topology peers or routing until it rejoins. It is backed by `/api/status` and `/api/events`.
-
-To run without the embedded UI (for example, in a headless server environment), pass `--headless`:
-
-```bash
-mesh-llm serve --model Qwen2.5-3B --headless
-```
-
-In headless mode, the web console routes (`/`, `/dashboard`, `/chat`) return 404. The management API (`/api/*`) stays fully available on the `--console` port.
-
-You can also try the hosted demo:
-
-**[mesh-llm-console.fly.dev](https://mesh-llm-console.fly.dev/)**
-
-## More docs
-
-- [docs/README.md](docs/README.md) for the docs map and topic directories
-- [docs/USAGE.md](docs/USAGE.md) for service installs, model commands, storage, and runtime control
-- [docs/AGENTS.md](docs/AGENTS.md) for Goose, Claude Code, pi, OpenCode, curl, and blackboard usage
-- [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for benchmark numbers and context
-- [CONTRIBUTING.md](CONTRIBUTING.md) for local development and build workflows
-- [docs/plugins/README.md](docs/plugins/README.md) for the plugin system and blackboard internals
-- [docs/design/VIRTUAL_LLM.md](docs/design/VIRTUAL_LLM.md) for inter-model collaboration design
-- [crates/mesh-llm/README.md](crates/mesh-llm/README.md) for Rust crate structure
-- [crates/mesh-llm-identity/README.md](crates/mesh-llm-identity/README.md) for shared owner identity and envelope crypto
-- [crates/mesh-llm-protocol/README.md](crates/mesh-llm-protocol/README.md) for shared mesh wire protocol types and frame helpers
-- [crates/mesh-llm-routing/README.md](crates/mesh-llm-routing/README.md) for shared routing targets and model placement helpers
-- [crates/mesh-llm-types/README.md](crates/mesh-llm-types/README.md) for shared protocol-facing model and mesh data types
-- [crates/mesh-llm-ui/README.md](crates/mesh-llm-ui/README.md) for web console source, build, and embedded asset ownership
-- [ROADMAP.md](ROADMAP.md) for future work
+Source builds require `just`, `cmake`, Rust, and Node.js 24 + npm. CUDA builds
+need `nvcc`, ROCm builds need ROCm/HIP, and Vulkan builds need Vulkan dev files
+plus `glslc`.
+
+## Documentation hub
+
+| Doc | Use it for |
+|---|---|
+| [docs/MESHES.md](docs/MESHES.md) | Private meshes, public discovery, publishing, invite tokens, API-only clients |
+| [docs/SKIPPY_SPLITS.md](docs/SKIPPY_SPLITS.md) | Running big models with package-backed Skippy stage splits |
+| [docs/LAYER_PACKAGE_REPOS.md](docs/LAYER_PACKAGE_REPOS.md) | Contributing and publishing layer package repositories |
+| [docs/AGENTS.md](docs/AGENTS.md) | Goose, Claude Code, OpenCode, Pi, curl, and blackboard |
+| [docs/EXO_COMPARISON.md](docs/EXO_COMPARISON.md) | Balanced comparison with Exo |
+| [docs/CLI.md](docs/CLI.md) | Command reference and JSON automation |
+| [docs/USAGE.md](docs/USAGE.md) | Longer operational usage guide |
+| [docs/skippy/FAMILY_STATUS.md](docs/skippy/FAMILY_STATUS.md) | Certified Skippy model-family status |
+| [docs/specs/layer-package-repos.md](docs/specs/layer-package-repos.md) | Manifest and artifact format spec |
 
 ## Community
 
-Join the [#mesh-llm channel on the Goose Discord](https://discord.gg/goose-oss) for discussion and support.
+Mesh LLM is experimental distributed-systems software. When you report bugs,
+include the command you ran, platform/backend flavor, `/api/status` output if
+available, and whether the node was private, published, or joined with `--auto`.

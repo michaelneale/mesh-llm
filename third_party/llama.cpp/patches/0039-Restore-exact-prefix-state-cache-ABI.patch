@@ -1,7 +1,7 @@
-From d1c439cb92fad7ed0affc2358e076912936f4f96 Mon Sep 17 00:00:00 2001
+From 99f9337e160cbd8aff82b314f0c0dfca542e714d Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Tue, 5 May 2026 08:21:34 +1000
-Subject: [PATCH 39/46] Restore exact prefix state cache ABI
+Subject: [PATCH 39/80] Restore exact prefix state cache ABI
 
 ---
  include/skippy.h       |  91 ++++++++-
@@ -1003,3 +1003,4 @@ index 3002b720..56ab40d7 100644
          uint64_t token_count,
 -- 
 2.50.1 (Apple Git-155)
+

@@ -1,8 +1,8 @@
 # Benchmark Corpus
 
-This document records the first production-style corpus plan for staged prefill
-and TTFT benchmarks. The goal is to cover realistic prompt shapes without
-turning every run into an all-day evaluation.
+Use this production-style corpus plan for staged prefill and TTFT benchmarks.
+The goal is to cover realistic prompt shapes without turning every run into an
+all-day evaluation.
 
 ## First Corpus Shape
 

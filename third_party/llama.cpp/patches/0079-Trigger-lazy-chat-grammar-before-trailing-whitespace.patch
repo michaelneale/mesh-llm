@@ -1,7 +1,7 @@
-From 0f3e85111332c4d664835eb6e2d92c9bc536e09d Mon Sep 17 00:00:00 2001
+From f97e709f4548541af1d847042f0a32bddaa57e51 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Sat, 9 May 2026 13:58:47 +1000
-Subject: [PATCH] Trigger lazy chat grammar before trailing whitespace
+Subject: [PATCH 79/80] Trigger lazy chat grammar before trailing whitespace
 
 ---
  common/chat-auto-parser-generator.cpp | 14 +++++++++++++-
@@ -9,7 +9,7 @@ Subject: [PATCH] Trigger lazy chat grammar before trailing whitespace
  2 files changed, 39 insertions(+), 2 deletions(-)
 
 diff --git a/common/chat-auto-parser-generator.cpp b/common/chat-auto-parser-generator.cpp
-index 2fac0ea5..1e07043b 100644
+index 6021fc4e..23a06ed0 100644
 --- a/common/chat-auto-parser-generator.cpp
 +++ b/common/chat-auto-parser-generator.cpp
 @@ -23,6 +23,18 @@ static void foreach_function(const json & tools, const std::function<void(const

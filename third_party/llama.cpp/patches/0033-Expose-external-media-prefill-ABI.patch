@@ -1,7 +1,7 @@
-From 7db41c4b00ea8a7423c5992227ee151259459d74 Mon Sep 17 00:00:00 2001
+From 4b0b00d3a63f554a294d46a9678c50cccc7a6804 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Sat, 2 May 2026 16:10:53 +1000
-Subject: [PATCH 33/45] Expose external media prefill ABI
+Subject: [PATCH 33/80] Expose external media prefill ABI
 
 ---
  include/skippy.h | 35 +++++++++++++++++++-

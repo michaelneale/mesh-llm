@@ -8,7 +8,11 @@ This repo (`mesh-llm`) contains mesh-llm — a Rust binary that pools GPUs over 
 
 | Doc | What it covers |
 |---|---|
-| `README.md` | Usage, install, CLI flags, examples |
+| `README.md` | Quickstart and documentation hub |
+| `docs/MESHES.md` | Public/private meshes, publishing, discovery, join flows |
+| `docs/SKIPPY_SPLITS.md` | Running big models with Skippy split serving |
+| `docs/LAYER_PACKAGE_REPOS.md` | Contributing and publishing layer package repos |
+| `docs/EXO_COMPARISON.md` | mesh-llm vs Exo comparison |
 | `CONTRIBUTING.md` | Build from source, dev workflow, UI dev |
 | `RELEASE.md` | Release process (build, bundle, tag, GitHub release) |
 | `ROADMAP.md` | Future directions |
@@ -25,7 +29,7 @@ This repo (`mesh-llm`) contains mesh-llm — a Rust binary that pools GPUs over 
 | `docs/moe/README.md` | MoE analyzer, placement, and CLI planning notes |
 | `docs/plugins/README.md` | Plugin architecture and plugin development |
 | `fly/README.md` | Fly.io deployment (console + API apps) |
-| `tools/relay-fly-legacy/README.md` | Legacy self-hosted iroh relay (not in use — now using services.iroh.computer) |
+| `tools/relay-fly-legacy/README.md` | Archived self-hosted iroh relay reference; production uses services.iroh.computer |
 
 ## Building
 
@@ -34,7 +38,7 @@ Always use `just`. Never build manually.
 ```bash
 just build    # llama.cpp fork + mesh-llm + UI
 just bundle   # portable tarball
-just stop     # kill mesh/rpc/llama processes
+just stop     # stop tracked mesh-llm runtime processes
 just test     # quick inference test against :9337
 just auto     # build + stop + start with --auto
 just ui-dev   # vite dev server with HMR
@@ -76,7 +80,7 @@ libraries. The only durable llama.cpp patch queue is
 - `docs/moe/` — MoE ranking, placement, and CLI plans
 - `docs/plugins/` — Plugin architecture docs and plans
 - `fly/` — Fly.io deployment (console + API client apps)
-- `tools/relay-fly-legacy/` — Legacy self-hosted iroh relay (not in use — now using services.iroh.computer)
+- `tools/relay-fly-legacy/` — Archived self-hosted iroh relay reference; production uses services.iroh.computer
 - `evals/` — Benchmarking and evaluation scripts
 
 ## Module Structure Rules
@@ -158,13 +162,13 @@ Current structure notes.
 - `crates/mesh-llm/src/runtime/mod.rs` — Top-level startup flows, runtime orchestration, and command dispatch
 - `crates/mesh-llm/src/mesh/mod.rs` — `Node` struct, gossip, mesh_id, peer management
 - `crates/mesh-llm/src/inference/election.rs` — Host election, tensor split calculation
-- `crates/mesh-llm/src/inference/launch.rs` — llama-server/rpc-server process management
+- `crates/mesh-llm/src/inference/skippy/` — Embedded staged runtime integration
 - `crates/mesh-llm/src/inference/moe.rs` — MoE detection, expert rankings, split orchestration
 - `crates/mesh-llm/src/network/proxy.rs` — HTTP proxy: request parsing, model routing, response helpers
 - `crates/mesh-llm/src/network/router.rs` — Request classification, model scoring, multimodal routing
 - `crates/mesh-llm/src/network/nostr.rs` — Nostr discovery, `score_mesh()`, `smart_auto()`
 - `crates/mesh-llm/src/network/tunnel.rs` — TCP ↔ QUIC relay (RPC + HTTP)
-- `crates/mesh-llm/src/api/mod.rs` — Management API (:3131): `/api/status`, `/api/events`, `/api/discover`, `/api/join`
+- `crates/mesh-llm/src/api/mod.rs` — Management API (:3131): `/api/status`, `/api/events`, `/api/discover`
 - `crates/mesh-llm/src/models/catalog.rs` — Model catalog, HuggingFace downloads
 - `crates/mesh-llm/src/models/capabilities.rs` — Multimodal/vision/audio/reasoning capability inference
 - `crates/mesh-llm/src/plugins/blobstore/mod.rs` — Request-scoped media object storage for multimodal
@@ -322,8 +326,7 @@ bash -c './target/debug/mesh-llm serve --model "..." --auto > /tmp/mesh.log 2>&1
 ### Debugging Embedded Runtime Startup
 
 If the embedded runtime fails to load, check mesh-llm stderr/log output and
-`~/.mesh-llm/runtime/` for the active instance metadata. The old external
-`llama-server` and `rpc-server` log files are no longer produced. Embedded
+`~/.mesh-llm/runtime/` for the active instance metadata. Embedded
 skippy/llama.cpp native logs are redirected away from the TUI into the active
 instance runtime directory:
 

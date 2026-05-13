@@ -26,11 +26,13 @@ Relay connections degrade over hours on some nodes (Studio pattern: fresh=250ms,
 
 ## Production relay infrastructure
 
-mesh-llm now uses managed iroh relays via [services.iroh.computer](https://services.iroh.computer) as the default:
+mesh-llm uses managed iroh relays via [services.iroh.computer](https://services.iroh.computer) as the default:
 - `usw1-2.relay.michaelneale.mesh-llm.iroh.link` (US West)
 - `aps1-1.relay.michaelneale.mesh-llm.iroh.link` (Asia-Pacific South)
 
-The old self-hosted Fly.io relay (`tools/relay-fly-legacy/`) is no longer in use. Adding more relay regions may help with the relay decay issue above.
+Relay operations use managed iroh relays by default; `tools/relay-fly-legacy/`
+is an archived reference. Adding more relay regions may help with the relay
+decay issue above.
 
 ## Agent launcher
 
@@ -44,13 +46,16 @@ mesh-llm run opencode       # opencode pointed at mesh API
 
 We already print launch commands when the mesh is ready and show them in the web console. There's also a native Goose provider (`micn/mesh-provider-v2` branch on `block/goose`) with emulated tool calling.
 
-## Single binary distribution
+## Runtime distribution
 
-Currently ships as a 3-binary bundle (`mesh-llm` + `llama-server` + `rpc-server`). Could compile llama.cpp directly into the Rust binary via [llama-cpp-2](https://crates.io/crates/llama-cpp-2) — one binary, no bundle.
+Release bundles ship the `mesh-llm` host binary plus flavor-specific native
+runtime libraries. Future packaging work can keep reducing bundle complexity
+while preserving the embedded Skippy/llama.cpp runtime path.
 
 ## MoE expert sharding ✅
 
-Implemented. Auto-detects MoE, computes overlapping expert assignments, splits locally, session-sticky routing. Zero cross-node traffic. See [MoE_PLAN.md](docs/design/MoE_PLAN.md).
+Implemented. Auto-detects MoE, computes overlapping expert assignments, splits
+locally, and uses session-sticky routing with zero cross-node expert traffic.
 
 Remaining: optimized rankings for unknown models, scale testing on Mixtral 8×22B / Qwen3-235B.
 
