@@ -1,7 +1,7 @@
-From dc720bdafa008f6664e1b35320b50efefd5abfac Mon Sep 17 00:00:00 2001
+From feaddd89973486ad154d009fdfd9959d84bb6eb3 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Thu, 7 May 2026 18:14:02 +1000
-Subject: [PATCH] Expose external decode stage filter ABI
+Subject: [PATCH 71/80] Expose external decode stage filter ABI
 
 ---
  include/skippy.h |  8 ++++++++

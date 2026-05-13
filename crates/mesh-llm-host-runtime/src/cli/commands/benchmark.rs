@@ -1,6 +1,7 @@
 use anyhow::Result;
 
-use crate::cli::benchmark::{BenchmarkCommand, PromptImportSource};
+use crate::cli::benchmark::{BenchmarkCommand, GpuBenchmarkBackend, PromptImportSource};
+use crate::system::benchmark;
 use crate::system::benchmark_prompts::{self, ImportPromptsArgs};
 
 pub(crate) async fn dispatch_benchmark_command(command: &BenchmarkCommand) -> Result<()> {
@@ -20,6 +21,20 @@ pub(crate) async fn dispatch_benchmark_command(command: &BenchmarkCommand) -> Re
             };
             benchmark_prompts::import_prompt_corpus(args).await
         }
+        BenchmarkCommand::RunGpu { backend } => {
+            let outputs = benchmark::run_backend_by_name(map_gpu_backend(*backend))?;
+            println!("{}", serde_json::to_string(&outputs)?);
+            Ok(())
+        }
+    }
+}
+
+fn map_gpu_backend(backend: GpuBenchmarkBackend) -> &'static str {
+    match backend {
+        GpuBenchmarkBackend::Metal => "metal",
+        GpuBenchmarkBackend::Cuda => "cuda",
+        GpuBenchmarkBackend::Hip => "hip",
+        GpuBenchmarkBackend::Intel => "intel",
     }
 }
 

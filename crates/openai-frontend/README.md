@@ -21,7 +21,7 @@ logprobs, and `/v1/responses` are parsed and normalized here; backend support
 is advertised or rejected explicitly by the runtime adapter.
 
 For the concrete benchy command and contract, see
-[`docs/LLAMA_BENCHY.md`](../../docs/LLAMA_BENCHY.md).
+[`docs/skippy/LLAMA_BENCHY.md`](../../docs/skippy/LLAMA_BENCHY.md).
 
 ## Supported API Surface
 

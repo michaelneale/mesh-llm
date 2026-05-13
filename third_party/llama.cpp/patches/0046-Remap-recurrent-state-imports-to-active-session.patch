@@ -1,7 +1,7 @@
-From 539ce2b9462a09a513cac60ace678a2579a4ad94 Mon Sep 17 00:00:00 2001
+From 2495cf73c41bddf7688bc477324c9656e11af4f7 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Wed, 6 May 2026 21:03:48 +1000
-Subject: [PATCH] Remap recurrent state imports to active session
+Subject: [PATCH 46/80] Remap recurrent state imports to active session
 
 ---
  src/skippy.cpp | 16 +++++++++++++---
@@ -41,3 +41,4 @@ index 4486ad78..1f6fe94a 100644
      }
 -- 
 2.50.1 (Apple Git-155)
+

@@ -1,14 +1,17 @@
+use std::collections::BTreeSet;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::fs::{File, OpenOptions};
 use std::io::{LineWriter, Write};
 use std::path::Path;
 use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 
 use anyhow::{anyhow, Context, Result};
+use serde_json::Value;
 use skippy_ffi::{
     ActivationDType, ActivationDesc as RawActivationDesc, ActivationLayout,
     ChatMessage as RawChatMessage, Error as RawError,
@@ -18,7 +21,9 @@ use skippy_ffi::{
     SlicePlan as RawSlicePlan, Status, TensorInfo as RawTensorInfo, TensorRole,
     TokenSignal as RawTokenSignal,
 };
+use tokio::sync::mpsc;
 
+mod devices;
 pub mod package;
 
 pub const MAX_LOGIT_BIAS: usize = 256;
@@ -27,6 +32,10 @@ pub const GGML_TYPE_Q4_0: u32 = 2;
 pub const GGML_TYPE_Q8_0: u32 = 8;
 pub const LLAMA_SERVER_DEFAULT_N_BATCH: u32 = 2048;
 pub const LLAMA_SERVER_DEFAULT_N_UBATCH: u32 = 512;
+
+/// GGML_LLAMA_LOG_LEVEL values (set before llama_backend_init).
+/// 0=silent, 1=error, 2=warn, 3=info (default), 4=debug.
+pub const LLAMA_LOG_LEVEL_DEBUG: &str = "4";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[repr(i32)]
@@ -37,6 +46,7 @@ pub enum FlashAttentionType {
     Enabled = 1,
 }
 
+pub use devices::{backend_devices, BackendDevice, BackendDeviceType};
 pub use skippy_ffi::LoadMode as RuntimeLoadMode;
 pub use skippy_ffi::{
     ActivationDType as RuntimeActivationDType, ActivationLayout as RuntimeActivationLayout,
@@ -44,8 +54,547 @@ pub use skippy_ffi::{
 
 static NATIVE_LOG_FILE: OnceLock<Mutex<Option<LineWriter<File>>>> = OnceLock::new();
 
+/// Channel sender for filtered native log messages.
+/// Messages matching key patterns (backend init, model load, VRAM, KV cache, tokenizer) are sent here.
+static NATIVE_LOG_FILTERED_TX: OnceLock<Mutex<Option<mpsc::UnboundedSender<NativeLogEvent>>>> =
+    OnceLock::new();
+
+static NATIVE_LOG_AGGREGATOR: OnceLock<Mutex<NativeLogAggregator>> = OnceLock::new();
+static NATIVE_LOG_FORWARDING_ENABLED: AtomicBool = AtomicBool::new(false);
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NativeLogEvent {
+    pub message: String,
+    pub category: &'static str,
+    pub params: Vec<(String, Value)>,
+}
+
+#[derive(Debug, Default)]
+struct ProgressTracker {
+    total: Option<usize>,
+    completed: usize,
+    next_percent: usize,
+}
+
+impl ProgressTracker {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    fn set_total(&mut self, total: usize) {
+        self.total = Some(total);
+        self.completed = 0;
+        self.next_percent = 10;
+    }
+
+    fn advance(
+        &mut self,
+        delta: usize,
+        category: &'static str,
+        label: &'static str,
+        unit: &'static str,
+    ) -> Vec<NativeLogEvent> {
+        let Some(total) = self.total else {
+            return Vec::new();
+        };
+        if total == 0 {
+            return Vec::new();
+        }
+
+        self.completed = self.completed.saturating_add(delta).min(total);
+        let mut events = Vec::new();
+        while self.next_percent <= 100 && self.completed * 100 >= total * self.next_percent {
+            events.push(NativeLogEvent {
+                message: format!(
+                    "{label} {}% ({}/{} {unit})",
+                    self.next_percent, self.completed, total
+                ),
+                category,
+                params: Vec::new(),
+            });
+            self.next_percent += 10;
+        }
+        events
+    }
+
+    fn is_complete(&self) -> bool {
+        matches!(self.total, Some(total) if total > 0 && self.completed >= total)
+    }
+}
+
+#[derive(Debug, Default)]
+struct ModelMetadataHighlights {
+    architecture: Option<String>,
+    name: Option<String>,
+    model_type: Option<String>,
+    size_label: Option<String>,
+    context_length: Option<String>,
+    block_count: Option<String>,
+    embedding_length: Option<String>,
+    feed_forward_length: Option<String>,
+    attention_heads: Option<String>,
+    attention_heads_kv: Option<String>,
+    tokenizer_model: Option<String>,
+    tokenizer_pre: Option<String>,
+}
+
+impl ModelMetadataHighlights {
+    fn apply(&mut self, key: &str, value: &str) {
+        let value = value.trim().trim_matches('"').to_string();
+        if value.is_empty() {
+            return;
+        }
+
+        match key {
+            "general.architecture" => self.architecture = Some(value),
+            "general.name" => self.name = Some(value),
+            "general.type" => self.model_type = Some(value),
+            "general.size_label" => self.size_label = Some(value),
+            "tokenizer.ggml.model" => self.tokenizer_model = Some(value),
+            "tokenizer.ggml.pre" => self.tokenizer_pre = Some(value),
+            _ if key.ends_with(".context_length") => self.context_length = Some(value),
+            _ if key.ends_with(".block_count") => self.block_count = Some(value),
+            _ if key.ends_with(".embedding_length") => self.embedding_length = Some(value),
+            _ if key.ends_with(".feed_forward_length") => self.feed_forward_length = Some(value),
+            _ if key.ends_with(".attention.head_count") => self.attention_heads = Some(value),
+            _ if key.ends_with(".attention.head_count_kv") => self.attention_heads_kv = Some(value),
+            _ => {}
+        }
+    }
+
+    fn summary_params(&self) -> Vec<(String, Value)> {
+        let mut params = Vec::new();
+        if let Some(value) = &self.architecture {
+            params.push(("architecture".to_string(), Value::String(value.clone())));
+        }
+        if let Some(value) = &self.name {
+            params.push(("name".to_string(), Value::String(value.clone())));
+        }
+        if let Some(value) = &self.model_type {
+            params.push(("type".to_string(), Value::String(value.clone())));
+        }
+        if let Some(value) = &self.size_label {
+            params.push(("size".to_string(), Value::String(value.clone())));
+        }
+        if let Some(value) = &self.context_length {
+            params.push(("ctx".to_string(), json_value_from_text(value)));
+        }
+        if let Some(value) = &self.block_count {
+            params.push(("blocks".to_string(), json_value_from_text(value)));
+        }
+        if let Some(value) = &self.embedding_length {
+            params.push(("embed".to_string(), json_value_from_text(value)));
+        }
+        if let Some(value) = &self.feed_forward_length {
+            params.push(("ffn".to_string(), json_value_from_text(value)));
+        }
+        if let Some(value) = &self.attention_heads {
+            params.push(("heads".to_string(), json_value_from_text(value)));
+        }
+        if let Some(value) = &self.attention_heads_kv {
+            params.push(("kv_heads".to_string(), json_value_from_text(value)));
+        }
+        if let Some(value) = &self.tokenizer_model {
+            params.push(("tokenizer".to_string(), Value::String(value.clone())));
+        }
+        if let Some(value) = &self.tokenizer_pre {
+            params.push(("tokenizer_pre".to_string(), Value::String(value.clone())));
+        }
+        params
+    }
+}
+
+#[derive(Debug, Default)]
+struct NativeLogAggregator {
+    metadata_progress: ProgressTracker,
+    tensor_progress: ProgressTracker,
+    layer_assign_progress: ProgressTracker,
+    kv_cache_progress: ProgressTracker,
+    metadata_in_dump: bool,
+    metadata_summary_emitted: bool,
+    metadata_highlights: ModelMetadataHighlights,
+    tensor_groups: Vec<(String, usize)>,
+    tensor_groups_emitted: bool,
+    kv_layers_seen: BTreeSet<usize>,
+}
+
 fn native_log_file() -> &'static Mutex<Option<LineWriter<File>>> {
     NATIVE_LOG_FILE.get_or_init(|| Mutex::new(None))
+}
+
+fn native_log_aggregator() -> &'static Mutex<NativeLogAggregator> {
+    NATIVE_LOG_AGGREGATOR.get_or_init(|| Mutex::new(NativeLogAggregator::default()))
+}
+
+/// Register a channel receiver for filtered native log messages.
+/// Returns the receiver end; call this once before model loading begins.
+pub fn register_filtered_native_logs() -> mpsc::UnboundedReceiver<NativeLogEvent> {
+    let (tx, rx) = mpsc::unbounded_channel();
+    NATIVE_LOG_FILTERED_TX
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap()
+        .replace(tx);
+    if let Ok(mut aggregator) = native_log_aggregator().lock() {
+        aggregator.reset();
+    }
+    rx
+}
+
+pub fn unregister_filtered_native_logs() {
+    if let Some(sender) = NATIVE_LOG_FILTERED_TX.get() {
+        sender.lock().unwrap().take();
+    }
+    if let Ok(mut aggregator) = native_log_aggregator().lock() {
+        aggregator.reset();
+    }
+}
+
+pub fn set_filtered_native_logs_enabled(enabled: bool) {
+    NATIVE_LOG_FORWARDING_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+impl NativeLogAggregator {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    fn reset_model_loading_state(&mut self) {
+        self.metadata_progress.reset();
+        self.tensor_progress.reset();
+        self.layer_assign_progress.reset();
+        self.kv_cache_progress.reset();
+        self.metadata_in_dump = false;
+        self.metadata_summary_emitted = false;
+        self.metadata_highlights = ModelMetadataHighlights::default();
+        self.tensor_groups.clear();
+        self.tensor_groups_emitted = false;
+        self.kv_layers_seen.clear();
+    }
+
+    fn process_line(&mut self, line: &str) -> Vec<NativeLogEvent> {
+        let s = line.trim();
+        if s.is_empty() {
+            return Vec::new();
+        }
+
+        let mut events = Vec::new();
+        let metadata_kv = parse_metadata_kv_line(s);
+        let tensor_summary = parse_tensor_type_summary(s);
+        if metadata_kv.is_none() {
+            events.extend(self.flush_metadata_summary());
+        }
+        if tensor_summary.is_none() {
+            events.extend(self.flush_tensor_group_summary());
+        }
+
+        if let Some((metadata_rows, tensor_rows)) = parse_loaded_metadata_counts(s) {
+            self.reset_model_loading_state();
+            self.metadata_progress.set_total(metadata_rows);
+            self.tensor_progress.set_total(tensor_rows);
+            events.push(NativeLogEvent {
+                message: format!(
+                    "model load plan: metadata rows={metadata_rows}, tensor rows={tensor_rows}"
+                ),
+                category: "model",
+                params: Vec::new(),
+            });
+            return events;
+        }
+
+        if let Some((key, value)) = metadata_kv {
+            self.metadata_in_dump = true;
+            self.metadata_highlights.apply(key, value);
+            events.extend(
+                self.metadata_progress
+                    .advance(1, "model", "metadata", "rows"),
+            );
+            return events;
+        }
+
+        if let Some((tensor_type, count)) = tensor_summary {
+            self.record_tensor_group(tensor_type, count);
+            events.extend(
+                self.tensor_progress
+                    .advance(count, "model", "tensors", "tensors"),
+            );
+            if self.tensor_progress.is_complete() {
+                events.extend(self.flush_tensor_group_summary());
+            }
+            return events;
+        }
+
+        if let Some(layers) = parse_kv_cache_layers_total(s) {
+            self.kv_cache_progress.set_total(layers);
+            self.kv_layers_seen.clear();
+            events.push(NativeLogEvent {
+                message: format!("kv cache plan: layer rows={layers}"),
+                category: "kv_cache",
+                params: Vec::new(),
+            });
+            return events;
+        }
+
+        if let Some(layer_index) = parse_kv_cache_layer_index(s) {
+            if self.kv_layers_seen.insert(layer_index) {
+                events.extend(
+                    self.kv_cache_progress
+                        .advance(1, "kv_cache", "kv cache", "layers"),
+                );
+            }
+            return events;
+        }
+
+        if let Some(layer_index) = parse_layer_assign_index(s) {
+            if self.layer_assign_progress.total.is_none() {
+                if let Some(total) = self
+                    .metadata_highlights
+                    .block_count
+                    .as_deref()
+                    .and_then(|s| s.parse::<usize>().ok())
+                {
+                    self.layer_assign_progress.set_total(total);
+                }
+            }
+            let new_completed = layer_index + 1;
+            if new_completed > self.layer_assign_progress.completed {
+                let delta = new_completed - self.layer_assign_progress.completed;
+                events.extend(
+                    self.layer_assign_progress
+                        .advance(delta, "model", "layers", "layers"),
+                );
+            }
+            return events;
+        }
+
+        if should_suppress_native_log_line(s) {
+            return events;
+        }
+
+        if let Some(event) = summarize_native_log_line(s) {
+            events.push(event);
+        }
+
+        events
+    }
+
+    fn flush_metadata_summary(&mut self) -> Vec<NativeLogEvent> {
+        if !self.metadata_in_dump || self.metadata_summary_emitted {
+            return Vec::new();
+        }
+        self.metadata_in_dump = false;
+        self.metadata_summary_emitted = true;
+        let params = self.metadata_highlights.summary_params();
+        if params.is_empty() {
+            Vec::new()
+        } else {
+            vec![NativeLogEvent {
+                message: "Reading model metadata...".to_string(),
+                category: "model",
+                params,
+            }]
+        }
+    }
+
+    fn record_tensor_group(&mut self, tensor_type: &str, count: usize) {
+        let tensor_type = canonical_tensor_group_key(tensor_type);
+        if let Some((_, existing_count)) = self
+            .tensor_groups
+            .iter_mut()
+            .find(|(existing_type, _)| existing_type == &tensor_type)
+        {
+            *existing_count = count;
+        } else {
+            self.tensor_groups.push((tensor_type, count));
+        }
+        self.tensor_groups_emitted = false;
+    }
+
+    fn flush_tensor_group_summary(&mut self) -> Vec<NativeLogEvent> {
+        if self.tensor_groups.is_empty() || self.tensor_groups_emitted {
+            return Vec::new();
+        }
+        self.tensor_groups_emitted = true;
+        vec![NativeLogEvent {
+            message: "Reading tensor groups...".to_string(),
+            category: "model",
+            params: self
+                .tensor_groups
+                .iter()
+                .map(|(tensor_type, count)| (tensor_type.clone(), Value::from(*count as u64)))
+                .collect(),
+        }]
+    }
+}
+
+fn json_value_from_text(value: &str) -> Value {
+    value
+        .parse::<u64>()
+        .map(Value::from)
+        .unwrap_or_else(|_| Value::String(value.to_string()))
+}
+
+fn canonical_tensor_group_key(tensor_type: &str) -> String {
+    let trimmed = tensor_type.trim();
+    if trimmed.eq_ignore_ascii_case("q4_k") {
+        "q4_K".to_string()
+    } else if trimmed.eq_ignore_ascii_case("q5_k") {
+        "q5_K".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn should_suppress_native_log_line(line: &str) -> bool {
+    line.starts_with("llama_model_loader:") && (line.contains(": - kv") || line.contains("- kv"))
+        || (line.starts_with("clip_model_loader:") && line.contains(": tensor["))
+        || line.contains("tokenizer.ggml.tokens arr")
+        || line.contains("tokenizer.ggml.merges arr")
+        || line.contains("tokenizer.ggml.token_type arr")
+        || line.starts_with("print_info:")
+        || (line.starts_with("llama_kv_cache:")
+            && (line.contains(": filtered") || line.contains(": dev =")))
+}
+
+fn summarize_native_log_line(line: &str) -> Option<NativeLogEvent> {
+    if line.contains("backend_init")
+        || line.contains("llama_backend_init")
+        || line.contains("GGML_CUDA")
+        || (line.contains("CUDA") && (line.contains("init") || line.contains("device")))
+        || (line.contains("metal") && (line.contains("init") || line.contains("device")))
+    {
+        return Some(NativeLogEvent {
+            message: line.to_string(),
+            category: "backend",
+            params: Vec::new(),
+        });
+    }
+
+    if line.contains(".gguf loaded")
+        || line.starts_with("llm_load_print_meta")
+        || line.starts_with("llm_load_tensors")
+        || (line.contains("loading model") && !line.contains("clip_model"))
+        || (line.contains("loaded model") && !line.starts_with("llama_model_loader:"))
+    {
+        return Some(NativeLogEvent {
+            message: line.to_string(),
+            category: "model",
+            params: Vec::new(),
+        });
+    }
+
+    if line.contains("VRAM")
+        || line.contains("vram")
+        || line.contains("mem_alloc")
+        || line.contains("_Mapped model buffer size")
+        || (line.contains("GPU") && line.contains("memory"))
+        || line.contains("compute buffer size")
+        || line.contains("scratch buffer")
+    {
+        return Some(NativeLogEvent {
+            message: line.to_string(),
+            category: "memory",
+            params: Vec::new(),
+        });
+    }
+
+    if line.starts_with("llama_kv_cache:")
+        && (line.contains("buffer size") || line.contains("size = ") || line.contains("attn_rot"))
+    {
+        return Some(NativeLogEvent {
+            message: line.to_string(),
+            category: "kv_cache",
+            params: Vec::new(),
+        });
+    }
+
+    if line.starts_with("init_tokenizer:")
+        || line.starts_with("load: special tokens cache size")
+        || line.starts_with("load: token to piece cache size")
+    {
+        return Some(NativeLogEvent {
+            message: line.to_string(),
+            category: "tokenizer",
+            params: Vec::new(),
+        });
+    }
+
+    None
+}
+
+fn parse_loaded_metadata_counts(line: &str) -> Option<(usize, usize)> {
+    let (_, remainder) = line.split_once("loaded meta data with ")?;
+    let (metadata_rows, remainder) = remainder.split_once(" key-value pairs and ")?;
+    let metadata_rows = metadata_rows.trim().parse().ok()?;
+    let (tensor_rows, _) = remainder.split_once(" tensors")?;
+    let tensor_rows = tensor_rows.trim().parse().ok()?;
+    Some((metadata_rows, tensor_rows))
+}
+
+fn parse_metadata_kv_line(line: &str) -> Option<(&str, &str)> {
+    if !line.starts_with("llama_model_loader:") || !line.contains("- kv") {
+        return None;
+    }
+    let (_, remainder) = line.split_once(": - kv")?;
+    let (_, remainder) = remainder.split_once(':')?;
+    let remainder = remainder.trim();
+    let (lhs, value) = remainder.split_once(" = ")?;
+    let key = lhs.split_whitespace().next()?;
+    Some((key, value.trim()))
+}
+
+fn parse_tensor_type_summary(line: &str) -> Option<(&str, usize)> {
+    if !line.starts_with("llama_model_loader:") || !line.contains("- type") {
+        return None;
+    }
+    let (_, remainder) = line.split_once("- type")?;
+    let remainder = remainder.trim();
+    let (tensor_type, count_and_suffix) = remainder.split_once(':')?;
+    let count = count_and_suffix.split_whitespace().next()?.parse().ok()?;
+    Some((tensor_type.trim(), count))
+}
+
+fn parse_layer_assign_index(line: &str) -> Option<usize> {
+    if !line.starts_with("load_tensors: layer") || !line.contains("assigned to device") {
+        return None;
+    }
+    let (_, remainder) = line.split_once("load_tensors: layer")?;
+    let digits = remainder
+        .trim_start()
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect::<String>();
+    (!digits.is_empty()).then(|| digits.parse().ok()).flatten()
+}
+
+fn parse_kv_cache_layers_total(line: &str) -> Option<usize> {
+    if !line.starts_with("llama_kv_cache:") || !line.contains(" layers") {
+        return None;
+    }
+    let prefix = line.split_once(" layers")?.0;
+    let digits = prefix
+        .chars()
+        .rev()
+        .skip_while(|ch| ch.is_whitespace())
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>();
+    (!digits.is_empty()).then(|| digits.parse().ok()).flatten()
+}
+
+fn parse_kv_cache_layer_index(line: &str) -> Option<usize> {
+    if !line.starts_with("llama_kv_cache: layer") {
+        return None;
+    }
+    let (_, remainder) = line.split_once("layer")?;
+    let digits = remainder
+        .trim_start()
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect::<String>();
+    (!digits.is_empty()).then(|| digits.parse().ok()).flatten()
 }
 
 fn flush_native_log_writer<W: Write>(writer: &mut Option<LineWriter<W>>) {
@@ -100,6 +649,17 @@ pub fn restore_native_logs() {
     set_native_log_callback(None);
 }
 
+/// Enable verbose llama.cpp logging. Call before `llama_backend_init()` / model loading.
+/// Sets GGML_LLAMA_LOG_LEVEL=4 so LLAMA_LOG_DEBUG macros produce output.
+pub fn enable_verbose_native_logs() {
+    std::env::set_var("GGML_LLAMA_LOG_LEVEL", LLAMA_LOG_LEVEL_DEBUG);
+}
+
+/// Disable verbose llama.cpp logging (restore default level).
+pub fn disable_verbose_native_logs() {
+    std::env::remove_var("GGML_LLAMA_LOG_LEVEL");
+}
+
 unsafe extern "C" fn write_native_log(_level: c_int, text: *const c_char, _user_data: *mut c_void) {
     if text.is_null() {
         return;
@@ -109,6 +669,28 @@ unsafe extern "C" fn write_native_log(_level: c_int, text: *const c_char, _user_
     if let Ok(mut guard) = native_log_file().lock() {
         if let Some(writer) = guard.as_mut() {
             let _ = writer.write_all(bytes);
+        }
+    }
+
+    // Also send aggregated messages through the channel when runtime forwarding is enabled.
+    if !NATIVE_LOG_FORWARDING_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+
+    if let Ok(text_str) = core::str::from_utf8(bytes) {
+        let events = if let Ok(mut aggregator) = native_log_aggregator().lock() {
+            aggregator.process_line(text_str.trim())
+        } else {
+            Vec::new()
+        };
+        if let Some(tx) = NATIVE_LOG_FILTERED_TX.get() {
+            if let Ok(guard) = tx.lock() {
+                if let Some(ref sender) = *guard {
+                    for event in events {
+                        let _ = sender.send(event);
+                    }
+                }
+            }
         }
     }
 }
@@ -692,6 +1274,13 @@ impl Drop for MediaProjector {
 }
 
 impl StageModel {
+    pub fn new_dummy() -> Self {
+        Self {
+            raw: std::ptr::null_mut(),
+            media: None,
+        }
+    }
+
     pub fn open(path: impl AsRef<Path>, config: &RuntimeConfig) -> Result<Self> {
         let path = path.as_ref();
         let path = CString::new(path.to_string_lossy().as_bytes())
@@ -2879,6 +3468,8 @@ fn free_error(error: *mut RawError) {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
+
     use std::{
         env,
         ffi::CString,
@@ -2892,13 +3483,24 @@ mod tests {
         },
         time::{SystemTime, UNIX_EPOCH},
     };
+    use tokio::sync::mpsc::error::TryRecvError;
 
     use super::{
-        flush_native_log_writer, parse_cache_type, redirect_native_logs_to_file,
-        restore_native_logs, write_native_log, ChatTemplateMessage, FlashAttentionType, ModelInfo,
+        flush_native_log_writer, parse_cache_type, parse_layer_assign_index,
+        redirect_native_logs_to_file, register_filtered_native_logs, restore_native_logs,
+        set_filtered_native_logs_enabled, unregister_filtered_native_logs, write_native_log,
+        ChatTemplateMessage, FlashAttentionType, ModelInfo, NativeLogAggregator, NativeLogEvent,
         RuntimeConfig, RuntimeLoadMode, StageModel, TensorRole, GGML_TYPE_F16, GGML_TYPE_Q4_0,
         GGML_TYPE_Q8_0,
     };
+
+    static NATIVE_LOG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn native_log_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        NATIVE_LOG_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     fn correctness_model() -> Option<PathBuf> {
         env::var_os("SKIPPY_CORRECTNESS_MODEL").map(PathBuf::from)
@@ -2973,6 +3575,8 @@ mod tests {
 
     #[test]
     fn native_log_writer_flushes_newline_and_partial_line() -> anyhow::Result<()> {
+        let _native_log_guard = native_log_test_guard();
+
         struct RestoreNativeLogs;
 
         impl Drop for RestoreNativeLogs {
@@ -3096,5 +3700,357 @@ mod tests {
         assert!(prompt.contains("Template smoke prompt."));
         assert!(prompt.len() >= "Template smoke prompt.".len());
         Ok(())
+    }
+
+    #[test]
+    fn aggregator_preserves_backend_summary_lines() {
+        let mut aggregator = NativeLogAggregator::default();
+        assert_eq!(
+            aggregator.process_line("backend_init succeeded"),
+            vec![NativeLogEvent {
+                message: "backend_init succeeded".to_string(),
+                category: "backend",
+                params: Vec::new(),
+            }]
+        );
+        assert_eq!(
+            aggregator.process_line("llama_backend_init: GGML_CUDA"),
+            vec![NativeLogEvent {
+                message: "llama_backend_init: GGML_CUDA".to_string(),
+                category: "backend",
+                params: Vec::new(),
+            }]
+        );
+    }
+
+    #[test]
+    fn aggregator_ignores_non_backend_cuda_mentions() {
+        let mut aggregator = NativeLogAggregator::default();
+        assert!(aggregator
+            .process_line("CUDA kernel launch for attention")
+            .is_empty());
+        assert!(aggregator.process_line("offloading to CUDA").is_empty());
+    }
+
+    #[test]
+    fn aggregator_builds_metadata_summary_and_progress() {
+        let mut aggregator = NativeLogAggregator::default();
+        assert_eq!(
+            aggregator.process_line(
+                "llama_model_loader: loaded meta data with 10 key-value pairs and 100 tensors from model.gguf (version GGUF V3)"
+            ),
+            vec![NativeLogEvent {
+                message: "model load plan: metadata rows=10, tensor rows=100".to_string(),
+                category: "model",
+                params: Vec::new(),
+            }]
+        );
+
+        for (idx, line) in [
+            "llama_model_loader: - kv   0: general.architecture str = qwen35",
+            "llama_model_loader: - kv   1: general.name str = Qwen 3.5 4B",
+            "llama_model_loader: - kv   2: general.type str = model",
+            "llama_model_loader: - kv   3: general.size_label str = 4B",
+            "llama_model_loader: - kv   4: qwen35.context_length u32 = 40960",
+            "llama_model_loader: - kv   5: qwen35.block_count u32 = 36",
+            "llama_model_loader: - kv   6: qwen35.embedding_length u32 = 2560",
+            "llama_model_loader: - kv   7: qwen35.feed_forward_length u32 = 9728",
+            "llama_model_loader: - kv   8: qwen35.attention.head_count u32 = 32",
+            "llama_model_loader: - kv   9: qwen35.attention.head_count_kv u32 = 8",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let events = aggregator.process_line(line);
+            assert!(
+                events
+                    .iter()
+                    .any(|event| event.message.contains(&format!("{}%", (idx + 1) * 10))),
+                "expected {}% metadata progress in {:?}",
+                (idx + 1) * 10,
+                events
+            );
+        }
+
+        let flush_events = aggregator.process_line("llm_load_print_meta: version = 3");
+        assert!(flush_events
+            .iter()
+            .any(|event| event.message == "llm_load_print_meta: version = 3"));
+        assert!(flush_events
+            .iter()
+            .any(|event| event.message == "Reading model metadata..."));
+        assert!(flush_events.iter().any(|event| event
+            .params
+            .iter()
+            .any(|(key, value)| key == "architecture"
+                && value == &Value::String("qwen35".to_string()))));
+    }
+
+    #[test]
+    fn aggregator_emits_tensor_progress_from_type_summaries() {
+        let mut aggregator = NativeLogAggregator::default();
+        aggregator.process_line(
+            "llama_model_loader: loaded meta data with 46 key-value pairs and 100 tensors from model.gguf (version GGUF V3)",
+        );
+
+        let first = aggregator.process_line("llama_model_loader: - type  f32:  30 tensors");
+        assert!(first
+            .iter()
+            .any(|event| event.message.contains("tensors 10%")));
+        assert!(first
+            .iter()
+            .any(|event| event.message.contains("tensors 30%")));
+
+        let second = aggregator.process_line("llama_model_loader: - type q4_k:  70 tensors");
+        assert!(second
+            .iter()
+            .any(|event| event.message.contains("tensors 100%")));
+        assert!(second.iter().any(|event| {
+            event.message == "Reading tensor groups..."
+                && event
+                    .params
+                    .iter()
+                    .any(|(key, value)| key == "f32" && value == &Value::from(30_u64))
+                && event
+                    .params
+                    .iter()
+                    .any(|(key, value)| key == "q4_K" && value == &Value::from(70_u64))
+        }));
+    }
+
+    #[test]
+    fn aggregator_preserves_memory_summary_lines() {
+        let mut aggregator = NativeLogAggregator::default();
+        assert_eq!(
+            aggregator.process_line("VRAM used: 12.4 GB"),
+            vec![NativeLogEvent {
+                message: "VRAM used: 12.4 GB".to_string(),
+                category: "memory",
+                params: Vec::new(),
+            }]
+        );
+    }
+
+    #[test]
+    fn aggregator_tracks_kv_cache_layer_progress_without_double_counting() {
+        let mut aggregator = NativeLogAggregator::default();
+        let plan = aggregator.process_line(
+            "llama_kv_cache: size = 4096.00 MiB (131072 cells,   8 layers,  2/1 seqs), K (f16): 2048.00 MiB, V (f16): 2048.00 MiB",
+        );
+        assert_eq!(
+            plan,
+            vec![NativeLogEvent {
+                message: "kv cache plan: layer rows=8".to_string(),
+                category: "kv_cache",
+                params: Vec::new(),
+            }]
+        );
+
+        let first = aggregator.process_line("llama_kv_cache: layer   0: filtered");
+        assert!(first
+            .iter()
+            .any(|event| event.message.contains("kv cache 10%")));
+
+        let duplicate = aggregator.process_line("llama_kv_cache: layer   0: dev = MTL0");
+        assert!(duplicate.is_empty());
+
+        for layer in 1..8 {
+            aggregator.process_line(&format!("llama_kv_cache: layer   {layer}: filtered"));
+        }
+
+        let summary = aggregator.process_line("llama_kv_cache: attn_rot = 128");
+        assert_eq!(
+            summary,
+            vec![NativeLogEvent {
+                message: "llama_kv_cache: attn_rot = 128".to_string(),
+                category: "kv_cache",
+                params: Vec::new(),
+            }]
+        );
+    }
+
+    #[test]
+    fn aggregator_preserves_tokenizer_summary_lines() {
+        let mut aggregator = NativeLogAggregator::default();
+        assert_eq!(
+            aggregator.process_line("init_tokenizer: initializing tokenizer for type 2"),
+            vec![NativeLogEvent {
+                message: "init_tokenizer: initializing tokenizer for type 2".to_string(),
+                category: "tokenizer",
+                params: Vec::new(),
+            }]
+        );
+    }
+
+    #[test]
+    fn aggregator_suppresses_print_info_lines() {
+        let mut aggregator = NativeLogAggregator::default();
+        assert!(aggregator
+            .process_line("print_info: n_vocab               = 248320")
+            .is_empty());
+    }
+
+    #[test]
+    fn aggregator_rejects_empty_and_whitespace_lines() {
+        let mut aggregator = NativeLogAggregator::default();
+        assert!(aggregator.process_line("").is_empty());
+        assert!(aggregator.process_line("   ").is_empty());
+    }
+
+    #[test]
+    fn aggregator_suppresses_raw_noise_lines() {
+        let mut aggregator = NativeLogAggregator::default();
+        assert!(aggregator
+            .process_line("clip_model_loader: tensor[0]: n_dims = 1, name = v.blk.0.attn_out.bias")
+            .is_empty());
+        assert!(aggregator
+            .process_line("tokenizer.ggml.tokens arr[str,248320] = [\"!\", ...]")
+            .is_empty());
+    }
+
+    #[test]
+    fn write_native_log_respects_forwarding_flag() {
+        let _native_log_guard = native_log_test_guard();
+
+        struct ResetNativeLogForwarding;
+
+        impl Drop for ResetNativeLogForwarding {
+            fn drop(&mut self) {
+                unregister_filtered_native_logs();
+                set_filtered_native_logs_enabled(false);
+            }
+        }
+
+        let _reset = ResetNativeLogForwarding;
+        unregister_filtered_native_logs();
+        let mut rx = register_filtered_native_logs();
+
+        let line =
+            CString::new("init_tokenizer: initializing tokenizer for type 2\n").expect("cstring");
+
+        set_filtered_native_logs_enabled(false);
+        unsafe { write_native_log(0, line.as_ptr(), ptr::null_mut()) };
+        assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
+
+        set_filtered_native_logs_enabled(true);
+        unsafe { write_native_log(0, line.as_ptr(), ptr::null_mut()) };
+        assert_eq!(
+            rx.blocking_recv(),
+            Some(NativeLogEvent {
+                message: "init_tokenizer: initializing tokenizer for type 2".to_string(),
+                category: "tokenizer",
+                params: Vec::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn register_filtered_native_logs_replaces_receiver_cleanly() {
+        let _native_log_guard = native_log_test_guard();
+
+        struct ResetNativeLogForwarding;
+
+        impl Drop for ResetNativeLogForwarding {
+            fn drop(&mut self) {
+                unregister_filtered_native_logs();
+                set_filtered_native_logs_enabled(false);
+            }
+        }
+
+        let _reset = ResetNativeLogForwarding;
+        unregister_filtered_native_logs();
+        set_filtered_native_logs_enabled(true);
+
+        let first = register_filtered_native_logs();
+        drop(first);
+        let mut second = register_filtered_native_logs();
+
+        let line =
+            CString::new("init_tokenizer: initializing tokenizer for type 2\n").expect("cstring");
+        unsafe { write_native_log(0, line.as_ptr(), ptr::null_mut()) };
+
+        assert_eq!(
+            second.blocking_recv(),
+            Some(NativeLogEvent {
+                message: "init_tokenizer: initializing tokenizer for type 2".to_string(),
+                category: "tokenizer",
+                params: Vec::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_layer_assign_index_extracts_layer_number() {
+        assert_eq!(
+            parse_layer_assign_index("load_tensors: layer   0 assigned to device CUDA0"),
+            Some(0)
+        );
+        assert_eq!(
+            parse_layer_assign_index("load_tensors: layer  63 assigned to device CUDA0"),
+            Some(63)
+        );
+        assert_eq!(
+            parse_layer_assign_index("load_tensors: layer   5 assigned to device CPU"),
+            Some(5)
+        );
+        assert_eq!(
+            parse_layer_assign_index("llm_load_tensors: offloaded 64/65 layers"),
+            None
+        );
+        assert_eq!(
+            parse_layer_assign_index("load_tensors: layer   0 computation graph"),
+            None
+        );
+    }
+
+    #[test]
+    fn aggregator_tracks_layer_assign_progress_using_block_count() {
+        let mut aggregator = NativeLogAggregator::default();
+
+        aggregator.process_line(
+            "llama_model_loader: loaded meta data with 10 key-value pairs and 100 tensors from model.gguf (version GGUF V3)"
+        );
+        for line in [
+            "llama_model_loader: - kv   0: general.architecture str = qwen35",
+            "llama_model_loader: - kv   1: general.name str = Qwen 3.5 4B",
+            "llama_model_loader: - kv   2: general.type str = model",
+            "llama_model_loader: - kv   3: general.size_label str = 4B",
+            "llama_model_loader: - kv   4: qwen35.context_length u32 = 40960",
+            "llama_model_loader: - kv   5: qwen35.block_count u32 = 4",
+            "llama_model_loader: - kv   6: qwen35.embedding_length u32 = 2560",
+            "llama_model_loader: - kv   7: qwen35.feed_forward_length u32 = 9728",
+            "llama_model_loader: - kv   8: qwen35.attention.head_count u32 = 32",
+            "llama_model_loader: - kv   9: qwen35.attention.head_count_kv u32 = 8",
+        ] {
+            aggregator.process_line(line);
+        }
+        aggregator.process_line("llm_load_print_meta: version = 3");
+
+        let e0 = aggregator.process_line("load_tensors: layer   0 assigned to device CUDA0");
+        assert!(e0.iter().any(|event| event.message.contains("layers 10%")));
+        assert!(e0.iter().any(|event| event.message.contains("layers 20%")));
+
+        let e1 = aggregator.process_line("load_tensors: layer   1 assigned to device CUDA0");
+        assert!(e1.iter().any(|event| event.message.contains("layers 50%")));
+
+        let e2 = aggregator.process_line("load_tensors: layer   2 assigned to device CUDA0");
+        assert!(e2.iter().any(|event| event.message.contains("layers 70%")));
+
+        let e3 = aggregator.process_line("load_tensors: layer   3 assigned to device CUDA0");
+        let pcts: Vec<&str> = e3
+            .iter()
+            .filter_map(|ev| {
+                if ev.message.contains("layers") && ev.message.contains('%') {
+                    Some(ev.message.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(
+            pcts.iter().any(|m| m.contains("100%")),
+            "expected layers 100% at final layer, got {:?}",
+            pcts
+        );
     }
 }

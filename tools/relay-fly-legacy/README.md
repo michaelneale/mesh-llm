@@ -1,8 +1,7 @@
-# ⚠️ LEGACY — Not in use
+# Fly relay reference
 
-This was a self-hosted iroh-relay on Fly.io. It is **no longer used**.
-
-mesh-llm now uses managed iroh relay infrastructure via [services.iroh.computer](https://services.iroh.computer):
+mesh-llm production relay operations use managed iroh relay infrastructure via
+[services.iroh.computer](https://services.iroh.computer):
 
 | Relay | Region | URL |
 |-------|--------|-----|
@@ -11,12 +10,12 @@ mesh-llm now uses managed iroh relay infrastructure via [services.iroh.computer]
 
 These are configured as defaults in `crates/mesh-llm/src/mesh/mod.rs`.
 
-The old Fly.io relay (`mesh-llm-relay.fly.dev`) can be decommissioned.
+`mesh-llm-relay.fly.dev` is retained here as a Fly.io deployment reference.
 
 ---
 
 <details>
-<summary>Original README (archived)</summary>
+<summary>Fly.io relay deployment reference</summary>
 
 # iroh-relay on Fly.io
 

@@ -123,14 +123,6 @@ function Get-BundleBinaryName {
     return "$BaseName.exe"
 }
 
-function Copy-BenchmarkBinaries {
-    param([string]$BundleDir)
-
-    Get-ChildItem -Path $releaseBinDir -Filter "membench-fingerprint*.exe" -ErrorAction SilentlyContinue | ForEach-Object {
-        Copy-Item $_.FullName -Destination (Join-Path $BundleDir $_.Name) -Force
-    }
-}
-
 function New-ZipArchive {
     param(
         [string]$SourceDir,
@@ -192,8 +184,6 @@ New-Item -ItemType Directory -Path $bundleDir -Force | Out-Null
 
 try {
     Copy-Item $meshBinary -Destination (Join-Path $bundleDir (Get-BundleBinaryName "mesh-llm" $binaryFlavor)) -Force
-    Copy-BenchmarkBinaries $bundleDir
-
     $versionedPath = Join-Path $resolvedOutputDir $versionedAsset
     $stablePath = Join-Path $resolvedOutputDir $stableAsset
 

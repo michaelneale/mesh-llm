@@ -1,7 +1,7 @@
-From 7c01adcc3ac78312ecba02f572e2354e7fb732ae Mon Sep 17 00:00:00 2001
+From 91d53e5f8363dc38f453f3eda4c3341a14987c83 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Tue, 5 May 2026 07:11:33 +1000
-Subject: [PATCH 37/45] Apply chat grammar during stage sampling
+Subject: [PATCH 37/80] Apply chat grammar during stage sampling
 
 ---
  include/skippy.h |  10 +-

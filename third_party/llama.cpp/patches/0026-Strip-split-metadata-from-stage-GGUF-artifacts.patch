@@ -1,7 +1,7 @@
-From 0a89eb2dac89aea916e931a0e9760b2b9150dd43 Mon Sep 17 00:00:00 2001
+From 9c23f62e7c0b39c818ce969f6878985a7aa112ed Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Tue, 28 Apr 2026 07:38:29 +1000
-Subject: [PATCH 26/45] Strip split metadata from stage GGUF artifacts
+Subject: [PATCH 26/80] Strip split metadata from stage GGUF artifacts
 
 ---
  src/skippy.cpp | 8 ++++++++

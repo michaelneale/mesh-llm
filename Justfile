@@ -2,11 +2,9 @@
 
 llama_dir := env("MESH_LLM_LLAMA_DIR", ".deps/llama.cpp")
 llama_build_root := env("MESH_LLM_LLAMA_BUILD_ROOT", ".deps/llama-build")
-build_dir := env("LLAMA_STAGE_BUILD_DIR", llama_build_root / "build-stage-abi-cpu")
 mesh_dir := "crates/mesh-llm"
 ui_dir := "crates/mesh-llm-ui"
 ui_legacy_dir := "crates/mesh-llm/ui-legacy"
-benchmark_src_dir := mesh_dir / "benchmarks"
 home_dir := if os_family() == "windows" { env("USERPROFILE") } else { env("HOME") }
 xdg_cache_dir := env("XDG_CACHE_HOME", home_dir / ".cache")
 hf_home := env("HF_HOME", xdg_cache_dir / "huggingface")
@@ -231,6 +229,11 @@ metrics-server-build: _lld-cargo-config
 metrics-server-build: _lld-cargo-config
     @cargo build -p metrics-server
 
+# Build the binaries copied into the Skippy WAN Docker lab image.
+[linux]
+skippy-wan-lab-build-bins:
+    cargo build --release --locked -p skippy-server -p skippy-prompt -p metrics-server -p skippy-model-package
+
 # Generate a reproducible benchmark corpus for skippy bench tooling.
 bench-corpus tier="smoke" *ARGS:
     scripts/generate-bench-corpus.py "{{ tier }}" {{ ARGS }}
@@ -299,14 +302,6 @@ bundle output="/tmp/mesh-bundle.tar.gz":
         [ -f "$bin" ] || continue
         install_name_tool -add_rpath @executable_path/ "$bin" 2>/dev/null || true
     done
-    # Include Apple Silicon benchmark binary if built
-    BENCH="target/release/membench-fingerprint"
-    if [ -f "$BENCH" ]; then
-        cp "$BENCH" "$BUNDLE/"
-        echo "Included: membench-fingerprint"
-    else
-        echo "Note: membench-fingerprint not found — run 'just benchmark-build-apple' to include it"
-    fi
     tar czf {{ output }} -C "$DIR" mesh-bundle/
     rm -rf "$DIR"
     echo "Bundle: {{ output }} ($(du -sh {{ output }} | cut -f1))"
@@ -360,43 +355,6 @@ release-bundle-vulkan version output="dist":
 release-bundle-vulkan-windows version output="dist":
     @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Version "{{version}}" -OutputDir "{{output}}" -Flavor vulkan
 
-# ── Benchmark Binaries ────────────────────────────────────────────────────────
-
-# Build Apple Silicon memory bandwidth benchmark (macOS only)
-[macos]
-benchmark-build-apple:
-    swiftc -O {{ benchmark_src_dir }}/membench-fingerprint.swift -o target/release/membench-fingerprint
-    echo "Built: target/release/membench-fingerprint"
-
-# Build NVIDIA CUDA memory bandwidth benchmark (requires CUDA toolkit)
-benchmark-build-cuda:
-    nvcc -O3 -o target/release/membench-fingerprint-cuda {{ benchmark_src_dir }}/membench-fingerprint.cu
-    echo "Built: target/release/membench-fingerprint-cuda"
-
-[windows]
-benchmark-build-cuda-windows:
-    @powershell -NoProfile -ExecutionPolicy Bypass -Command "nvcc -O3 -o 'target/release/membench-fingerprint-cuda.exe' '{{ benchmark_src_dir }}/membench-fingerprint.cu'; if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }; Write-Host 'Built: target/release/membench-fingerprint-cuda.exe'"
-
-# Build AMD ROCm/HIP memory bandwidth benchmark (requires ROCm)
-benchmark-build-hip:
-    hipcc -O3 -std=c++17 -o target/release/membench-fingerprint-hip {{ benchmark_src_dir }}/membench-fingerprint.hip
-    echo "Built: target/release/membench-fingerprint-hip"
-
-[windows]
-benchmark-build-hip-windows:
-    @powershell -NoProfile -ExecutionPolicy Bypass -Command "hipcc -O3 -std=c++17 -o 'target/release/membench-fingerprint-hip.exe' '{{ benchmark_src_dir }}/membench-fingerprint.hip'; if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }; Write-Host 'Built: target/release/membench-fingerprint-hip.exe'"
-
-# Build Intel Arc SYCL memory bandwidth benchmark (requires Intel oneAPI) — UNVALIDATED
-benchmark-build-intel:
-    @echo "WARNING: Intel Arc benchmark is unvalidated — no Intel Arc hardware has been tested"
-    icpx -O3 -fsycl -o target/release/membench-fingerprint-intel {{ benchmark_src_dir }}/membench-fingerprint-intel.cpp
-    echo "Built: target/release/membench-fingerprint-intel"
-
-[windows]
-benchmark-build-intel-windows:
-    @echo "WARNING: Intel Arc benchmark is unvalidated — no Intel Arc hardware has been tested"
-    @powershell -NoProfile -ExecutionPolicy Bypass -Command "icpx -O3 -fsycl -o 'target/release/membench-fingerprint-intel.exe' '{{ benchmark_src_dir }}/membench-fingerprint-intel.cpp'; if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }; Write-Host 'Built: target/release/membench-fingerprint-intel.exe'"
-
 # Run the UI dev server with Vite HMR, proxying /api to mesh-llm (default: http://127.0.0.1:3131)
 ui-dev api="http://127.0.0.1:3131" port="5173":
     #!/usr/bin/env bash
@@ -428,14 +386,25 @@ test-all: _lld-cargo-config
     #!/usr/bin/env bash
     set -euo pipefail
 
-    # Ensure native llama.cpp libraries exist (required by skippy-ffi → cargo test linking)
-    if [ ! -f "{{ build_dir }}/common/libllama-common.a" ]; then
-        echo "ERROR: Native llama.cpp libraries not found at {{ build_dir }}/"
-        echo "Run 'just llama-build' first to prepare them, then retry."
-        exit 1
+    native_backend="${LLAMA_STAGE_BACKEND:-${SKIPPY_LLAMA_BACKEND:-${LLAMA_BACKEND:-}}}"
+    if [[ -z "$native_backend" ]]; then
+        case "$(uname -s)" in
+            Darwin) native_backend="metal" ;;
+            *) native_backend="cpu" ;;
+        esac
+    fi
+    export LLAMA_STAGE_BACKEND="$native_backend"
+
+    if [[ -z "${LLAMA_STAGE_BUILD_DIR:-}" ]]; then
+        LLAMA_STAGE_BUILD_DIR="$(scripts/build-llama.sh --print-build-dir)"
+        export LLAMA_STAGE_BUILD_DIR
     fi
 
-    export LLAMA_STAGE_BUILD_DIR="{{ build_dir }}"
+    echo "=== Native llama.cpp ABI ($LLAMA_STAGE_BACKEND) ==="
+    echo "Build dir: $LLAMA_STAGE_BUILD_DIR"
+    scripts/prepare-llama.sh
+    scripts/build-llama.sh
+    echo ""
 
     # Each UI step runs in a subshell so cd doesn't leak between steps.
     echo "=== 1/7 Rust format check ==="
@@ -445,7 +414,10 @@ test-all: _lld-cargo-config
     cargo clippy -p mesh-llm -- -D warnings
     echo ""
     echo "=== 3/7 Rust tests ==="
+    echo "--- mesh-llm ---"
     cargo test -p mesh-llm
+    echo "--- skippy-runtime lib ---"
+    cargo test -p skippy-runtime --lib
     echo ""
     echo "=== 4/7 ESLint + Prettier ==="
     (cd "{{ ui_dir }}" && pnpm run lint)
@@ -463,7 +435,7 @@ test-all: _lld-cargo-config
         echo "No server on port 3131 — starting UI dev server with public mesh..."
 
         # Start dev server in background, capture PID tree for cleanup
-        MESH_UI_API_ORIGIN="https://meshllm.cloud" VITE_API_URL="https://meshllm.cloud" bash -c 'cd "{{ ui_dir }}" && pnpm run dev -- --host 0.0.0.0 --port 5173' &
+        MESH_UI_API_ORIGIN="https://meshllm.cloud" VITE_API_URL="https://meshllm.cloud" bash -c 'cd "{{ ui_dir }}" && pnpm exec vite --host 0.0.0.0 --port 5173' &
         DEV_PID=$!
 
         # Wait for dev server to be ready (up to 30s)

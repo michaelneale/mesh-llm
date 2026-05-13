@@ -10,13 +10,21 @@ clap = { version = "4", features = ["derive"] }
 dirs = "6.0.0"
 hex = "0.4.3"
 libc = "0.2.183"
+mesh-llm-gpu-bench = { path = "../mesh-llm-gpu-bench" }
 reqwest = { version = "0.12", features = ["stream", "json"] }
 semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+skippy-runtime = { path = "../skippy-runtime", optional = true }
 tracing = "0.1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[features]
+gpu-bench-cuda = ["mesh-llm-gpu-bench/cuda"]
+gpu-bench-hip = ["mesh-llm-gpu-bench/hip"]
+gpu-bench-intel = ["mesh-llm-gpu-bench/intel"]
+skippy-devices = ["dep:skippy-runtime"]
 
 [dev-dependencies]
 serial_test = "3"

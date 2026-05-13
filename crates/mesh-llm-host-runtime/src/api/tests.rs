@@ -3089,10 +3089,6 @@ fn headless_blackboard_status_still_reads_api_status() {
         !is_ui_only_route("/api/runtime"),
         "/api/runtime must be accessible in headless mode"
     );
-    assert!(
-        !is_ui_only_route("/api/join"),
-        "/api/join must be accessible in headless mode"
-    );
 }
 
 #[test]

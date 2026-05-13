@@ -1,7 +1,7 @@
-From 12d9238e5f4e85514d1dc8e523cec210732b23b0 Mon Sep 17 00:00:00 2001
+From 71f1cc9d4a5118da92faa77949006c3961fa3ca9 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Wed, 6 May 2026 20:10:14 +1000
-Subject: [PATCH] Support Qwen35 and Hunyuan-VL runtime slices
+Subject: [PATCH 64/80] Support Qwen35 and Hunyuan-VL runtime slices
 
 ---
  src/models/qwen35.cpp | 27 +++++++++++++++++++++++----
@@ -60,7 +60,7 @@ index f276be61..1557ec15 100644
      cur = build_norm(cur, model.output_norm, nullptr, LLM_NORM_RMS, -1);
  
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 078b7ece..efcbc42b 100644
+index f316ba76..beb30637 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -1590,6 +1590,7 @@ static enum skippy_status skippy_finish_model_open(

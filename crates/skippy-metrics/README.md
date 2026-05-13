@@ -17,8 +17,8 @@ flowchart LR
     Mesh["mesh-llm<br/>topology + lifecycle metadata"] -.-> M["metrics-server"]
     S0["stage servers<br/>request summaries"] -.-> M
     B["bench / diagnostic drivers<br/>run metadata"] -.-> M
-    M --> D["metrics.duckdb"]
-    M --> R["report.json<br/>DuckDB-backed views"]
+    M --> D["metrics.sqlite"]
+    M --> R["report.json<br/>SQLite-backed views"]
 
     V["skippy-metrics<br/>names + attributes"] -.-> S0
     V -.-> B
@@ -27,4 +27,4 @@ flowchart LR
 
 The hot inference path must not block on telemetry. Stage servers and runtime
 cache operations emit best-effort summaries, while `metrics-server` owns
-ingestion, DuckDB storage, and report export.
+ingestion, SQLite storage, and report export.

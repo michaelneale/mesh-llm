@@ -1,0 +1,20 @@
+[package]
+name = "mesh-llm-gpu-bench"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[dependencies]
+anyhow = "1"
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+
+[build-dependencies]
+cc = "1"
+
+[features]
+cuda = []
+hip = []
+intel = []
