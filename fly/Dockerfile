@@ -26,6 +26,7 @@ ENV PATH="/root/.cargo/bin:$PATH"
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates/mesh-llm-ui/ crates/mesh-llm-ui/
+COPY crates/mesh-llm-gpu-bench/ crates/mesh-llm-gpu-bench/
 COPY crates/mesh-llm-identity/ crates/mesh-llm-identity/
 COPY crates/mesh-llm-protocol/ crates/mesh-llm-protocol/
 COPY crates/mesh-llm-routing/ crates/mesh-llm-routing/
