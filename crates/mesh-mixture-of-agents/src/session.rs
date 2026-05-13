@@ -54,6 +54,12 @@ pub struct Session {
     running_summary: String,
 }
 
+impl Default for Session {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Session {
     pub fn new() -> Self {
         Self {
@@ -285,7 +291,7 @@ impl Session {
             .iter()
             .rev()
             .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
-            .and_then(|m| extract_text_content(m))
+            .and_then(extract_text_content)
             .unwrap_or_default()
     }
 

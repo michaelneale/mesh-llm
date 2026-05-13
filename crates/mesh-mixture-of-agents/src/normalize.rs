@@ -457,19 +457,15 @@ fn extract_tool_proposal(raw: &str) -> (Option<String>, Option<Value>) {
 fn extract_json_object(text: &str) -> Option<String> {
     // Try the whole thing first
     let trimmed = text.trim();
-    if trimmed.starts_with('{') {
-        if let Ok(_) = serde_json::from_str::<Value>(trimmed) {
-            return Some(trimmed.to_string());
-        }
+    if trimmed.starts_with('{') && serde_json::from_str::<Value>(trimmed).is_ok() {
+        return Some(trimmed.to_string());
     }
 
     // Look inside markdown code blocks
     for block in text.split("```") {
         let block = block.trim().strip_prefix("json").unwrap_or(block).trim();
-        if block.starts_with('{') {
-            if let Ok(_) = serde_json::from_str::<Value>(block) {
-                return Some(block.to_string());
-            }
+        if block.starts_with('{') && serde_json::from_str::<Value>(block).is_ok() {
+            return Some(block.to_string());
         }
     }
 
