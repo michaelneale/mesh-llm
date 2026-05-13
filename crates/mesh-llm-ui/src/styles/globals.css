@@ -74,6 +74,7 @@
   --shell-pad-bottom: 32px;
   --shell-max-width: 1280px;
   --shell-zoom: 1;
+  --chat-layout-height: calc(100dvh - 180px);
   --topnav-pad-x: 18px;
   --topnav-pad-y: 10px;
   --topnav-gap: 10px;

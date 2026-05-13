@@ -81,6 +81,7 @@ export interface PeerInfo {
   hardware_label?: string
   owner?: string | { status?: string; verified?: boolean; name?: string; display_name?: string }
   gpus?: GpuInfo[]
+  first_joined_mesh_ts?: number
 }
 
 export type MeshPublicationState = 'private' | 'public' | 'publish_failed'
@@ -125,6 +126,7 @@ export interface StatusPayload {
   owner?: PeerInfo['owner']
   nostr_discovery?: boolean
   publication_state?: MeshPublicationState
+  first_joined_mesh_ts?: number
 }
 
 // ============================================================

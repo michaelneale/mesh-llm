@@ -8,6 +8,7 @@ import {
   hoverCardPlacement,
   isTextEditingTarget,
   latencyLabel,
+  nodeAgeLabel,
   nodeMetrics,
   nodeVisuals,
   renderKind,
@@ -52,9 +53,26 @@ describe('MeshViz helpers', () => {
     expect(nodeMetrics(servingNode, hostPeer).map(({ id, label, value }) => ({ id, label, value }))).toEqual([
       { id: 'model', label: 'Model', value: 'peer-model-q8' },
       { id: 'latency', label: 'Latency', value: '1ms' },
+      { id: 'age', label: 'Age', value: 'N/A' },
       { id: 'compute', label: 'Compute', value: 'us-east' },
       { id: 'vram', label: 'VRAM', value: '48.0 GB' }
     ])
+  })
+
+  it('formats join timestamps supplied in either milliseconds or seconds', () => {
+    const nowMs = 1_700_004_000_000
+    const firstJoinedMs = nowMs - 3_600_000
+    const firstJoinedSeconds = firstJoinedMs / 1000
+
+    expect(nodeAgeLabel({ ...servingNode, firstJoinedMeshTs: firstJoinedMs }, undefined, nowMs)).toBe('1h')
+    expect(nodeAgeLabel({ ...servingNode, firstJoinedMeshTs: firstJoinedSeconds }, undefined, nowMs)).toBe('1h')
+    expect(
+      nodeAgeLabel(
+        { ...servingNode, firstJoinedMeshTs: firstJoinedMs - 3_600_000 },
+        { ...hostPeer, firstJoinedMeshTs: firstJoinedMs },
+        nowMs
+      )
+    ).toBe('1h')
   })
 
   it('keeps status and visual tokens aligned for debug and non-debug nodes', () => {

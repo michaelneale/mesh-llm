@@ -45,6 +45,7 @@ export type Peer = {
   latencySource?: LatencySource | null
   latencyAgeMs?: number | null
   latencyObserverId?: string | null
+  firstJoinedMeshTs?: number
 }
 export type PeerSummary = { total: number; online: number; capacity: string }
 
@@ -109,6 +110,7 @@ export type MeshNode = {
   latencyMs?: number | null
   hostname?: string
   vramGB?: number
+  firstJoinedMeshTs?: number
 }
 export type ModelSelectStatus = { label: string; tone?: StatusBadgeTone }
 export type ModelSelectOption = { value: string; label: string; meta?: string; status?: ModelSelectStatus }

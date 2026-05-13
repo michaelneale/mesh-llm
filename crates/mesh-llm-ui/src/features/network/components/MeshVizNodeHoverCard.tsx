@@ -17,6 +17,7 @@ export function MeshVizNodeHoverCard({ node, peer }: MeshVizNodeHoverCardProps) 
   const nodeId = peer?.shortId ?? node.id
   const role = roleLabel(node, peer)
   const secondaryLabel = meshNodeSecondaryLabel(node, peer)
+  const showSecondaryLabel = secondaryLabel.trim().toLowerCase() !== role.trim().toLowerCase()
   const statusSource = meshNodeStatusSource(peer, node)
   const status = meshStatusLabel(statusSource)
   const { side, align } = hoverCardPlacement(node)
@@ -50,9 +51,11 @@ export function MeshVizNodeHoverCard({ node, peer }: MeshVizNodeHoverCardProps) 
           <span className="inline-flex items-center rounded-full border border-border bg-background px-2 py-0.5 text-[length:var(--density-type-label)] font-medium text-fg-dim">
             {role}
           </span>
-          <span className="inline-flex items-center rounded-full border border-border bg-background px-2 py-0.5 text-[length:var(--density-type-label)] font-medium text-fg-dim">
-            {secondaryLabel}
-          </span>
+          {showSecondaryLabel ? (
+            <span className="inline-flex items-center rounded-full border border-border bg-background px-2 py-0.5 text-[length:var(--density-type-label)] font-medium text-fg-dim">
+              {secondaryLabel}
+            </span>
+          ) : null}
         </div>
 
         <div className="mt-3 border-t border-border-soft pt-2.5">

@@ -1235,17 +1235,13 @@ export function ChatPageContent({ data = CHAT_HARNESS }: ChatPageProps) {
           <EmptyState
             tone="accent"
             icon={<MessageSquareMore aria-hidden={true} className="size-10" strokeWidth={1.4} />}
-            title={
-              conversations.conversations.length === 0
-                ? 'Start your first conversation'
-                : 'Start with a clean routing context'
-            }
+            title="Start Chatting"
             description={
               conversations.conversations.length === 0 ? (
-                'Type a prompt below to begin. A local copy stays in this browser, and the mesh node receives what it needs to answer.'
+                'Type a message below to begin. Your chats stay in this browser, and the mesh routes requests automatically.'
               ) : (
                 <>
-                  No messages yet. Type a prompt to begin, and responses will use{' '}
+                  No messages yet. Send a message to begin a fresh conversation; replies use{' '}
                   <span className="font-mono text-fg">{activeModelName}</span> unless you choose another model.
                 </>
               )

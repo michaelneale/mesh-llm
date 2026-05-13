@@ -4,6 +4,6 @@ type MeshVisibilityFields = Pick<StatusPayload, 'nostr_discovery' | 'publication
 
 export function isPublicMesh(payload: MeshVisibilityFields): boolean {
   if (payload.publication_state === 'public') return true
-  if (payload.publication_state != null) return false
+  if (payload.publication_state === 'publish_failed') return false
   return payload.nostr_discovery === true
 }

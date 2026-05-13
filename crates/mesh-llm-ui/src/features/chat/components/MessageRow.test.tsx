@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { MessageRow } from '@/features/chat/components/MessageRow'
@@ -67,11 +67,11 @@ describe('MessageRow', () => {
     expect(screen.queryByText('0.0 tok/s')).not.toBeInTheDocument()
   })
 
-  it('renders inspectable messages as labeled buttons and preserves the inspect action', async () => {
+  it('renders inspectable messages as articles with an explicit inspect control', async () => {
     const user = userEvent.setup()
     const inspect = vi.fn()
 
-    render(
+    const { container } = render(
       <MessageRow
         messageRole="assistant"
         body="Inspectable response from the mesh"
@@ -81,18 +81,12 @@ describe('MessageRow', () => {
       />
     )
 
+    const article = container.querySelector('article')
     const button = screen.getByRole('button', { name: 'Inspect mesh route' })
 
-    expect(button).toHaveClass(
-      'relative',
-      '-mx-2',
-      'mb-5',
-      'block',
-      'w-[calc(100%+16px)]',
-      'select-none',
-      'focus-visible:outline-accent'
-    )
-    expect(button).toHaveTextContent('Inspectable response from the mesh')
+    expect(article).toHaveClass('relative', '-mx-2', 'mb-5', 'block', 'w-[calc(100%+16px)]', 'select-none')
+    expect(button).not.toHaveClass('w-[calc(100%+16px)]')
+    expect(article).toHaveTextContent('Inspectable response from the mesh')
 
     await user.click(button)
 
@@ -273,6 +267,60 @@ describe('MessageRow', () => {
     expect(screen.getByText('Verified').tagName.toLowerCase()).toBe('em')
     expect(screen.getByText('Concise').tagName.toLowerCase()).toBe('code')
     expect(screen.getByText('Paris').closest('.select-text')).toBeInTheDocument()
+  })
+
+  it('renders assistant markdown tables with semantic compact cell styling', () => {
+    render(
+      <MessageRow
+        messageRole="assistant"
+        body={'| Category | Texture |\n| --- | --- |\n| Fresh | Soft |\n| Aged | Firm |'}
+        timestamp="12:11"
+        model="Qwen3-8B"
+      />
+    )
+
+    expect(screen.queryByText(/\| Category \| Texture \|/)).not.toBeInTheDocument()
+    expect(screen.getByRole('table')).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Category' })).toHaveClass('font-semibold')
+    expect(screen.getByRole('cell', { name: 'Fresh' })).toHaveClass('border', 'text-fg-dim')
+  })
+
+  it('keeps markdown tables semantic when assistant messages can be inspected', async () => {
+    const user = userEvent.setup()
+    const inspect = vi.fn()
+
+    render(
+      <MessageRow
+        messageRole="assistant"
+        body={'| Node | Role |\n| --- | --- |\n| carrack | primary |'}
+        timestamp="12:11"
+        inspect={inspect}
+        inspectLabel="Inspect routed response"
+      />
+    )
+
+    const table = screen.getByRole('table')
+
+    expect(within(table).getByRole('columnheader', { name: 'Node' })).toBeInTheDocument()
+    expect(within(table).getByRole('cell', { name: 'carrack' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Inspect routed response' }))
+
+    expect(inspect).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not preserve raw markdown blank lines around rendered assistant blocks', () => {
+    const { container } = render(
+      <MessageRow
+        messageRole="assistant"
+        body={'Intro paragraph.\n\n## Details\n\n- First item\n\n- Second item'}
+        timestamp="12:11"
+        model="Qwen3-8B"
+      />
+    )
+
+    expect(container.querySelector('.whitespace-pre-wrap')).not.toBeInTheDocument()
+    expect(screen.getByText('First item').parentElement).toHaveClass('[&>span]:my-0', '[&>span]:inline')
   })
 
   it('marks an open thinking segment as in progress while streaming', () => {
