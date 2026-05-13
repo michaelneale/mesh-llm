@@ -401,6 +401,21 @@ fn owner_control_error_envelope(
     }
 }
 
+fn owner_control_rejection_envelope(
+    data: &[u8],
+    request_id: Option<u64>,
+    err: &ControlFrameError,
+) -> crate::proto::node::OwnerControlEnvelope {
+    let code = if matches!(err, ControlFrameError::MissingControlCommand) {
+        crate::proto::node::OwnerControlErrorCode::UnknownCommand
+    } else if serde_json::from_slice::<serde_json::Value>(data).is_ok() {
+        crate::proto::node::OwnerControlErrorCode::LegacyJsonUnsupported
+    } else {
+        crate::proto::node::OwnerControlErrorCode::BadRequest
+    };
+    owner_control_error_envelope(code, request_id, None, err.to_string())
+}
+
 fn infer_remote_served_descriptors(
     primary_model_name: &str,
     serving_models: &[String],
@@ -4163,7 +4178,7 @@ impl Node {
                     return Ok(());
                 }
             };
-        if handshake_envelope.validate_frame().is_err() {
+        if let Err(error) = handshake_envelope.validate_frame() {
             let _ = self
                 .send_owner_control_terminal_envelope(
                     send,
@@ -4171,7 +4186,7 @@ impl Node {
                         crate::proto::node::OwnerControlErrorCode::InvalidHandshake,
                         None,
                         None,
-                        "invalid owner-control handshake envelope",
+                        error.to_string(),
                     ),
                 )
                 .await;
@@ -4237,16 +4252,12 @@ impl Node {
                         break;
                     }
                 };
-            if envelope.validate_frame().is_err() {
+            if let Err(error) = envelope.validate_frame() {
+                let request_id = envelope.request.as_ref().map(|request| request.request_id);
                 let _ = self
                     .send_owner_control_terminal_envelope(
                         send,
-                        owner_control_error_envelope(
-                            crate::proto::node::OwnerControlErrorCode::BadRequest,
-                            None,
-                            None,
-                            "invalid owner-control request envelope",
-                        ),
+                        owner_control_rejection_envelope(&request_bytes, request_id, &error),
                     )
                     .await;
                 break;

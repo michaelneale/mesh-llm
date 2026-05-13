@@ -319,7 +319,6 @@ Owner-control is an additive operator lane for config and inventory actions. It 
 - Read the local bootstrap policy from `GET /api/runtime/control-bootstrap` or `mesh-llm runtime bootstrap --json`.
 - If no explicit endpoint is supplied, the current client contract returns `ControlEndpointRequired` unless the caller explicitly opts into legacy compatibility with `allow_legacy_config=true`.
 - If an explicit endpoint is configured and fails, the client stays on owner-control and reports a structured failure. It does **not** silently fall back to legacy mesh-plane config streams.
-- For cross-host owner-control, bind the listener with `--control-bind` and set `--control-advertise-addr <routable-ip:port>` so the local-only endpoint token contains the operator-routable address instead of private/container interface addresses. This advertised address remains explicit bootstrap data only; it is not published through gossip, Nostr, or public `/api/status`.
 
 ### Transport and fallback matrix
 
@@ -340,17 +339,6 @@ Inspect the local bootstrap policy:
 ```bash
 mesh-llm runtime bootstrap --port 3131 --json
 curl -s localhost:3131/api/runtime/control-bootstrap | jq .
-```
-
-Start a remote node with an explicitly advertised owner-control address when the operator host must connect from another machine:
-
-```bash
-mesh-llm \
-  --control-bind 0.0.0.0:18443 \
-  --control-advertise-addr '<routable-ip>:18443' \
-  --owner-key /path/to/owner-keystore.json \
-  --owner-required \
-  --headless
 ```
 
 Run owner-control requests through the local management API using an explicit endpoint token:

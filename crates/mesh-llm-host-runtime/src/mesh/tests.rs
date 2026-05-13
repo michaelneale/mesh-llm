@@ -5450,6 +5450,53 @@ async fn control_plane_legacy_compat_control_alpn_rejects_legacy_frames() -> Res
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn control_plane_validation_error_preserves_request_id() -> Result<()> {
+    let owner_keypair = test_owner_keypair(0xb5, 0xb6);
+    let tmp = std::env::temp_dir().join(format!(
+        "mesh-llm-control-plane-invalid-command-{}",
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&tmp).ok();
+
+    let (server, _secret_key, _config_path) =
+        start_owner_control_test_server(&owner_keypair, &tmp).await?;
+    let (_endpoint, mut send, mut recv, _endpoint_id) =
+        open_owner_control_stream(&server, &owner_keypair).await?;
+    write_len_prefixed(
+        &mut send,
+        &crate::proto::node::OwnerControlEnvelope {
+            gen: NODE_PROTOCOL_GENERATION,
+            handshake: None,
+            request: Some(crate::proto::node::OwnerControlRequest {
+                request_id: 7,
+                get_config: None,
+                watch_config: None,
+                apply_config: None,
+                refresh_inventory: None,
+            }),
+            response: None,
+            error: None,
+        }
+        .encode_to_vec(),
+    )
+    .await?;
+
+    let rejection = read_owner_control_envelope(&mut recv).await?;
+    let error = rejection
+        .error
+        .expect("invalid command should be rejected with an error envelope");
+    assert_eq!(
+        crate::proto::node::OwnerControlErrorCode::try_from(error.code).unwrap(),
+        crate::proto::node::OwnerControlErrorCode::UnknownCommand
+    );
+    assert_eq!(error.request_id, Some(7));
+
+    server.shutdown_control_listener().await;
+    std::fs::remove_dir_all(&tmp).ok();
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn config_subscribe_wrong_owner_returns_error() -> Result<()> {
     let server_owner = test_owner_keypair(0x22, 0x23);
     let client_owner = test_owner_keypair(0x33, 0x34);
