@@ -54,6 +54,9 @@ pub(super) async fn handle(
 }
 
 async fn handle_control_bootstrap(stream: &mut TcpStream, state: &MeshApi) -> anyhow::Result<()> {
+    if !ensure_loopback_control_caller(stream).await? {
+        return Ok(());
+    }
     respond_json(stream, 200, &state.control_bootstrap().await).await
 }
 
@@ -103,6 +106,9 @@ async fn handle_control_get_config(
     state: &MeshApi,
     body: &str,
 ) -> anyhow::Result<()> {
+    if !ensure_loopback_control_caller(stream).await? {
+        return Ok(());
+    }
     let request: ControlEndpointRequest = match serde_json::from_str(body) {
         Ok(request) => request,
         Err(_) => return respond_error(stream, 400, "Invalid JSON body").await,
@@ -132,6 +138,9 @@ async fn handle_control_refresh_inventory(
     state: &MeshApi,
     body: &str,
 ) -> anyhow::Result<()> {
+    if !ensure_loopback_control_caller(stream).await? {
+        return Ok(());
+    }
     let request: ControlEndpointRequest = match serde_json::from_str(body) {
         Ok(request) => request,
         Err(_) => return respond_error(stream, 400, "Invalid JSON body").await,
@@ -161,6 +170,9 @@ async fn handle_control_apply_config(
     state: &MeshApi,
     body: &str,
 ) -> anyhow::Result<()> {
+    if !ensure_loopback_control_caller(stream).await? {
+        return Ok(());
+    }
     let request: ApplyConfigRequest = match serde_json::from_str(body) {
         Ok(request) => request,
         Err(_) => return respond_error(stream, 400, "Invalid JSON body").await,
@@ -234,6 +246,22 @@ fn required_control_endpoint(endpoint: Option<String>) -> Result<String, LocalCo
             current_revision: None,
         }),
     }
+}
+
+async fn ensure_loopback_control_caller(stream: &mut TcpStream) -> anyhow::Result<bool> {
+    if let Ok(addr) = stream.peer_addr() {
+        if !addr.ip().is_loopback() {
+            tracing::warn!("runtime control: rejected non-loopback caller {addr}");
+            respond_json(
+                stream,
+                403,
+                &serde_json::json!({"error": "runtime control endpoints only accept localhost connections"}),
+            )
+            .await?;
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn local_control_snapshot_payload(
