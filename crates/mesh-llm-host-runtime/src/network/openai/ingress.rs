@@ -65,13 +65,10 @@ pub(crate) async fn api_proxy(
                         }
                         models.sort();
                         models.dedup();
-                        // Offer "mesh" virtual model when ≥2 distinct models
-                        // are available for mixture-of-agents fan-out.
-                        if models.len() >= 2
-                            && !models.contains(&moa::VIRTUAL_MODEL_NAME.to_string())
-                        {
-                            models.push(moa::VIRTUAL_MODEL_NAME.to_string());
-                        }
+                        // Note: the "mesh" virtual model (MoA fan-out) is NOT
+                        // advertised in the models list — like "auto", it's a
+                        // routing directive, not a real model.  Clients that
+                        // want MoA use model: "mesh" explicitly.
                         let descriptors = node.served_model_descriptors().await;
                         let _ = proxy::send_models_list_with_descriptors(
                             tcp_stream,
