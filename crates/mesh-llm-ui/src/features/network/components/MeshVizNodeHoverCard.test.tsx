@@ -55,7 +55,7 @@ describe('MeshVizNodeHoverCard', () => {
     vi.useRealTimers()
   })
 
-  it('renders peer-backed hover details without changing the current labels', () => {
+  it('renders peer-backed hover details with compact age metadata in the header', () => {
     vi.useFakeTimers()
     vi.setSystemTime(NOW_MS)
     renderOpenHoverCard(node, peer)
@@ -67,8 +67,8 @@ describe('MeshVizNodeHoverCard', () => {
     expect(screen.getByText('You')).toBeInTheDocument()
     expect(screen.getByText('local')).toBeInTheDocument()
     expect(screen.getByText('llama-local-q4')).toBeInTheDocument()
-    expect(screen.getByText('Age')).toBeInTheDocument()
     expect(screen.getByText('1h')).toBeInTheDocument()
+    expect(screen.queryByText('Age')).not.toBeInTheDocument()
     expect(screen.getByText('52% mesh share · 1 models')).toBeInTheDocument()
   })
 
@@ -97,8 +97,8 @@ describe('MeshVizNodeHoverCard', () => {
     expect(screen.getByText('Local node')).toBeInTheDocument()
     expect(screen.getByText('Local')).toBeInTheDocument()
     expect(screen.getByText('<1 ms')).toBeInTheDocument()
-    expect(screen.getByText('Age')).toBeInTheDocument()
     expect(screen.getByText('N/A')).toBeInTheDocument()
+    expect(screen.queryByText('Age')).not.toBeInTheDocument()
     expect(screen.getByText('16.0 GB')).toBeInTheDocument()
   })
 })
