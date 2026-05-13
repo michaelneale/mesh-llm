@@ -135,7 +135,7 @@ fn pack_specialist(session: &Session) -> PackedContext {
     PackedContext {
         messages,
         max_tokens: 512,
-        tools: None, // Specialist gets summaries in system prompt, not full schemas
+        tools: session.tools().cloned(), // Specialist gets full schemas for native tool_calls
     }
 }
 

@@ -13,6 +13,26 @@
 use crate::normalize::{OutputKind, WorkerOutput};
 use serde_json::Value;
 
+/// Pick the best tool proposal: prefer proposals that have arguments,
+/// then by confidence.  A proposal without arguments (e.g. from a fast
+/// worker that only got tool names in the system prompt) should lose to
+/// one that has actual arguments.
+fn best_tool_proposal<'a>(proposals: &[&'a WorkerOutput]) -> &'a WorkerOutput {
+    proposals
+        .iter()
+        .copied()
+        .max_by(|a, b| {
+            let a_has_args = a.tool_arguments.is_some()
+                && a.tool_arguments.as_ref() != Some(&Value::Object(Default::default()));
+            let b_has_args = b.tool_arguments.is_some()
+                && b.tool_arguments.as_ref() != Some(&Value::Object(Default::default()));
+            a_has_args
+                .cmp(&b_has_args)
+                .then(a.confidence.partial_cmp(&b.confidence).unwrap())
+        })
+        .unwrap()
+}
+
 /// What the arbiter decided.
 #[derive(Debug)]
 pub enum Decision {
@@ -94,11 +114,7 @@ pub fn arbitrate(outputs: &[WorkerOutput], has_tools: bool) -> Decision {
             let unanimous = tool_names.iter().all(|n| *n == first);
 
             if unanimous {
-                // Pick the highest-confidence proposal's arguments
-                let best = tool_proposals
-                    .iter()
-                    .max_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap())
-                    .unwrap();
+                let best = best_tool_proposal(&tool_proposals);
                 return Decision::ToolCall {
                     name: first.to_string(),
                     arguments: best
@@ -109,10 +125,7 @@ pub fn arbitrate(outputs: &[WorkerOutput], has_tools: bool) -> Decision {
             }
 
             // Different tools proposed — check if one is clearly dominant
-            let max_conf = tool_proposals
-                .iter()
-                .max_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap())
-                .unwrap();
+            let max_conf = best_tool_proposal(&tool_proposals);
             let others_low = tool_proposals
                 .iter()
                 .filter(|o| o.tool_name != max_conf.tool_name)
@@ -241,10 +254,7 @@ pub fn try_early_decision(
             let first = tool_names[0];
             let unanimous = tool_names.iter().all(|n| *n == first);
             if unanimous {
-                let best = tool_proposals
-                    .iter()
-                    .max_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap())
-                    .unwrap();
+                let best = best_tool_proposal(&tool_proposals);
                 tracing::info!(
                     "moa: early exit — {} workers agree on tool '{}', {} still pending",
                     tool_proposals.len(),
