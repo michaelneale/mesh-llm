@@ -5957,6 +5957,14 @@ async fn run_passive(
     console_state.set_nostr_discovery(cli.nostr_discovery).await;
     if is_client {
         console_state.set_client(true).await;
+        // Clients that joined via Nostr discovery are on a public mesh even
+        // though they don't publish themselves.  Reflect this so the UI shows
+        // "public mesh" branding instead of the private-mesh invite flow.
+        if cli.nostr_discovery {
+            console_state
+                .set_publication_state(api::PublicationState::Public)
+                .await;
+        }
     }
     // Both clients and standby nodes can proxy requests through the mesh
     console_state.update(false, true).await;
