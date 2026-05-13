@@ -18,6 +18,7 @@ use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey, TransportAddr};
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
 use tokio::sync::{watch, Mutex};
@@ -32,6 +33,7 @@ use crate::protocol::*;
 use skippy_protocol::proto::stage as skippy_stage_proto;
 
 const PRETTY_LOCAL_REQUEST_WINDOW_SECS: u64 = 24 * 60 * 60;
+const EPHEMERAL_QUIC_PORT: u16 = 0;
 
 fn emit_mesh_info(message: String) {
     let _ = crate::cli::output::emit_event(crate::cli::output::OutputEvent::Info {
@@ -67,14 +69,30 @@ const ARTIFACT_TRANSFER_OPEN_TIMEOUT: std::time::Duration = std::time::Duration:
 const ARTIFACT_TRANSFER_READ_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const ARTIFACT_TRANSFER_BUFFER_BYTES: usize = 1024 * 1024;
 
-fn quic_bind_addr(bind_port: Option<u16>) -> Option<std::net::SocketAddr> {
-    if let Some(port) = bind_port {
-        return Some(std::net::SocketAddr::from(([0, 0, 0, 0], port)));
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct QuicBindSelection {
+    pub ip: Option<IpAddr>,
+    pub port: Option<u16>,
+}
+
+fn quic_bind_addr(bind: QuicBindSelection) -> Option<SocketAddr> {
+    if let Some(ip) = bind.ip {
+        return Some(SocketAddr::new(
+            ip,
+            bind.port.unwrap_or(EPHEMERAL_QUIC_PORT),
+        ));
+    }
+
+    if let Some(port) = bind.port {
+        return Some(SocketAddr::from(([0, 0, 0, 0], port)));
     }
 
     #[cfg(target_os = "windows")]
     {
-        Some(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+        Some(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            EPHEMERAL_QUIC_PORT,
+        )))
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -85,6 +103,54 @@ fn quic_bind_addr(bind_port: Option<u16>) -> Option<std::net::SocketAddr> {
 
 fn default_control_bind_addr() -> std::net::SocketAddr {
     std::net::SocketAddr::from(([127, 0, 0, 1], 0))
+}
+
+fn is_public_ipv4_candidate(socket: &SocketAddr) -> bool {
+    match socket.ip() {
+        IpAddr::V4(ip) => is_global_ipv4_candidate(ip),
+        IpAddr::V6(_) => false,
+    }
+}
+
+fn is_global_ipv4_candidate(ip: Ipv4Addr) -> bool {
+    let [a, b, c, _] = ip.octets();
+    !(ip.is_private()
+        || ip.is_loopback()
+        || ip.is_link_local()
+        || ip.is_multicast()
+        || ip.is_broadcast()
+        || ip.is_unspecified()
+        || (a == 100 && (64..=127).contains(&b))
+        || (a == 192 && b == 0 && c == 0)
+        || (a == 192 && b == 0 && c == 2)
+        || (a == 198 && (b == 18 || b == 19))
+        || (a == 198 && b == 51 && c == 100)
+        || (a == 203 && b == 0 && c == 113)
+        || a >= 240)
+}
+
+fn endpoint_addr_has_public_ipv4(addr: &EndpointAddr) -> bool {
+    addr.addrs.iter().any(|candidate| match candidate {
+        TransportAddr::Ip(socket) => is_public_ipv4_candidate(socket),
+        _ => false,
+    })
+}
+
+// Host-network Docker and CNI bridges commonly reuse the same 172.* addresses
+// on every host. When a node selects a bind IP, only advertise that direct IP
+// while preserving relay and public candidates for non-LAN reachability.
+fn filter_endpoint_addr_for_bind_ip(
+    mut addr: EndpointAddr,
+    bind_ip: Option<IpAddr>,
+) -> EndpointAddr {
+    let Some(bind_ip) = bind_ip else {
+        return addr;
+    };
+    addr.addrs.retain(|candidate| match candidate {
+        TransportAddr::Ip(socket) => socket.ip() == bind_ip || is_public_ipv4_candidate(socket),
+        _ => true,
+    });
+    addr
 }
 
 fn effective_relay_urls(relay_urls: &[String]) -> Vec<String> {
@@ -1239,6 +1305,7 @@ async fn stun_public_addr(advertised_port: u16) -> Option<std::net::SocketAddr> 
 pub struct Node {
     endpoint: Endpoint,
     public_addr: Option<std::net::SocketAddr>,
+    quic_bind: QuicBindSelection,
     state: Arc<Mutex<MeshState>>,
     role: Arc<Mutex<NodeRole>>,
     models: Arc<Mutex<Vec<String>>>,
@@ -2244,7 +2311,7 @@ impl Node {
     pub async fn start(
         role: NodeRole,
         relay_urls: &[String],
-        bind_port: Option<u16>,
+        quic_bind: QuicBindSelection,
         max_vram_gb: Option<f64>,
         enumerate_host: bool,
         owner_config: Option<OwnerRuntimeConfig>,
@@ -2284,7 +2351,7 @@ impl Node {
                 &urls,
             )));
         }
-        if let Some(addr) = quic_bind_addr(bind_port) {
+        if let Some(addr) = quic_bind_addr(quic_bind) {
             tracing::info!("Binding QUIC to {addr}");
             builder = builder.bind_addr(addr)?;
         }
@@ -2300,9 +2367,10 @@ impl Node {
 
         // Discover public IP via STUN so the invite token includes it.
         // With --bind-port, the advertised port is the bound port (for port forwarding).
-        // Without --bind-port, we use port 0 — the IP is still useful for hole-punching.
+        // Without --bind-port, port 0 is intentional: it asks the OS for a conflict-free
+        // ephemeral port. The IP is still useful for hole-punching.
         // Relay STUN may not work on sinkholed networks, so we use raw STUN to Google/Cloudflare.
-        let stun_port = bind_port.unwrap_or(0);
+        let stun_port = quic_bind.port.unwrap_or(EPHEMERAL_QUIC_PORT);
         let public_addr = stun_public_addr(stun_port).await;
 
         let (peer_change_tx, peer_change_rx) = watch::channel(0usize);
@@ -2408,6 +2476,7 @@ impl Node {
         let node = Node {
             endpoint,
             public_addr,
+            quic_bind,
             state: Arc::new(Mutex::new(MeshState {
                 peers: HashMap::new(),
                 connections: HashMap::new(),
@@ -2548,6 +2617,7 @@ impl Node {
         Node {
             endpoint,
             public_addr: None,
+            quic_bind: QuicBindSelection::default(),
             state: Arc::new(Mutex::new(MeshState {
                 peers: HashMap::new(),
                 connections: HashMap::new(),
@@ -2677,23 +2747,24 @@ impl Node {
     }
 
     pub fn invite_token(&self) -> String {
-        let mut addr = self.endpoint.addr();
+        let mut addr = self.endpoint_addr_for_advertisement();
         // Inject STUN-discovered public address if relay STUN didn't provide one.
         if let Some(pub_addr) = self.public_addr {
-            use iroh::TransportAddr;
-            let has_public = addr.addrs.iter().any(|a| match a {
-                TransportAddr::Ip(sock) => match sock.ip() {
-                    std::net::IpAddr::V4(v4) => !v4.is_private() && !v4.is_loopback(),
-                    _ => false,
-                },
-                _ => false,
-            });
-            if !has_public {
+            if !endpoint_addr_has_public_ipv4(&addr) {
                 addr.addrs.insert(TransportAddr::Ip(pub_addr));
             }
         }
+        addr = filter_endpoint_addr_for_bind_ip(addr, self.quic_bind.ip);
         let json = serde_json::to_vec(&addr).expect("serializable");
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&json)
+    }
+
+    fn endpoint_addr_for_advertisement(&self) -> EndpointAddr {
+        let mut addr = self.endpoint.addr();
+        if self.quic_bind.ip.is_some() {
+            addr = filter_endpoint_addr_for_bind_ip(addr, self.quic_bind.ip);
+        }
+        addr
     }
 
     /// Decode an invite token into an [`EndpointAddr`] without connecting.

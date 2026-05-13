@@ -41,6 +41,29 @@ Join from an API-only client:
 mesh-llm client --join <token>
 ```
 
+### Multi-interface Linux and Docker hosts
+
+On Linux hosts with several kernel-visible interfaces, especially
+`docker run --network host` systems, iroh can discover and advertise Docker or
+CNI bridge addresses such as `172.17.0.1`. If every host has the same bridge
+address, peers may race the wrong local bridge instead of the real management
+network.
+
+Choose the host-to-host interface explicitly:
+
+```bash
+# seed
+mesh-llm serve --split --bind-ip 10.1.2.3 --bind-port 47916 --model Qwen3-8B-Q4_K_M
+
+# worker
+mesh-llm serve --split --join <token> --model Qwen3-8B-Q4_K_M
+```
+
+`--bind-ip` binds mesh QUIC to that local address and filters the invite/gossip
+direct-address set to the selected IP while keeping relay/public candidates.
+Use `--listen-all` only for the local HTTP API/console listener; it does not
+select the mesh QUIC interface.
+
 ## Publish your own mesh
 
 ```bash

@@ -16,8 +16,33 @@ use tokio::sync::watch;
 #[test]
 fn quic_bind_addr_uses_explicit_port_on_all_platforms() {
     assert_eq!(
-        quic_bind_addr(Some(7000)),
+        quic_bind_addr(QuicBindSelection {
+            ip: None,
+            port: Some(7000)
+        }),
         Some(std::net::SocketAddr::from(([0, 0, 0, 0], 7000)))
+    );
+}
+
+#[test]
+fn quic_bind_addr_uses_explicit_ip_and_port() {
+    assert_eq!(
+        quic_bind_addr(QuicBindSelection {
+            ip: Some("10.1.2.3".parse().unwrap()),
+            port: Some(7000)
+        }),
+        Some("10.1.2.3:7000".parse().unwrap())
+    );
+}
+
+#[test]
+fn quic_bind_addr_uses_explicit_ip_with_ephemeral_port() {
+    assert_eq!(
+        quic_bind_addr(QuicBindSelection {
+            ip: Some("10.1.2.3".parse().unwrap()),
+            port: None
+        }),
+        Some("10.1.2.3:0".parse().unwrap())
     );
 }
 
@@ -25,7 +50,7 @@ fn quic_bind_addr_uses_explicit_port_on_all_platforms() {
 #[cfg(target_os = "windows")]
 fn quic_bind_addr_falls_back_to_localhost_ephemeral_on_windows() {
     assert_eq!(
-        quic_bind_addr(None),
+        quic_bind_addr(QuicBindSelection::default()),
         Some(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
     );
 }
@@ -33,7 +58,51 @@ fn quic_bind_addr_falls_back_to_localhost_ephemeral_on_windows() {
 #[test]
 #[cfg(not(target_os = "windows"))]
 fn quic_bind_addr_keeps_endpoint_default_on_non_windows() {
-    assert_eq!(quic_bind_addr(None), None);
+    assert_eq!(quic_bind_addr(QuicBindSelection::default()), None);
+}
+
+#[test]
+fn endpoint_addr_filter_for_bind_ip_keeps_selected_ip_relay_and_public_candidates() {
+    let mut addr = EndpointAddr {
+        id: make_test_endpoint_id(0x42),
+        addrs: Default::default(),
+    };
+    addr.addrs
+        .insert(iroh::TransportAddr::Ip("10.1.2.3:47916".parse().unwrap()));
+    addr.addrs
+        .insert(iroh::TransportAddr::Ip("172.23.0.1:47916".parse().unwrap()));
+    addr.addrs.insert(iroh::TransportAddr::Ip(
+        "100.107.22.123:47916".parse().unwrap(),
+    ));
+    addr.addrs.insert(iroh::TransportAddr::Ip(
+        "192.168.1.20:47916".parse().unwrap(),
+    ));
+    addr.addrs.insert(iroh::TransportAddr::Ip(
+        "35.199.1.10:47916".parse().unwrap(),
+    ));
+    addr.addrs.insert(iroh::TransportAddr::Relay(
+        "https://relay.example.com".parse().unwrap(),
+    ));
+
+    let filtered = filter_endpoint_addr_for_bind_ip(addr, Some("10.1.2.3".parse().unwrap()));
+    let ip_addrs: HashSet<_> = filtered
+        .addrs
+        .iter()
+        .filter_map(|addr| match addr {
+            iroh::TransportAddr::Ip(socket) => Some(socket.to_string()),
+            _ => None,
+        })
+        .collect();
+
+    assert!(ip_addrs.contains("10.1.2.3:47916"));
+    assert!(ip_addrs.contains("35.199.1.10:47916"));
+    assert!(!ip_addrs.contains("172.23.0.1:47916"));
+    assert!(!ip_addrs.contains("100.107.22.123:47916"));
+    assert!(!ip_addrs.contains("192.168.1.20:47916"));
+    assert!(filtered
+        .addrs
+        .iter()
+        .any(|addr| matches!(addr, iroh::TransportAddr::Relay(_))));
 }
 
 fn stage_load_request() -> crate::inference::skippy::StageLoadRequest {
@@ -106,6 +175,7 @@ async fn make_test_node(role: super::NodeRole) -> Result<Node> {
     let node = Node {
         endpoint,
         public_addr: None,
+        quic_bind: QuicBindSelection::default(),
         state: Arc::new(Mutex::new(MeshState {
             peers: HashMap::new(),
             connections: HashMap::new(),

@@ -4212,7 +4212,10 @@ pub(crate) async fn run_plugin_mcp(cli: &Cli) -> Result<()> {
     let (node, _channels) = mesh::Node::start(
         NodeRole::Client,
         &cli.relay,
-        cli.bind_port,
+        mesh::QuicBindSelection {
+            ip: cli.bind_ip,
+            port: cli.bind_port,
+        },
         Some(0.0),
         !cli.no_enumerate_host,
         Some(owner_config),
@@ -4331,7 +4334,10 @@ async fn run_auto(
     let (node, channels) = mesh::Node::start(
         role,
         &cli.relay,
-        cli.bind_port,
+        mesh::QuicBindSelection {
+            ip: cli.bind_ip,
+            port: cli.bind_port,
+        },
         max_vram,
         !cli.no_enumerate_host,
         Some(owner_config),

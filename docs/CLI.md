@@ -72,6 +72,11 @@ Runtime switches:
 - `--client`: API-only mode (no GPU/model serving).
 - `--console <CONSOLE>`: console/API management port (default `3131`).
 - `--headless`: disable the embedded web UI; keep the management API on the `--console` port.
+- `--bind-ip <IP>`: bind mesh QUIC to a specific local IP address and advertise
+  only that selected direct IP, plus relay/public candidates. Use this on
+  multi-interface hosts where Docker/CNI bridge addresses overlap across nodes.
+- `--bind-port <PORT>`: bind mesh QUIC to a fixed UDP port, usually paired
+  with `--bind-ip` for firewall or NAT rules.
 - `--publish`: publish your mesh for discovery.
 - `--mesh-name <MESH_NAME>`: friendly mesh name in discovery.
 - `--region <REGION>`: region hint for discovery.

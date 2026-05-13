@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use std::ffi::OsString;
+use std::net::IpAddr;
 use std::path::PathBuf;
 
 use crate::cli::benchmark::BenchmarkCommand;
@@ -383,6 +384,10 @@ pub(crate) struct Cli {
     #[arg(long, hide = true)]
     pub(crate) bind_port: Option<u16>,
 
+    /// Bind mesh QUIC to a specific local IP address.
+    #[arg(long, hide = true)]
+    pub(crate) bind_ip: Option<IpAddr>,
+
     /// Bind to 0.0.0.0 (for containers/Fly.io).
     #[arg(long, hide = true)]
     pub(crate) listen_all: bool,
@@ -750,18 +755,21 @@ where
     let mut explicit_surface = None;
 
     // Skip leading global flags to find the pseudo-subcommand position.
-    // Recognized value-taking flags: --log-format, --max-vram, --llama-flavor, --device,
-    // --tensor-split, --bind-port, --max-clients, --port, --console, --draft-max, --ctx-size.
+    // Recognized value-taking flags: --log-format, --mesh-discovery-mode, --max-vram,
+    // --llama-flavor, --device, --tensor-split, --bind-port, --bind-ip, --max-clients,
+    // --port, --console, --draft-max, --ctx-size.
     // Boolean flags: --help-advanced, --auto, --client, --headless, --publish, --blackboard,
     // --plugin, --auto-update, --no-draft, --split, --no-enumerate-host, --listen-all,
     // --no-console, --owner-required.
     let value_taking_flags = [
         "--log-format",
+        "--mesh-discovery-mode",
         "--max-vram",
         "--llama-flavor",
         "--device",
         "--tensor-split",
         "--bind-port",
+        "--bind-ip",
         "--max-clients",
         "--port",
         "--console",
@@ -1255,6 +1263,41 @@ mod tests {
 
         assert_eq!(cli.log_format, LogFormat::Json);
         assert_eq!(normalized.explicit_surface, Some(RuntimeSurface::Client));
+    }
+
+    #[test]
+    fn cli_accepts_global_bind_ip_before_serve() {
+        let normalized = normalize_runtime_surface_args([
+            "mesh-llm",
+            "--bind-ip",
+            "10.1.2.3",
+            "serve",
+            "--bind-port",
+            "47916",
+        ]);
+        let cli = Cli::parse_from(normalized.normalized);
+
+        assert_eq!(cli.bind_ip, Some("10.1.2.3".parse().unwrap()));
+        assert_eq!(cli.bind_port, Some(47916));
+        assert_eq!(normalized.explicit_surface, Some(RuntimeSurface::Serve));
+    }
+
+    #[test]
+    fn cli_accepts_global_mesh_discovery_mode_before_serve() {
+        let normalized = normalize_runtime_surface_args([
+            "mesh-llm",
+            "--mesh-discovery-mode",
+            "mdns",
+            "serve",
+            "--auto",
+        ]);
+        let cli = Cli::parse_from(normalized.normalized);
+
+        assert_eq!(
+            cli.mesh_discovery_mode,
+            crate::network::discovery::MeshDiscoveryMode::Mdns
+        );
+        assert_eq!(normalized.explicit_surface, Some(RuntimeSurface::Serve));
     }
 
     #[test]

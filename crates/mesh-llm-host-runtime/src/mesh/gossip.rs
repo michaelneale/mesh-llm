@@ -734,7 +734,7 @@ impl Node {
         };
         let my_first_joined_mesh_ts = *self.first_joined_mesh_ts.lock().await;
         announcements.push(PeerAnnouncement {
-            addr: self.endpoint.addr(),
+            addr: self.endpoint_addr_for_advertisement(),
             role: my_role,
             first_joined_mesh_ts: my_first_joined_mesh_ts,
             models: my_models,

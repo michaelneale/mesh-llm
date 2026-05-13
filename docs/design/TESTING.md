@@ -153,6 +153,27 @@ mesh-llm serve --model Qwen2.5-32B --join <TOKEN>
 - Stage placement is proportional to available VRAM (e.g. `0.67,0.33`)
 - Draft model auto-detected and used
 
+#### Multi-interface Docker/Linux bind-IP validation
+
+For host-network Docker or multi-NIC Linux hosts, validate the selected
+host-to-host interface explicitly:
+
+```bash
+# seed on the routable management IP
+mesh-llm serve --model Qwen2.5-32B --split --bind-ip 10.1.2.3 --bind-port 7842
+
+# worker joins the printed token
+mesh-llm serve --model Qwen2.5-32B --split --join <TOKEN>
+```
+
+- Decode the invite token and confirm Docker/CNI bridge addresses such as
+  `172.17.0.1` or `172.23.0.1` are absent when `--bind-ip` is set.
+- The seed sees the worker in `/api/status`; it must not stay at
+  `Waiting for peers...`.
+- `/v1/models` becomes non-empty after split startup and inference works.
+- `--listen-all` is not a substitute for this test; it only affects local
+  HTTP API/console listeners.
+
 ### 4. Two GPU nodes, model too big for one
 
 When the model exceeds host VRAM, split happens automatically without `--split`.
