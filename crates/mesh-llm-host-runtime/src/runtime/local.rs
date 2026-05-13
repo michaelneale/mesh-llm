@@ -153,6 +153,7 @@ pub(super) struct LocalRuntimeModelStartSpec<'a> {
     pub(super) n_ubatch_override: Option<u32>,
     pub(super) flash_attention_override: FlashAttentionType,
     pub(super) parallel_override: Option<usize>,
+    pub(super) skippy_telemetry: skippy::SkippyTelemetryOptions,
 }
 
 pub(super) enum SplitRuntimeStart {
@@ -680,6 +681,7 @@ pub(super) async fn start_runtime_split_model(
         flash_attention_override: spec.flash_attention_override,
         pinned_gpu: spec.pinned_gpu,
         slots,
+        skippy_telemetry: spec.skippy_telemetry.clone(),
     })
     .await?;
     let (coordinator_tx, coordinator_rx) = tokio::sync::mpsc::channel(1);
@@ -706,6 +708,7 @@ pub(super) async fn start_runtime_split_model(
         flash_attention_override: spec.flash_attention_override,
         pinned_gpu: spec.pinned_gpu.cloned(),
         slots,
+        skippy_telemetry: spec.skippy_telemetry.clone(),
         event_tx: coordinator_tx,
     }));
 
@@ -854,6 +857,7 @@ struct SplitGenerationLoadSpec<'a> {
     n_batch_override: Option<u32>,
     n_ubatch_override: Option<u32>,
     flash_attention_override: FlashAttentionType,
+    skippy_telemetry: skippy::SkippyTelemetryOptions,
 }
 
 async fn load_split_runtime_generation(
@@ -1067,6 +1071,7 @@ async fn load_split_runtime_generation_inner(
     let slots = spec.slots;
     let node_for_hook = spec.node.clone();
     let model_ref = spec.model_ref.to_string();
+    let skippy_telemetry = spec.skippy_telemetry.clone();
     let _ = emit_event(OutputEvent::ModelLoading {
         model: model_ref.clone(),
         source: None,
@@ -1078,6 +1083,7 @@ async fn load_split_runtime_generation_inner(
             slots,
             skippy_server::CONTEXT_BUDGET_MAX_TOKENS,
             Some(skippy::MeshAutoHookPolicy::new(node_for_hook)),
+            skippy_telemetry,
         )
     })
     .await
@@ -1314,6 +1320,7 @@ struct SplitTopologyCoordinator {
     flash_attention_override: FlashAttentionType,
     pinned_gpu: Option<crate::runtime::StartupPinnedGpuTarget>,
     slots: usize,
+    skippy_telemetry: skippy::SkippyTelemetryOptions,
     event_tx: tokio::sync::mpsc::Sender<SplitCoordinatorEvent>,
 }
 
@@ -1676,6 +1683,7 @@ impl SplitTopologyCoordinator {
             flash_attention_override: self.flash_attention_override,
             pinned_gpu: self.pinned_gpu.as_ref(),
             slots: self.slots,
+            skippy_telemetry: self.skippy_telemetry.clone(),
         })
         .await?;
         let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
@@ -2585,7 +2593,8 @@ async fn start_runtime_skippy_model(
         .with_ctx_size(context_length)
         .with_generation_concurrency(plan.slots)
         .with_cache_types(effective_cache_type_k, effective_cache_type_v)
-        .with_flash_attn_type(resolved_flash_attn_type);
+        .with_flash_attn_type(resolved_flash_attn_type)
+        .with_telemetry(spec.skippy_telemetry.clone());
     if spec.n_batch_override.is_some() || spec.n_ubatch_override.is_some() {
         options = options.with_batch_sizes(spec.n_batch_override, spec.n_ubatch_override);
     }
@@ -2711,6 +2720,7 @@ async fn start_runtime_layer_package_model(
     let slots = plan.slots;
     let node_for_hook = spec.node.clone();
     let model_ref = model_name.clone();
+    let skippy_telemetry = spec.skippy_telemetry.clone();
     let _ = emit_event(OutputEvent::ModelLoading {
         model: model_ref.clone(),
         source: None,
@@ -2722,6 +2732,7 @@ async fn start_runtime_layer_package_model(
             slots,
             skippy_server::CONTEXT_BUDGET_MAX_TOKENS,
             Some(skippy::MeshAutoHookPolicy::new(node_for_hook)),
+            skippy_telemetry,
         )
     })
     .await
@@ -3690,6 +3701,7 @@ mod tests {
             n_batch_override: None,
             n_ubatch_override: None,
             flash_attention_override: FlashAttentionType::Auto,
+            skippy_telemetry: skippy::SkippyTelemetryOptions::off(),
         }))
         .await
         {

@@ -1032,6 +1032,7 @@ struct StartupLocalModelTask {
     flash_attention: FlashAttentionType,
     parallel_override: Option<usize>,
     split: bool,
+    skippy_telemetry: skippy::SkippyTelemetryOptions,
     survey_telemetry: survey::SurveyTelemetry,
     survey_launch_kind: survey::SurveyLaunchKind,
     stop_rx: tokio::sync::watch::Receiver<bool>,
@@ -1068,6 +1069,7 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         flash_attention,
         parallel_override,
         split,
+        skippy_telemetry,
         survey_telemetry,
         survey_launch_kind,
         mut stop_rx,
@@ -1138,6 +1140,7 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         n_ubatch_override: n_ubatch,
         flash_attention_override: flash_attention,
         parallel_override,
+        skippy_telemetry: skippy_telemetry.clone(),
     };
     let mut launch_started: Instant;
     let (
@@ -1459,6 +1462,7 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                             n_ubatch_override: n_ubatch,
                             flash_attention_override: flash_attention,
                             parallel_override,
+                            skippy_telemetry: skippy_telemetry.clone(),
                         }, &model_ref)
                         .await
                         {
@@ -4097,6 +4101,20 @@ async fn store_benchmark_metrics(
     *fp16_arc.lock().await = result.and_then(|r| r.compute_tflops_fp16.clone());
 }
 
+fn skippy_telemetry_options(cli: &Cli) -> skippy::SkippyTelemetryOptions {
+    if !cli.debug {
+        return skippy::SkippyTelemetryOptions::off();
+    }
+
+    skippy::SkippyTelemetryOptions::debug(
+        cli.skippy_metrics_otlp_grpc
+            .as_deref()
+            .map(str::trim)
+            .filter(|endpoint| !endpoint.is_empty())
+            .map(str::to_owned),
+    )
+}
+
 /// Serve mode: join the mesh and serve local models through the embedded runtime.
 async fn run_auto(
     mut cli: Cli,
@@ -4139,6 +4157,7 @@ async fn run_auto(
 
     let console_port = Some(cli.console);
     let is_client = cli.client;
+    let skippy_telemetry = skippy_telemetry_options(&cli);
 
     // Scan local models on disk
     let local_models = if is_client {
@@ -4887,6 +4906,7 @@ async fn run_auto(
         flash_attention: primary_flash_attention,
         parallel_override: primary_parallel_override,
         split: startup_split,
+        skippy_telemetry: skippy_telemetry.clone(),
         survey_telemetry: survey_telemetry_for_primary,
         survey_launch_kind: survey::SurveyLaunchKind::Startup,
         stop_rx: primary_stop_rx,
@@ -4978,6 +4998,7 @@ async fn run_auto(
                     flash_attention: extra_flash_attention,
                     parallel_override: extra_parallel_override,
                     split: startup_split,
+                    skippy_telemetry: skippy_telemetry.clone(),
                     survey_telemetry: extra_survey_telemetry,
                     survey_launch_kind: survey::SurveyLaunchKind::MultiModel,
                     stop_rx: extra_stop_rx,
@@ -5159,6 +5180,7 @@ async fn run_auto(
                                         .and_then(|m| m.flash_attention)
                                         .unwrap_or(FlashAttentionType::Auto),
                                     parallel_override,
+                                    skippy_telemetry: skippy_telemetry_options(&cli),
                                 },
                                 &runtime_model_name,
                             )

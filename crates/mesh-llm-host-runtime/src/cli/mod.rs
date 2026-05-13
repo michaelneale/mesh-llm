@@ -247,6 +247,10 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) debug: bool,
 
+    /// OTLP/gRPC endpoint for embedded Skippy debug telemetry, for example http://127.0.0.1:14317.
+    #[arg(long, hide = true)]
+    pub(crate) skippy_metrics_otlp_grpc: Option<String>,
+
     /// Show all options (including advanced/niche ones).
     #[arg(long, hide = true)]
     pub(crate) help_advanced: bool,

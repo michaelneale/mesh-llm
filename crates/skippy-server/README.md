@@ -144,9 +144,9 @@ unload or replan.
   promoting it for concurrent serving.
 - Benchy usage lives in [`docs/skippy/LLAMA_BENCHY.md`](../../docs/skippy/LLAMA_BENCHY.md).
 - The local OpenAI smoke harness is `scripts/openai-smoke.sh`.
-- `serve-binary --async-prefill-forward` forwards eligible non-final prefill
-  activation frames on a bounded background writer. It is opt-in because the
-  benefit is topology dependent.
+- `serve-binary` forwards eligible non-final prefill activation frames on a
+  bounded background writer by default. Use `--no-async-prefill-forward` only
+  when comparing against the synchronous prefill path.
 - `runtime-slice` loads a full model and filters tensors at runtime.
 - `artifact-slice` loads GGUF slice artifacts written by `skippy-model-package`
   with `filter_tensors_on_load=true`.
@@ -194,10 +194,10 @@ sequenceDiagram
     S->>S: compute while frame i drains
 ```
 
-This is topology dependent and remains opt-in; benchmark the target link,
-chunk size, and activation dtype before promoting a setting. The conservative
-exact default is `f16`; `q8` should stay per-family/per-split opt-in until a
-correctness smoke validates it.
+This is topology dependent; use `--no-async-prefill-forward` to benchmark the
+synchronous baseline on a target link. The conservative exact default is `f16`;
+`q8` should stay per-family/per-split opt-in until a correctness smoke validates
+it.
 
 Debug telemetry includes middle-out timing spans:
 
