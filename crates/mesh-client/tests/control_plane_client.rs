@@ -210,7 +210,26 @@ async fn spawn_success_server(
                     let _ = send.finish();
                     return;
                 }
-                if request.watch_config.is_some() {
+                if let Some(watch_config) = request.watch_config {
+                    let watch_response = if watch_config.include_snapshot {
+                        mesh_client::proto::node::OwnerControlWatchConfigResponse {
+                            accepted: None,
+                            snapshot: Some(test_snapshot(
+                                endpoint_id.as_bytes(),
+                                6,
+                                "watch-model.gguf",
+                            )),
+                            update: None,
+                        }
+                    } else {
+                        mesh_client::proto::node::OwnerControlWatchConfigResponse {
+                            accepted: Some(mesh_client::proto::node::OwnerControlWatchAccepted {
+                                target_node_id: endpoint_id.as_bytes().to_vec(),
+                            }),
+                            snapshot: None,
+                            update: None,
+                        }
+                    };
                     write_control_envelope(
                         &mut send,
                         OwnerControlEnvelope {
@@ -220,17 +239,7 @@ async fn spawn_success_server(
                             response: Some(mesh_client::proto::node::OwnerControlResponse {
                                 request_id: request.request_id,
                                 get_config: None,
-                                watch_config: Some(
-                                    mesh_client::proto::node::OwnerControlWatchConfigResponse {
-                                        accepted: None,
-                                        snapshot: Some(test_snapshot(
-                                            endpoint_id.as_bytes(),
-                                            6,
-                                            "watch-model.gguf",
-                                        )),
-                                        update: None,
-                                    },
-                                ),
+                                watch_config: Some(watch_response),
                                 apply_config: None,
                                 refresh_inventory: None,
                             }),
@@ -354,7 +363,7 @@ async fn write_control_envelope(
 
 fn owner_control_client(connection: ControlPlaneConnection) -> OwnerControlClient {
     match connection {
-        ControlPlaneConnection::OwnerControl(client) => client,
+        ControlPlaneConnection::OwnerControl(client) => *client,
         ControlPlaneConnection::LegacyMeshConfig => panic!("expected owner-control session"),
     }
 }
@@ -429,6 +438,35 @@ async fn control_plane_client_apply_config_get_watch_refresh_and_close() {
         apply_requests[0].config.as_ref().unwrap().models[0].model,
         "applied-model.gguf"
     );
+}
+
+#[tokio::test]
+async fn control_plane_client_watch_without_snapshot_returns_accepted() {
+    let client = make_client().await;
+    let owner_keypair = test_owner_keypair(0x11, 0x12);
+    let (_server, token, _state, watch_closed_rx) = spawn_success_server(&owner_keypair).await;
+    let control = owner_control_client(
+        client
+            .connect_control_plane(ControlPlaneBootstrapOptions::new().with_control_endpoint(token))
+            .await
+            .expect("connection should use owner-control ALPN"),
+    );
+
+    let mut watch = control
+        .watch_config(false)
+        .await
+        .expect("watch_config should open");
+    match watch.next().await.expect("watch accepted should arrive") {
+        OwnerControlWatchEvent::Accepted(accepted) => {
+            assert_eq!(accepted.target_node_id.len(), 32);
+        }
+        _ => panic!("expected initial watch accepted event"),
+    }
+    watch.close().await.expect("watch close should succeed");
+    tokio::time::timeout(std::time::Duration::from_secs(5), watch_closed_rx)
+        .await
+        .expect("server should observe watch close")
+        .expect("watch close signal should succeed");
 }
 
 #[tokio::test]

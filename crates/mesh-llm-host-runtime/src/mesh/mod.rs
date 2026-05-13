@@ -5798,24 +5798,24 @@ impl Node {
         requester_node_id: &[u8],
         target_node_id: &[u8],
         request_id: u64,
-    ) -> Result<(), crate::proto::node::OwnerControlEnvelope> {
+    ) -> Result<(), Box<crate::proto::node::OwnerControlEnvelope>> {
         if requester_node_id != remote.as_bytes() {
-            return Err(owner_control_error_envelope(
+            return Err(Box::new(owner_control_error_envelope(
                 crate::proto::node::OwnerControlErrorCode::BadRequest,
                 Some(request_id),
                 None,
                 "requester_node_id does not match connection identity",
-            ));
+            )));
         }
         if let Err(err) =
             verify_control_plane_target_node(target_node_id, self.endpoint.id().as_bytes())
         {
-            return Err(owner_control_error_envelope(
+            return Err(Box::new(owner_control_error_envelope(
                 crate::proto::node::OwnerControlErrorCode::TargetNodeMismatch,
                 Some(request_id),
                 None,
                 err.to_string(),
-            ));
+            )));
         }
         Ok(())
     }
@@ -5843,7 +5843,7 @@ impl Node {
                 &get.target_node_id,
                 request_id,
             ) {
-                return self.send_owner_control_envelope(send, envelope).await;
+                return self.send_owner_control_envelope(send, *envelope).await;
             }
             let snapshot = {
                 let state = self.config_state.lock().await;
@@ -5872,17 +5872,33 @@ impl Node {
         }
 
         if let Some(watch) = request.watch_config {
+            let mut rev_rx = self.config_revision_tx.subscribe();
             if let Err(envelope) = self.verify_owner_control_request_ids(
                 remote,
                 &watch.requester_node_id,
                 &watch.target_node_id,
                 request_id,
             ) {
-                return self.send_owner_control_envelope(send, envelope).await;
+                return self.send_owner_control_envelope(send, *envelope).await;
             }
-            let snapshot = {
-                let state = self.config_state.lock().await;
-                self.owner_control_snapshot_from_state(&state)
+            let watch_response = if watch.include_snapshot {
+                let snapshot = {
+                    let state = self.config_state.lock().await;
+                    self.owner_control_snapshot_from_state(&state)
+                };
+                OwnerControlWatchConfigResponse {
+                    accepted: None,
+                    snapshot: Some(snapshot),
+                    update: None,
+                }
+            } else {
+                OwnerControlWatchConfigResponse {
+                    accepted: Some(crate::proto::node::OwnerControlWatchAccepted {
+                        target_node_id: self.endpoint.id().as_bytes().to_vec(),
+                    }),
+                    snapshot: None,
+                    update: None,
+                }
             };
             self.send_owner_control_envelope(
                 send,
@@ -5893,11 +5909,7 @@ impl Node {
                     response: Some(OwnerControlResponse {
                         request_id,
                         get_config: None,
-                        watch_config: Some(OwnerControlWatchConfigResponse {
-                            accepted: None,
-                            snapshot: Some(snapshot),
-                            update: None,
-                        }),
+                        watch_config: Some(watch_response),
                         apply_config: None,
                         refresh_inventory: None,
                     }),
@@ -5906,7 +5918,6 @@ impl Node {
             )
             .await?;
 
-            let mut rev_rx = self.config_revision_tx.subscribe();
             loop {
                 tokio::select! {
                     changed = rev_rx.changed() => {
@@ -5961,7 +5972,7 @@ impl Node {
                 &apply.target_node_id,
                 request_id,
             ) {
-                return self.send_owner_control_envelope(send, envelope).await;
+                return self.send_owner_control_envelope(send, *envelope).await;
             }
             let Some(config_snapshot) = apply.config else {
                 return self
@@ -6104,7 +6115,7 @@ impl Node {
                 &refresh.target_node_id,
                 request_id,
             ) {
-                return self.send_owner_control_envelope(send, envelope).await;
+                return self.send_owner_control_envelope(send, *envelope).await;
             }
             let _ = self.refresh_local_inventory_snapshot().await;
             let snapshot = {

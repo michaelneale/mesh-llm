@@ -197,7 +197,7 @@ impl From<OwnerControlError> for OwnerControlRemoteError {
 /// or an explicit `LegacyMeshConfig` selection when `allow_legacy_config=true` and
 /// no endpoint was configured. The client never performs a silent downgrade.
 pub enum ControlPlaneConnection {
-    OwnerControl(OwnerControlClient),
+    OwnerControl(Box<OwnerControlClient>),
     LegacyMeshConfig,
 }
 
@@ -238,6 +238,7 @@ impl MeshClient {
             ConfigTransportSelection::OwnerControl { endpoint, .. } => {
                 OwnerControlClient::connect(endpoint, self.config.owner_keypair.clone(), &options)
                     .await
+                    .map(Box::new)
                     .map(ControlPlaneConnection::OwnerControl)
             }
         }
@@ -667,17 +668,17 @@ fn sign_node_ownership_proto(
     let cert_id = uuid::Uuid::new_v4().simple().to_string();
     let owner_sign_public_key = owner.verifying_key().as_bytes().to_vec();
     let owner_id = owner.owner_id();
-    let signature_payload = canonical_claim_bytes(
-        NODE_OWNERSHIP_VERSION,
-        &cert_id,
-        &owner_id,
-        &owner_sign_public_key,
+    let signature_payload = canonical_claim_bytes(CanonicalClaim {
+        version: NODE_OWNERSHIP_VERSION,
+        cert_id: &cert_id,
+        owner_id: &owner_id,
+        owner_sign_public_key: &owner_sign_public_key,
         node_endpoint_id,
         issued_at_unix_ms,
         expires_at_unix_ms,
-        None,
-        None,
-    );
+        node_label: None,
+        hostname_hint: None,
+    });
     SignedNodeOwnership {
         version: NODE_OWNERSHIP_VERSION,
         cert_id,
@@ -692,28 +693,30 @@ fn sign_node_ownership_proto(
     }
 }
 
-fn canonical_claim_bytes(
+struct CanonicalClaim<'a> {
     version: u32,
-    cert_id: &str,
-    owner_id: &str,
-    owner_sign_public_key: &[u8],
-    node_endpoint_id: &[u8; 32],
+    cert_id: &'a str,
+    owner_id: &'a str,
+    owner_sign_public_key: &'a [u8],
+    node_endpoint_id: &'a [u8; 32],
     issued_at_unix_ms: u64,
     expires_at_unix_ms: u64,
-    node_label: Option<&str>,
-    hostname_hint: Option<&str>,
-) -> Vec<u8> {
+    node_label: Option<&'a str>,
+    hostname_hint: Option<&'a str>,
+}
+
+fn canonical_claim_bytes(claim: CanonicalClaim<'_>) -> Vec<u8> {
     let mut buf = Vec::with_capacity(256);
     buf.extend_from_slice(SIGNING_DOMAIN_TAG);
-    buf.extend_from_slice(&version.to_le_bytes());
-    write_string(&mut buf, cert_id);
-    write_string(&mut buf, owner_id);
-    buf.extend_from_slice(owner_sign_public_key);
-    buf.extend_from_slice(node_endpoint_id);
-    buf.extend_from_slice(&issued_at_unix_ms.to_le_bytes());
-    buf.extend_from_slice(&expires_at_unix_ms.to_le_bytes());
-    write_optional_string(&mut buf, node_label);
-    write_optional_string(&mut buf, hostname_hint);
+    buf.extend_from_slice(&claim.version.to_le_bytes());
+    write_string(&mut buf, claim.cert_id);
+    write_string(&mut buf, claim.owner_id);
+    buf.extend_from_slice(claim.owner_sign_public_key);
+    buf.extend_from_slice(claim.node_endpoint_id);
+    buf.extend_from_slice(&claim.issued_at_unix_ms.to_le_bytes());
+    buf.extend_from_slice(&claim.expires_at_unix_ms.to_le_bytes());
+    write_optional_string(&mut buf, claim.node_label);
+    write_optional_string(&mut buf, claim.hostname_hint);
     buf
 }
 

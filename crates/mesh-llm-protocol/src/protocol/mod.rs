@@ -43,6 +43,7 @@ pub enum ControlFrameError {
     InvalidSenderId { got: usize },
     MissingHttpPort,
     MissingOwnerId,
+    MissingControlOwnerId,
     InvalidConfigHashLength { got: usize },
     InvalidSubprotocol,
     InvalidPublicKeyLength { got: usize },
@@ -54,6 +55,7 @@ pub enum ControlFrameError {
     MissingControlResult,
     MissingControlOwnership,
     MissingRequestId,
+    InvalidOwnerControlErrorCode { got: i32 },
     DecodeError(String),
     WrongStreamType { expected: u8, got: u8 },
     ForgedSender,
@@ -82,6 +84,9 @@ impl std::fmt::Display for ControlFrameError {
                 write!(f, "HOST-role peer annotation missing http_port")
             }
             ControlFrameError::MissingOwnerId => write!(f, "config frame missing owner_id"),
+            ControlFrameError::MissingControlOwnerId => {
+                write!(f, "owner control handshake missing owner_id")
+            }
             ControlFrameError::InvalidConfigHashLength { got } => {
                 write!(f, "invalid config_hash length: expected 32, got {}", got)
             }
@@ -118,6 +123,9 @@ impl std::fmt::Display for ControlFrameError {
             }
             ControlFrameError::MissingRequestId => {
                 write!(f, "owner control request_id must be non-zero")
+            }
+            ControlFrameError::InvalidOwnerControlErrorCode { got } => {
+                write!(f, "invalid owner control error code: {got}")
             }
             ControlFrameError::DecodeError(msg) => write!(f, "protobuf decode error: {}", msg),
             ControlFrameError::WrongStreamType { expected, got } => write!(
@@ -354,7 +362,7 @@ impl ValidateControlFrame for crate::proto::node::OwnerControlHandshake {
             .as_ref()
             .ok_or(ControlFrameError::MissingControlOwnership)?;
         if ownership.owner_id.trim().is_empty() {
-            return Err(ControlFrameError::MissingOwnerId);
+            return Err(ControlFrameError::MissingControlOwnerId);
         }
         validate_public_key_length(ownership.owner_sign_public_key.len())?;
         validate_endpoint_id_length(ownership.node_endpoint_id.len())?;
@@ -436,7 +444,7 @@ impl ValidateControlFrame for crate::proto::node::OwnerControlError {
             crate::proto::node::OwnerControlErrorCode::try_from(self.code),
             Err(_) | Ok(crate::proto::node::OwnerControlErrorCode::Unspecified)
         ) {
-            return Err(ControlFrameError::MissingControlResult);
+            return Err(ControlFrameError::InvalidOwnerControlErrorCode { got: self.code });
         }
         Ok(())
     }
@@ -743,8 +751,8 @@ mod tests {
         ConfigApplyMode, NodeConfigSnapshot, NodeGpuConfig, NodeModelEntry,
         OwnerControlApplyConfigRequest, OwnerControlApplyConfigResponse,
         OwnerControlConfigSnapshot, OwnerControlConfigUpdate, OwnerControlEnvelope,
-        OwnerControlErrorCode, OwnerControlGetConfigRequest, OwnerControlGetConfigResponse,
-        OwnerControlHandshake, OwnerControlRefreshInventoryRequest,
+        OwnerControlError, OwnerControlErrorCode, OwnerControlGetConfigRequest,
+        OwnerControlGetConfigResponse, OwnerControlHandshake, OwnerControlRefreshInventoryRequest,
         OwnerControlRefreshInventoryResponse, OwnerControlRequest, OwnerControlResponse,
         OwnerControlWatchAccepted, OwnerControlWatchConfigResponse, SignedNodeOwnership,
     };
@@ -1012,6 +1020,44 @@ mod tests {
             OwnerControlErrorCode::UnknownCommand
         );
         assert_eq!(error.request_id, Some(42));
+    }
+
+    #[test]
+    fn owner_control_handshake_empty_owner_id_uses_handshake_error() {
+        let mut envelope = control_plane_test_handshake();
+        envelope
+            .handshake
+            .as_mut()
+            .and_then(|handshake| handshake.ownership.as_mut())
+            .expect("test handshake must include ownership")
+            .owner_id = "   ".to_string();
+
+        let err = decode_owner_control_envelope(&encode_owner_control_envelope(&envelope))
+            .expect_err("handshake with blank owner_id must be rejected");
+        assert!(matches!(err, ControlFrameError::MissingControlOwnerId));
+        assert_eq!(err.to_string(), "owner control handshake missing owner_id");
+    }
+
+    #[test]
+    fn owner_control_error_rejects_invalid_error_code() {
+        for code in [OwnerControlErrorCode::Unspecified as i32, 9999] {
+            let err = OwnerControlError {
+                code,
+                message: "invalid".to_string(),
+                request_id: Some(1),
+                current_revision: None,
+            }
+            .validate_frame()
+            .expect_err("invalid owner-control error code must be rejected");
+            assert!(matches!(
+                err,
+                ControlFrameError::InvalidOwnerControlErrorCode { got } if got == code
+            ));
+            assert_eq!(
+                err.to_string(),
+                format!("invalid owner control error code: {code}")
+            );
+        }
     }
 
     #[test]

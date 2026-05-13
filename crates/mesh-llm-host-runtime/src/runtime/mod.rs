@@ -5741,7 +5741,7 @@ async fn run_passive(
         model_name: label,
         api_port: local_port,
         model_size_bytes: 0,
-        owner_key_path: resolve_runtime_owner_key_path(&cli)?,
+        owner_key_path: resolve_runtime_owner_key_path(cli)?,
         plugin_manager: plugin_manager.clone(),
         affinity_router: affinity_router.clone(),
         runtime_data_collector,

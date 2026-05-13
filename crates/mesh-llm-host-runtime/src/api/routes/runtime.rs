@@ -212,7 +212,7 @@ async fn connect_owner_control_client(
         .await
         .map_err(control_error_from_client)?;
     match connection {
-        ControlPlaneConnection::OwnerControl(client) => Ok(client),
+        ControlPlaneConnection::OwnerControl(client) => Ok(*client),
         ControlPlaneConnection::LegacyMeshConfig => Err(LocalControlErrorPayload {
             code: "control_endpoint_required".to_string(),
             message: "owner-control endpoint must be provided explicitly".to_string(),
@@ -268,9 +268,9 @@ fn load_local_owner_keypair(
 ) -> anyhow::Result<crate::crypto::OwnerKeypair> {
     let path =
         path.ok_or_else(|| anyhow::anyhow!("local owner keystore unavailable for this runtime"))?;
-    let info = keystore_metadata(&path)?;
+    let info = keystore_metadata(path)?;
     if info.encrypted && std::env::var("MESH_LLM_OWNER_PASSPHRASE").is_err() {
-        match load_owner_keypair_from_keychain(&path) {
+        match load_owner_keypair_from_keychain(path) {
             Ok(keypair) => return Ok(keypair),
             Err(OwnerKeychainLoadError::NoEntry)
             | Err(OwnerKeychainLoadError::Crypto(crate::crypto::CryptoError::DecryptionFailed))
@@ -281,16 +281,15 @@ fn load_local_owner_keypair(
                 crate::crypto::CryptoError::KeychainAccessDenied { .. },
             )) => {}
             Err(OwnerKeychainLoadError::Crypto(err)) => {
-                return Err(err)
-                    .map_err(Into::into)
-                    .map_err(|error: anyhow::Error| {
-                        error.context(format!("Failed to load owner keystore {}", path.display()))
-                    })
+                let error: anyhow::Error = err.into();
+                return Err(
+                    error.context(format!("Failed to load owner keystore {}", path.display()))
+                );
             }
         }
     }
-    let passphrase = resolve_owner_passphrase(&path)?;
-    load_keystore(&path, passphrase.as_deref().map(|value| value.as_str()))
+    let passphrase = resolve_owner_passphrase(path)?;
+    load_keystore(path, passphrase.as_deref().map(|value| value.as_str()))
         .map_err(Into::into)
         .map_err(|error: anyhow::Error| {
             error.context(format!("Failed to load owner keystore {}", path.display()))

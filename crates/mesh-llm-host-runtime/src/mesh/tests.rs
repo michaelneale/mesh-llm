@@ -1432,6 +1432,170 @@ async fn control_plane_watch_observes_apply_revision() -> Result<()> {
 }
 
 #[tokio::test]
+async fn control_plane_watch_without_snapshot_starts_with_accepted() -> Result<()> {
+    use crate::proto::node::OwnerControlRequest;
+
+    let owner_keypair = test_owner_keypair(0xA1, 0xA2);
+    let tmp = std::env::temp_dir().join(format!(
+        "mesh-llm-control-watch-no-snapshot-{}",
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&tmp).ok();
+    let (server, _secret_key, _config_path) =
+        start_owner_control_test_server(&owner_keypair, &tmp).await?;
+
+    let (_watch_endpoint, mut watch_send, mut watch_recv, watch_requester_id) =
+        open_owner_control_stream(&server, &owner_keypair).await?;
+    write_len_prefixed(
+        &mut watch_send,
+        &crate::proto::node::OwnerControlEnvelope {
+            gen: NODE_PROTOCOL_GENERATION,
+            handshake: None,
+            request: Some(OwnerControlRequest {
+                request_id: 12,
+                get_config: None,
+                watch_config: Some(crate::proto::node::OwnerControlWatchConfigRequest {
+                    requester_node_id: watch_requester_id.as_bytes().to_vec(),
+                    target_node_id: server.id().as_bytes().to_vec(),
+                    include_snapshot: false,
+                }),
+                apply_config: None,
+                refresh_inventory: None,
+            }),
+            response: None,
+            error: None,
+        }
+        .encode_to_vec(),
+    )
+    .await?;
+
+    let initial = read_owner_control_envelope(&mut watch_recv).await?;
+    let watch = initial
+        .response
+        .expect("watch should return a response")
+        .watch_config
+        .expect("watch should return watch_config");
+    assert!(watch.snapshot.is_none());
+    assert!(watch.update.is_none());
+    let accepted = watch
+        .accepted
+        .expect("watch without snapshot should start with accepted");
+    assert_eq!(accepted.target_node_id, server.id().as_bytes().to_vec());
+
+    server.shutdown_control_listener().await;
+    std::fs::remove_dir_all(&tmp).ok();
+    Ok(())
+}
+
+#[tokio::test]
+async fn control_plane_watch_without_snapshot_observes_apply_revision() -> Result<()> {
+    use crate::proto::node::{NodeConfigSnapshot, NodeGpuConfig, OwnerControlRequest};
+
+    let owner_keypair = test_owner_keypair(0xA3, 0xA4);
+    let tmp = std::env::temp_dir().join(format!(
+        "mesh-llm-control-watch-no-snapshot-update-{}",
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&tmp).ok();
+    let (server, _secret_key, _config_path) =
+        start_owner_control_test_server(&owner_keypair, &tmp).await?;
+
+    let initial_revision = { server.config_state.lock().await.revision() };
+    let (_watch_endpoint, mut watch_send, mut watch_recv, watch_requester_id) =
+        open_owner_control_stream(&server, &owner_keypair).await?;
+    write_len_prefixed(
+        &mut watch_send,
+        &crate::proto::node::OwnerControlEnvelope {
+            gen: NODE_PROTOCOL_GENERATION,
+            handshake: None,
+            request: Some(OwnerControlRequest {
+                request_id: 13,
+                get_config: None,
+                watch_config: Some(crate::proto::node::OwnerControlWatchConfigRequest {
+                    requester_node_id: watch_requester_id.as_bytes().to_vec(),
+                    target_node_id: server.id().as_bytes().to_vec(),
+                    include_snapshot: false,
+                }),
+                apply_config: None,
+                refresh_inventory: None,
+            }),
+            response: None,
+            error: None,
+        }
+        .encode_to_vec(),
+    )
+    .await?;
+    let accepted = read_owner_control_envelope(&mut watch_recv).await?;
+    assert!(accepted
+        .response
+        .expect("watch should return a response")
+        .watch_config
+        .expect("watch should return watch_config")
+        .accepted
+        .is_some());
+
+    let (_apply_endpoint, mut apply_send, mut apply_recv, apply_requester_id) =
+        open_owner_control_stream(&server, &owner_keypair).await?;
+    write_len_prefixed(
+        &mut apply_send,
+        &crate::proto::node::OwnerControlEnvelope {
+            gen: NODE_PROTOCOL_GENERATION,
+            handshake: None,
+            request: Some(OwnerControlRequest {
+                request_id: 14,
+                get_config: None,
+                watch_config: None,
+                apply_config: Some(crate::proto::node::OwnerControlApplyConfigRequest {
+                    requester_node_id: apply_requester_id.as_bytes().to_vec(),
+                    target_node_id: server.id().as_bytes().to_vec(),
+                    expected_revision: initial_revision,
+                    config: Some(NodeConfigSnapshot {
+                        version: 1,
+                        gpu: Some(NodeGpuConfig {
+                            assignment: crate::proto::node::GpuAssignment::Auto as i32,
+                        }),
+                        models: vec![],
+                        plugins: vec![],
+                    }),
+                }),
+                refresh_inventory: None,
+            }),
+            response: None,
+            error: None,
+        }
+        .encode_to_vec(),
+    )
+    .await?;
+    let apply = read_owner_control_envelope(&mut apply_recv).await?;
+    let applied = apply
+        .response
+        .expect("apply should return a response")
+        .apply_config
+        .expect("apply should return apply_config");
+    assert!(applied.success);
+
+    let update = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        read_owner_control_envelope(&mut watch_recv),
+    )
+    .await
+    .expect("watch stream should emit an update within 5 seconds")?;
+    let update = update
+        .response
+        .expect("watch update should return a response")
+        .watch_config
+        .expect("watch update should return watch_config")
+        .update
+        .expect("watch update should carry an update payload");
+    assert_eq!(update.revision, initial_revision + 1);
+    assert_eq!(update.config_hash, applied.config_hash);
+
+    server.shutdown_control_listener().await;
+    std::fs::remove_dir_all(&tmp).ok();
+    Ok(())
+}
+
+#[tokio::test]
 async fn control_plane_apply_rejects_stale_revision() -> Result<()> {
     use crate::proto::node::{
         NodeConfigSnapshot, NodeGpuConfig, OwnerControlErrorCode, OwnerControlRequest,
