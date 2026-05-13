@@ -84,7 +84,7 @@ export function Composer({
         ref={textareaRef}
         id="prompt-composer"
         data-testid="chat-input"
-        className="block w-full resize-none bg-transparent px-4 py-3.5 text-[length:var(--density-type-body-lg)] leading-[1.5] outline-none focus-visible:outline-none placeholder:text-fg-faint"
+        className="block w-full resize-none bg-transparent px-4 py-3.5 text-[16px] leading-[1.5] outline-none focus-visible:outline-none placeholder:text-fg-faint sm:text-[length:var(--density-type-body-lg)]"
         disabled={disabled}
         placeholder={isPreparingAttachments ? preparingLabel : placeholder}
         value={value}

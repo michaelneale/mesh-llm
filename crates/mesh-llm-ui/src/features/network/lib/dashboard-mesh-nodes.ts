@@ -45,6 +45,7 @@ export function peerToMeshNode(peer: Peer, position: Pick<MeshNode, 'x' | 'y'>):
     latencyMs: peer.latencyMs,
     hostname: peer.hostname,
     vramGB: peer.vramGB,
+    firstJoinedMeshTs: peer.firstJoinedMeshTs,
     x: position.x,
     y: position.y
   }
@@ -73,7 +74,8 @@ function meshNodeWithPeerState(node: MeshNode, peer: Peer): MeshNode {
     latencyMs: peer.latencyMs,
     subLabel: meshPeerSecondaryLabel(peer),
     hostname: peer.hostname,
-    vramGB: peer.vramGB
+    vramGB: peer.vramGB,
+    firstJoinedMeshTs: peer.firstJoinedMeshTs
   }
 }
 
