@@ -1113,6 +1113,7 @@ pub struct SamplingConfig {
     pub temperature: f32,
     pub top_p: f32,
     pub top_k: i32,
+    pub min_p: f32,
     pub presence_penalty: f32,
     pub frequency_penalty: f32,
     pub repeat_penalty: f32,
@@ -1128,6 +1129,7 @@ impl Default for SamplingConfig {
             temperature: 1.0,
             top_p: 1.0,
             top_k: 0,
+            min_p: 0.0,
             presence_penalty: 0.0,
             frequency_penalty: 0.0,
             repeat_penalty: 1.0,
@@ -1165,7 +1167,7 @@ impl SamplingConfig {
             frequency_penalty: self.frequency_penalty,
             repeat_penalty: self.repeat_penalty,
             logit_bias_count: self.logit_bias.len().min(MAX_LOGIT_BIAS) as u32,
-            reserved: 0,
+            min_p: self.min_p,
             logit_bias,
         }
     }

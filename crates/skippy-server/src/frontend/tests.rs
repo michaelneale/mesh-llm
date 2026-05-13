@@ -803,16 +803,21 @@ fn mid_generation_window_fires_on_repetition_even_with_low_entropy() {
 
 #[test]
 fn default_sampling_controls_are_allowed() {
+    // When no sampling params are specified, the server applies its own
+    // defaults (temp=0.8, top_k=40, top_p=0.95, min_p=0.05) which enable
+    // the sampling chain automatically.
     let request: ChatCompletionRequest = serde_json::from_value(json!({
         "model": "jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF:Q4_K_M",
-        "messages": [{"role": "user", "content": "hello"}],
-        "temperature": 1.0,
-        "top_p": 1.0
+        "messages": [{"role": "user", "content": "hello"}]
     }))
     .unwrap();
 
     let sampling = chat_sampling_config(&request).unwrap();
-    assert!(!sampling.enabled);
+    assert!(sampling.enabled);
+    assert_eq!(sampling.temperature, 0.8);
+    assert_eq!(sampling.top_p, 0.95);
+    assert_eq!(sampling.top_k, 40);
+    assert_eq!(sampling.min_p, 0.05);
 }
 
 #[test]
@@ -1004,7 +1009,7 @@ fn unsupported_extra_generation_fields_return_openai_error() {
     let request: ChatCompletionRequest = serde_json::from_value(json!({
         "model": "jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF:Q4_K_M",
         "messages": [{"role": "user", "content": "hello"}],
-        "min_p": 0.1
+        "typical_p": 0.5
     }))
     .unwrap();
 
@@ -1013,6 +1018,20 @@ fn unsupported_extra_generation_fields_return_openai_error() {
         error.body().error.code.as_deref(),
         Some("unsupported_model_feature")
     );
+}
+
+#[test]
+fn min_p_is_accepted_and_forwarded() {
+    let request: ChatCompletionRequest = serde_json::from_value(json!({
+        "model": "jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF:Q4_K_M",
+        "messages": [{"role": "user", "content": "hello"}],
+        "min_p": 0.1
+    }))
+    .unwrap();
+
+    let sampling = chat_sampling_config(&request).unwrap();
+    assert!(sampling.enabled);
+    assert_eq!(sampling.min_p, 0.1);
 }
 
 #[test]

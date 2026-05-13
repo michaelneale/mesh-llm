@@ -189,7 +189,7 @@ pub(super) fn requires_structured_output(value: &Value) -> bool {
 pub(super) fn ensure_extra_generation_fields_absent(
     extra: &std::collections::BTreeMap<String, serde_json::Value>,
 ) -> OpenAiResult<()> {
-    const UNSUPPORTED_FIELDS: &[&str] = &["min_p", "typical_p"];
+    const UNSUPPORTED_FIELDS: &[&str] = &["typical_p"];
 
     for field in UNSUPPORTED_FIELDS {
         if extra.get(*field).is_some_and(|value| !value.is_null()) {
@@ -211,11 +211,12 @@ pub(super) fn sampling_config(
     extra: &std::collections::BTreeMap<String, serde_json::Value>,
 ) -> OpenAiResult<SamplingConfig> {
     ensure_extra_generation_fields_absent(extra)?;
-    let temperature = temperature.unwrap_or(1.0);
-    let top_p = top_p.unwrap_or(1.0);
+    let temperature = temperature.unwrap_or(0.8);
+    let top_p = top_p.unwrap_or(0.95);
     let presence_penalty = presence_penalty.unwrap_or(0.0);
     let frequency_penalty = frequency_penalty.unwrap_or(0.0);
-    let top_k = optional_i32_extra(extra, "top_k")?.unwrap_or(0);
+    let top_k = optional_i32_extra(extra, "top_k")?.unwrap_or(40);
+    let min_p = optional_f32_extra(extra, "min_p")?.unwrap_or(0.05);
     let repeat_penalty = optional_f32_extra(extra, "repeat_penalty")?
         .or(optional_f32_extra(extra, "repetition_penalty")?)
         .unwrap_or(1.0);
@@ -223,6 +224,7 @@ pub(super) fn sampling_config(
     validate_sampling_range("top_p", top_p, 0.0..=1.0)?;
     validate_sampling_range("presence_penalty", presence_penalty, -2.0..=2.0)?;
     validate_sampling_range("frequency_penalty", frequency_penalty, -2.0..=2.0)?;
+    validate_sampling_range("min_p", min_p, 0.0..=1.0)?;
     validate_sampling_range("repeat_penalty", repeat_penalty, 0.0..=100.0)?;
     if top_k < 0 {
         return Err(OpenAiError::invalid_request(
@@ -240,6 +242,7 @@ pub(super) fn sampling_config(
         || (temperature - 1.0).abs() > f32::EPSILON
         || (top_p - 1.0).abs() > f32::EPSILON
         || top_k > 0
+        || min_p > 0.0
         || presence_penalty.abs() > f32::EPSILON
         || frequency_penalty.abs() > f32::EPSILON
         || (repeat_penalty - 1.0).abs() > f32::EPSILON
@@ -250,6 +253,7 @@ pub(super) fn sampling_config(
         temperature,
         top_p,
         top_k,
+        min_p,
         presence_penalty,
         frequency_penalty,
         repeat_penalty,
@@ -338,6 +342,7 @@ pub(super) fn wire_sampling_config(sampling: &SamplingConfig) -> Option<WireSamp
         temperature: sampling.temperature,
         top_p: sampling.top_p,
         top_k: sampling.top_k,
+        min_p: sampling.min_p,
         presence_penalty: sampling.presence_penalty,
         frequency_penalty: sampling.frequency_penalty,
         repeat_penalty: sampling.repeat_penalty,

@@ -3171,6 +3171,7 @@ fn runtime_sampling_config(sampling: Option<&StageSamplingConfig>) -> Option<Sam
         temperature: sampling.temperature,
         top_p: sampling.top_p,
         top_k: sampling.top_k,
+        min_p: sampling.min_p,
         presence_penalty: sampling.presence_penalty,
         frequency_penalty: sampling.frequency_penalty,
         repeat_penalty: sampling.repeat_penalty,

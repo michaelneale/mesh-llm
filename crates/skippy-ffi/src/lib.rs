@@ -244,7 +244,7 @@ pub struct SamplingConfig {
     pub frequency_penalty: f32,
     pub repeat_penalty: f32,
     pub logit_bias_count: u32,
-    pub reserved: u32,
+    pub min_p: f32,
     pub logit_bias: [LogitBias; 256],
 }
 
