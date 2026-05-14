@@ -211,9 +211,20 @@ pub fn try_early_decision(
     }
 
     // ── Single output with others still pending ─────────────────────
-    // Wait for at least one more so we have a chance to detect disagreement.
+    // Wait for at least one more so we have a chance to detect disagreement —
+    // UNLESS most other workers have already failed, in which case return
+    // the sole survivor immediately rather than waiting for stragglers.
     if outputs.len() < 2 && remaining > 0 {
-        return None;
+        let failed_count = total_finished - outputs.len();
+        let majority_failed = failed_count > 0 && failed_count >= total_workers / 2;
+        if !majority_failed {
+            return None;
+        }
+        // Majority failed — return the sole survivor
+        tracing::info!(
+            "moa: early exit — sole survivor, {failed_count}/{total_workers} workers failed",
+        );
+        return Some(single_output_decision(&outputs[0], has_tools));
     }
 
     // ── 2+ outputs: check for consensus ─────────────────────────────
@@ -468,5 +479,82 @@ mod tests {
             Decision::NeedsReducer { reason } => assert!(reason.contains("uncertain")),
             other => panic!("expected NeedsReducer, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn early_decision_sole_survivor_majority_failed() {
+        // 1 success, 3 failures, 1 still pending — majority failed, return sole survivor
+        let outputs = vec![make_output(OutputKind::Answer, 0.8, "Paris")];
+        // total_workers=5, total_finished=4 (1 success + 3 failures), remaining=1
+        match try_early_decision(&outputs, 5, 4, false) {
+            Some(Decision::Answer(text)) => assert!(text.contains("Paris")),
+            other => {
+                panic!("expected early Answer for sole survivor (majority failed), got {other:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn early_decision_sole_survivor_minority_failed_waits() {
+        // 1 success, 1 failure, 3 still pending — minority failed, wait for more
+        let outputs = vec![make_output(OutputKind::Answer, 0.8, "Paris")];
+        // total_workers=5, total_finished=2 (1 success + 1 failure), remaining=3
+        assert!(try_early_decision(&outputs, 5, 2, false).is_none());
+    }
+
+    #[test]
+    fn best_tool_proposal_prefers_arguments() {
+        let without_args = WorkerOutput {
+            kind: OutputKind::ToolProposal,
+            confidence: 0.9,
+            tool_name: Some("read_file".into()),
+            tool_arguments: None,
+            payload: "calling read_file".into(),
+            model: "fast-model".into(),
+            role: crate::worker::WorkerRole::Fast,
+            elapsed_ms: 100,
+        };
+        let with_args = WorkerOutput {
+            kind: OutputKind::ToolProposal,
+            confidence: 0.6,
+            tool_name: Some("read_file".into()),
+            tool_arguments: Some(serde_json::json!({"path": "/tmp/test.txt"})),
+            payload: "calling read_file".into(),
+            model: "strong-model".into(),
+            role: crate::worker::WorkerRole::Strong,
+            elapsed_ms: 3000,
+        };
+        let proposals = vec![&without_args, &with_args];
+        let best = best_tool_proposal(&proposals);
+        assert_eq!(best.model, "strong-model");
+        assert!(best.tool_arguments.is_some());
+    }
+
+    #[test]
+    fn best_tool_proposal_falls_back_to_confidence() {
+        let a = WorkerOutput {
+            kind: OutputKind::ToolProposal,
+            confidence: 0.6,
+            tool_name: Some("read_file".into()),
+            tool_arguments: Some(serde_json::json!({"path": "/a.txt"})),
+            payload: "calling read_file".into(),
+            model: "model-a".into(),
+            role: crate::worker::WorkerRole::Specialist,
+            elapsed_ms: 2000,
+        };
+        let b = WorkerOutput {
+            kind: OutputKind::ToolProposal,
+            confidence: 0.9,
+            tool_name: Some("read_file".into()),
+            tool_arguments: Some(serde_json::json!({"path": "/b.txt"})),
+            payload: "calling read_file".into(),
+            model: "model-b".into(),
+            role: crate::worker::WorkerRole::Strong,
+            elapsed_ms: 3000,
+        };
+        let proposals = vec![&a, &b];
+        let best = best_tool_proposal(&proposals);
+        // Both have args, so confidence wins
+        assert_eq!(best.model, "model-b");
     }
 }

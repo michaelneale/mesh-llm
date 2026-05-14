@@ -698,13 +698,15 @@ impl moa::ModelBackend for LocalModelBackend {
         tools: Option<&serde_json::Value>,
         max_tokens: u32,
         timeout: std::time::Duration,
+        sampling: moa::SamplingParams,
     ) -> Result<serde_json::Value, String> {
         let url = format!("http://127.0.0.1:{}/v1/chat/completions", self.port);
         let mut body = serde_json::json!({
             "model": model,
             "messages": messages,
             "max_tokens": max_tokens,
-            "temperature": 0.3,
+            "temperature": sampling.temperature,
+            "top_p": sampling.top_p,
             "stream": false,
             "mesh_hooks": false,
         });
@@ -747,12 +749,14 @@ impl moa::ModelBackend for RemoteModelBackend {
         tools: Option<&serde_json::Value>,
         max_tokens: u32,
         timeout: std::time::Duration,
+        sampling: moa::SamplingParams,
     ) -> Result<serde_json::Value, String> {
         let mut body = serde_json::json!({
             "model": model,
             "messages": messages,
             "max_tokens": max_tokens,
-            "temperature": 0.3,
+            "temperature": sampling.temperature,
+            "top_p": sampling.top_p,
             "stream": false,
             "mesh_hooks": false,
         });
@@ -908,8 +912,8 @@ async fn build_moa_config(
     Some(moa::GatewayConfig {
         backends,
         models,
-        worker_timeout: std::time::Duration::from_secs(30),
-        reducer_timeout: std::time::Duration::from_secs(45),
+        worker_timeout: std::time::Duration::from_secs(15),
+        reducer_timeout: std::time::Duration::from_secs(30),
     })
 }
 

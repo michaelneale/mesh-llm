@@ -37,6 +37,41 @@ use worker::WorkerRole;
 /// The virtual model name that triggers MoA routing.
 pub const VIRTUAL_MODEL_NAME: &str = "mesh";
 
+// ─── Sampling params ─────────────────────────────────────────────────
+
+/// Sampling hyperparameters sent to backend models.
+/// Workers get higher temperature for diversity; reducer gets lower for precision.
+#[derive(Debug, Clone, Copy)]
+pub struct SamplingParams {
+    pub temperature: f32,
+    pub top_p: f32,
+}
+
+impl SamplingParams {
+    /// High-diversity settings for MoA workers — encourages each model
+    /// to explore different parts of the solution space.
+    pub fn worker() -> Self {
+        Self {
+            temperature: 0.8,
+            top_p: 0.95,
+        }
+    }
+
+    /// Low-variance settings for the reducer — precise synthesis.
+    pub fn reducer() -> Self {
+        Self {
+            temperature: 0.3,
+            top_p: 0.9,
+        }
+    }
+}
+
+impl Default for SamplingParams {
+    fn default() -> Self {
+        Self::reducer()
+    }
+}
+
 // ─── Backend trait ───────────────────────────────────────────────────
 
 /// Abstraction for calling a model.  The gateway doesn't care whether
@@ -52,6 +87,7 @@ pub trait ModelBackend: Send + Sync + 'static {
         tools: Option<&Value>,
         max_tokens: u32,
         timeout: Duration,
+        sampling: SamplingParams,
     ) -> Result<Value, String>;
 }
 
@@ -80,13 +116,15 @@ impl ModelBackend for HttpBackend {
         tools: Option<&Value>,
         max_tokens: u32,
         timeout: Duration,
+        sampling: SamplingParams,
     ) -> Result<Value, String> {
         let url = format!("{}/chat/completions", self.base_url);
         let mut body = json!({
             "model": model,
             "messages": messages,
             "max_tokens": max_tokens,
-            "temperature": 0.3,
+            "temperature": sampling.temperature,
+            "top_p": sampling.top_p,
             "stream": false,
         });
         if let Some(tools) = tools {
@@ -247,6 +285,7 @@ async fn handle_query(
                 packed.tools.as_ref(),
                 packed.max_tokens,
                 timeout,
+                SamplingParams::worker(),
             )
             .await;
             let elapsed = t0.elapsed().as_millis() as u64;
@@ -300,6 +339,7 @@ async fn handle_tool_result(
         tools.as_ref(),
         2048,
         config.reducer_timeout,
+        SamplingParams::reducer(),
     )
     .await;
 
@@ -369,6 +409,7 @@ async fn resolve_decision(
                 tools.as_ref(),
                 2048,
                 config.reducer_timeout,
+                SamplingParams::reducer(),
             )
             .await
             {
@@ -413,6 +454,8 @@ fn pick_reducer(config: &GatewayConfig) -> (String, usize) {
 // ─── Backend call + text extraction ──────────────────────────────────
 
 /// Call a backend and extract the assistant text from the response.
+/// Retries once on HTTP 429 (rate limit) after the server's `retry-after`
+/// delay (default 1s).
 async fn call_backend(
     backend: &dyn ModelBackend,
     model: &str,
@@ -420,11 +463,35 @@ async fn call_backend(
     tools: Option<&Value>,
     max_tokens: u32,
     timeout: Duration,
+    sampling: SamplingParams,
 ) -> Result<String, String> {
-    let resp = backend
-        .chat_completion(model, messages, tools, max_tokens, timeout)
-        .await?;
-    extract_text_from_response(&resp)
+    match backend
+        .chat_completion(model, messages, tools, max_tokens, timeout, sampling)
+        .await
+    {
+        Ok(resp) => extract_text_from_response(&resp),
+        Err(e) if e.contains("429") => {
+            // Parse retry-after from error message if present, default 1s
+            let delay = parse_retry_after(&e).unwrap_or(1);
+            tracing::info!("moa: 429 from {model}, retrying after {delay}s");
+            tokio::time::sleep(Duration::from_secs(delay)).await;
+            let resp = backend
+                .chat_completion(model, messages, tools, max_tokens, timeout, sampling)
+                .await?;
+            extract_text_from_response(&resp)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Extract retry-after seconds from an error message containing "retry-after: N".
+fn parse_retry_after(err: &str) -> Option<u64> {
+    let lower = err.to_lowercase();
+    lower
+        .find("retry-after:")
+        .map(|i| &err[i + 12..])
+        .and_then(|s| s.split_whitespace().next())
+        .and_then(|s| s.trim().parse::<u64>().ok())
 }
 
 /// Extract assistant text from a chat completion response body.
@@ -711,4 +778,49 @@ fn short_id() -> String {
         .unwrap_or_default()
         .as_nanos();
     format!("{:x}", t)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_retry_after_from_header() {
+        let err = "HTTP 429: retry-after: 2\r\ncontent-type: application/json";
+        assert_eq!(parse_retry_after(err), Some(2));
+    }
+
+    #[test]
+    fn parse_retry_after_missing() {
+        let err = "HTTP 429: Too Many Requests";
+        assert_eq!(parse_retry_after(err), None);
+    }
+
+    #[test]
+    fn parse_retry_after_case_insensitive() {
+        let err = "Retry-After: 5";
+        assert_eq!(parse_retry_after(err), Some(5));
+    }
+
+    #[test]
+    fn worker_sampling_high_diversity() {
+        let s = SamplingParams::worker();
+        assert!(s.temperature > 0.5, "workers need high temp for diversity");
+        assert!(s.top_p > 0.9, "workers need high top_p for diversity");
+    }
+
+    #[test]
+    fn reducer_sampling_low_variance() {
+        let s = SamplingParams::reducer();
+        assert!(s.temperature <= 0.4, "reducer needs low temp for precision");
+        assert!(s.top_p <= 0.95, "reducer needs bounded top_p");
+    }
+
+    #[test]
+    fn default_sampling_is_reducer() {
+        let d = SamplingParams::default();
+        let r = SamplingParams::reducer();
+        assert!((d.temperature - r.temperature).abs() < f32::EPSILON);
+        assert!((d.top_p - r.top_p).abs() < f32::EPSILON);
+    }
 }
