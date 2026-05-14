@@ -39,6 +39,9 @@ outputs:
   rust_changed:
     description: 'Boolean: true if Rust files changed'
     value: ${{ steps.derive.outputs.rust_changed }}
+  dependency_policy_changed:
+    description: 'Boolean: true if dependency or deny-policy files changed'
+    value: ${{ steps.derive.outputs.dependency_policy_changed }}
 
 runs:
   using: composite
@@ -112,6 +115,13 @@ runs:
         elif [[ $(echo "$AFFECTED_CRATES" | jq 'length') -gt 0 ]]; then
           RUST_CHANGED="true"
         fi
+
+        DEPENDENCY_POLICY_CHANGED="false"
+        if [[ -n "$CHANGED_FILES" ]]; then
+          if echo "$CHANGED_FILES" | grep -q -E '(^Cargo\.toml$|^Cargo\.lock$|/Cargo\.toml$|^deny\.toml$)'; then
+            DEPENDENCY_POLICY_CHANGED="true"
+          fi
+        fi
         
         # Set outputs using GITHUB_OUTPUT
         {
@@ -125,4 +135,5 @@ runs:
           echo "ui_changed=$UI_CHANGED"
           echo "docs_only=$DOCS_ONLY"
           echo "rust_changed=$RUST_CHANGED"
+          echo "dependency_policy_changed=$DEPENDENCY_POLICY_CHANGED"
         } >> "$GITHUB_OUTPUT"

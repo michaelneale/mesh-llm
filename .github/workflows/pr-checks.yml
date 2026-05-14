@@ -30,6 +30,7 @@ jobs:
       ui_changed: ${{ steps.compute.outputs.ui_changed }}
       docs_only: ${{ steps.compute.outputs.docs_only }}
       rust_changed: ${{ steps.compute.outputs.rust_changed }}
+      dependency_policy_changed: ${{ steps.compute.outputs.dependency_policy_changed }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -110,7 +111,7 @@ jobs:
 
   rust-deny:
     needs: changes
-    if: needs.changes.outputs.rust_changed == 'true'
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.dependency_policy_changed == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
