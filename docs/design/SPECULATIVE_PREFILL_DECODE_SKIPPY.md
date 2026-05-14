@@ -488,66 +488,68 @@ with thinking enabled. See "Proof of Concept Results" above.
 - Per-token signal extraction during verify (entropy/margin per position)
 - Draft token probability lookup (softmax(logits)[draft_token])
 
-### Phase 2: Wire existing `--draft` CLI to skippy-server
+### Phase 2: Mesh-native speculative prefill
 
-The host runtime has `--draft`, `--draft-max`, `--no-draft` CLI flags
-that are parsed but never wired through. The skippy-server has a complete
-speculative decode loop (`DraftRunner`, `embedded_generation.rs`) that
-works but always receives `draft_model_path: None`.
+This is the core optimization. A fast model generates a complete answer,
+then the distributed target verifies it in one prefill pass — avoiding
+sequential decode round trips entirely.
 
-6. **Thread `--draft` through `SkippyModelLoadOptions`** — add
-   `draft_model_path: Option<PathBuf>` and `speculative_window: usize`
-   fields. Pass from CLI → `LocalRuntimeModelStartSpec` →
-   `SkippyModelLoadOptions` → `EmbeddedOpenAiArgs`.
+**This is NOT standard speculative decoding.** Standard spec decode
+(`DraftRunner` in skippy-server) proposes small rolling windows of tokens
+and verifies them in a tight loop. That helps single-node latency but
+doesn't help distributed splits — each verify window is still a
+sequential forward pass through all nodes. Speculative prefill is
+fundamentally different: one complete draft, one parallel prefill, done.
 
-7. **Test with local draft** — `mesh-llm serve --model Qwen3-8B
-   --draft ~/.cache/.../Qwen3-0.6B-Q4_K_M.gguf --draft-max 8`.
-   Verify the existing `DraftRunner` + `classify_verify_span` loop
-   works end-to-end with real models.
+> Note: the existing `--draft` CLI flag and `DraftRunner` infra in
+> skippy-server implement standard spec decode. Wiring those through is
+> an independent improvement for single-node serving, not on this path.
 
-This lights up **standard speculative decoding** (tight rolling windows)
-for single-node serving — useful even without distributed splits.
-
-### Phase 3: Mesh-native speculative prefill
-
-This is the new optimization that the PoC proved viable.
-
-8. **`pick_draft_model()` in ingress** — given `ModelTargets` and the
+6. **`pick_draft_model()` in ingress** — given `ModelTargets` and the
    target model name, select the best draft model. Priority: same-family
    smallest local → any smallest local → same-family smallest remote →
-   any smallest remote. Uses `available_model_sizes` from gossip.
+   any smallest remote. Uses `available_model_sizes` from gossip. Any
+   model works — the mesh might have a MiniMax or Llama that can still
+   produce structurally plausible text for a Qwen target.
 
-9. **Draft generation via `ModelBackend`** — reuse the `LocalModelBackend`
-   / `RemoteModelBackend` from MoA to call the draft model. Request uses
-   no-think chat template, short context (last 4–6 messages), low
-   temperature.
+7. **Generate complete draft via `ModelBackend`** — reuse the
+   `LocalModelBackend` / `RemoteModelBackend` from MoA to call the draft
+   model with:
+   - Thinking disabled (`/no_think` chat template)
+   - Short context (last 4–6 messages, not full history)
+   - Low temperature (greedy or near-greedy)
+   - The draft model produces a complete text answer, not token IDs
 
-10. **Verify-and-commit in skippy-server** — new request path: when the
-    proxy provides a `draft_response` text field alongside the normal
-    request:
-    - Tokenize prompt + draft with target's chat template/tokenizer
-    - Prefill prompt, then `verify_tokens()` on draft tokens
-    - Find divergence K using `classify_verify_span()` (already exists)
-    - K == end → return draft as response (zero decode)
-    - K < end → trim to K, decode the tail normally
-    - Stream: emit accepted prefix immediately, then stream decode tail
+8. **Verify-and-commit in skippy-server** — new request path: when the
+   proxy provides a `draft_response` text field alongside the normal
+   chat completion request:
+   - Tokenize the full prompt using the target's chat template
+   - Tokenize the draft text using the target's tokenizer
+   - Prefill the prompt tokens normally
+   - Call `verify_tokens()` on the draft tokens — this is ONE prefill
+     pass, one network round trip through all split nodes, regardless
+     of how long the draft is
+   - Find divergence K using `classify_verify_span()` (already exists)
+   - K == end → return draft as response (zero decode round trips)
+   - K < end → KV cache is warm to K, decode only the tail from K
 
-11. **Automatic engagement in proxy** — the proxy detects:
-    - Target is a distributed layer split (not single-node)
-    - A draft model is available (from `pick_draft_model()`)
-    - Request doesn't have `"speculative_prefill": false`
-    When all conditions hold, transparently engage spec prefill.
+9. **Automatic engagement in proxy** — the proxy detects:
+   - Target is a distributed layer split (not single-node local)
+   - A draft model is available (from `pick_draft_model()`)
+   - Request doesn't have `"speculative_prefill": false`
+   When all conditions hold, transparently engage spec prefill before
+   forwarding the request to the target.
 
-### Phase 4: Adaptive and production hardening
+### Phase 3: Adaptive and production hardening
 
-12. **Acceptance rate tracking** — per (draft, target) model pair, track
+10. **Acceptance rate tracking** — per (draft, target) model pair, track
     running acceptance rate. Disable speculation if acceptance is
     consistently < 10% (the draft doesn't help for this pair).
 
-13. **Draft timeout** — if draft generation takes longer than estimated
+11. **Draft timeout** — if draft generation takes longer than estimated
     decode time, abort and fall through to normal decode.
 
-14. **Streaming prefill emission** — emit the verified draft prefix as
+12. **Streaming prefill emission** — emit the verified draft prefix as
     SSE chunks immediately, then stream decode tokens for the tail.
 
 ## Relationship to Existing Systems
@@ -778,9 +780,9 @@ immediately):
 Default is `true` (enabled) when the proxy detects a split target with
 an available draft model.
 
-### CLI flags (existing, unwired)
+### CLI flags (related but separate)
 
-The CLI already has hidden flags for draft model configuration:
+The CLI already has hidden flags for **standard** speculative decoding:
 
 ```
 --draft <path>        Draft model GGUF path
@@ -788,15 +790,17 @@ The CLI already has hidden flags for draft model configuration:
 --no-draft            Disable automatic draft detection
 ```
 
-These were designed for standard speculative decoding (tight
-draft→verify→repair loop inside skippy-server). They should be wired
-through to `SkippyModelLoadOptions` → `EmbeddedOpenAiArgs` to enable
-the existing `DraftRunner` + `embedded_generation.rs` spec decode loop.
+These control skippy-server's `DraftRunner` — a tight rolling-window
+draft→verify loop for **single-node** serving. This is a different
+optimization from speculative prefill and solves a different problem
+(local decode throughput vs. distributed decode latency). Wiring
+these flags through is independent work.
 
-For mesh-native spec prefill (full-response draft → one-pass verify),
-the proxy-level automatic engagement is the right UX. The CLI flags
-control the lower-level per-model draft, while the proxy handles
-cross-model mesh-wide draft selection.
+Speculative prefill operates at the **proxy layer**, not inside
+skippy-server's decode loop. The proxy selects a draft model from the
+mesh, gets a complete text response, and injects it into the target's
+request for one-pass verification. No CLI flag needed — the proxy
+engages it automatically when conditions are met.
 
 ### What this is NOT
 
