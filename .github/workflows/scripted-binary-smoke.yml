@@ -1,0 +1,76 @@
+name: Reusable Scripted Binary Smoke Tests
+
+on:
+  workflow_call:
+    inputs:
+      artifact_name:
+        required: true
+        type: string
+      artifact_path:
+        required: false
+        default: ci-artifacts/linux
+        type: string
+      binary_name:
+        required: false
+        default: mesh-llm
+        type: string
+      staged_binary_path:
+        required: false
+        default: target/debug/mesh-llm
+        type: string
+      model_url:
+        required: false
+        default: https://huggingface.co/unsloth/SmolLM2-135M-Instruct-GGUF/resolve/9e6855bc4be717fca1ef21360a1db4b29d5c559a/SmolLM2-135M-Instruct-Q8_0.gguf
+        type: string
+      model_file:
+        required: false
+        default: SmolLM2-135M-Instruct-Q8_0.gguf
+        type: string
+      model_cache_scope:
+        required: true
+        type: string
+      cache_key_prefix:
+        required: false
+        default: ''
+        type: string
+      smoke_script:
+        required: true
+        type: string
+      runs_on:
+        required: false
+        default: '"ubuntu-latest"'
+        type: string
+      timeout_minutes:
+        required: false
+        default: 20
+        type: number
+
+env:
+  MODEL_URL: ${{ inputs.model_url }}
+  MODEL_FILE: ${{ inputs.model_file }}
+
+jobs:
+  scripted_binary_smoke:
+    name: Scripted Binary Smoke
+    runs-on: ${{ fromJson(inputs.runs_on) }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install smoke dependencies
+        run: sudo apt-get update && sudo apt-get install -y curl jq lsof
+
+      - uses: ./.github/actions/restore-smoke-inputs
+        with:
+          artifact_name: ${{ inputs.artifact_name }}
+          artifact_path: ${{ inputs.artifact_path }}
+          binary_name: ${{ inputs.binary_name }}
+          staged_binary_path: ${{ inputs.staged_binary_path }}
+          model_url: ${{ inputs.model_url }}
+          model_file: ${{ inputs.model_file }}
+          model_cache_scope: ${{ inputs.model_cache_scope }}
+          cache_key_prefix: ${{ inputs.cache_key_prefix }}
+          save_model_cache: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Run scripted smoke
+        run: ${{ inputs.smoke_script }} "${{ inputs.staged_binary_path }}" "${{ inputs.artifact_path }}" "$HOME/.models/${{ inputs.model_file }}"

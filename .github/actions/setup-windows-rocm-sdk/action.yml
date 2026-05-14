@@ -11,20 +11,6 @@ inputs:
     required: false
     default: sdk-installer-cache
 
-outputs:
-  rocm-path:
-    description: Resolved ROCm/HIP SDK root.
-    value: ${{ steps.resolve.outputs.rocm-path }}
-  hipcc:
-    description: Resolved HIP C compiler path.
-    value: ${{ steps.resolve.outputs.hipcc }}
-  hipcxx:
-    description: Resolved HIP C++ compiler path.
-    value: ${{ steps.resolve.outputs.hipcxx }}
-  installer-cache-hit:
-    description: Whether the HIP SDK installer cache restored exactly.
-    value: ${{ steps.installer-cache.outputs.cache-hit }}
-
 runs:
   using: composite
   steps:

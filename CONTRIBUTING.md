@@ -167,26 +167,27 @@ On native Windows, `just check-release` runs the host-safe Rust/doc invariant su
 
 CI uses [`dorny/paths-filter`](https://github.com/dorny/paths-filter) to skip jobs when unchanged areas of the repo are modified. A `changes` detection job runs first on every push and PR, then each build job gates on its output.
 
-For the repo's CI design rules and workflow responsibilities, see [`docs/CI_GUIDANCE.md`](docs/CI_GUIDANCE.md).
+For the current PR build topology, see [`ci/ci.md`](ci/ci.md). For workflow-editing rules agents must follow, see [`.github/AGENTS.md`](.github/AGENTS.md).
 
 ### What triggers what
 
-| Changed paths                                                                                           | `linux` / `macos` | `linux_cuda` / `linux_rocm` / `linux_vulkan` / `windows` |
-| ------------------------------------------------------------------------------------------------------- | ----------------- | -------------------------------------------------------- |
-| `crates/mesh-llm-host-runtime/**`, `crates/mesh-llm-system/**`, `Cargo.*`, `Justfile`, `scripts/**`, `crates/mesh-llm/build.rs`, `crates/mesh-llm-plugin/**`, `crates/mesh-llm/tests/**`, `crates/mesh-llm-protocol/proto/**` | ✅ runs           | ✅ runs                                                  |
-| `crates/mesh-llm-ui/**`                                                                                        | ✅ runs           | ⏭ skipped                                               |
-| `**/*.md`, `docs/**`, anything else                                                                     | ⏭ skipped        | ⏭ skipped                                               |
-| Manual `workflow_dispatch`                                                                              | ✅ runs           | ✅ runs                                                  |
+| Changed paths | `PR Quality Checks` | `PR Builds` CPU rows | Backend target rows |
+| --- | --- | --- | --- |
+| Rust crate or build-script changes | ✅ fmt/clippy | ✅ Linux/macOS/Windows CPU routing as needed | ⏭ skipped unless backend inputs changed |
+| `third_party/llama.cpp/**`, backend build scripts, `.github/workflows/pr_*.yml`, cache-version, `Justfile` | ✅ fmt/clippy | ✅ runs | ✅ CUDA/ROCm/Vulkan rows run where supported |
+| `crates/mesh-llm-ui/**` | ✅ UI quality | ✅ Linux/macOS UI build paths | ⏭ skipped |
+| `**/*.md`, `docs/**`, anything docs-only | ✅ changes summary only | ⏭ skipped | ⏭ skipped |
+| Manual `workflow_dispatch` | ✅ runs | ✅ runs | ✅ runs |
 
 ### Verifying path filtering works
 
 To confirm builds are skipped on a docs-only change, open a PR and push a commit that touches only a `.md` file (e.g. add a blank line to `README.md`). All build jobs should appear as **Skipped** in the Actions tab — only the `changes` job runs.
 
-To confirm UI-only changes skip the GPU backend jobs, push a commit touching only `crates/mesh-llm-ui/**`. The `linux` and `macos` jobs run; `linux_cuda`, `linux_rocm`, `linux_vulkan`, and `windows` are skipped.
+To confirm UI-only changes skip backend jobs, push a commit touching only `crates/mesh-llm-ui/**`. UI quality and the CPU producer rows run, while Linux/Windows CUDA, ROCm, and Vulkan backend rows stay skipped.
 
 ### Adding new paths
 
-If you add a new Rust crate, build script, or test directory, add its path to the `rust` filter in `.github/workflows/ci.yml` under the `changes` job so it correctly triggers the build matrix.
+If you add a new Rust crate, build script, or test directory, update `.github/actions/compute-changes`, `scripts/affected-crates.sh`, and the relevant `pr_*.yml` path filters so PR and main routing agree.
 
 ## GPU benchmark execution
 

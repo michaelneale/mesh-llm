@@ -34,6 +34,7 @@ fi
 # Start mesh-llm client --auto in background
 echo "Starting mesh-llm client --auto..."
 "$MESH_LLM" \
+    --log-format json \
     client \
     --auto \
     --port "$API_PORT" \

@@ -12,9 +12,6 @@ on:
       cache_key_prefix:
         required: true
         type: string
-      workflow_cache_file:
-        required: true
-        type: string
       runs_on:
         required: false
         default: '"ubuntu-latest"'
@@ -52,39 +49,16 @@ jobs:
           python -m pip install --upgrade pip -r ci/requirements-ci-python.txt
           npm install --global openai
 
-      - name: Download Linux inference binary
-        uses: actions/download-artifact@v7
+      - uses: ./.github/actions/restore-smoke-inputs
         with:
-          name: ${{ inputs.artifact_name }}
-          path: ci-artifacts/linux
-
-      - name: Stage binary for inference smokes
-        run: |
-          mkdir -p "$(dirname "${{ inputs.mesh_binary_target }}")"
-          cp ci-artifacts/linux/mesh-llm "${{ inputs.mesh_binary_target }}"
-          chmod +x "${{ inputs.mesh_binary_target }}"
-          test -x "${{ inputs.mesh_binary_target }}"
-
-      - name: Cache integration model
-        id: cache-model
-        uses: actions/cache/restore@v5
-        with:
-          path: ~/.models/${{ env.MODEL_FILE }}
-          key: ${{ inputs.cache_key_prefix }}${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-model-${{ env.MODEL_FILE }}-${{ hashFiles('.github/cache-version.txt', '.github/workflows/smoke.yml', inputs.workflow_cache_file) }}
-
-      - name: Download integration model
-        if: steps.cache-model.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p ~/.models
-          curl -fSL "$MODEL_URL" -o "$HOME/.models/$MODEL_FILE"
-          ls -lh "$HOME/.models/$MODEL_FILE"
-
-      - name: Save integration model cache
-        if: ${{ github.ref == 'refs/heads/main' && steps.cache-model.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v5
-        with:
-          path: ~/.models/${{ env.MODEL_FILE }}
-          key: ${{ steps.cache-model.outputs.cache-primary-key }}
+          artifact_name: ${{ inputs.artifact_name }}
+          artifact_path: ci-artifacts/linux
+          staged_binary_path: ${{ inputs.mesh_binary_target }}
+          model_url: ${{ env.MODEL_URL }}
+          model_file: ${{ env.MODEL_FILE }}
+          model_cache_scope: inference-smoke-model
+          cache_key_prefix: ${{ inputs.cache_key_prefix }}
+          save_model_cache: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Smoke test real skippy inference
         run: |

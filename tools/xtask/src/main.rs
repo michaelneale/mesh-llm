@@ -490,6 +490,11 @@ fn check_docs_and_workflow_invariants(repo_root: &Path) -> DynResult<()> {
     let justfile = fs::read_to_string(repo_root.join("Justfile"))?;
     let release_workflow = fs::read_to_string(repo_root.join(".github/workflows/release.yml"))?;
     let ci_workflow = fs::read_to_string(repo_root.join(".github/workflows/ci.yml"))?;
+    let pr_ci_workflow = fs::read_to_string(repo_root.join(".github/workflows/pr_ci.yml"))?;
+    let pr_quality_workflow =
+        fs::read_to_string(repo_root.join(".github/workflows/pr_quality.yml"))?;
+    let pr_cleanup_workflow =
+        fs::read_to_string(repo_root.join(".github/workflows/pr_cleanup.yml"))?;
 
     ensure_contains(
         &readme,
@@ -567,47 +572,70 @@ fn check_docs_and_workflow_invariants(repo_root: &Path) -> DynResult<()> {
         "RELEASE Windows check-release note",
     )?;
     ensure_contains(
-        &ci_workflow,
+        &pr_ci_workflow,
         "cargo run -p xtask -- repo-consistency release-targets",
-        "CI xtask release-target check",
+        "PR Builds xtask release-target check",
     )?;
-    check_ci_crate_test_coverage(&ci_workflow)?;
+    ensure_contains(
+        &pr_quality_workflow,
+        "name: PR Quality Checks",
+        "PR quality workflow display name",
+    )?;
+    ensure_contains(
+        &pr_cleanup_workflow,
+        "pull_request_target:",
+        "PR cache cleanup trigger",
+    )?;
+    ensure_contains(
+        &ci_workflow,
+        "push:\n    branches: [main]",
+        "main CI push trigger",
+    )?;
+    check_ci_crate_test_coverage(&pr_ci_workflow)?;
 
     Ok(())
 }
 
 fn check_ci_crate_test_coverage(ci_workflow: &str) -> DynResult<()> {
-    const REQUIRED_TEST_COMMANDS: &[(&str, &str)] = &[
-        ("cargo test -p mesh-llm-client", "mesh client crate tests"),
-        ("cargo test -p mesh-api", "mesh API crate tests"),
-        ("cargo test -p mesh-api-ffi", "mesh API FFI crate tests"),
-        (
-            "cargo test -p skippy-protocol --lib",
-            "skippy protocol crate tests",
-        ),
-        (
-            "cargo test -p skippy-server --lib",
-            "skippy server crate tests",
-        ),
-        (
-            "cargo test -p openai-frontend --lib",
-            "OpenAI frontend crate tests",
-        ),
-        ("cargo test -p skippy-runtime", "skippy runtime crate tests"),
-        (
-            "cargo test -p skippy-topology",
-            "skippy topology crate tests",
-        ),
-        (
-            "cargo test -p skippy-model-package",
-            "skippy model-package crate tests",
-        ),
-        ("cargo test -p skippy-prompt", "skippy prompt crate tests"),
-        ("cargo test -p metrics-server", "metrics server crate tests"),
+    const REQUIRED_TEST_CRATES: &[(&str, &str)] = &[
+        ("mesh-llm-client", "mesh client crate tests"),
+        ("mesh-api", "mesh API crate tests"),
+        ("mesh-api-ffi", "mesh API FFI crate tests"),
+        ("skippy-protocol", "skippy protocol crate tests"),
+        ("skippy-server", "skippy server crate tests"),
+        ("openai-frontend", "OpenAI frontend crate tests"),
+        ("skippy-runtime", "skippy runtime crate tests"),
+        ("skippy-topology", "skippy topology crate tests"),
+        ("skippy-model-package", "skippy model-package crate tests"),
+        ("skippy-prompt", "skippy prompt crate tests"),
+        ("metrics-server", "metrics server crate tests"),
     ];
+    const LIB_ONLY_CRATE_PATTERN: &str = "skippy-protocol|skippy-server|openai-frontend)";
 
-    for (command, context) in REQUIRED_TEST_COMMANDS {
-        ensure_contains(ci_workflow, command, &format!("CI {context}"))?;
+    ensure_contains(
+        ci_workflow,
+        "cargo test -p \"$c\"",
+        "CI dynamic crate test command",
+    )?;
+    ensure_contains(
+        ci_workflow,
+        "for c in mesh-llm-client mesh-api mesh-api-ffi; do",
+        "CI SDK/API crate test loop",
+    )?;
+    ensure_contains(
+        ci_workflow,
+        "for c in skippy-protocol skippy-server openai-frontend skippy-runtime skippy-topology skippy-model-package skippy-prompt metrics-server; do",
+        "CI Skippy crate test loop",
+    )?;
+    ensure_contains(
+        ci_workflow,
+        LIB_ONLY_CRATE_PATTERN,
+        "CI lib-only crate test flag selector",
+    )?;
+    ensure_contains(ci_workflow, "--lib", "CI lib-only crate test flag")?;
+
+    for (crate_name, context) in REQUIRED_TEST_CRATES {
+        ensure_contains(ci_workflow, crate_name, &format!("CI {context}"))?;
     }
 
     Ok(())

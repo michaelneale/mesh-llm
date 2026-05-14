@@ -1,0 +1,109 @@
+name: Reusable SDK Smoke Tests
+
+on:
+  workflow_call:
+    inputs:
+      sdk_kind:
+        required: true
+        type: string
+      artifact_name:
+        required: true
+        type: string
+      artifact_path:
+        required: true
+        type: string
+      binary_name:
+        required: false
+        default: mesh-llm
+        type: string
+      staged_binary_path:
+        required: true
+        type: string
+      model_url:
+        required: false
+        default: https://huggingface.co/unsloth/SmolLM2-135M-Instruct-GGUF/resolve/9e6855bc4be717fca1ef21360a1db4b29d5c559a/SmolLM2-135M-Instruct-Q8_0.gguf
+        type: string
+      model_file:
+        required: false
+        default: SmolLM2-135M-Instruct-Q8_0.gguf
+        type: string
+      model_cache_scope:
+        required: true
+        type: string
+      cache_key_prefix:
+        required: false
+        default: ''
+        type: string
+      runs_on:
+        required: true
+        type: string
+      timeout_minutes:
+        required: false
+        default: 30
+        type: number
+
+env:
+  MODEL_URL: ${{ inputs.model_url }}
+  MODEL_FILE: ${{ inputs.model_file }}
+
+jobs:
+  sdk_smoke:
+    name: ${{ inputs.sdk_kind }} SDK Smoke
+    runs-on: ${{ fromJson(inputs.runs_on) }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        if: ${{ inputs.sdk_kind == 'native' }}
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-java@v5
+        if: ${{ inputs.sdk_kind == 'kotlin' }}
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux SDK dependencies
+        if: ${{ runner.os == 'Linux' }}
+        run: sudo apt-get update && sudo apt-get install -y build-essential libdbus-1-dev curl jq lsof lld
+
+      - name: Install macOS SDK dependencies
+        if: ${{ runner.os == 'macOS' }}
+        run: brew install jq
+
+      - name: Configure Linux Rust linker
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          mkdir -p .cargo
+          cat > .cargo/config.toml <<'EOF'
+          [target.x86_64-unknown-linux-gnu]
+          rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+          EOF
+
+      - uses: ./.github/actions/restore-smoke-inputs
+        with:
+          artifact_name: ${{ inputs.artifact_name }}
+          artifact_path: ${{ inputs.artifact_path }}
+          binary_name: ${{ inputs.binary_name }}
+          staged_binary_path: ${{ inputs.staged_binary_path }}
+          model_url: ${{ inputs.model_url }}
+          model_file: ${{ inputs.model_file }}
+          model_cache_scope: ${{ inputs.model_cache_scope }}
+          cache_key_prefix: ${{ inputs.cache_key_prefix }}
+          save_model_cache: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Native SDK smoke test
+        if: ${{ inputs.sdk_kind == 'native' }}
+        run: scripts/ci-native-sdk-smoke.sh "${{ inputs.staged_binary_path }}" "${{ inputs.artifact_path }}" "$HOME/.models/${{ inputs.model_file }}"
+
+      - name: Kotlin SDK smoke test
+        if: ${{ inputs.sdk_kind == 'kotlin' }}
+        run: scripts/ci-kotlin-sdk-smoke.sh "${{ inputs.staged_binary_path }}" "${{ inputs.artifact_path }}" "$HOME/.models/${{ inputs.model_file }}"
+
+      - name: Swift SDK smoke test
+        if: ${{ inputs.sdk_kind == 'swift' }}
+        run: scripts/ci-swift-sdk-smoke.sh "${{ inputs.staged_binary_path }}" "$(dirname "${{ inputs.staged_binary_path }}")" "$HOME/.models/${{ inputs.model_file }}"
