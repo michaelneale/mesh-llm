@@ -430,6 +430,108 @@ prefill is similar in spirit but the "plan" is a full draft response and
 speculative prefill internally: the planner's output is verified against
 the executor.
 
+## Draft Model Selection
+
+### Context subsetting
+
+The draft model doesn't need the full conversation — it needs enough
+context to produce plausible text. MoA's context packing already proves
+this works (fast workers get system + last message and produce useful
+output).
+
+**Strategies (simplest to most sophisticated):**
+
+1. **Last message only** — system prompt + last user turn. ~500-2500
+   tokens. Fits any model. Works for factual queries and single-turn
+   tasks. Fails when the answer depends on earlier conversation.
+
+2. **Last N messages** — system prompt + last 4-6 messages. ~2000-5000
+   tokens. Covers most multi-turn agent conversations. Already proven
+   in MoA context packing.
+
+3. **Summarized history** — compress prior turns into a summary, keep
+   the last message verbatim. Handles deep conversations within small
+   context windows. More complex — the summary could come from the draft
+   model itself or be maintained incrementally.
+
+4. **Adaptive** — start with last message only. Track acceptance rate.
+   If drafts keep getting rejected at token 0, give more context next
+   time. Learn per-conversation how much history the draft needs.
+
+For the first implementation, **strategy 2 (last 4-6 messages)** is
+the sweet spot.
+
+### Candidate models and context windows
+
+| Model | Params | Q4 Size | Context | Speed | Notes |
+|---|---|---|---|---|---|
+| Qwen3-0.6B | 0.6B | 378MB | 32K | Fastest | Same family as Qwen3-32B/72B |
+| Qwen3-1.7B | 1.7B | ~1GB | 32K | Very fast | Better quality, same family |
+| Qwen3-4B | 4B | 2.3GB | 32K | Fast | Good balance, on mesh peers |
+| Qwen3.5-4B | 4B | 2.6GB | 32K | Fast | Latest Qwen, improved |
+| Llama-3.2-1B | 1.3B | ~700MB | **131K** | Very fast | Huge context for tiny model |
+| Llama-3.2-3B | 3.2B | ~1.7GB | **131K** | Fast | Best context/size ratio |
+| Gemma-3-1B | 1B | ~700MB | 32K | Very fast | Google family |
+| Gemma-4-E4B | 4B (1B active) | 4.6GB | 32K | Very fast | MoE — only 1B active |
+| Phi-4-mini | 3.8B | ~2GB | 16K | Fast | Strong reasoning, short context |
+| SmolLM2-1.7B | 1.7B | ~1GB | 8K | Very fast | Shortest context — limited use |
+
+**Standout candidates:**
+
+- **Llama-3.2-1B** — 131K context in 700MB. Can see enormous conversation
+  histories. Ideal for long-context agentic sessions where prior turns
+  matter. Cross-family drafting works fine since we compare text not tokens.
+
+- **Qwen3-0.6B** — 378MB, absurdly fast. Same family as the Qwen3 models
+  that dominate the mesh, so highest expected acceptance rate for same-family
+  targets. 32K context is sufficient with context subsetting.
+
+- **Qwen3-4B** — sweet spot of quality vs speed. Already running on mesh
+  peers, so it could draft as a "fast peer" without downloading anything.
+
+### Model pairings
+
+**Same family (highest acceptance rate):**
+
+The draft and target share training data distribution, so they tend to
+phrase things similarly. A small Qwen drafting for a large Qwen will
+often produce identical token sequences.
+
+- Qwen3-0.6B → Qwen3-32B/72B/235B
+- Qwen3-4B → Qwen3-32B/72B/235B
+- Llama-3.2-1B → Llama-3.3-70B
+
+**Cross family (still works):**
+
+Since we compare text (re-tokenized by the target), any coherent draft
+model works. The acceptance rate will be lower than same-family because
+phrasing differs, but for factual/structural content (code, data, facts)
+the divergence is small.
+
+- Qwen3-4B → any large model (Qwen3 is unusually coherent for its size)
+- Gemma-4-E4B → any large model (1B active, fast, good quality)
+- Llama-3.2-1B → any large model (131K context advantage)
+
+**Poor pairings:**
+
+- Any draft → creative/stylistic target (style diverges immediately)
+- Tiny (0.6B) → large model on code tasks (small models hallucinate code)
+- Short-context draft on deep conversation (draft misses key context)
+
+### Draft model doesn't have to be local
+
+The mesh already has fast small models on peer nodes. A Qwen3-4B on a
+peer with low RTT is an effective remote draft model — it drafts in 1-2s,
+still faster than 200 decode rounds at 50ms each on a distributed split.
+
+Selection priority:
+1. Local small model (zero network cost)
+2. Fast peer with small model (low RTT, already loaded)
+3. Remote API with small model (higher latency, but still worth it if
+   target decode is expensive)
+
+The constraint is wall-clock time: `draft_time + verify_time < target_decode_time`.
+
 ## Open Questions
 
 1. **Sampling temperature** — the draft model should use low temperature
@@ -452,10 +554,9 @@ the executor.
    correctly across layer splits, since logits are only meaningful at the
    final layer.
 
-5. **How much draft context is enough?** — empirical question. For factual
-   queries the last user message is probably sufficient. For multi-turn
-   reasoning the draft may need more history. The answer likely varies by
-   query type and can be tuned.
+5. **Acceptance rate tracking** — should we track per-model-pair acceptance
+   rates to learn which drafters work best for which targets? And use that
+   to auto-select the draft model?
 
 ## Decision Log
 
@@ -464,9 +565,9 @@ the executor.
 | Draft injected as plain prompt (no special framing) | The model doesn't distinguish draft from real content during prefill. Plain injection is simplest and works. Prefix framing can be tested later. |
 | Divergence point K → decode from K, no re-draft | The large model's decode from K is authoritative. Re-drafting adds latency and complexity with diminishing returns. |
 | Start with greedy match, add probability threshold | Greedy match is simplest to implement and test. Probability threshold is the production target but needs logit access extensions. |
-| Draft model = fastest available, not necessarily local | Any fast model works — local, fast peer, or remote API. Constraint is wall-clock latency, not locality. |
+| Draft model = fastest available, not necessarily local | Any fast model works — local, fast peer, or remote API. Constraint is wall-clock latency, not locality. See "Draft Model Selection" section for candidates and context windows. |
 | Tokenizer/chat template don't matter | Draft output is plain text, re-tokenized by the target model's own tokenizer. No token ID alignment needed between draft and target. |
-| Draft doesn't need full context | Enough context for a plausible draft. Last user message often sufficient. Shorter context = faster draft. |
+| Draft doesn't need full context | Enough context for a plausible draft. Last 4-6 messages is the sweet spot. Shorter context = faster draft. See "Context subsetting" for strategies. |
 | Target threshold: `prob > 0.5` default | Balanced speed/accuracy. Tunable per request or globally. |
 
 ## Files
