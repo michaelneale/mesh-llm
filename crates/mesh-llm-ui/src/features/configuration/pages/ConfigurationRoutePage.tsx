@@ -18,6 +18,7 @@ export function ConfigurationRoutePage() {
   const newConfigurationPageEnabled = useBooleanFeatureFlag('global/newConfigurationPage')
   const signingAttestationEnabled = useBooleanFeatureFlag('configuration/signingAttestation')
   const integrationsEnabled = useBooleanFeatureFlag('configuration/integrations')
+  const wakePolicyConfigurationEnabled = useBooleanFeatureFlag('configuration/wakePolicyConfiguration')
 
   const navigateToTab = useCallback(
     (configurationTab: ConfigurationTabId) => {
@@ -39,13 +40,13 @@ export function ConfigurationRoutePage() {
     )
   }
 
-  if (activeTab === undefined || !isConfigurationTabId(activeTab)) {
-    return <Navigate replace to="/configuration/$configurationTab" params={{ configurationTab: 'defaults' }} />
-  }
-
   if (
-    (activeTab === 'signing' && !signingAttestationEnabled) ||
-    (activeTab === 'integrations' && !integrationsEnabled)
+    activeTab === undefined ||
+    !isConfigurationTabId(activeTab, {
+      integrationsEnabled,
+      signingAttestationEnabled,
+      wakePolicyEnabled: wakePolicyConfigurationEnabled
+    })
   ) {
     return <Navigate replace to="/configuration/$configurationTab" params={{ configurationTab: 'defaults' }} />
   }

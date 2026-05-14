@@ -25,6 +25,10 @@ const routeCacheProbe = vi.hoisted(() => ({
   chatClient: undefined as QueryClient | undefined
 }))
 
+vi.mock('@/features/reserves/pages/ReservesPage', () => ({
+  ReservesPageContent: () => <div>Reserves route</div>
+}))
+
 vi.mock('@/features/developer/pages/DeveloperPlaygroundPage', async () => {
   const router = await vi.importActual<typeof import('@tanstack/react-router')>('@tanstack/react-router')
 
@@ -146,6 +150,7 @@ function renderRouterWithHistory(history: ReturnType<typeof createMemoryHistory>
 describe('app router routes', () => {
   it.each([
     ['/', 'MeshLLM - Dashboard', 'Dashboard route'],
+    ['/reserves', 'MeshLLM - Reserves', 'Reserves route'],
     ['/chat', 'MeshLLM - Chat', 'Chat route cache: missing'],
     ['/configuration/defaults', 'MeshLLM - Configuration', 'Active route tab: defaults'],
     ['/__playground?tab=shell-controls', 'MeshLLM - Developer Playground', 'Active developer route tab: shell-controls']

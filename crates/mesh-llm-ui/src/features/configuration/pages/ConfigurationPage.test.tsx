@@ -13,7 +13,8 @@ const defaultBlockerTransition = vi.hoisted(() => ({
 }))
 const featureFlagMocks = vi.hoisted(() => ({
   integrationsEnabled: false,
-  signingAttestationEnabled: false
+  signingAttestationEnabled: false,
+  wakePolicyConfigurationEnabled: false
 }))
 
 vi.mock('@tanstack/react-router', () => ({
@@ -28,6 +29,7 @@ vi.mock('@/lib/feature-flags', async (importOriginal) => {
     useBooleanFeatureFlag: vi.fn((path: string) => {
       if (path === 'configuration/integrations') return featureFlagMocks.integrationsEnabled
       if (path === 'configuration/signingAttestation') return featureFlagMocks.signingAttestationEnabled
+      if (path === 'configuration/wakePolicyConfiguration') return featureFlagMocks.wakePolicyConfigurationEnabled
       return true
     })
   }
@@ -85,6 +87,7 @@ describe('ConfigurationPage', () => {
     vi.clearAllMocks()
     featureFlagMocks.integrationsEnabled = false
     featureFlagMocks.signingAttestationEnabled = false
+    featureFlagMocks.wakePolicyConfigurationEnabled = false
     mockUseBlocker.mockImplementation(
       ({ shouldBlockFn }: { shouldBlockFn: (transition: typeof defaultBlockerTransition) => boolean }) =>
         shouldBlockFn(defaultBlockerTransition) ? blockedBlocker : idleBlocker
@@ -103,6 +106,7 @@ describe('ConfigurationPage', () => {
     for (const label of ['Defaults', 'Model Deployment', 'TOML Output']) {
       expect(screen.getByRole('tab', { name: label })).toBeInTheDocument()
     }
+    expect(screen.queryByRole('tab', { name: 'Reserves' })).not.toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: 'Signing / Attestation' })).not.toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: 'Integrations' })).not.toBeInTheDocument()
 
@@ -114,17 +118,24 @@ describe('ConfigurationPage', () => {
     expect(screen.queryByRole('dialog', { name: 'Model catalog' })).not.toBeInTheDocument()
   })
 
-  it('shows temporary configuration sections only when their feature flags are enabled', async () => {
+  it('shows reserves and temporary configuration sections only when their feature flags are enabled', async () => {
     const user = userEvent.setup()
     featureFlagMocks.integrationsEnabled = true
     featureFlagMocks.signingAttestationEnabled = true
+    featureFlagMocks.wakePolicyConfigurationEnabled = true
 
     render(<ConfigurationPage enableNavigationBlocker={false} />)
 
+    const wakePolicyTab = screen.getByRole('tab', { name: 'Reserves' })
     const signingTab = screen.getByRole('tab', { name: 'Signing / Attestation' })
     const integrationsTab = screen.getByRole('tab', { name: 'Integrations' })
+    expect(wakePolicyTab).toBeInTheDocument()
     expect(signingTab).toBeInTheDocument()
     expect(integrationsTab).toBeInTheDocument()
+
+    await user.click(wakePolicyTab)
+    expect(screen.getByRole('heading', { level: 2, name: 'Reserves' })).toBeInTheDocument()
+    expect(screen.getByText(/backend persistence is still being wired/i)).toBeInTheDocument()
 
     await user.click(signingTab)
     expect(screen.getByRole('heading', { name: 'Signing / Attestation' })).toBeInTheDocument()
@@ -135,10 +146,16 @@ describe('ConfigurationPage', () => {
     expect(screen.getByText(/plugin and external endpoint defaults/i)).toBeInTheDocument()
   })
 
-  it('keeps a directly requested gated temporary section on the defaults workspace', () => {
-    render(<ConfigurationPage initialTab="signing" enableNavigationBlocker={false} />)
+  it('keeps directly requested gated sections on the defaults workspace', () => {
+    const { rerender } = render(<ConfigurationPage initialTab="wake-policy" enableNavigationBlocker={false} />)
 
-    expect(screen.queryByRole('tab', { name: 'Signing / Attestation' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: 'Reserves' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Reserves' })).not.toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Defaults' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('heading', { name: /inherited defaults/i })).toBeInTheDocument()
+
+    rerender(<ConfigurationPage initialTab="signing" enableNavigationBlocker={false} />)
+
     expect(screen.queryByRole('heading', { name: 'Signing / Attestation' })).not.toBeInTheDocument()
     expect(screen.getByRole('tab', { name: 'Defaults' })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByRole('heading', { name: /inherited defaults/i })).toBeInTheDocument()
@@ -147,18 +164,22 @@ describe('ConfigurationPage', () => {
   it('applies configuration section feature flags independently', () => {
     featureFlagMocks.signingAttestationEnabled = true
     featureFlagMocks.integrationsEnabled = false
+    featureFlagMocks.wakePolicyConfigurationEnabled = false
 
     const { rerender } = render(<ConfigurationPage enableNavigationBlocker={false} />)
 
     expect(screen.getByRole('tab', { name: 'Signing / Attestation' })).toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: 'Integrations' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: 'Reserves' })).not.toBeInTheDocument()
 
     featureFlagMocks.signingAttestationEnabled = false
     featureFlagMocks.integrationsEnabled = true
+    featureFlagMocks.wakePolicyConfigurationEnabled = true
     rerender(<ConfigurationPage enableNavigationBlocker={false} />)
 
     expect(screen.queryByRole('tab', { name: 'Signing / Attestation' })).not.toBeInTheDocument()
     expect(screen.getByRole('tab', { name: 'Integrations' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Reserves' })).toBeInTheDocument()
   })
 
   it('renders the Defaults sections and updates the active sidebar category', async () => {

@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react'
 import * as NavigationMenu from '@radix-ui/react-navigation-menu'
 import * as Select from '@radix-ui/react-select'
 import {
+  BatteryCharging,
   BotMessageSquare,
   Check,
   ChevronDown,
@@ -46,8 +47,13 @@ type TopNavProps = {
 
 export type ApiTargetLiveness = 'checking' | 'live' | 'unavailable'
 
-const tabs: { value: AppTab; href: string; labelKey: 'tabs.network' | 'tabs.chat' | 'tabs.configuration' }[] = [
+const tabs: {
+  value: AppTab
+  href: string
+  labelKey: 'tabs.network' | 'tabs.reserves' | 'tabs.chat' | 'tabs.configuration'
+}[] = [
   { value: 'network', href: '/', labelKey: 'tabs.network' },
+  { value: 'reserves', href: '/reserves', labelKey: 'tabs.reserves' },
   { value: 'chat', href: '/chat', labelKey: 'tabs.chat' },
   { value: 'configuration', href: '/configuration', labelKey: 'tabs.configuration' }
 ]
@@ -60,6 +66,7 @@ const themeOptions: { value: Theme; label: string; description: string; Icon: Lu
 
 const tabIcons: Record<AppTab, LucideIcon> = {
   network: Network,
+  reserves: BatteryCharging,
   chat: BotMessageSquare,
   configuration: Settings
 }

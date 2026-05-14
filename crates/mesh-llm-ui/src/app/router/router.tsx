@@ -19,6 +19,13 @@ const indexRoute = createRoute({
   component: lazyRouteComponent(() => import('@/features/network/pages/DashboardPage'), 'DashboardPageSurface'),
   errorComponent: FeatureErrorBoundary
 })
+const reservesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/reserves',
+  head: () => ({ meta: [{ title: 'MeshLLM - Reserves' }] }),
+  component: lazyRouteComponent(() => import('@/features/reserves/pages/ReservesPage'), 'ReservesPageContent'),
+  errorComponent: FeatureErrorBoundary
+})
 const chatRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/chat',
@@ -65,6 +72,7 @@ const meshVizPerfRoute = createRoute({
 })
 export const routeTree = rootRoute.addChildren([
   indexRoute,
+  reservesRoute,
   chatRoute,
   configurationRoute,
   configurationTabRoute,

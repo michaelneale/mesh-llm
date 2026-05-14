@@ -88,7 +88,14 @@ vi.mock('@/components/ui/select', async () => {
 })
 
 import { defaultQueryClient } from '@/lib/query/query-client'
-import { attachmentForMessage, ChatPage, describeImageAttachmentForPrompt, describeRenderedPagesAsText } from '@/App'
+import { DATA_MODE_STORAGE_KEY } from '@/lib/data-mode'
+import {
+  App,
+  attachmentForMessage,
+  ChatPage,
+  describeImageAttachmentForPrompt,
+  describeRenderedPagesAsText
+} from '@/App'
 import type { StatusPayload } from '@/features/app-shell/lib/status-types'
 
 function buildProps(overrides: Partial<Parameters<typeof ChatPage>[0]> = {}): Parameters<typeof ChatPage>[0] {
@@ -315,6 +322,7 @@ beforeEach(() => {
   statusPayload = createStatusPayload()
   modelsPayload = { mesh_models: [] }
   defaultQueryClient.clear()
+  window.localStorage.clear()
   setupFetchMock()
   Object.defineProperty(window, 'EventSource', {
     configurable: true,
@@ -326,6 +334,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.resetAllMocks()
+  window.localStorage.clear()
   setPath('/')
 })
 
@@ -487,6 +496,34 @@ describe('ChatPage', () => {
 })
 
 describe('App routing and status', () => {
+  it('persists the development data source selection across remounts', async () => {
+    setPath('/dashboard')
+    const { unmount } = render(<App />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open interface preferences' }))
+    expect(await screen.findByRole('radio', { name: 'Harness' })).toHaveAttribute('aria-checked', 'true')
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Live API' }))
+    await waitFor(() => expect(window.localStorage.getItem(DATA_MODE_STORAGE_KEY)).toBe('live'))
+
+    unmount()
+
+    const rerenderedLiveApp = render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Open interface preferences' }))
+
+    expect(await screen.findByRole('radio', { name: 'Live API' })).toHaveAttribute('aria-checked', 'true')
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Harness' }))
+    await waitFor(() => expect(window.localStorage.getItem(DATA_MODE_STORAGE_KEY)).toBe('harness'))
+
+    rerenderedLiveApp.unmount()
+
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Open interface preferences' }))
+
+    expect(await screen.findByRole('radio', { name: 'Harness' })).toHaveAttribute('aria-checked', 'true')
+  })
+
   it('desktop unknown path fallback resolves to dashboard behavior', async () => {
     const testRouter = renderAppRoute('/unknown-path')
 
@@ -649,7 +686,9 @@ describe('App routing and status', () => {
       hosted_models: [],
       serving_models: []
     }
-    renderAppRoute('/chat')
+    setPath('/chat')
+    window.localStorage.setItem(DATA_MODE_STORAGE_KEY, 'live')
+    render(<App />)
 
     const input = await screen.findByTestId('chat-input')
     await waitFor(() => expect(mockFetch.mock.calls.some((call) => call[0] === '/api/models')).toBe(true))
@@ -671,7 +710,9 @@ describe('App routing and status', () => {
       hosted_models: [],
       serving_models: ['unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_XL']
     }
-    renderAppRoute('/chat')
+    setPath('/chat')
+    window.localStorage.setItem(DATA_MODE_STORAGE_KEY, 'live')
+    render(<App />)
 
     const input = await screen.findByTestId('chat-input')
     await waitFor(() => expect(input).not.toBeDisabled())

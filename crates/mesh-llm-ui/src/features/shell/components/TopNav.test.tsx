@@ -321,7 +321,10 @@ describe('TopNav', () => {
     const user = userEvent.setup()
     const onTabChange = vi.fn()
 
-    renderTopNav({ onTabChange, tabHrefs: { configuration: '/configuration/toml-review' } })
+    renderTopNav({ onTabChange, tabHrefs: { reserves: '/reserves', configuration: '/configuration/toml-review' } })
+
+    const reservesTab = screen.getByRole('link', { name: 'Reserves' })
+    expect(reservesTab).toHaveAttribute('href', '/reserves')
 
     const configurationTab = screen.getByRole('link', { name: 'Configuration' })
     expect(configurationTab).toHaveAttribute('href', '/configuration/toml-review')
@@ -350,14 +353,16 @@ describe('TopNav', () => {
     renderTopNav({ onTabChange })
 
     const networkButton = screen.getByRole('button', { name: 'Network' })
+    const reservesButton = screen.getByRole('button', { name: 'Reserves' })
     const chatButton = screen.getByRole('button', { name: 'Chat' })
 
     expect(networkButton).toHaveClass('ui-control-primary')
+    expect(reservesButton).toHaveClass('ui-control-primary')
     expect(chatButton).toHaveClass('ui-control-primary')
 
-    await user.click(chatButton)
+    await user.click(reservesButton)
 
-    expect(onTabChange).toHaveBeenCalledWith('chat')
+    expect(onTabChange).toHaveBeenCalledWith('reserves')
   })
 
   it('opens compact navigation actions without a heading and dismisses terminal actions', async () => {
@@ -390,10 +395,11 @@ describe('TopNav', () => {
   })
 
   it('hides disabled primary tabs while keeping enabled tabs available', () => {
-    renderTopNav({ enabledTabs: { configuration: false } })
+    renderTopNav({ enabledTabs: { reserves: false, configuration: false } })
 
     expect(screen.getByRole('link', { name: 'Network' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Chat' })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Reserves' })).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'Configuration' })).not.toBeInTheDocument()
   })
 
@@ -404,12 +410,14 @@ describe('TopNav', () => {
       onTabChange,
       tabHrefs: {
         network: '/mesh/llm/ui-preview/',
+        reserves: '/mesh/llm/ui-preview/reserves',
         chat: '/mesh/llm/ui-preview/chat',
         configuration: '/mesh/llm/ui-preview/configuration/toml-review'
       }
     })
 
     expect(screen.getByRole('link', { name: 'Network' })).toHaveAttribute('href', '/mesh/llm/ui-preview/')
+    expect(screen.getByRole('link', { name: 'Reserves' })).toHaveAttribute('href', '/mesh/llm/ui-preview/reserves')
     expect(screen.getByRole('link', { name: 'Chat' })).toHaveAttribute('href', '/mesh/llm/ui-preview/chat')
     expect(screen.getByRole('link', { name: 'Configuration' })).toHaveAttribute(
       'href',

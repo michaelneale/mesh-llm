@@ -6,29 +6,29 @@ export type FeatureFlagGroup = {
 
 export const DEFAULT_FEATURE_FLAGS = {
   global: {
-    newConfigurationPage: false
+    newConfigurationPage: false,
+    newReservesPage: false
   },
   configuration: {
     signingAttestation: false,
-    integrations: false
+    integrations: false,
+    wakePolicyConfiguration: false
   },
   chat: {
     systemPromptButton: false,
     transparencyTab: false
-  },
-  dashboard: {
-    wakeableCapacity: false
   }
 } as const satisfies FeatureFlagGroup
 
-export type FeatureFlagSectionId = 'global' | 'configuration' | 'chat' | 'dashboard'
+export type FeatureFlagSectionId = 'global' | 'configuration' | 'chat'
 export type FeatureFlagPath =
   | 'global/newConfigurationPage'
+  | 'global/newReservesPage'
   | 'configuration/signingAttestation'
   | 'configuration/integrations'
+  | 'configuration/wakePolicyConfiguration'
   | 'chat/systemPromptButton'
   | 'chat/transparencyTab'
-  | 'dashboard/wakeableCapacity'
 
 export type FeatureFlagDefinition = {
   sectionId: FeatureFlagSectionId
@@ -57,21 +57,13 @@ export const FEATURE_FLAG_SECTIONS: readonly FeatureFlagSectionDefinition[] = [
         path: 'global/newConfigurationPage',
         label: 'New configuration page',
         description: 'Shows the Configuration app surface while the new configuration flow is being rolled out.'
-      }
-    ]
-  },
-  {
-    id: 'dashboard',
-    label: 'Dashboard',
-    description: 'Rollout switches for dashboard surfaces that are still being validated.',
-    flags: [
+      },
       {
-        sectionId: 'dashboard',
-        key: 'wakeableCapacity',
-        path: 'dashboard/wakeableCapacity',
-        label: 'Wakeable capacity',
-        description:
-          'Shows the Wakeable Capacity card on the dashboard. Provider-backed capacity that can be woken on demand, kept separate from live topology.'
+        sectionId: 'global',
+        key: 'newReservesPage',
+        path: 'global/newReservesPage',
+        label: 'New reserves page',
+        description: 'Shows the Reserves page in the primary navigation while the reserve-capacity migration rolls out.'
       }
     ]
   },
@@ -116,6 +108,13 @@ export const FEATURE_FLAG_SECTIONS: readonly FeatureFlagSectionDefinition[] = [
         label: 'Integrations',
         description:
           'Shows the temporary integrations section in Configuration while integration management is being designed.'
+      },
+      {
+        sectionId: 'configuration',
+        key: 'wakePolicyConfiguration',
+        path: 'configuration/wakePolicyConfiguration',
+        label: 'Reserves',
+        description: 'Shows the Reserves tab in Configuration while reserve-capacity settings are still UI-only.'
       }
     ]
   }
@@ -146,16 +145,18 @@ export function getBaseFeatureFlagValue(path: FeatureFlagPath): boolean {
   switch (path) {
     case 'global/newConfigurationPage':
       return DEFAULT_FEATURE_FLAGS.global.newConfigurationPage
+    case 'global/newReservesPage':
+      return DEFAULT_FEATURE_FLAGS.global.newReservesPage
     case 'configuration/signingAttestation':
       return DEFAULT_FEATURE_FLAGS.configuration.signingAttestation
     case 'configuration/integrations':
       return DEFAULT_FEATURE_FLAGS.configuration.integrations
+    case 'configuration/wakePolicyConfiguration':
+      return DEFAULT_FEATURE_FLAGS.configuration.wakePolicyConfiguration
     case 'chat/systemPromptButton':
       return DEFAULT_FEATURE_FLAGS.chat.systemPromptButton
     case 'chat/transparencyTab':
       return DEFAULT_FEATURE_FLAGS.chat.transparencyTab
-    case 'dashboard/wakeableCapacity':
-      return DEFAULT_FEATURE_FLAGS.dashboard.wakeableCapacity
   }
 }
 
@@ -176,6 +177,20 @@ export function normalizeFeatureFlagOverrides(value: unknown): FeatureFlagOverri
       normalized[section.id] = {
         ...(normalized[section.id] ?? {}),
         [flag.key]: rawFlagValue
+      }
+    }
+  }
+
+  const legacyReservesSection = value.reserves
+  if (isRecord(legacyReservesSection) && normalized.configuration?.wakePolicyConfiguration === undefined) {
+    const rawWakePolicyConfiguration = legacyReservesSection.wakePolicyConfiguration
+    if (
+      typeof rawWakePolicyConfiguration === 'boolean' &&
+      rawWakePolicyConfiguration !== getBaseFeatureFlagValue('configuration/wakePolicyConfiguration')
+    ) {
+      normalized.configuration = {
+        ...(normalized.configuration ?? {}),
+        wakePolicyConfiguration: rawWakePolicyConfiguration
       }
     }
   }

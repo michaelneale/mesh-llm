@@ -992,7 +992,23 @@ export const DASHBOARD_HARNESS: DashboardHarnessData = {
     apiStatus: 'configured target',
     runCommand: 'mesh-llm --auto --join <mesh-invite-token>',
     description: 'contribute compute to the mesh'
-  }
+  },
+  wakeableNodes: [
+    {
+      logical_id: 'vast-a100-1',
+      state: 'sleeping',
+      models: ['Qwen2.5-72B-Instruct'],
+      vram_gb: 80,
+      provider: 'Vast'
+    },
+    {
+      logical_id: 'runpod-h100-2',
+      state: 'waking',
+      models: ['DeepSeek-R1', 'Qwen3-32B'],
+      vram_gb: 94,
+      wake_eta_secs: 420
+    }
+  ]
 }
 
 export const SHELL_HARNESS: ShellHarnessData = {
