@@ -622,6 +622,23 @@ fn collect_gguf_paths_recursive(dir: &Path, paths: &mut Vec<PathBuf>) {
     }
 }
 
+pub(crate) fn scan_hf_cache_fast(cache_root: &Path) -> Vec<PathBuf> {
+    let mut gguf_paths = Vec::new();
+    let Ok(entries) = std::fs::read_dir(cache_root) else {
+        return gguf_paths;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let snapshots = path.join("snapshots");
+            if snapshots.exists() {
+                collect_gguf_paths_recursive(&snapshots, &mut gguf_paths);
+            }
+        }
+    }
+    gguf_paths
+}
+
 pub fn layered_package_layer_count_for_path(path: &Path) -> Option<usize> {
     let (root, paths) = layered_package_gguf_paths(path)?;
     let layers = paths
@@ -1545,21 +1562,4 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&temp);
     }
-}
-
-pub(crate) fn scan_hf_cache_fast(cache_root: &Path) -> Vec<PathBuf> {
-    let mut gguf_paths = Vec::new();
-    let Ok(entries) = std::fs::read_dir(cache_root) else {
-        return gguf_paths;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            let snapshots = path.join("snapshots");
-            if snapshots.exists() {
-                collect_gguf_paths_recursive(&snapshots, &mut gguf_paths);
-            }
-        }
-    }
-    gguf_paths
 }

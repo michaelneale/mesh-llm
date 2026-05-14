@@ -1,0 +1,163 @@
+name: PR Quality Checks
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CACHE_NAMESPACE: mesh-llm
+  CARGO_INCREMENTAL: "0"
+  SCCACHE_GHA_ENABLED: "true"
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      affected_crates: ${{ steps.compute.outputs.affected_crates }}
+      test_crates: ${{ steps.compute.outputs.test_crates }}
+      batches_json: ${{ steps.compute.outputs.batches_json }}
+      clippy_batches_json: ${{ steps.compute.outputs.clippy_batches_json }}
+      all_rust: ${{ steps.compute.outputs.all_rust }}
+      ui_changed: ${{ steps.compute.outputs.ui_changed }}
+      docs_only: ${{ steps.compute.outputs.docs_only }}
+      rust_changed: ${{ steps.compute.outputs.rust_changed }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Check CI crate-list drift
+        run: cargo run -p xtask -- repo-consistency ci-crate-lists
+      - uses: ./.github/actions/compute-changes
+        id: compute
+        with:
+          event_name: ${{ github.event_name }}
+          base_sha: ${{ github.event.pull_request.base.sha || '' }}
+          head_sha: ${{ github.event.pull_request.head.sha || '' }}
+
+  rust-fmt:
+    needs: changes
+    if: needs.changes.outputs.rust_changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  rust-clippy:
+    needs: changes
+    if: needs.changes.outputs.rust_changed == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        batch: ${{ fromJson(needs.changes.outputs.clippy_batches_json) }}
+    name: rust-clippy (${{ matrix.batch.idx }})
+    env:
+      RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev lld
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+          cache-bin: "false"
+          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ runner.os }}-${{ hashFiles('.github/cache-version.txt') }}
+          shared-key: pr-clippy
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Run clippy
+        env:
+          CLIPPY_CRATES: ${{ toJson(matrix.batch.crates) }}
+        run: |
+          CRATES=$(jq -r '.[]' <<<"$CLIPPY_CRATES")
+          if [[ -z "$CRATES" ]]; then
+            echo "Batch ${{ matrix.batch.idx }}: no crates to check"
+            exit 0
+          fi
+          echo "Batch ${{ matrix.batch.idx }} crates: $CRATES"
+          for CRATE in $CRATES; do
+            # skippy-ffi requires llama.cpp ABI build — skip in quality-only workflow
+            if [[ "$CRATE" == "skippy-ffi" ]]; then
+              echo "Skipping skippy-ffi: requires llama.cpp ABI build (not available in PR Quality Checks)"
+              continue
+            fi
+            cargo clippy -p "$CRATE" --all-targets -- -D warnings
+          done
+
+  ui-quality:
+    needs: changes
+    if: needs.changes.outputs.ui_changed == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/mesh-llm-ui
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: crates/mesh-llm-ui/pnpm-lock.yaml
+      - name: Install dependencies
+        run: pnpm i --frozen-lockfile
+      - name: Lint
+        run: pnpm run lint
+      - name: Type check
+        run: pnpm run typecheck
+      - name: Test
+        run: pnpm test
+
+  summary:
+    needs: [changes, rust-fmt, rust-clippy, ui-quality]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check quality gate
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          FMT: ${{ needs.rust-fmt.result }}
+          CLIPPY: ${{ needs.rust-clippy.result }}
+          UI: ${{ needs.ui-quality.result }}
+        run: |
+          echo "┌────────────────────┬──────────────────────┐"
+          echo "│ Check              │ Result               │"
+          echo "├────────────────────┼──────────────────────┤"
+          printf "│ %-18s │ %-20s │\n" "changes"     "$CHANGES"
+          printf "│ %-18s │ %-20s │\n" "rust-fmt"    "$FMT"
+          printf "│ %-18s │ %-20s │\n" "rust-clippy" "$CLIPPY"
+          printf "│ %-18s │ %-20s │\n" "ui-quality"  "$UI"
+          echo "└────────────────────┴──────────────────────┘"
+
+          FAILED=false
+          for STATUS in "$CHANGES" "$FMT" "$CLIPPY" "$UI"; do
+            if [[ "$STATUS" == "failure" || "$STATUS" == "cancelled" ]]; then
+              FAILED=true
+            fi
+          done
+
+          if [[ "$FAILED" == "true" ]]; then
+            echo "ERROR: One or more quality checks failed."
+            exit 1
+          fi
+
+          echo "All quality checks passed (or were skipped)."

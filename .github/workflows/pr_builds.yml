@@ -1,13 +1,13 @@
-name: CI
+name: PR Builds
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CACHE_NAMESPACE: mesh-llm
@@ -38,6 +38,8 @@ jobs:
       all_rust: ${{ steps.compute.outputs.all_rust }}
       docs_only: ${{ steps.compute.outputs.docs_only }}
       rust_changed: ${{ steps.compute.outputs.rust_changed }}
+      backend_changed: ${{ steps.compute.outputs.backend_changed }}
+      sdk_smoke_required: ${{ steps.compute.outputs.sdk_smoke_required }}
       ui_dist_cache_key: ${{ steps.ui_key.outputs.ui_dist_cache_key }}
     steps:
       - uses: actions/checkout@v5
@@ -56,7 +58,8 @@ jobs:
               - 'scripts/**'
               - 'third_party/llama.cpp/**'
               - '.github/cache-version.txt'
-              - '.github/workflows/ci.yml'
+              - '.github/workflows/pr_builds.yml'
+              - '.github/workflows/pr_quality.yml'
               - '.github/workflows/smoke.yml'
 
             ui:
@@ -65,7 +68,7 @@ jobs:
               - 'crates/skippy-bench/**'
               - 'crates/llama-spec-bench/**'
               - 'crates/mesh-llm-gpu-bench/**'
-              - '.github/workflows/ci.yml'
+              - '.github/workflows/pr_builds.yml'
             sdk:
               - 'crates/mesh-api/**'
               - 'crates/mesh-api-ffi/**'
@@ -80,7 +83,7 @@ jobs:
               - 'scripts/ci-kotlin-sdk-smoke.sh'
               - 'scripts/ci-swift-sdk-smoke.sh'
               - 'scripts/ci-sdk-fixture.sh'
-              - '.github/workflows/ci.yml'
+              - '.github/workflows/pr_ci.yml'
             docker:
               - '.dockerignore'
               - 'docker/**'
@@ -88,7 +91,7 @@ jobs:
               - 'crates/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
-              - '.github/workflows/docker.yml'
+              - '.github/workflows/pr_docker.yml'
             windows_cpu:
               - 'crates/skippy-ffi/**'
               - 'scripts/build-windows.ps1'
@@ -97,7 +100,7 @@ jobs:
               - 'Cargo.lock'
               - 'Justfile'
               - '.github/cache-version.txt'
-              - '.github/workflows/ci.yml'
+              - '.github/workflows/pr_ci.yml'
               - '.github/workflows/windows-warm-caches.yml'
             windows_gpu:
               - 'crates/skippy-ffi/**'
@@ -107,7 +110,7 @@ jobs:
               - 'Justfile'
               - '.github/cache-version.txt'
               - '.github/actions/setup-windows-rocm-sdk/**'
-              - '.github/workflows/ci.yml'
+              - '.github/workflows/pr_ci.yml'
               - '.github/workflows/windows-warm-caches.yml'
 
             docs:
@@ -119,28 +122,77 @@ jobs:
         uses: ./.github/actions/compute-changes
         with:
           event_name: ${{ github.event_name }}
-          base_sha: ''
-          head_sha: ''
+          base_sha: ${{ github.event.pull_request.base.sha || '' }}
+          head_sha: ${{ github.event.pull_request.head.sha || '' }}
       - name: Compute UI dist cache key
         id: ui_key
         run: |
           HASH=$(git ls-files -s crates/mesh-llm-ui .github/cache-version.txt | git hash-object --stdin)
           echo "ui_dist_cache_key=${CACHE_NAMESPACE}-ui-dist-${HASH}" >> "$GITHUB_OUTPUT"
 
-  linux:
+  linux_targets:
     needs: changes
-    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true') && needs.changes.outputs.docs_only != 'true' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' || needs.changes.outputs.backend_changed == 'true' || needs.changes.outputs.benchmarks == 'true') && needs.changes.outputs.docs_only != 'true' }}
+    name: Linux ${{ matrix.name }}
     runs-on: ubuntu-latest
+    container:
+      image: ${{ matrix.container }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: CPU
+            backend: cpu
+            container: ubuntu:22.04
+            cache_key: linux-cpu
+            build_dir: .deps/llama.cpp/build-stage-abi-static
+          - name: CUDA slim
+            backend: cuda
+            container: nvidia/cuda:${{ vars.CUDA_VERSION || '12.6.3' }}-devel-ubuntu22.04
+            cache_key: linux-cuda-slim
+            build_dir: .deps/llama-build/build-stage-abi-cuda-sm89
+            cuda_arch: "89"
+          - name: ROCm slim
+            backend: rocm
+            container: rocm/dev-ubuntu-24.04:7.2.3
+            cache_key: linux-rocm-slim
+            build_dir: .deps/llama-build/build-stage-abi-rocm-gfx1100
+            amdgpu_targets: gfx1100
+          - name: Vulkan
+            backend: vulkan
+            container: ubuntu:24.04
+            cache_key: linux-vulkan
+            build_dir: .deps/llama-build/build-stage-abi-vulkan
+    env:
+      RUN_LINUX_CPU: ${{ matrix.backend == 'cpu' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true') }}
+      RUN_LINUX_BACKEND: ${{ matrix.backend != 'cpu' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend_changed == 'true' || needs.changes.outputs.benchmarks == 'true') }}
+      LLAMA_STAGE_BACKEND: ${{ matrix.backend }}
+      LLAMA_STAGE_BUILD_DIR: ${{ matrix.build_dir }}
+      LLAMA_STAGE_CUDA_ARCHITECTURES: ${{ matrix.cuda_arch }}
+      LLAMA_STAGE_AMDGPU_TARGETS: ${{ matrix.amdgpu_targets }}
+      MESH_LLM_SKIP_UI: "1"
+      GGML_CUDA_NO_VMM: "1"
+      LLAMA_STAGE_SKIP_NCCL: "1"
     steps:
+      - name: Skip Linux CPU producer
+        if: ${{ matrix.backend == 'cpu' && env.RUN_LINUX_CPU != 'true' }}
+        run: echo "Skipping Linux CPU producer because this change only touches backend-specific inputs."
+      - name: Skip Linux backend target
+        if: ${{ matrix.backend != 'cpu' && env.RUN_LINUX_BACKEND != 'true' }}
+        run: echo "Skipping Linux ${{ matrix.name }} because this change does not touch backend build inputs."
       - uses: actions/checkout@v5
+        if: ${{ matrix.backend == 'cpu' && env.RUN_LINUX_CPU == 'true' }}
 
       - uses: pnpm/action-setup@v4
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
+        if: ${{ matrix.backend == 'cpu' && env.RUN_LINUX_CPU == 'true' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true') }}
         with:
           version: latest
 
       - uses: actions/setup-node@v5
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
+        if: ${{ matrix.backend == 'cpu' && env.RUN_LINUX_CPU == 'true' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true') }}
         with:
           node-version: 24
           cache: pnpm
@@ -148,45 +200,46 @@ jobs:
             .github/cache-version.txt
             crates/mesh-llm-ui/pnpm-lock.yaml
 
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: |
-            .github/cache-version.txt
-            ci/requirements-ci-python.txt
+      - name: Install Linux CPU action prerequisites
+        if: ${{ matrix.backend == 'cpu' && env.RUN_LINUX_CPU == 'true' }}
+        run: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates lsb-release python3 python3-pip python3-venv python-is-python3
 
       - name: Build UI
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
+        if: ${{ matrix.backend == 'cpu' && env.RUN_LINUX_CPU == 'true' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true') }}
         working-directory: crates/mesh-llm-ui
         run: pnpm i --frozen-lockfile && pnpm run build
 
       - name: Test UI
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
+        if: ${{ matrix.backend == 'cpu' && env.RUN_LINUX_CPU == 'true' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true') }}
         working-directory: crates/mesh-llm-ui
         run: pnpm test
 
       - name: Save UI dist cache
-        if: github.ref == 'refs/heads/main' && needs.changes.outputs.ui == 'true'
+        if: ${{ matrix.backend == 'cpu' && env.RUN_LINUX_CPU == 'true' && (github.ref == 'refs/heads/main' && needs.changes.outputs.ui == 'true') }}
         uses: actions/cache/save@v4
         with:
           path: crates/mesh-llm-ui/dist
           key: ${{ needs.changes.outputs.ui_dist_cache_key }}
 
       - name: Install Python SDKs
-        run: python -m pip install --upgrade pip -r ci/requirements-ci-python.txt
+        if: ${{ matrix.backend == 'cpu' && env.RUN_LINUX_CPU == 'true' }}
+        run: python3 -m pip install --upgrade pip -r ci/requirements-ci-python.txt
 
       - name: Install Hugging Face CLI
-        run: python -m pip install --upgrade "huggingface_hub[cli]"
+        if: ${{ matrix.backend == 'cpu' && env.RUN_LINUX_CPU == 'true' }}
+        run: python3 -m pip install --upgrade "huggingface_hub[cli]"
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev curl jq lsof lld
+        if: ${{ matrix.backend == 'cpu' && env.RUN_LINUX_CPU == 'true' }}
+        run: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev curl git jq lsof lld
 
       - uses: dtolnay/rust-toolchain@stable
+        if: ${{ matrix.backend == 'cpu' && env.RUN_LINUX_CPU == 'true' }}
         with:
           targets: aarch64-linux-android
 
       - name: Configure Linux Rust linker
+        if: ${{ matrix.backend == 'cpu' && env.RUN_LINUX_CPU == 'true' }}
         run: |
           mkdir -p .cargo
           cat > .cargo/config.toml <<'EOF'
@@ -195,8 +248,10 @@ jobs:
           EOF
 
       - uses: mozilla-actions/sccache-action@v0.0.9
+        if: ${{ matrix.backend == 'cpu' && env.RUN_LINUX_CPU == 'true' }}
 
       - uses: Swatinem/rust-cache@v2
+        if: ${{ matrix.backend == 'cpu' && env.RUN_LINUX_CPU == 'true' }}
         with:
           workspaces: . -> target
           cache-bin: "false"
@@ -205,9 +260,11 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check release-target repo consistency
+        if: ${{ matrix.backend == 'cpu' && env.RUN_LINUX_CPU == 'true' }}
         run: cargo run -p xtask -- repo-consistency release-targets
 
       - name: Check embedded client dependency purity
+        if: ${{ matrix.backend == 'cpu' && env.RUN_LINUX_CPU == 'true' }}
         run: |
           cargo tree -p mesh-llm-client --prefix=none --no-dedupe > /tmp/mesh-client-deps.txt
           FORBIDDEN="keyring|rpassword|hf-hub|dirs|clap|include_dir|rmcp|keyring-core"
@@ -218,7 +275,7 @@ jobs:
           fi
 
       - name: SDK and API crate tests
-        if: ${{ needs.changes.outputs.all_rust == 'true' || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm-client') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-api') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-api-ffi') }}
+        if: ${{ matrix.backend == 'cpu' && env.RUN_LINUX_CPU == 'true' && (needs.changes.outputs.all_rust == 'true' || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm-client') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-api') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-api-ffi')) }}
         env:
           AFFECTED: ${{ needs.changes.outputs.affected_crates }}
           ALL_RUST: ${{ needs.changes.outputs.all_rust }}
@@ -237,9 +294,11 @@ jobs:
           done
 
       - name: Ensure ABI cache directory
+        if: ${{ matrix.backend == 'cpu' && env.RUN_LINUX_CPU == 'true' }}
         run: mkdir -p "$LLAMA_STAGE_BUILD_DIR"
 
       - name: Cache patched llama.cpp ABI build
+        if: ${{ matrix.backend == 'cpu' && env.RUN_LINUX_CPU == 'true' }}
         id: llama_cache
         uses: actions/cache@v5
         with:
@@ -247,15 +306,15 @@ jobs:
           key: ${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-skippy-abi-cpu-${{ hashFiles('scripts/build-llama.sh', 'third_party/llama.cpp/upstream.txt', 'third_party/llama.cpp/patches/**', 'Justfile', '.github/cache-version.txt') }}
 
       - name: Prepare patched llama.cpp ABI checkout
-        if: steps.llama_cache.outputs.cache-hit != 'true'
+        if: ${{ matrix.backend == 'cpu' && env.RUN_LINUX_CPU == 'true' && (steps.llama_cache.outputs.cache-hit != 'true') }}
         run: scripts/prepare-llama.sh pinned
 
       - name: Build patched llama.cpp ABI libraries
-        if: steps.llama_cache.outputs.cache-hit != 'true'
+        if: ${{ matrix.backend == 'cpu' && env.RUN_LINUX_CPU == 'true' && (steps.llama_cache.outputs.cache-hit != 'true') }}
         run: scripts/build-llama.sh
 
       - name: Skippy crate tests
-        if: ${{ needs.changes.outputs.all_rust == 'true' || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'skippy-protocol') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'skippy-server') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'openai-frontend') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'skippy-runtime') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'skippy-topology') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'skippy-model-package') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'skippy-prompt') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'metrics-server') }}
+        if: ${{ matrix.backend == 'cpu' && env.RUN_LINUX_CPU == 'true' && (needs.changes.outputs.all_rust == 'true' || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'skippy-protocol') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'skippy-server') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'openai-frontend') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'skippy-runtime') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'skippy-topology') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'skippy-model-package') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'skippy-prompt') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'metrics-server')) }}
         env:
           AFFECTED: ${{ needs.changes.outputs.affected_crates }}
           ALL_RUST: ${{ needs.changes.outputs.all_rust }}
@@ -288,10 +347,11 @@ jobs:
       # Keep the debug binary build and smoke always-on: smoke coverage still
       # exercises the built mesh-llm binary even when the unit-test set shrinks.
       - name: Build mesh-llm binary (debug)
+        if: ${{ matrix.backend == 'cpu' && env.RUN_LINUX_CPU == 'true' }}
         run: cargo build -p mesh-llm --bin mesh-llm
 
       - name: Unit tests
-        if: ${{ needs.changes.outputs.all_rust == 'true' || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'model-artifact') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm-host-runtime') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm') }}
+        if: ${{ matrix.backend == 'cpu' && env.RUN_LINUX_CPU == 'true' && (needs.changes.outputs.all_rust == 'true' || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'model-artifact') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm-host-runtime') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm')) }}
         env:
           AFFECTED: ${{ needs.changes.outputs.affected_crates }}
           ALL_RUST: ${{ needs.changes.outputs.all_rust }}
@@ -310,26 +370,30 @@ jobs:
           done
 
       - name: Skippy smoke tests
+        if: ${{ matrix.backend == 'cpu' && env.RUN_LINUX_CPU == 'true' }}
         timeout-minutes: 45
         env:
           WORK_DIR: ${{ runner.temp }}/skippy-ci-smoke
         run: scripts/skippy-ci-smoke.sh
 
       - name: Protocol compatibility matrix
-        if: ${{ needs.changes.outputs.all_rust == 'true' || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm-protocol') }}
+        if: ${{ matrix.backend == 'cpu' && env.RUN_LINUX_CPU == 'true' && (needs.changes.outputs.all_rust == 'true' || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm-protocol')) }}
         run: |
           cargo test -p mesh-llm --test protocol_compat_v0_client
           cargo test -p mesh-llm --test protocol_convert_matrix
 
       - name: CLI smoke test
+        if: ${{ matrix.backend == 'cpu' && env.RUN_LINUX_CPU == 'true' }}
         run: |
           target/debug/mesh-llm --log-format json --version
           target/debug/mesh-llm --log-format json --help | head -5
 
       - name: Client-auto boot test
+        if: ${{ matrix.backend == 'cpu' && env.RUN_LINUX_CPU == 'true' }}
         run: scripts/ci-client-auto-test.sh target/debug/mesh-llm
 
       - name: Upload Linux inference binary
+        if: ${{ matrix.backend == 'cpu' && env.RUN_LINUX_CPU == 'true' }}
         uses: actions/upload-artifact@v6
         with:
           name: ci-linux-inference-binaries
@@ -338,8 +402,103 @@ jobs:
           retention-days: 1
 
       - name: Show sccache stats
-        if: always()
+        if: ${{ matrix.backend == 'cpu' && env.RUN_LINUX_CPU == 'true' && (always()) }}
         run: sccache --show-stats || true
+
+      - name: Install base packages
+        if: ${{ env.RUN_LINUX_BACKEND == 'true' }}
+        run: |
+          packages="ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential lld"
+          if [ "${{ matrix.backend }}" = "vulkan" ]; then
+            packages="$packages software-properties-common glslc libvulkan-dev spirv-headers"
+          elif [ "${{ matrix.backend }}" = "rocm" ]; then
+            packages="$packages hipblas-dev rocblas-dev"
+          fi
+          for attempt in 1 2 3; do
+            if [ "${{ matrix.backend }}" = "vulkan" ]; then
+              apt-get -o Acquire::Retries=5 update &&
+                DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --fix-missing software-properties-common &&
+                add-apt-repository -y universe
+            fi
+            apt-get -o Acquire::Retries=5 update &&
+              DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --fix-missing $packages &&
+              break
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep $((attempt * 10))
+          done
+          if [ "${{ matrix.backend }}" = "vulkan" ]; then
+            command -v glslc
+            pkg-config --exists vulkan
+          fi
+          rm -rf /var/lib/apt/lists/*
+      - uses: actions/checkout@v5
+        if: ${{ env.RUN_LINUX_BACKEND == 'true' }}
+      - uses: dtolnay/rust-toolchain@stable
+        if: ${{ env.RUN_LINUX_BACKEND == 'true' }}
+      - name: Configure Linux Rust linker
+        if: ${{ env.RUN_LINUX_BACKEND == 'true' }}
+        run: |
+          mkdir -p .cargo
+          cat > .cargo/config.toml <<'EOF'
+          [target.x86_64-unknown-linux-gnu]
+          rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+          EOF
+      - uses: taiki-e/install-action@just
+        if: ${{ env.RUN_LINUX_BACKEND == 'true' }}
+      - uses: mozilla-actions/sccache-action@v0.0.9
+        if: ${{ env.RUN_LINUX_BACKEND == 'true' }}
+      - uses: Swatinem/rust-cache@v2
+        if: ${{ env.RUN_LINUX_BACKEND == 'true' }}
+        with:
+          workspaces: . -> target
+          cache-bin: "false"
+          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ runner.os }}-${{ hashFiles('.github/cache-version.txt') }}
+          shared-key: ${{ matrix.cache_key }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Prepare UI placeholder
+        if: ${{ env.RUN_LINUX_BACKEND == 'true' }}
+        run: mkdir -p crates/mesh-llm-ui/dist && printf '<html></html>' > crates/mesh-llm-ui/dist/index.html
+      - name: Ensure Vulkan ABI cache directory
+        if: ${{ env.RUN_LINUX_BACKEND == 'true' && matrix.backend == 'vulkan' }}
+        run: mkdir -p "$LLAMA_STAGE_BUILD_DIR"
+      - name: Cache Vulkan ABI build
+        if: ${{ env.RUN_LINUX_BACKEND == 'true' && matrix.backend == 'vulkan' }}
+        id: backend_llama_cache
+        uses: actions/cache@v5
+        with:
+          path: .deps/llama-build/build-stage-abi-vulkan
+          key: ${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-skippy-abi-vulkan-${{ hashFiles('scripts/build-linux.sh', 'scripts/build-llama.sh', 'third_party/llama.cpp/upstream.txt', 'third_party/llama.cpp/patches/**', 'Justfile', '.github/cache-version.txt') }}
+      - name: Build Linux CUDA backend
+        if: ${{ env.RUN_LINUX_BACKEND == 'true' && matrix.backend == 'cuda' }}
+        run: just --shell bash --shell-arg -lc release-build-cuda 89
+      - name: Build Linux ROCm backend
+        if: ${{ env.RUN_LINUX_BACKEND == 'true' && matrix.backend == 'rocm' }}
+        run: |
+          export CMAKE_PREFIX_PATH="/opt/rocm:${CMAKE_PREFIX_PATH:-}"
+          just --shell bash --shell-arg -lc release-build-rocm gfx1100
+      - name: Build Linux Vulkan backend
+        if: ${{ env.RUN_LINUX_BACKEND == 'true' && matrix.backend == 'vulkan' && steps.backend_llama_cache.outputs.cache-hit != 'true' }}
+        run: just --shell bash --shell-arg -lc release-build-vulkan
+      - name: Build Linux Vulkan binary only
+        if: ${{ env.RUN_LINUX_BACKEND == 'true' && matrix.backend == 'vulkan' && steps.backend_llama_cache.outputs.cache-hit == 'true' }}
+        run: cargo build --release -p mesh-llm
+      - name: Linux CUDA CLI smoke test
+        if: ${{ env.RUN_LINUX_BACKEND == 'true' && matrix.backend == 'cuda' }}
+        run: |
+          cuda_stub_runtime="$(mktemp -d)"
+          ln -s /usr/local/cuda/lib64/stubs/libcuda.so "$cuda_stub_runtime/libcuda.so.1"
+          export LD_LIBRARY_PATH="$cuda_stub_runtime:/usr/local/cuda/lib64/stubs:${LD_LIBRARY_PATH:-}"
+          target/release/mesh-llm --log-format json --version
+      - name: Linux ROCm CLI smoke test
+        if: ${{ env.RUN_LINUX_BACKEND == 'true' && matrix.backend == 'rocm' }}
+        run: |
+          export LD_LIBRARY_PATH="/opt/rocm/lib:${LD_LIBRARY_PATH:-}"
+          target/release/mesh-llm --log-format json --version
+      - name: Linux Vulkan CLI smoke test
+        if: ${{ env.RUN_LINUX_BACKEND == 'true' && matrix.backend == 'vulkan' }}
+        run: target/release/mesh-llm --log-format json --version
 
   hf_download_smoke:
     needs: changes
@@ -350,8 +509,8 @@ jobs:
       timeout_minutes: 15
 
   inference_smoke_tests:
-    needs: [changes, linux]
-    if: ${{ needs.linux.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.all_rust == 'true' || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'skippy-server') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'skippy-runtime') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'openai-frontend') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'model-artifact')) && needs.changes.outputs.docs_only != 'true' }}
+    needs: [changes, linux_targets]
+    if: ${{ needs.linux_targets.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.all_rust == 'true' || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'skippy-server') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'skippy-runtime') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'openai-frontend') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'model-artifact')) && needs.changes.outputs.docs_only != 'true' }}
     uses: ./.github/workflows/smoke.yml
     with:
       artifact_name: ci-linux-inference-binaries
@@ -359,7 +518,7 @@ jobs:
       cache_key_prefix: ''
 
   agent_live_smokes:
-    needs: [changes, linux]
+    needs: [changes, linux_targets]
     if: ${{ (vars.MESH_AGENT_BASE_URL != '' || vars.MESH_OPENCODE_BASE_URL != '') && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.all_rust == 'true' || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'openai-frontend') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm-client')) && needs.changes.outputs.docs_only != 'true' }}
     runs-on: self-hosted
     timeout-minutes: 45
@@ -405,8 +564,8 @@ jobs:
         run: scripts/ci-goose-smoke.sh
 
   two_node_client_serving_smoke:
-    needs: [changes, linux]
-    if: ${{ needs.linux.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.all_rust == 'true' || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'openai-frontend') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm-client')) && needs.changes.outputs.docs_only != 'true' }}
+    needs: [changes, linux_targets]
+    if: ${{ needs.linux_targets.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.all_rust == 'true' || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'openai-frontend') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm-client')) && needs.changes.outputs.docs_only != 'true' }}
     uses: ./.github/workflows/scripted-binary-smoke.yml
     with:
       artifact_name: ci-linux-inference-binaries
@@ -417,8 +576,8 @@ jobs:
       timeout_minutes: 20
 
   native_sdk_smoke:
-    needs: [changes, linux, inference_smoke_tests]
-    if: ${{ needs.inference_smoke_tests.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.sdk == 'true') && needs.changes.outputs.docs_only != 'true' }}
+    needs: [changes, linux_targets]
+    if: ${{ needs.linux_targets.result == 'success' && needs.changes.outputs.sdk_smoke_required == 'true' && needs.changes.outputs.docs_only != 'true' }}
     uses: ./.github/workflows/sdk-smoke.yml
     with:
       sdk_kind: native
@@ -429,8 +588,8 @@ jobs:
       runs_on: '"ubuntu-latest"'
 
   kotlin_sdk_smoke:
-    needs: [changes, linux, inference_smoke_tests]
-    if: ${{ needs.inference_smoke_tests.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.sdk == 'true') && needs.changes.outputs.docs_only != 'true' }}
+    needs: [changes, linux_targets]
+    if: ${{ needs.linux_targets.result == 'success' && needs.changes.outputs.sdk_smoke_required == 'true' && needs.changes.outputs.docs_only != 'true' }}
     uses: ./.github/workflows/sdk-smoke.yml
     with:
       sdk_kind: kotlin
@@ -441,8 +600,8 @@ jobs:
       runs_on: '"ubuntu-latest"'
 
   swift_sdk_smoke:
-    needs: [changes, macos]
-    if: ${{ needs.macos.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.sdk == 'true') && needs.changes.outputs.docs_only != 'true' }}
+    needs: [changes, macos_targets]
+    if: ${{ needs.macos_targets.result == 'success' && needs.changes.outputs.sdk_smoke_required == 'true' && needs.changes.outputs.docs_only != 'true' }}
     uses: ./.github/workflows/sdk-smoke.yml
     with:
       sdk_kind: swift
@@ -453,21 +612,42 @@ jobs:
       runs_on: '"macos-14"'
       timeout_minutes: 40
 
-  macos:
+  macos_targets:
     needs: changes
-    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' || needs.changes.outputs.benchmarks == 'true') && needs.changes.outputs.docs_only != 'true' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' || needs.changes.outputs.benchmarks == 'true' || needs.changes.outputs.backend_changed == 'true') && needs.changes.outputs.docs_only != 'true' }}
+    name: macOS ${{ matrix.name }}
     runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: CPU
+            backend: cpu
+          - name: CUDA
+            backend: cuda
+          - name: ROCm
+            backend: rocm
+          - name: Vulkan
+            backend: vulkan
     env:
+      RUN_MACOS_CPU: ${{ matrix.backend == 'cpu' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' || needs.changes.outputs.benchmarks == 'true') }}
       LLAMA_STAGE_BACKEND: metal
       LLAMA_STAGE_BUILD_DIR: .deps/llama.cpp/build-stage-abi-metal
     steps:
+      - name: Skip macOS CPU producer
+        if: ${{ matrix.backend == 'cpu' && env.RUN_MACOS_CPU != 'true' }}
+        run: echo "Skipping macOS CPU producer because this change only touches unsupported macOS backend markers."
+      - name: Skip unsupported macOS GPU backend
+        if: ${{ matrix.backend != 'cpu' }}
+        run: echo "Skipping macOS ${{ matrix.name }} because CUDA, ROCm, and Vulkan PR builds are unsupported on macOS runners."
       - uses: actions/checkout@v5
+        if: ${{ matrix.backend == 'cpu' && env.RUN_MACOS_CPU == 'true' }}
       - uses: pnpm/action-setup@v4
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
+        if: ${{ matrix.backend == 'cpu' && env.RUN_MACOS_CPU == 'true' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true') }}
         with:
           version: latest
       - uses: actions/setup-node@v5
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
+        if: ${{ matrix.backend == 'cpu' && env.RUN_MACOS_CPU == 'true' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true') }}
         with:
           node-version: 24
           cache: pnpm
@@ -476,21 +656,21 @@ jobs:
             crates/mesh-llm-ui/pnpm-lock.yaml
       - name: Restore UI dist cache
         id: ui-cache
-        if: needs.changes.outputs.ui == 'true' || github.event_name == 'workflow_dispatch'
+        if: ${{ matrix.backend == 'cpu' && env.RUN_MACOS_CPU == 'true' && (needs.changes.outputs.ui == 'true' || github.event_name == 'workflow_dispatch') }}
         uses: actions/cache/restore@v4
         with:
           path: crates/mesh-llm-ui/dist
           key: ${{ needs.changes.outputs.ui_dist_cache_key }}
       - name: Build UI
-        if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true') && steps.ui-cache.outputs.cache-hit != 'true' }}
+        if: ${{ matrix.backend == 'cpu' && env.RUN_MACOS_CPU == 'true' && ((github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true') && steps.ui-cache.outputs.cache-hit != 'true') }}
         working-directory: crates/mesh-llm-ui
         run: pnpm i --frozen-lockfile && pnpm run build
       - name: Install UI deps (cache hit only)
-        if: needs.changes.outputs.ui == 'true' && steps.ui-cache.outputs.cache-hit == 'true'
+        if: ${{ matrix.backend == 'cpu' && env.RUN_MACOS_CPU == 'true' && (needs.changes.outputs.ui == 'true' && steps.ui-cache.outputs.cache-hit == 'true') }}
         working-directory: crates/mesh-llm-ui
         run: pnpm i --frozen-lockfile
       - name: Verify UI dist exists
-        if: needs.changes.outputs.ui == 'true' || github.event_name == 'workflow_dispatch'
+        if: ${{ matrix.backend == 'cpu' && env.RUN_MACOS_CPU == 'true' && (needs.changes.outputs.ui == 'true' || github.event_name == 'workflow_dispatch') }}
         run: |
           if [ ! -f crates/mesh-llm-ui/dist/index.html ]; then
             echo "ERROR: crates/mesh-llm-ui/dist/index.html not found after restore/build"
@@ -498,11 +678,13 @@ jobs:
           fi
           echo "UI dist OK: $(ls crates/mesh-llm-ui/dist | wc -l) files"
       - name: Test UI
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
+        if: ${{ matrix.backend == 'cpu' && env.RUN_MACOS_CPU == 'true' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true') }}
         working-directory: crates/mesh-llm-ui
         run: pnpm test
       - uses: dtolnay/rust-toolchain@stable
+        if: ${{ matrix.backend == 'cpu' && env.RUN_MACOS_CPU == 'true' }}
       - uses: Swatinem/rust-cache@v2
+        if: ${{ matrix.backend == 'cpu' && env.RUN_MACOS_CPU == 'true' }}
         with:
           workspaces: . -> target
           cache-bin: "false"
@@ -510,8 +692,10 @@ jobs:
           shared-key: macos
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install build dependencies
+        if: ${{ matrix.backend == 'cpu' && env.RUN_MACOS_CPU == 'true' }}
         run: brew install cmake ninja jq lld
       - name: Configure macOS Rust linker
+        if: ${{ matrix.backend == 'cpu' && env.RUN_MACOS_CPU == 'true' }}
         run: |
           mkdir -p .cargo
           lld_prefix="$(brew --prefix lld)"
@@ -523,23 +707,26 @@ jobs:
           rustflags = ["-C", "link-arg=-fuse-ld=$lld_prefix/bin/ld64.lld"]
           EOF
       - name: Ensure ABI cache directory
+        if: ${{ matrix.backend == 'cpu' && env.RUN_MACOS_CPU == 'true' }}
         run: mkdir -p "$LLAMA_STAGE_BUILD_DIR"
       - name: Cache patched llama.cpp ABI build
+        if: ${{ matrix.backend == 'cpu' && env.RUN_MACOS_CPU == 'true' }}
         id: llama_cache
         uses: actions/cache@v5
         with:
           path: .deps/llama.cpp/build-stage-abi-metal
           key: ${{ env.CACHE_NAMESPACE }}-macos-14-skippy-abi-metal-${{ hashFiles('scripts/build-mac.sh', 'scripts/build-llama.sh', 'third_party/llama.cpp/upstream.txt', 'third_party/llama.cpp/patches/**', 'Justfile', '.github/cache-version.txt') }}
       - name: Prepare patched llama.cpp ABI checkout
-        if: steps.llama_cache.outputs.cache-hit != 'true'
+        if: ${{ matrix.backend == 'cpu' && env.RUN_MACOS_CPU == 'true' && (steps.llama_cache.outputs.cache-hit != 'true') }}
         run: scripts/prepare-llama.sh pinned
       - name: Build patched llama.cpp ABI libraries
-        if: steps.llama_cache.outputs.cache-hit != 'true'
+        if: ${{ matrix.backend == 'cpu' && env.RUN_MACOS_CPU == 'true' && (steps.llama_cache.outputs.cache-hit != 'true') }}
         run: scripts/build-llama.sh
       - name: Build mesh-llm binary (debug)
+        if: ${{ matrix.backend == 'cpu' && env.RUN_MACOS_CPU == 'true' }}
         run: cargo build -p mesh-llm --bin mesh-llm
       - name: Unit tests
-        if: ${{ needs.changes.outputs.all_rust == 'true' || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'model-artifact') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm-host-runtime') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm') }}
+        if: ${{ matrix.backend == 'cpu' && env.RUN_MACOS_CPU == 'true' && (needs.changes.outputs.all_rust == 'true' || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'model-artifact') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm-host-runtime') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm')) }}
         env:
           AFFECTED: ${{ needs.changes.outputs.affected_crates }}
           ALL_RUST: ${{ needs.changes.outputs.all_rust }}
@@ -557,10 +744,12 @@ jobs:
             fi
           done
       - name: CLI smoke test
+        if: ${{ matrix.backend == 'cpu' && env.RUN_MACOS_CPU == 'true' }}
         run: |
           target/debug/mesh-llm --log-format json --version
           target/debug/mesh-llm --log-format json --help | head -5
       - name: Upload macOS inference binary
+        if: ${{ matrix.backend == 'cpu' && env.RUN_MACOS_CPU == 'true' }}
         uses: actions/upload-artifact@v6
         with:
           name: ci-macos-inference-binaries
@@ -568,247 +757,18 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  linux_cuda:
+  windows_targets:
     needs: changes
-    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.benchmarks == 'true') && needs.changes.outputs.docs_only != 'true' }}
-    name: Linux CUDA slim
-    runs-on: ubuntu-latest
-    container:
-      image: nvidia/cuda:${{ vars.CUDA_VERSION || '12.6.3' }}-devel-ubuntu22.04
-    env:
-      LLAMA_STAGE_BUILD_DIR: .deps/llama-build/build-stage-abi-cuda-sm89
-      LLAMA_STAGE_BACKEND: cuda
-      LLAMA_STAGE_CUDA_ARCHITECTURES: "89"
-      MESH_LLM_SKIP_UI: "1"
-      # CI containers have no GPU driver (libcuda.so.1). Disable VMM and NCCL
-      # to avoid linking libraries that require the CUDA driver at runtime.
-      GGML_CUDA_NO_VMM: "1"
-      LLAMA_STAGE_SKIP_NCCL: "1"
-    steps:
-      - name: Install base packages
-        run: |
-          for attempt in 1 2 3; do
-            apt-get -o Acquire::Retries=5 update &&
-              DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --fix-missing ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential lld &&
-              break
-            if [ "$attempt" -eq 3 ]; then
-              exit 1
-            fi
-            sleep $((attempt * 10))
-          done
-          rm -rf /var/lib/apt/lists/*
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Configure Linux Rust linker
-        run: |
-          mkdir -p .cargo
-          cat > .cargo/config.toml <<'EOF'
-          [target.x86_64-unknown-linux-gnu]
-          rustflags = ["-C", "link-arg=-fuse-ld=lld"]
-          EOF
-      - uses: taiki-e/install-action@just
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: . -> target
-          cache-bin: "false"
-          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ runner.os }}-${{ hashFiles('.github/cache-version.txt') }}
-          shared-key: linux-cuda-slim
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Prepare UI placeholder
-        run: mkdir -p crates/mesh-llm-ui/dist && printf '<html></html>' > crates/mesh-llm-ui/dist/index.html
-
-      - name: Build Linux CUDA backend
-        run: just --shell bash --shell-arg -lc release-build-cuda 89
-      - name: CLI smoke test
-        run: |
-          cuda_stub_runtime="$(mktemp -d)"
-          ln -s /usr/local/cuda/lib64/stubs/libcuda.so "$cuda_stub_runtime/libcuda.so.1"
-          export LD_LIBRARY_PATH="$cuda_stub_runtime:/usr/local/cuda/lib64/stubs:${LD_LIBRARY_PATH:-}"
-          target/release/mesh-llm --log-format json --version
-
-  linux_rocm:
-    needs: changes
-    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.benchmarks == 'true') && needs.changes.outputs.docs_only != 'true' }}
-    name: Linux ROCm slim
-    runs-on: ubuntu-latest
-    container:
-      image: rocm/dev-ubuntu-24.04:7.0-complete
-    env:
-      LLAMA_STAGE_BUILD_DIR: .deps/llama-build/build-stage-abi-rocm-gfx1100
-      LLAMA_STAGE_BACKEND: rocm
-      LLAMA_STAGE_AMDGPU_TARGETS: gfx1100
-      MESH_LLM_SKIP_UI: "1"
-    steps:
-      - name: Install base packages
-        run: |
-          for attempt in 1 2 3; do
-            apt-get -o Acquire::Retries=5 update &&
-              DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --fix-missing ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential lld &&
-              break
-            if [ "$attempt" -eq 3 ]; then
-              exit 1
-            fi
-            sleep $((attempt * 10))
-          done
-          rm -rf /var/lib/apt/lists/*
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Configure Linux Rust linker
-        run: |
-          mkdir -p .cargo
-          cat > .cargo/config.toml <<'EOF'
-          [target.x86_64-unknown-linux-gnu]
-          rustflags = ["-C", "link-arg=-fuse-ld=lld"]
-          EOF
-      - uses: taiki-e/install-action@just
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: . -> target
-          cache-bin: "false"
-          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ runner.os }}-${{ hashFiles('.github/cache-version.txt') }}
-          shared-key: linux-rocm-slim
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Prepare UI placeholder
-        run: mkdir -p crates/mesh-llm-ui/dist && printf '<html></html>' > crates/mesh-llm-ui/dist/index.html
-
-      - name: Build Linux ROCm backend
-        run: just --shell bash --shell-arg -lc release-build-rocm gfx1100
-      - name: CLI smoke test
-        run: |
-          export LD_LIBRARY_PATH="/opt/rocm/lib:${LD_LIBRARY_PATH:-}"
-          target/release/mesh-llm --log-format json --version
-
-  linux_vulkan:
-    needs: changes
-    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') && needs.changes.outputs.docs_only != 'true' }}
-    name: Linux Vulkan
-    runs-on: ubuntu-latest
-    env:
-      LLAMA_STAGE_BACKEND: vulkan
-      LLAMA_STAGE_BUILD_DIR: .deps/llama-build/build-stage-abi-vulkan
-      MESH_LLM_SKIP_UI: "1"
-    steps:
-      - uses: actions/checkout@v5
-      - name: Install Vulkan build packages
-        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev glslc libvulkan-dev spirv-headers lld
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Configure Linux Rust linker
-        run: |
-          mkdir -p .cargo
-          cat > .cargo/config.toml <<'EOF'
-          [target.x86_64-unknown-linux-gnu]
-          rustflags = ["-C", "link-arg=-fuse-ld=lld"]
-          EOF
-      - uses: taiki-e/install-action@just
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: . -> target
-          cache-bin: "false"
-          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ runner.os }}-${{ hashFiles('.github/cache-version.txt') }}
-          shared-key: linux-vulkan
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Prepare UI placeholder
-        run: mkdir -p crates/mesh-llm-ui/dist && printf '<html></html>' > crates/mesh-llm-ui/dist/index.html
-      - name: Ensure ABI cache directory
-        run: mkdir -p "$LLAMA_STAGE_BUILD_DIR"
-      - name: Cache patched llama.cpp ABI build
-        id: llama_cache
-        uses: actions/cache@v5
-        with:
-          path: .deps/llama-build/build-stage-abi-vulkan
-          key: ${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-skippy-abi-vulkan-${{ hashFiles('scripts/build-linux.sh', 'scripts/build-llama.sh', 'third_party/llama.cpp/upstream.txt', 'third_party/llama.cpp/patches/**', 'Justfile', '.github/cache-version.txt') }}
-      - name: Build Linux Vulkan backend
-        if: steps.llama_cache.outputs.cache-hit != 'true'
-        run: just --shell bash --shell-arg -lc release-build-vulkan
-      - name: Build mesh-llm binary only
-        if: steps.llama_cache.outputs.cache-hit == 'true'
-        run: cargo build --release -p mesh-llm
-      - name: CLI smoke test
-        run: target/release/mesh-llm --log-format json --version
-  windows_cpu:
-    needs: changes
-    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') && needs.changes.outputs.docs_only != 'true' }}
-    name: Windows CPU
-    runs-on: windows-2022
-    env:
-      RUN_WINDOWS_CPU_FULL: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.windows_cpu == 'true' }}
-      LLAMA_STAGE_BACKEND: cpu
-      LLAMA_STAGE_BUILD_DIR: .deps/llama.cpp/build-stage-abi-cpu
-      MESH_LLM_SKIP_UI: "1"
-      MESH_LLM_REQUIRE_SCCACHE: "1"
-      RUSTC_WRAPPER: sccache
-    steps:
-      - uses: actions/checkout@v5
-      - name: Use fast Windows CPU check
-        if: ${{ env.RUN_WINDOWS_CPU_FULL != 'true' }}
-        shell: pwsh
-        run: Write-Host "Running Windows CPU cargo check because this change does not touch Windows CPU build inputs."
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: taiki-e/install-action@just
-        if: ${{ env.RUN_WINDOWS_CPU_FULL == 'true' }}
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: . -> target
-          cache-bin: "false"
-          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ runner.os }}-${{ hashFiles('.github/cache-version.txt') }}
-          shared-key: windows-cpu
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Prepare UI placeholder
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path crates/mesh-llm-ui/dist | Out-Null
-          '<html></html>' | Set-Content -Path crates/mesh-llm-ui/dist/index.html -Encoding utf8
-      - name: Ensure ABI cache directory
-        if: ${{ env.RUN_WINDOWS_CPU_FULL == 'true' }}
-        shell: pwsh
-        run: New-Item -ItemType Directory -Force -Path $env:LLAMA_STAGE_BUILD_DIR | Out-Null
-      - name: Cache patched llama.cpp ABI build
-        if: ${{ env.RUN_WINDOWS_CPU_FULL == 'true' }}
-        id: llama_cache
-        uses: actions/cache@v5
-        with:
-          path: .deps/llama.cpp/build-stage-abi-cpu
-          key: ${{ env.CACHE_NAMESPACE }}-windows-2022-skippy-abi-cpu-${{ hashFiles('scripts/build-windows.ps1', 'third_party/llama.cpp/upstream.txt', 'third_party/llama.cpp/patches/**', 'Justfile', '.github/cache-version.txt') }}
-      - name: Build Windows CPU backend
-        if: ${{ env.RUN_WINDOWS_CPU_FULL == 'true' && steps.llama_cache.outputs.cache-hit != 'true' }}
-        shell: pwsh
-        run: just release-build-windows
-      - name: Build mesh-llm binary only
-        if: ${{ env.RUN_WINDOWS_CPU_FULL == 'true' && steps.llama_cache.outputs.cache-hit == 'true' }}
-        shell: pwsh
-        run: cargo build --release --locked -p mesh-llm
-      - name: Check mesh-llm binary on Windows
-        if: ${{ env.RUN_WINDOWS_CPU_FULL != 'true' }}
-        shell: pwsh
-        run: cargo check --locked -p mesh-llm --bin mesh-llm
-      - name: CLI smoke test
-        if: ${{ env.RUN_WINDOWS_CPU_FULL == 'true' }}
-        shell: pwsh
-        run: |
-          .\target\release\mesh-llm.exe --log-format json --version
-          .\target\release\mesh-llm.exe --log-format json --help | Select-Object -First 5
-
-  windows_gpu:
-    needs: changes
-    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') && needs.changes.outputs.docs_only != 'true' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.all_rust == 'true' || needs.changes.outputs.windows_cpu == 'true' || needs.changes.outputs.windows_gpu == 'true') && needs.changes.outputs.docs_only != 'true' }}
     name: Windows ${{ matrix.name }}
     runs-on: windows-2022
-    env:
-      RUN_WINDOWS_GPU: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.windows_gpu == 'true' }}
-      LLAMA_STAGE_BUILD_DIR: .deps/llama.cpp/build-stage-abi-${{ matrix.backend }}
-      MESH_LLM_SKIP_UI: "1"
-      RUSTC_WRAPPER: sccache
-      WINDOWS_CUDA_VERSION: ${{ vars.CUDA_VERSION || '12.6.3' }}
-      WINDOWS_VULKAN_SDK_VERSION: ${{ vars.VULKAN_SDK_VERSION || '1.4.328.1' }}
-      ROCM_HIP_SDK_FILENAME: AMD-Software-PRO-Edition-25.Q3-WinSvr2022-For-HIP.exe
     strategy:
       fail-fast: false
       matrix:
         include:
+          - name: CPU
+            backend: cpu
+            cache_key: windows-cpu
           - name: CUDA
             backend: cuda
             build_recipe: release-build-cuda-windows
@@ -821,21 +781,36 @@ jobs:
             backend: vulkan
             build_recipe: release-build-vulkan-windows
             build_args: ""
+    env:
+      RUN_WINDOWS_CPU_FULL: ${{ matrix.backend == 'cpu' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.windows_cpu == 'true') }}
+      RUN_WINDOWS_GPU: ${{ matrix.backend != 'cpu' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.windows_gpu == 'true') }}
+      LLAMA_STAGE_BACKEND: ${{ matrix.backend }}
+      LLAMA_STAGE_BUILD_DIR: .deps/llama.cpp/build-stage-abi-${{ matrix.backend }}
+      MESH_LLM_SKIP_UI: "1"
+      MESH_LLM_REQUIRE_SCCACHE: "1"
+      RUSTC_WRAPPER: sccache
+      WINDOWS_CUDA_VERSION: ${{ vars.CUDA_VERSION || '12.6.3' }}
+      WINDOWS_VULKAN_SDK_VERSION: ${{ vars.VULKAN_SDK_VERSION || '1.4.328.1' }}
+      ROCM_HIP_SDK_FILENAME: AMD-Software-PRO-Edition-25.Q3-WinSvr2022-For-HIP.exe
     steps:
+      - name: Skip Windows CPU full build
+        if: ${{ matrix.backend == 'cpu' && env.RUN_WINDOWS_CPU_FULL != 'true' }}
+        shell: pwsh
+        run: Write-Host "Running Windows CPU cargo check because this change does not touch Windows CPU build inputs."
       - name: Skip Windows GPU build
-        if: ${{ env.RUN_WINDOWS_GPU != 'true' }}
+        if: ${{ matrix.backend != 'cpu' && env.RUN_WINDOWS_GPU != 'true' }}
         shell: pwsh
         run: Write-Host "Skipping Windows ${{ matrix.name }} because this change does not touch Windows GPU build inputs."
       - uses: actions/checkout@v5
-        if: ${{ env.RUN_WINDOWS_GPU == 'true' }}
+        if: ${{ matrix.backend == 'cpu' || env.RUN_WINDOWS_GPU == 'true' }}
       - uses: dtolnay/rust-toolchain@stable
-        if: ${{ env.RUN_WINDOWS_GPU == 'true' }}
+        if: ${{ matrix.backend == 'cpu' || env.RUN_WINDOWS_GPU == 'true' }}
       - uses: taiki-e/install-action@just
-        if: ${{ env.RUN_WINDOWS_GPU == 'true' }}
+        if: ${{ env.RUN_WINDOWS_CPU_FULL == 'true' || env.RUN_WINDOWS_GPU == 'true' }}
       - uses: mozilla-actions/sccache-action@v0.0.9
-        if: ${{ env.RUN_WINDOWS_GPU == 'true' }}
+        if: ${{ matrix.backend == 'cpu' || env.RUN_WINDOWS_GPU == 'true' }}
       - uses: Swatinem/rust-cache@v2
-        if: ${{ env.RUN_WINDOWS_GPU == 'true' }}
+        if: ${{ matrix.backend == 'cpu' || env.RUN_WINDOWS_GPU == 'true' }}
         with:
           workspaces: . -> target
           cache-bin: "false"
@@ -843,22 +818,22 @@ jobs:
           shared-key: windows-${{ matrix.backend }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Prepare UI placeholder
-        if: ${{ env.RUN_WINDOWS_GPU == 'true' }}
+        if: ${{ env.RUN_WINDOWS_CPU_FULL == 'true' || env.RUN_WINDOWS_GPU == 'true' }}
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path crates/mesh-llm-ui/dist | Out-Null
           '<html></html>' | Set-Content -Path crates/mesh-llm-ui/dist/index.html -Encoding utf8
       - name: Ensure ABI cache directory
-        if: ${{ env.RUN_WINDOWS_GPU == 'true' }}
+        if: ${{ env.RUN_WINDOWS_CPU_FULL == 'true' || env.RUN_WINDOWS_GPU == 'true' }}
         shell: pwsh
         run: New-Item -ItemType Directory -Force -Path $env:LLAMA_STAGE_BUILD_DIR | Out-Null
       - name: Cache patched llama.cpp ABI build
-        if: ${{ env.RUN_WINDOWS_GPU == 'true' }}
+        if: ${{ env.RUN_WINDOWS_CPU_FULL == 'true' || env.RUN_WINDOWS_GPU == 'true' }}
         id: llama_cache
         uses: actions/cache@v5
         with:
           path: .deps/llama.cpp/build-stage-abi-${{ matrix.backend }}
-          key: ${{ env.CACHE_NAMESPACE }}-windows-2022-skippy-abi-${{ matrix.backend }}-${{ matrix.build_args }}-${{ matrix.backend == 'cuda' && format('cuda-{0}-Jimver-v0.2.35', env.WINDOWS_CUDA_VERSION) || matrix.backend == 'vulkan' && format('vulkan-{0}-jakoch-v1.5.2', env.WINDOWS_VULKAN_SDK_VERSION) || format('rocm-{0}', env.ROCM_HIP_SDK_FILENAME) }}-${{ hashFiles('scripts/build-windows.ps1', 'scripts/install-windows-sdk.ps1', '.github/actions/setup-windows-rocm-sdk/action.yml', 'third_party/llama.cpp/upstream.txt', 'third_party/llama.cpp/patches/**', 'Justfile', '.github/cache-version.txt') }}
+          key: ${{ env.CACHE_NAMESPACE }}-windows-2022-skippy-abi-${{ matrix.backend }}-${{ matrix.build_args }}-${{ matrix.backend == 'cuda' && format('cuda-{0}-Jimver-v0.2.35', env.WINDOWS_CUDA_VERSION) || matrix.backend == 'vulkan' && format('vulkan-{0}-jakoch-v1.5.2', env.WINDOWS_VULKAN_SDK_VERSION) || matrix.backend == 'rocm' && format('rocm-{0}', env.ROCM_HIP_SDK_FILENAME) || 'cpu' }}-${{ hashFiles('scripts/build-windows.ps1', 'scripts/install-windows-sdk.ps1', '.github/actions/setup-windows-rocm-sdk/action.yml', 'third_party/llama.cpp/upstream.txt', 'third_party/llama.cpp/patches/**', 'Justfile', '.github/cache-version.txt') }}
       - name: Install CUDA toolkit
         if: ${{ env.RUN_WINDOWS_GPU == 'true' && matrix.backend == 'cuda' && steps.llama_cache.outputs.cache-hit != 'true' }}
         uses: Jimver/cuda-toolkit@v0.2.35
@@ -911,6 +886,18 @@ jobs:
         uses: ./.github/actions/setup-windows-rocm-sdk
         with:
           rocm-hip-sdk-filename: ${{ env.ROCM_HIP_SDK_FILENAME }}
+      - name: Build Windows CPU backend
+        if: ${{ env.RUN_WINDOWS_CPU_FULL == 'true' && steps.llama_cache.outputs.cache-hit != 'true' }}
+        shell: pwsh
+        run: just release-build-windows
+      - name: Build Windows CPU binary only
+        if: ${{ env.RUN_WINDOWS_CPU_FULL == 'true' && steps.llama_cache.outputs.cache-hit == 'true' }}
+        shell: pwsh
+        run: cargo build --release --locked -p mesh-llm
+      - name: Check mesh-llm binary on Windows
+        if: ${{ matrix.backend == 'cpu' && env.RUN_WINDOWS_CPU_FULL != 'true' }}
+        shell: pwsh
+        run: cargo check --locked -p mesh-llm --bin mesh-llm
       - name: Build Windows GPU backend
         if: ${{ env.RUN_WINDOWS_GPU == 'true' && steps.llama_cache.outputs.cache-hit != 'true' }}
         shell: pwsh
@@ -932,10 +919,13 @@ jobs:
           }
           $libs | ForEach-Object { Write-Host $_.FullName }
       - name: CLI smoke test
-        if: ${{ env.RUN_WINDOWS_GPU == 'true' }}
+        if: ${{ env.RUN_WINDOWS_CPU_FULL == 'true' || env.RUN_WINDOWS_GPU == 'true' }}
         shell: pwsh
         run: |
-          if ("${{ steps.llama_cache.outputs.cache-hit }}" -eq "true") {
+          if ("${{ matrix.backend }}" -eq "cpu") {
+            .\target\release\mesh-llm.exe --log-format json --version
+            .\target\release\mesh-llm.exe --log-format json --help | Select-Object -First 5
+          } elseif ("${{ steps.llama_cache.outputs.cache-hit }}" -eq "true") {
             Write-Host "Skipping Windows ${{ matrix.name }} launch smoke because the cached ABI was verified without relinking."
           } elseif (-not (Test-Path .\target\release\mesh-llm.exe)) {
             throw "target\release\mesh-llm.exe was not produced"

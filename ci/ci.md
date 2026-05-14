@@ -1,113 +1,120 @@
 ```mermaid
 flowchart TD
-    subgraph Triggers["Triggers"]
-        PR["Pull Request / push main"]
+    subgraph Triggers["Pull request triggers"]
+        PR["opened / synchronize / reopened / ready_for_review"]
     end
-    subgraph Changes["changes (path filter)"]
-        F_UI["ui changed?"]
-        F_RUST["rust changed?"]
-        F_SDK["sdk changed?"]
-        F_BENCH["benchmarks changed?"]
+
+    subgraph Changes["compute-changes"]
+        Files["changed files"]
+        Affected["affected crates + reverse deps"]
+        ClippyBins["clippy binpack\nplan-clippy-batches.sh"]
+        Backend["backend_changed?"]
+        SDK["sdk_smoke_required?"]
+        Docs["docs_only?"]
     end
-    PR --> Changes
-    %% ── Producers ──
-    subgraph Producers["Producers (parallel, independent)"]
+
+    PR --> Files --> Affected
+    Affected --> ClippyBins
+    Files --> Backend
+    Affected --> SDK
+    Files --> Docs
+
+    subgraph Quality["pr_quality.yml · PR Quality Checks"]
         direction TB
-        subgraph UI_Target["Target: ui"]
-            UI["Build UI\nnpm ci + build + test\n→ upload: ci-ui-dist"]
-        end
-        subgraph Core_Target["Target: rust-core (ubuntu-latest)"]
-            CORE["fmt check · clippy\ncargo build -p mesh-llm (debug)\nunit tests · protocol compat\nbuild llama.cpp CPU+RPC\nCLI smoke · client-auto boot\n→ upload: ci-linux-inference-binaries"]
-        end
-        subgraph FFI_Target["Target: ffi-sdk (ubuntu-latest)"]
-            FFI["Build mesh-api / mesh-api-ffi / mesh-client\nembedded dep purity check\ncompile+lint only, no artifact"]
-        end
-        subgraph Vulkan_Target["Target: vulkan (ubuntu-latest)"]
-            VULKAN["Install libvulkan-dev + glslc\nDownload ci-ui-dist\njust release-build-vulkan\nCLI smoke"]
-        end
+        Fmt["rust-fmt"]
+        Clippy["rust-clippy matrix\nweighted affected-crate bins"]
+        UIQ["ui-quality"]
+        QSummary["summary"]
+        Fmt --> QSummary
+        Clippy --> QSummary
+        UIQ --> QSummary
     end
-    F_UI -- "true" --> UI_Target
-    F_RUST -- "true" --> Core_Target
-    F_RUST -- "true" --> FFI_Target
-    F_RUST -- "true" --> Vulkan_Target
-    UI_Target -- "artifact: ci-ui-dist" --> Vulkan_Target
-    %% ── CUDA (self-hosted GPU runner) ──
-    subgraph CUDA_Target["Target: cuda\n🖥️ self-hosted GPU runner"]
+
+    ClippyBins --> Clippy
+    Affected --> Fmt
+    Files --> UIQ
+
+subgraph PRCI["pr_builds.yml · PR Builds"]
         direction TB
-        CUDA_BUILD["Build llama.cpp CUDA\njust release-build-cuda 89\ncargo build mesh-llm (debug)"]
-        CUDA_SMOKE["CLI smoke\nmesh-llm --version / --help"]
-        CUDA_BUILD --> CUDA_SMOKE
-    end
-    F_RUST -- "true" --> CUDA_Target
-    UI_Target -- "artifact: ci-ui-dist" --> CUDA_Target
-    %% ── ROCm (self-hosted GPU runner) ──
-    subgraph ROCm_Target["Target: rocm\n🖥️ self-hosted GPU runner"]
-        direction TB
-        ROCM_BUILD["Build llama.cpp ROCm\njust release-build-rocm gfx1100\ncargo build mesh-llm (debug)"]
-        ROCM_SMOKE["CLI smoke"]
-        ROCM_BUILD --> ROCM_SMOKE
-    end
-    F_RUST -- "true" --> ROCm_Target
-    UI_Target -- "artifact: ci-ui-dist" --> ROCm_Target
-    %% ── Smoke tests (consume artifact) ──
-    subgraph Smoke["smoke.yml (reusable, ubuntu-latest)"]
-        SMOKE["Download ci-linux-inference-binaries\nReal inference · OpenAI compat\nSplit-mode · MoE split + mesh"]
-    end
-    CORE -- "artifact" --> SMOKE
-    subgraph SDK_Smokes["SDK Smokes (consume artifact)"]
-        direction LR
-        NATIVE["Native SDK\n(Linux)"]
-        KOTLIN["Kotlin SDK\n(Linux)"]
-        SWIFT["Swift SDK\n(macOS)\nbuild llama.cpp Metal"]
-    end
-    SMOKE -- "success" --> SDK_Smokes
-    F_SDK -- "true" --> SDK_Smokes
-    %% ── Benchmark smokes (optional, self-hosted) ──
-    subgraph Bench_Smokes["Benchmark Smokes (optional)\n🖥️ self-hosted runners"]
-        direction LR
-        SWIFT_BENCH["macOS benchmark"]
-        CUDA_BENCH["CUDA benchmark"]
-        ROCM_BENCH["ROCm benchmark"]
-    end
-    F_BENCH -- "true" --> Bench_Smokes
-    CUDA_Target --> CUDA_BENCH
-    ROCm_Target --> ROCM_BENCH
-    %% ════════════════════════════════════════════════════
-    %% Release (separate shape, separate trigger)
-    %% ════════════════════════════════════════════════════
-    subgraph Release["release.yml (workflow_dispatch, tag push)"]
-        REL_PREP["prepare_release\nversion bump · tag · push"]
-        subgraph REL_Builds["Release builds (full shape, parallel)"]
-            REL_CPU["Linux CPU\n(ubuntu-latest)"]
-            REL_ARM["Linux ARM64\n(ubuntu-24.04-arm)"]
-            REL_MACOS["macOS Metal\n(macos-14)"]
-            REL_VULKAN["Linux Vulkan\n(ubuntu-latest)"]
+        subgraph Producers["top-level target matrices"]
+            LinuxTargets["linux_targets matrix\nCPU row: crate tests · debug mesh-llm · CLI/client smoke\nCUDA / ROCm / Vulkan rows build when backend_changed\nCPU → ci-linux-inference-binaries"]
+            WindowsTargets["windows_targets matrix\nCPU / CUDA / ROCm / Vulkan\nCPU checks unless Windows CPU changed"]
+            MacTargets["macos_targets matrix\nCPU row: macOS Metal build · crate tests · CLI smoke\nCUDA / ROCm / Vulkan explicit skips\nCPU → ci-macos-inference-binaries"]
         end
-        subgraph REL_GPU["Release GPU builds\n🖥️ self-hosted runners"]
-            REL_CUDA_126["CUDA 12.6\nfull arch, FA=ON"]
-            REL_CUDA_127["CUDA 12.7\nfull arch, FA=ON"]
-            REL_CUDA_129["CUDA 12.9\nfull arch, FA=ON"]
-            REL_CUDA_132["CUDA 13.2\nfull arch, FA=ON"]
-            REL_ROCM["ROCm\nfull gfx matrix"]
+
+        subgraph Smokes["artifact-consuming smokes"]
+            Restore["restore-smoke-inputs action\ndownload artifact · stage binary · restore model"]
+            Inference["smoke.yml\nLinux inference + OpenAI + split serving"]
+            Scripted["scripted-binary-smoke.yml\ntwo-node client/serving"]
+            SDKSmoke["sdk-smoke.yml\nnative · Kotlin · Swift"]
         end
-        REL_SMOKE["Release smoke\n(release-shape binaries)"]
-        PUBLISH["publish GitHub release\ngated on smoke success"]
-        PUB_CRATES["publish crates.io"]
-        PUB_ANDROID["publish Android Maven"]
-        REL_PREP --> REL_Builds & REL_GPU
-        REL_CPU --> REL_SMOKE --> PUBLISH
-        PUBLISH --> PUB_CRATES & PUB_ANDROID
     end
-    style UI_Target fill:#1a3a5c,stroke:#4a90d9,color:#e8f4fd
-    style Core_Target fill:#1a3a5c,stroke:#4a90d9,color:#e8f4fd
-    style FFI_Target fill:#1a3a5c,stroke:#4a90d9,color:#e8f4fd
-    style Vulkan_Target fill:#1a3a5c,stroke:#4a90d9,color:#e8f4fd
-    style CUDA_Target fill:#2d1b4e,stroke:#9b59b6,color:#f5eeff
-    style ROCm_Target fill:#2d1b4e,stroke:#9b59b6,color:#f5eeff
-    style Smoke fill:#1a3d2e,stroke:#2ecc71,color:#eaffef
-    style SDK_Smokes fill:#1a3d2e,stroke:#2ecc71,color:#eaffef
-    style Bench_Smokes fill:#3d2b00,stroke:#f39c12,color:#fff8e1
-    style Release fill:#2a2a2a,stroke:#888,color:#ddd
-    style REL_Builds fill:#3a3a3a,stroke:#888,color:#ddd
-    style REL_GPU fill:#3a2a4a,stroke:#9b59b6,color:#f5eeff
+
+    Docs -. "true: gate heavy jobs" .-> PRCI
+    Affected --> LinuxTargets
+    Affected --> MacTargets
+    Backend --> LinuxTargets
+    Backend --> WindowsTargets
+    Backend --> MacTargets
+    LinuxTargets -- "CPU artifact: ci-linux-inference-binaries" --> Restore
+    MacTargets -- "CPU artifact: ci-macos-inference-binaries" --> Restore
+    Restore --> Inference
+    Restore --> Scripted
+    Restore --> SDKSmoke
+    SDK --> SDKSmoke
+
+    subgraph PRDocker["pr_docker.yml · PR Docker Build"]
+        DockerBuild["Build Docker client image\npush: false"]
+    end
+
+    Files --> DockerBuild
+
+    subgraph Cleanup["pr_cleanup.yml · PR Cache Cleanup"]
+        Closed["pull_request_target closed"]
+        DeleteCaches["delete caches for\nrefs/pull/<PR>/merge"]
+        DeleteArtifacts["delete artifacts from\nmatched PR workflow runs"]
+        Closed --> DeleteCaches
+        Closed --> DeleteArtifacts
+    end
+
+    subgraph MainRelease["non-PR workflows"]
+        MainCI["ci.yml\npush main / dispatch"]
+        DockerPublish["docker.yml\ntag / dispatch publish"]
+        Release["release.yml\nrelease artifacts + publish gates"]
+    end
+
+    style Quality fill:#1a3a5c,stroke:#4a90d9,color:#e8f4fd
+    style PRCI fill:#1a3d2e,stroke:#2ecc71,color:#eaffef
+    style Producers fill:#1a3d2e,stroke:#2ecc71,color:#eaffef
+    style Smokes fill:#17324d,stroke:#4a90d9,color:#e8f4fd
+    style PRDocker fill:#3d2b00,stroke:#f39c12,color:#fff8e1
+    style Cleanup fill:#3d2b00,stroke:#f39c12,color:#fff8e1
+    style MainRelease fill:#2a2a2a,stroke:#888,color:#ddd
 ```
+
+## Current PR Builds contract
+
+- `pr_quality.yml` is named **PR Quality Checks** and owns the earliest feedback:
+  formatting, UI quality when relevant, and deterministic clippy bins from
+  `scripts/plan-clippy-batches.sh`.
+- `pr_builds.yml` is named **PR Builds** and owns PR target matrices plus integration
+  and smoke validation. Linux, macOS, and Windows are top-level matrices; Linux
+  and macOS CPU rows upload the binaries that downstream smoke jobs consume.
+- `pr_docker.yml` validates the PR Docker client image without publishing.
+- `pr_cleanup.yml` deletes PR merge-ref caches and artifacts from positively
+  matched PR workflow runs when a pull request closes.
+- Non-PR workflows (`ci.yml`, `docker.yml`, `release.yml`) own main, dispatch,
+  tag, and release-grade publishing behavior.
+
+## Artifact and smoke reuse
+
+- Smoke jobs restore binaries through `.github/actions/restore-smoke-inputs` and
+  reusable workflows instead of rebuilding `mesh-llm` or patched llama.cpp.
+- Linux CPU artifacts feed inference, two-node, native SDK, and Kotlin SDK
+  smokes. macOS CPU artifacts feed Swift SDK smokes.
+- PR and smoke-only CI artifacts use `retention-days: 1`; PR cleanup removes
+  matched PR-run artifacts proactively.
+- Direct `mesh-llm` invocations in workflows and CI scripts must include
+  `--log-format json`.
+
+For agent-facing workflow editing rules, see `.github/AGENTS.md`.

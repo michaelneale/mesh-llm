@@ -1,0 +1,46 @@
+name: Reusable HuggingFace Download Smoke Tests
+
+on:
+  workflow_call:
+    inputs:
+      runs_on:
+        required: false
+        default: '"ubuntu-latest"'
+        type: string
+      timeout_minutes:
+        required: false
+        default: 20
+        type: number
+
+env:
+  CACHE_NAMESPACE: mesh-llm
+
+jobs:
+  hf_download_smoke:
+    name: HuggingFace download smoke
+    runs-on: ${{ fromJson(inputs.runs_on) }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev libdbus-1-dev lld
+      - name: Configure Linux Rust linker
+        run: |
+          mkdir -p .cargo
+          cat > .cargo/config.toml <<'EOF'
+          [target.x86_64-unknown-linux-gnu]
+          rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+          EOF
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+          cache-bin: "false"
+          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: HuggingFace download integration tests
+        run: scripts/ci-hf-download-smoke.sh

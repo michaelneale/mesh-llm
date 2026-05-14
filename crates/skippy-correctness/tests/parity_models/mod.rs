@@ -990,7 +990,7 @@ fn activation_frames_match(source: &ActivationFrame, restored: &ActivationFrame)
     if source.payload == restored.payload {
         return true;
     }
-    if source.payload.len() % 4 != 0 {
+    if !source.payload.len().is_multiple_of(4) {
         return false;
     }
 

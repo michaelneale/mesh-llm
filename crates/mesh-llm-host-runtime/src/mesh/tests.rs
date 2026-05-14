@@ -1778,9 +1778,7 @@ async fn owner_control_client_reuses_connection_for_sequential_requests() -> Res
             ControlPlaneBootstrapOptions::new().with_control_endpoint(endpoint_token),
         )
         .await?;
-    let control_client = match connection {
-        ControlPlaneConnection::OwnerControl(control_client) => control_client,
-    };
+    let ControlPlaneConnection::OwnerControl(control_client) = connection;
 
     let snapshot = control_client.get_config().await?;
     let config = snapshot
