@@ -6,7 +6,7 @@
 
 ## Summary
 
-A small local model generates a full draft response from the user's prompt.
+A fast model generates a full draft response from the user's prompt.
 That draft is injected into the prompt for the large distributed model, which
 runs a single prefill pass — computing logits at every token position — to
 verify whether it agrees with the draft. If the large model agrees, we skip
@@ -40,7 +40,7 @@ Speculative prefill decoding exploits this:
 
 | Phase | Tokens | Network rounds (distributed) |
 |---|---|---|
-| Draft (local small model) | Full response | 0 (local) |
+| Draft (fast model) | Full response | 0 if local, 1 if peer |
 | Verify (distributed large model) | Full response | 1 (prefill) |
 | Decode from K (if needed) | Response length − K | Response length − K |
 
@@ -55,7 +55,7 @@ large model never decodes a single token. Draft becomes the response.
 ┌─────────────────────────────────────────────────────────┐
 │  User prompt arrives                                     │
 │  ↓                                                       │
-│  Draft model (local, small, fast)                        │
+│  Draft model (fast — local, peer, or remote)             │
 │  → generates full response: "Canberra is the capital..." │
 │  ↓                                                       │
 │  Tokenize draft response                                 │
@@ -326,6 +326,10 @@ For a 2-node layer split with 50ms decode RTT, 200-token response, and
 For 100% acceptance: 0.5s draft + 0.1s verify = **0.6s total** vs 10.0s.
 **16x speedup.**
 
+Draft latency depends on source — a local small model is ~0.5s, a fast
+peer might be ~1-2s, a remote API might be ~2-3s. Even a 2s draft pays
+off massively against 10s of distributed decode.
+
 ## Implementation Plan
 
 ### Phase 1: FFI binding + proof of concept
@@ -370,12 +374,19 @@ For 100% acceptance: 0.5s draft + 0.1s verify = **0.6s total** vs 10.0s.
 
 ### Phase 3: Integration with mesh-llm
 
-9. **Draft model selection** — automatically pick the smallest loaded
-   model on the local node as the draft model. Or let the user configure
-   `--draft-model` explicitly.
+9. **Draft model selection** — find the fastest available model that can
+   take enough context to produce a plausible draft. This doesn't have to
+   be local — a small model on a fast peer, or even a remote API model
+   with low latency, works fine. The constraint is wall-clock time: the
+   draft must arrive faster than the target model would have decoded the
+   same tokens. Selection criteria:
+   - Lowest expected latency (local > fast peer > remote API)
+   - Sufficient context window for the query
+   - Historical draft acceptance rate (learn which models draft well for
+     which target)
 
 10. **Automatic engagement** — engage speculative prefill when:
-    - A small local model and a large distributed model are both available
+    - A fast draft model and a slower target model are both available
     - The request doesn't require tool calls (tool routing is decided by
       the draft, which may not have tool schemas)
     - The prompt is conversational / knowledge-based (not creative /
@@ -453,7 +464,7 @@ the executor.
 | Draft injected as plain prompt (no special framing) | The model doesn't distinguish draft from real content during prefill. Plain injection is simplest and works. Prefix framing can be tested later. |
 | Divergence point K → decode from K, no re-draft | The large model's decode from K is authoritative. Re-drafting adds latency and complexity with diminishing returns. |
 | Start with greedy match, add probability threshold | Greedy match is simplest to implement and test. Probability threshold is the production target but needs logit access extensions. |
-| Draft model = smallest local model | Minimizes draft latency. Any model family works — draft produces text, target tokenizes it independently. |
+| Draft model = fastest available, not necessarily local | Any fast model works — local, fast peer, or remote API. Constraint is wall-clock latency, not locality. |
 | Tokenizer/chat template don't matter | Draft output is plain text, re-tokenized by the target model's own tokenizer. No token ID alignment needed between draft and target. |
 | Draft doesn't need full context | Enough context for a plausible draft. Last user message often sufficient. Shorter context = faster draft. |
 | Target threshold: `prob > 0.5` default | Balanced speed/accuracy. Tunable per request or globally. |
