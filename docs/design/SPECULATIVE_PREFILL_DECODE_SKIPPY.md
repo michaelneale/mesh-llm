@@ -20,6 +20,9 @@ round per token). Trading many slow distributed decode steps for one fast
 local draft plus one distributed prefill verification is a massive latency
 win.
 
+This is a standalone optimization for distributed inference. It does not
+depend on MoA — any local small model can serve as the draft source.
+
 ## Motivation
 
 Standard speculative decoding (as in llama.cpp) works within a single
@@ -41,7 +44,8 @@ Speculative prefill decoding exploits this:
 | Verify (distributed large model) | Full response | 1 (prefill) |
 | Decode from K (if needed) | Response length − K | Response length − K |
 
-**Best case (draft fully accepted):** 0 distributed decode rounds.  
+**Best case (draft fully accepted):** 0 distributed decode rounds — the
+large model never decodes a single token. Draft becomes the response.  
 **Worst case (draft rejected at token 0):** Same as no speculation.  
 **Typical case:** Draft partially accepted, decode only the tail.
 
@@ -75,15 +79,17 @@ Speculative prefill decoding exploits this:
 
 ### Draft Injection
 
-The draft response is appended to the prompt as plain assistant content —
-the same way the model would see its own prior output. No special framing
-is needed. The large model's prefill processes the entire sequence (system +
-user + draft) in one pass.
+The draft response is appended to the prompt as plain text — it becomes
+part of the token sequence the large model prefills. No special framing,
+no metadata envelope, no chat template awareness. It's just more tokens
+in the prompt.
 
-If adding a lightweight prefix like `"Here is a proposed answer:\n"` before
-the draft improves verification accuracy (by priming the model to evaluate
-rather than continue), that can be tested empirically. The default is no
-prefix — just raw assistant content.
+This is why **tokenizer and chat template compatibility don't matter**.
+The draft model can be any model — different family, different tokenizer,
+different chat template. What matters is only the final text. The draft
+model produces text, that text gets tokenized by the *target model's*
+tokenizer, and the target model prefills its own tokens. The draft model's
+internal tokenization is never seen by the target.
 
 ### Why Plain Prompt Works
 
@@ -93,6 +99,16 @@ system prompt, or a draft — it just processes the sequence and produces
 logits. We read those logits to see if the model's predictions match the
 draft tokens. The model's own generation mechanism is never invoked; we're
 purely reading its internal state.
+
+### Draft Context Window
+
+The draft model does not need to see the full conversation context. It
+needs to see *enough* context that its output is plausible — enough to
+produce a draft that has high verification confidence from the target
+model. For many queries, just the last user message is sufficient. For
+multi-turn conversations, the last few turns may be enough. The draft
+model's context window is not a constraint because we can truncate the
+input it sees without affecting the target model's full-context prefill.
 
 ## What Exists in Skippy Today
 
@@ -358,12 +374,7 @@ For 100% acceptance: 0.5s draft + 0.1s verify = **0.6s total** vs 10.0s.
    model on the local node as the draft model. Or let the user configure
    `--draft-model` explicitly.
 
-10. **MoA integration** — the MoA gateway's fast worker could serve as
-    the draft model. The fast worker already runs a small model with
-    minimal context. Its output could be verified against the strong
-    worker's model via speculative prefill.
-
-11. **Automatic engagement** — engage speculative prefill when:
+10. **Automatic engagement** — engage speculative prefill when:
     - A small local model and a large distributed model are both available
     - The request doesn't require tool calls (tool routing is decided by
       the draft, which may not have tool schemas)
@@ -386,12 +397,11 @@ tokens. Verification is one prefill pass, not iterative rounds.
 ### vs. MoA (Mixture of Agents)
 
 MoA fans out to multiple models for diversity and arbitrates the best
-response. Speculative prefill could complement MoA:
-
-- The MoA fast worker's output becomes the draft
-- The strong worker's model verifies it via speculative prefill
-- If verified, skip the strong worker's decode entirely
-- If rejected, the strong worker decodes only the divergent tail
+response. Speculative prefill is orthogonal — it optimizes single-model
+response latency, while MoA optimizes response quality by combining
+multiple models. They could coexist (MoA dispatches to models that
+internally use speculative prefill for speed), but they solve different
+problems.
 
 ### vs. Mesh hooks (virtual_llm)
 
@@ -411,43 +421,30 @@ the executor.
 
 ## Open Questions
 
-1. **Tokenizer compatibility** — draft and target models must use the same
-   tokenizer (same vocabulary, same BPE merges). If they don't, the token
-   IDs won't align and verification is meaningless. This constrains which
-   model pairs work. Same-family pairs (e.g., Qwen3-0.6B drafting for
-   Qwen3-32B) are safe. Cross-family pairs need tokenizer verification.
-
-2. **Chat template alignment** — the draft model's chat template must match
-   the target's. If the draft wraps the response in different special tokens,
-   the target will see unexpected tokens during verification. Same-family
-   models share templates; cross-family needs careful handling.
-
-3. **Sampling temperature** — the draft model should use low temperature
+1. **Sampling temperature** — the draft model should use low temperature
    (greedy or near-greedy) to maximize agreement with the target. High
    temperature drafts are more likely to diverge, reducing the benefit.
-   This is the opposite of MoA workers, which want high temperature for
-   diversity.
 
-4. **Multi-turn context** — for multi-turn conversations, the draft model
-   needs the full conversation history. If the draft model has a shorter
-   context window than the target, it may produce degraded drafts on long
-   conversations.
-
-5. **Creative tasks** — for tasks where the user wants creative, diverse
+2. **Creative tasks** — for tasks where the user wants creative, diverse
    output (story writing, brainstorming), speculative prefill may be
    counterproductive. The draft model's output constrains the target to
    agree or diverge, rather than exploring freely. Need a heuristic or
    user flag to disable speculation for creative requests.
 
-6. **Verification cost with very long drafts** — all-position logits for
+3. **Verification cost with very long drafts** — all-position logits for
    a 2000-token draft on a model with 150K vocabulary is significant
    memory (2000 × 150K × 4 bytes ≈ 1.1 GB of logit data). May need to
    verify in chunks rather than all at once.
 
-7. **`skippy_verify_tokens_frame`** — there's a frame variant in the C ABI
+4. **`skippy_verify_tokens_frame`** — there's a frame variant in the C ABI
    for staged (distributed) verification. Need to confirm it works
    correctly across layer splits, since logits are only meaningful at the
    final layer.
+
+5. **How much draft context is enough?** — empirical question. For factual
+   queries the last user message is probably sufficient. For multi-turn
+   reasoning the draft may need more history. The answer likely varies by
+   query type and can be tuned.
 
 ## Decision Log
 
@@ -456,7 +453,9 @@ the executor.
 | Draft injected as plain prompt (no special framing) | The model doesn't distinguish draft from real content during prefill. Plain injection is simplest and works. Prefix framing can be tested later. |
 | Divergence point K → decode from K, no re-draft | The large model's decode from K is authoritative. Re-drafting adds latency and complexity with diminishing returns. |
 | Start with greedy match, add probability threshold | Greedy match is simplest to implement and test. Probability threshold is the production target but needs logit access extensions. |
-| Draft model = smallest local model | Minimizes draft latency. Same-family constraint handled by checking tokenizer compatibility at selection time. |
+| Draft model = smallest local model | Minimizes draft latency. Any model family works — draft produces text, target tokenizes it independently. |
+| Tokenizer/chat template don't matter | Draft output is plain text, re-tokenized by the target model's own tokenizer. No token ID alignment needed between draft and target. |
+| Draft doesn't need full context | Enough context for a plausible draft. Last user message often sufficient. Shorter context = faster draft. |
 | Target threshold: `prob > 0.5` default | Balanced speed/accuracy. Tunable per request or globally. |
 
 ## Files
