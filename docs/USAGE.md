@@ -311,14 +311,14 @@ This stage is intentionally node-local. Mesh-wide rebalancing and distributed lo
 
 ## Owner-control plane
 
-Owner-control is an additive operator lane for config and inventory actions. It does **not** replace the public mesh plane used for join, gossip, routing, or inference, and it does **not** remove the legacy mesh-plane config streams that older clients and released nodes still use.
+Owner-control is the operator lane for config and inventory actions. It does **not** replace the public mesh plane used for join, gossip, routing, or inference. Config and inventory mutation are exclusive to `mesh-llm-control/1`; the old mesh-plane config stream IDs are reserved but no longer carry protobuf request/response handling.
 
 ### Bootstrap contract
 
 - New control clients need an explicit owner-control endpoint token.
 - Read the local bootstrap policy from `GET /api/runtime/control-bootstrap` or `mesh-llm runtime bootstrap --json`.
-- If no explicit endpoint is supplied, the current client contract returns `ControlEndpointRequired` unless the caller explicitly opts into legacy compatibility with `allow_legacy_config=true`.
-- If an explicit endpoint is configured and fails, the client stays on owner-control and reports a structured failure. It does **not** silently fall back to legacy mesh-plane config streams.
+- If no explicit endpoint is supplied, the current client contract returns `ControlEndpointRequired`.
+- If an explicit endpoint is configured and fails, the client stays on owner-control and reports a structured failure. It does **not** silently fall back to mesh-plane config streams.
 
 ### Transport and fallback matrix
 
@@ -327,10 +327,9 @@ Owner-control is an additive operator lane for config and inventory actions. It 
 | New client + explicit endpoint | Use `mesh-llm-control/1` only; no silent legacy downgrade |
 | New client + no endpoint | `ControlEndpointRequired` |
 | New client ↔ old node with no endpoint | `ControlEndpointRequired` by default |
-| New client + no endpoint + `allow_legacy_config=true` | Explicit legacy mesh-plane compatibility path to old-node legacy config streams |
-| Old client + new node | Legacy mesh-plane config streams still work |
+| Old client + new node | Legacy mesh-plane config stream IDs are reserved but rejected as unsupported/unknown |
 | Old node ↔ new node public mesh join/routing | Public mesh ALPN negotiation, gossip, and routing remain compatible; owner-control is not required for join/routing |
-| Old client + old node | Unchanged legacy behavior |
+| Old client + old node | Unchanged old-node behavior outside this release |
 
 ### Operator commands
 
@@ -379,19 +378,19 @@ curl -s -X POST localhost:3131/api/runtime/control/apply-config \
 | Error | Meaning | Typical operator action |
 |---|---|---|
 | `ControlEndpointRequired` / `control_endpoint_required` | No explicit endpoint was supplied | Read `runtime bootstrap`, then retry with the advertised endpoint token |
-| `ControlUnsupported` / `control_unsupported` | Target accepted the connection path but does not speak `mesh-llm-control/1` | Retry only if you intentionally want the legacy compatibility lane |
+| `ControlUnsupported` / `control_unsupported` | Target accepted the connection path but does not speak `mesh-llm-control/1` | Verify the endpoint token targets an owner-control listener |
 | `ControlUnavailable` / `control_unavailable` | Endpoint token, listener, network path, or local owner key loading failed | Verify the endpoint token, listener status, and local owner keystore/passphrase |
 | `Unauthorized` / `unauthorized` | Same-owner handshake failed | Check that both nodes use the same owner identity and that the local key can be unlocked |
 | `RevisionConflict` / `revision_conflict` | Apply request used a stale `expected_revision` | Re-read config, merge, and retry with the current revision |
-| `LegacyJsonUnsupported` / `legacy_json_unsupported` | A legacy mesh-plane frame hit `mesh-llm-control/1` | Fix the caller to use owner-control protobuf frames or intentionally use the legacy lane |
+| `LegacyJsonUnsupported` / `legacy_json_unsupported` | A legacy mesh-plane frame hit `mesh-llm-control/1` | Fix the caller to use owner-control protobuf frames |
 
 ### Transition note
 
-Treat owner-control as the preferred lane for new operator clients. Treat legacy mesh-plane config streams as a compatibility lane that remains available for mixed-version meshes until the project explicitly announces a removal plan. The current implementation preserves both.
+Treat owner-control as the only lane for operator config and inventory clients. Legacy mesh-plane config stream IDs remain reserved for compatibility bookkeeping, but current nodes do not handle config subscribe/push requests on `mesh-llm/1`.
 
 ### Mixed-version QA harness
 
-Use the task harness when you need executable evidence for mixed-version routing or config coexistence:
+Use the task harness when you need executable evidence for mixed-version routing or owner-control bootstrap:
 
 ```bash
 scripts/qa-control-plane-mixed-version.sh \
@@ -400,7 +399,7 @@ scripts/qa-control-plane-mixed-version.sh \
   --evidence-dir .sisyphus/evidence
 ```
 
-Loopback-only routing/config smoke:
+Loopback-only routing/owner-control smoke:
 
 ```bash
 scripts/qa-control-plane-mixed-version.sh \
@@ -410,7 +409,7 @@ scripts/qa-control-plane-mixed-version.sh \
   --local-only
 ```
 
-Config coexistence lane only:
+Owner-control bootstrap lane only:
 
 ```bash
 scripts/qa-control-plane-mixed-version.sh \
@@ -421,11 +420,11 @@ scripts/qa-control-plane-mixed-version.sh \
   --config-only
 ```
 
-`--config-only` skips public-mesh probes and focuses on the config migration lane:
+`--config-only` skips public-mesh probes and focuses on the owner-control migration lane:
 
 - loopback released/current private-mesh coexistence in both directions
 - current-branch proof that new clients prefer `mesh-llm-control/1`
-- current-branch proof that old clients still use legacy config streams against new nodes
+- current-branch proof that missing endpoints fail with `ControlEndpointRequired`
 - current-node `runtime bootstrap` / `runtime get-config` evidence when owner-control is enabled
 
 If the local bootstrap payload reports `enabled=false`, the harness records a `PREREQ` result explaining that a signed same-owner keystore is required before runtime owner-control requests can be proven on that machine. That is an explicit prerequisite report, not a silent pass.

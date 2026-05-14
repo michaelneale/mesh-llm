@@ -101,24 +101,13 @@ fn control_plane_bootstrap_requires_explicit_endpoint_by_default() {
         .expect_err("new config clients should require explicit owner-control endpoints");
 
     assert_eq!(err.code, OwnerControlErrorCode::ControlEndpointRequired);
-    assert!(err.legacy_retry_allowed);
+    assert!(!err.legacy_retry_allowed);
 }
 
 #[test]
-fn control_plane_bootstrap_allows_explicit_legacy_fallback() {
-    let selection = ControlPlaneBootstrapOptions::new()
-        .with_allow_legacy_config(true)
-        .select_transport()
-        .expect("allow_legacy_config should permit legacy mesh config streams");
-
-    assert_eq!(selection, ConfigTransportSelection::LegacyMeshConfig);
-}
-
-#[test]
-fn control_plane_bootstrap_prefers_explicit_control_endpoint_over_legacy_opt_in() {
+fn control_plane_bootstrap_uses_explicit_control_endpoint() {
     let selection = ControlPlaneBootstrapOptions::new()
         .with_control_endpoint("https://control.example.test")
-        .with_allow_legacy_config(true)
         .select_transport()
         .expect("configured control endpoint should stay on owner-control lane");
 

@@ -34,19 +34,14 @@ fn owner_control_client_bind_addr() -> std::net::SocketAddr {
 /// Negotiation matrix:
 /// - new client + explicit control endpoint -> use `mesh-llm-control/1`; configured control
 ///   failures stay on the control lane and return structured errors.
-/// - new client + no control endpoint + `allow_legacy_config=false` -> return
-///   `ControlEndpointRequired`.
-/// - new client + no control endpoint + `allow_legacy_config=true` -> allow legacy mesh-plane
-///   config streams for compatibility with old targets.
-/// - old client + new node -> preserved by keeping legacy mesh-plane config streams available on
-///   the host side; this policy helper does not change that behavior.
-/// - old client + old node -> unchanged legacy mesh-plane config behavior on both sides; this
-///   helper intentionally does not participate because explicit owner-control bootstrap is a new
-///   client contract only.
+/// - new client + no control endpoint -> return `ControlEndpointRequired`.
+///
+/// Config and inventory mutation is intentionally exclusive to `mesh-llm-control/1`.
+/// The legacy mesh-plane config stream IDs remain reserved, but no client bootstrap path
+/// falls back to them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ControlPlaneBootstrapOptions {
     control_endpoint: Option<String>,
-    allow_legacy_config: bool,
 }
 
 impl ControlPlaneBootstrapOptions {
@@ -59,17 +54,8 @@ impl ControlPlaneBootstrapOptions {
         self
     }
 
-    pub fn with_allow_legacy_config(mut self, allow_legacy_config: bool) -> Self {
-        self.allow_legacy_config = allow_legacy_config;
-        self
-    }
-
     pub fn control_endpoint(&self) -> Option<&str> {
         self.control_endpoint.as_deref()
-    }
-
-    pub fn allow_legacy_config(&self) -> bool {
-        self.allow_legacy_config
     }
 
     pub fn select_transport(
@@ -80,7 +66,6 @@ impl ControlPlaneBootstrapOptions {
                 endpoint: endpoint.to_string(),
                 retry_policy: ControlPlaneRetryPolicy::NoSilentLegacyDowngrade,
             }),
-            None if self.allow_legacy_config => Ok(ConfigTransportSelection::LegacyMeshConfig),
             None => Err(ControlPlaneNegotiationError::endpoint_required()),
         }
     }
@@ -93,13 +78,6 @@ impl ControlPlaneBootstrapOptions {
         debug_assert!(self.control_endpoint.is_some());
         ControlPlaneNegotiationError::structured(code, message, false)
     }
-
-    pub fn explicit_legacy_retry(&self) -> Self {
-        Self {
-            control_endpoint: None,
-            allow_legacy_config: true,
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -108,7 +86,6 @@ pub enum ConfigTransportSelection {
         endpoint: String,
         retry_policy: ControlPlaneRetryPolicy,
     },
-    LegacyMeshConfig,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -135,10 +112,8 @@ impl ControlPlaneNegotiationError {
     pub fn endpoint_required() -> Self {
         Self {
             code: OwnerControlErrorCode::ControlEndpointRequired,
-            message:
-                "owner-control endpoint must be provided explicitly unless allow_legacy_config=true"
-                    .to_string(),
-            legacy_retry_allowed: true,
+            message: "owner-control endpoint must be provided explicitly".to_string(),
+            legacy_retry_allowed: false,
         }
     }
 
@@ -198,11 +173,9 @@ impl From<OwnerControlError> for OwnerControlRemoteError {
 /// Control-plane bootstrap is explicit and out-of-band.
 ///
 /// Callers either receive an owner-control session bound to a configured endpoint,
-/// or an explicit `LegacyMeshConfig` selection when `allow_legacy_config=true` and
-/// no endpoint was configured. The client never performs a silent downgrade.
+/// or a structured error. The client never performs a silent downgrade.
 pub enum ControlPlaneConnection {
     OwnerControl(Box<OwnerControlClient>),
-    LegacyMeshConfig,
 }
 
 pub struct OwnerControlClient {
@@ -236,9 +209,6 @@ impl MeshClient {
         options: ControlPlaneBootstrapOptions,
     ) -> Result<ControlPlaneConnection, ControlPlaneClientError> {
         match options.select_transport()? {
-            ConfigTransportSelection::LegacyMeshConfig => {
-                Ok(ControlPlaneConnection::LegacyMeshConfig)
-            }
             ConfigTransportSelection::OwnerControl { endpoint, .. } => {
                 OwnerControlClient::connect(endpoint, self.config.owner_keypair.clone(), &options)
                     .await

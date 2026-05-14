@@ -4641,7 +4641,6 @@ async fn run_auto(
             enabled: control_endpoint.is_some(),
             local_only: true,
             requires_explicit_remote_endpoint: true,
-            allow_legacy_config: false,
             endpoint: control_endpoint,
         })
         .await;
@@ -5753,7 +5752,6 @@ async fn run_passive(
             enabled: control_endpoint.is_some(),
             local_only: true,
             requires_explicit_remote_endpoint: true,
-            allow_legacy_config: false,
             endpoint: control_endpoint,
         })
         .await;

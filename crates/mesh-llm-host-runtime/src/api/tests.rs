@@ -829,7 +829,6 @@ async fn control_plane_api_exposes_local_endpoint_only() {
             enabled: true,
             local_only: true,
             requires_explicit_remote_endpoint: true,
-            allow_legacy_config: false,
             endpoint: Some("http://127.0.0.1:7447".to_string()),
         })
         .await;
@@ -864,7 +863,6 @@ async fn status_payload_control_plane_compat() {
             enabled: true,
             local_only: true,
             requires_explicit_remote_endpoint: true,
-            allow_legacy_config: false,
             endpoint: Some("control-endpoint-token".to_string()),
         })
         .await;
@@ -900,7 +898,6 @@ async fn config_apply_does_not_emit_peer_churn() {
             enabled: true,
             local_only: true,
             requires_explicit_remote_endpoint: true,
-            allow_legacy_config: false,
             endpoint: Some("control-endpoint-token".to_string()),
         })
         .await;

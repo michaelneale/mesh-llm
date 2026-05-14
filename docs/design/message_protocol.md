@@ -23,8 +23,8 @@ Each QUIC connection carries multiple logical streams, distinguished by a 1-byte
 | 0x07 | PEER_LEAVING | send | protobuf `PeerLeaving` |
 | 0x08 | PLUGIN_CHANNEL | bidirectional | plugin protocol |
 | 0x09 | PLUGIN_BULK_TRANSFER | send | plugin protocol bulk data |
-| 0x0b | CONFIG_SUBSCRIBE | bidirectional | protobuf `ConfigSubscribe` / `ConfigSnapshotResponse` |
-| 0x0c | CONFIG_PUSH | bidirectional | protobuf `ConfigPush` / `ConfigPushResponse` |
+| 0x0b | CONFIG_SUBSCRIBE | reserved | legacy mesh-plane config stream ID; do not reuse |
+| 0x0c | CONFIG_PUSH | reserved | legacy mesh-plane config stream ID; do not reuse |
 
 Streams 0x02 and 0x04 are raw TCP relay tunnels. They carry llama.cpp RPC and HTTP traffic respectively and are not subject to protobuf framing or generation validation.
 
@@ -38,7 +38,7 @@ All protobuf control-plane streams use the same framing:
 
 Maximum frame size: 8 MiB (`MAX_CONTROL_FRAME_BYTES`). Frames exceeding this limit are rejected.
 
-Skippy layer-package artifact transfer is not a mesh-owned schema. Gossip advertises `skippy-stage/1` feature support through `PeerAnnouncement.subprotocols`; mesh stream `0x0d` opens the advertised subprotocol, and the request/response schema plus artifact byte framing remain owned by `skippy-protocol`.
+Config and inventory mutation are exclusive to `mesh-llm-control/1`. The former mesh-plane config stream IDs `0x0b` and `0x0c` remain reserved for wire compatibility bookkeeping, but `mesh-llm/1` no longer dispatches protobuf request/response handlers for them. Skippy layer-package artifact transfer is not a mesh-owned schema. Gossip advertises `skippy-stage/1` feature support through `PeerAnnouncement.subprotocols`; mesh stream `0x0d` opens the advertised subprotocol, and the request/response schema plus artifact byte framing remain owned by `skippy-protocol`.
 
 ## Protocol Generation
 
@@ -51,10 +51,6 @@ Every protobuf message that carries a `gen` field must have `gen == 1`. Frames w
 - `RouteTable.gen`
 - `PeerDown.gen`
 - `PeerLeaving.gen`
-- `ConfigSubscribe.gen`
-- `ConfigSnapshotResponse.gen`
-- `ConfigPush.gen`
-- `ConfigPushResponse.gen`
 
 ## Admission (Quarantine-Until-Gossip)
 

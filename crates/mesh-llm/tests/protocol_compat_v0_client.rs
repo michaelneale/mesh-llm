@@ -45,10 +45,9 @@ fn legacy_config_stream_constants_remain_stable() {
 }
 
 #[test]
-fn explicit_control_endpoint_still_wins_over_legacy_opt_in() {
+fn explicit_control_endpoint_selects_owner_control() {
     let selection = ControlPlaneBootstrapOptions::new()
         .with_control_endpoint("https://control.example.test")
-        .with_allow_legacy_config(true)
         .select_transport()
         .expect("explicit endpoint should stay on owner-control lane");
 
@@ -62,13 +61,16 @@ fn explicit_control_endpoint_still_wins_over_legacy_opt_in() {
 }
 
 #[test]
-fn explicit_legacy_opt_in_still_selects_legacy_mesh_config() {
-    let selection = ControlPlaneBootstrapOptions::new()
-        .with_allow_legacy_config(true)
+fn missing_control_endpoint_rejects_config_bootstrap() {
+    let err = ControlPlaneBootstrapOptions::new()
         .select_transport()
-        .expect("allow_legacy_config should preserve legacy stream compatibility");
+        .expect_err("owner-control endpoint must be explicit");
 
-    assert_eq!(selection, ConfigTransportSelection::LegacyMeshConfig);
+    assert_eq!(
+        err.code,
+        mesh_client::proto::node::OwnerControlErrorCode::ControlEndpointRequired
+    );
+    assert!(!err.legacy_retry_allowed);
 }
 
 /// Old peers advertising only `mesh-llm/0` must be accepted with the JSON codec.

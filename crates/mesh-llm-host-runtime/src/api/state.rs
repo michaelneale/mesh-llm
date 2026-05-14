@@ -91,7 +91,6 @@ pub struct ControlBootstrapPayload {
     pub enabled: bool,
     pub local_only: bool,
     pub requires_explicit_remote_endpoint: bool,
-    pub allow_legacy_config: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
 }
@@ -102,7 +101,6 @@ impl Default for ControlBootstrapPayload {
             enabled: false,
             local_only: true,
             requires_explicit_remote_endpoint: true,
-            allow_legacy_config: false,
             endpoint: None,
         }
     }

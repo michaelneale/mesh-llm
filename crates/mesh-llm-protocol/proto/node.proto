@@ -296,57 +296,11 @@ message NodePluginEntry {
   repeated string args = 4;
 }
 
-message ConfigSubscribe {
-  uint32 gen = 1;                         // must equal NODE_PROTOCOL_GENERATION
-  bytes subscriber_id = 2;               // 32 bytes — subscribing node's endpoint id
-  string owner_id = 3;                    // filter: only configs from nodes with this owner_id (embedded client)
-}
-
-message ConfigSnapshotResponse {
-  uint32 gen = 1;                         // must equal NODE_PROTOCOL_GENERATION
-  bytes node_id = 2;                      // 32 bytes — the node this config belongs to
-  string owner_id = 3;                    // owner_id of the node that issued the snapshot (embedded client)
-  uint64 revision = 4;
-  bytes config_hash = 5;                  // SHA-256 of canonical proto bytes (32 bytes)
-  NodeConfigSnapshot config = 6;
-  optional string hostname = 7;           // convenience: node hostname for display
-  optional string error = 8;             // set when an error occurred; config/hash/node_id may be empty
-}
-
-message ConfigUpdateNotification {
-  uint32 gen = 1;
-  bytes node_id = 2;
-  string owner_id = 3;                    // owner_id of the node that pushed the update (embedded client)
-  uint64 revision = 4;
-  bytes config_hash = 5;
-  NodeConfigSnapshot config = 6;
-}
-
-message ConfigPush {
-  uint32 gen = 1;
-  bytes requester_id = 2;
-  bytes target_node_id = 3;
-  string owner_id = 4;                    // owner_id of the requester (embedded client)
-  uint64 expected_revision = 5;
-  NodeConfigSnapshot config = 6;
-  bytes owner_signing_public_key = 7;
-  bytes signature = 8;
-}
-
 enum ConfigApplyMode {
   CONFIG_APPLY_MODE_UNSPECIFIED = 0;
   CONFIG_APPLY_MODE_STAGED = 1;
   CONFIG_APPLY_MODE_LIVE = 2;
   CONFIG_APPLY_MODE_NOOP = 3;
-}
-
-message ConfigPushResponse {
-  uint32 gen = 1;
-  bool success = 2;
-  uint64 current_revision = 3;
-  bytes config_hash = 4;
-  optional string error = 5;
-  ConfigApplyMode apply_mode = 8;
 }
 
 message OwnerControlEnvelope {

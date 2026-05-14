@@ -427,11 +427,11 @@ The control plane uses QUIC ALPN `mesh-llm/1` with the `meshllm.node.v1` protobu
 | 0x05 | ROUTE_REQUEST | protobuf `RouteTableRequest` / `RouteTable` |
 | 0x06 | PEER_DOWN | protobuf `PeerDown` |
 | 0x07 | PEER_LEAVING | protobuf `PeerLeaving` |
-| 0x0b | CONFIG_SUBSCRIBE | protobuf `ConfigSubscribe` / `ConfigSnapshotResponse` |
-| 0x0c | CONFIG_PUSH | protobuf `ConfigPush` / `ConfigPushResponse` |
+| 0x0b | CONFIG_SUBSCRIBE | reserved legacy mesh-plane config stream ID; do not reuse |
+| 0x0c | CONFIG_PUSH | reserved legacy mesh-plane config stream ID; do not reuse |
 | 0x0d | STREAM_SUBPROTOCOL | protobuf `MeshSubprotocolOpen`, then subprotocol-owned bytes |
 
-Raw TCP relay streams (0x02 RPC, 0x04 HTTP) are unchanged.
+Config and inventory mutation must use `mesh-llm-control/1`; `mesh-llm/1` no longer dispatches request/response handlers for the reserved 0x0b/0x0c config stream IDs. Raw TCP relay streams (0x02 RPC, 0x04 HTTP) are unchanged.
 
 
 ### Verifying protobuf gossip in logs
@@ -474,12 +474,12 @@ cached and a worker does not:
 - Integrity check: corrupt or same-sized cached artifacts must be refetched or
   rejected by SHA-256 verification before stage load.
 
-### 13. Mixed-version owner-control and legacy coexistence
+### 13. Mixed-version owner-control coexistence
 
 Owner-control QA needs to prove two things at the same time:
 
 1. Public-mesh join and routed inference still work across released/current binaries.
-2. The new owner-control lane is additive: explicit endpoint bootstrap and `mesh-llm-control/1` work for current nodes while released peers continue to coexist on the public mesh plane and legacy config streams remain available as the compatibility lane.
+2. Explicit endpoint bootstrap and `mesh-llm-control/1` work for current nodes while released peers continue to coexist on the public mesh plane for join, gossip, routing, and inference. Config and inventory mutation stay on owner-control only.
 
 Use the dedicated harness for the full mixed-version pass:
 
@@ -500,7 +500,7 @@ scripts/qa-control-plane-mixed-version.sh \
   --local-only
 ```
 
-For the config coexistence lane only:
+For the owner-control bootstrap lane only:
 
 ```bash
 scripts/qa-control-plane-mixed-version.sh \
@@ -517,7 +517,7 @@ Expected checks:
 
 - Public mode: both binaries must bring up `/api/status`, list at least one model from `/v1/models`, and complete a routed chat request against the public mesh.
 - Loopback mode: the harness runs both mixed-version directions (`current -> released` and `released -> current`) on a private local mesh, waits for peers to appear on both nodes, then runs `mesh-llm runtime bootstrap --json` plus `mesh-llm runtime get-config --json` against the current-version node's explicit endpoint.
-- Config-only mode: the harness skips public probes, runs the same loopback coexistence checks, then executes the compatibility tests that prove old clients still use legacy config streams while new clients prefer `mesh-llm-control/1` and reject legacy frames on the owner-control ALPN.
+- Config-only mode: the harness skips public probes, runs the same loopback coexistence checks, then executes the compatibility tests that prove new clients require explicit endpoints, use `mesh-llm-control/1`, and reject legacy frames on the owner-control ALPN.
 - The current-version bootstrap payload must keep `requires_explicit_remote_endpoint=true` and expose an endpoint token when owner-control is enabled.
 - If the bootstrap payload reports `enabled=false`, the harness records a `PREREQ` result showing that a signed same-owner keystore is required before runtime owner-control requests can be proven on that machine.
 
@@ -543,12 +543,12 @@ Failure interpretation:
 
 Config-only result interpretation:
 
-- `PASS config-old-client-legacy-stream`: executable proof that the legacy mesh-plane config stream still works against a new node.
+- `PASS config-missing-endpoint-required`: executable proof that config bootstrap without an explicit owner-control endpoint is rejected.
 - `PASS config-new-client-owner-control`: executable proof that new clients prefer `mesh-llm-control/1`.
 - `PASS config-control-rejects-legacy-frames`: executable proof that owner-control does not silently accept legacy frames on the wrong ALPN.
 - `PREREQ config-*`: loopback coexistence worked, but runtime owner-control requests could not be proven because the local node did not expose a signed owner-control endpoint.
 
-Deprecation note: do not remove or declare removal of the legacy mesh-plane config streams while these mixed-version checks still pass. The current design keeps them as the compatibility lane during the transition to explicit owner-control bootstrap.
+Reserved-ID note: mesh-plane stream IDs 0x0b and 0x0c are kept reserved, but current nodes should not advertise or rely on legacy config subscribe/push behavior there.
 
 ## Single-machine testing with ephemeral keys
 

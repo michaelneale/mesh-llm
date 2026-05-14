@@ -225,12 +225,6 @@ async fn connect_owner_control_client(
         .map_err(control_error_from_client)?;
     match connection {
         ControlPlaneConnection::OwnerControl(client) => Ok(*client),
-        ControlPlaneConnection::LegacyMeshConfig => Err(LocalControlErrorPayload {
-            code: "control_endpoint_required".to_string(),
-            message: "owner-control endpoint must be provided explicitly".to_string(),
-            legacy_retry_allowed: false,
-            current_revision: None,
-        }),
     }
 }
 

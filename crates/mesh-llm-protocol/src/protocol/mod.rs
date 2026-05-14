@@ -20,7 +20,15 @@ pub const STREAM_PEER_DOWN: u8 = 0x06;
 pub const STREAM_PEER_LEAVING: u8 = 0x07;
 pub const STREAM_PLUGIN_CHANNEL: u8 = 0x08;
 pub const STREAM_PLUGIN_BULK_TRANSFER: u8 = 0x09;
+/// Reserved legacy mesh-plane config subscription stream ID.
+///
+/// Config and inventory control now live exclusively on `mesh-llm-control/1`;
+/// keep 0x0b reserved so old wire values are not accidentally reused.
 pub const STREAM_CONFIG_SUBSCRIBE: u8 = 0x0b;
+/// Reserved legacy mesh-plane config push stream ID.
+///
+/// Config and inventory control now live exclusively on `mesh-llm-control/1`;
+/// keep 0x0c reserved so old wire values are not accidentally reused.
 pub const STREAM_CONFIG_PUSH: u8 = 0x0c;
 pub const STREAM_SUBPROTOCOL: u8 = 0x0d;
 const _: () = {
@@ -232,94 +240,6 @@ impl ValidateControlFrame for crate::proto::node::PeerLeaving {
             return Err(ControlFrameError::InvalidEndpointId {
                 got: self.peer_id.len(),
             });
-        }
-        Ok(())
-    }
-}
-
-impl ValidateControlFrame for crate::proto::node::ConfigSubscribe {
-    fn validate_frame(&self) -> Result<(), ControlFrameError> {
-        if self.gen != NODE_PROTOCOL_GENERATION {
-            return Err(ControlFrameError::BadGeneration { got: self.gen });
-        }
-        validate_endpoint_id_length(self.subscriber_id.len())?;
-        if self.owner_id.is_empty() {
-            return Err(ControlFrameError::MissingOwnerId);
-        }
-        Ok(())
-    }
-}
-
-impl ValidateControlFrame for crate::proto::node::ConfigSnapshotResponse {
-    fn validate_frame(&self) -> Result<(), ControlFrameError> {
-        if self.gen != NODE_PROTOCOL_GENERATION {
-            return Err(ControlFrameError::BadGeneration { got: self.gen });
-        }
-        let is_error = matches!(self.error.as_deref(), Some(s) if !s.is_empty());
-        if !is_error {
-            validate_endpoint_id_length(self.node_id.len())?;
-            validate_config_hash_length(self.config_hash.len())?;
-            if self.config.is_none() {
-                return Err(ControlFrameError::MissingConfig);
-            }
-            if self.owner_id.is_empty() {
-                return Err(ControlFrameError::MissingOwnerId);
-            }
-        }
-        Ok(())
-    }
-}
-
-impl ValidateControlFrame for crate::proto::node::ConfigUpdateNotification {
-    fn validate_frame(&self) -> Result<(), ControlFrameError> {
-        if self.gen != NODE_PROTOCOL_GENERATION {
-            return Err(ControlFrameError::BadGeneration { got: self.gen });
-        }
-        validate_endpoint_id_length(self.node_id.len())?;
-        validate_config_hash_length(self.config_hash.len())?;
-        if self.config.is_none() {
-            return Err(ControlFrameError::MissingConfig);
-        }
-        if self.owner_id.is_empty() {
-            return Err(ControlFrameError::MissingOwnerId);
-        }
-        Ok(())
-    }
-}
-
-impl ValidateControlFrame for crate::proto::node::ConfigPush {
-    fn validate_frame(&self) -> Result<(), ControlFrameError> {
-        if self.gen != NODE_PROTOCOL_GENERATION {
-            return Err(ControlFrameError::BadGeneration { got: self.gen });
-        }
-        validate_endpoint_id_length(self.requester_id.len())?;
-        validate_endpoint_id_length(self.target_node_id.len())?;
-        if self.owner_id.is_empty() {
-            return Err(ControlFrameError::MissingOwnerId);
-        }
-        validate_public_key_length(self.owner_signing_public_key.len())?;
-        if self.signature.is_empty() {
-            return Err(ControlFrameError::MissingSignature);
-        }
-        if self.signature.len() != 64 {
-            return Err(ControlFrameError::InvalidSignatureLength {
-                got: self.signature.len(),
-            });
-        }
-        if self.config.is_none() {
-            return Err(ControlFrameError::MissingConfig);
-        }
-        Ok(())
-    }
-}
-
-impl ValidateControlFrame for crate::proto::node::ConfigPushResponse {
-    fn validate_frame(&self) -> Result<(), ControlFrameError> {
-        if self.gen != NODE_PROTOCOL_GENERATION {
-            return Err(ControlFrameError::BadGeneration { got: self.gen });
-        }
-        if self.success || !self.config_hash.is_empty() {
-            validate_config_hash_length(self.config_hash.len())?;
         }
         Ok(())
     }

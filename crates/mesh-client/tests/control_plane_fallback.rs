@@ -10,7 +10,7 @@ fn control_plane_fallback_new_client_requires_explicit_endpoint_by_default() {
         .expect_err("new config clients should require an explicit control endpoint by default");
 
     assert_eq!(err.code, OwnerControlErrorCode::ControlEndpointRequired);
-    assert!(err.legacy_retry_allowed);
+    assert!(!err.legacy_retry_allowed);
 }
 
 #[test]
@@ -30,20 +30,9 @@ fn control_plane_fallback_new_client_uses_explicit_control_endpoint() {
 }
 
 #[test]
-fn control_plane_fallback_explicit_legacy_fallback_requires_opt_in() {
-    let selection = ControlPlaneBootstrapOptions::new()
-        .with_allow_legacy_config(true)
-        .select_transport()
-        .expect("allow_legacy_config=true should permit legacy compatibility mode");
-
-    assert_eq!(selection, ConfigTransportSelection::LegacyMeshConfig);
-}
-
-#[test]
 fn control_plane_fallback_no_silent_downgrade_on_unreachable_configured_endpoint() {
-    let options = ControlPlaneBootstrapOptions::new()
-        .with_control_endpoint("https://control.example.test")
-        .with_allow_legacy_config(true);
+    let options =
+        ControlPlaneBootstrapOptions::new().with_control_endpoint("https://control.example.test");
 
     let err = options.configured_endpoint_failure(
         OwnerControlErrorCode::ControlUnavailable,
@@ -66,18 +55,4 @@ fn control_plane_fallback_no_silent_downgrade_on_alpn_mismatch() {
 
     assert_eq!(err.code, OwnerControlErrorCode::ControlUnsupported);
     assert!(!err.legacy_retry_allowed);
-}
-
-#[test]
-fn control_plane_fallback_explicit_legacy_retry_path_drops_configured_endpoint() {
-    let retry = ControlPlaneBootstrapOptions::new()
-        .with_control_endpoint("https://control.example.test")
-        .explicit_legacy_retry();
-
-    assert_eq!(retry.control_endpoint(), None);
-    assert!(retry.allow_legacy_config());
-    assert_eq!(
-        retry.select_transport().unwrap(),
-        ConfigTransportSelection::LegacyMeshConfig
-    );
 }

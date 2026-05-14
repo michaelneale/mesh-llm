@@ -364,7 +364,6 @@ async fn write_control_envelope(
 fn owner_control_client(connection: ControlPlaneConnection) -> OwnerControlClient {
     match connection {
         ControlPlaneConnection::OwnerControl(client) => *client,
-        ControlPlaneConnection::LegacyMeshConfig => panic!("expected owner-control session"),
     }
 }
 
@@ -560,11 +559,7 @@ async fn control_plane_client_does_not_silently_fallback_when_endpoint_fails() {
     let (_server, token) = spawn_control_unsupported_server().await;
     let control = owner_control_client(
         client
-            .connect_control_plane(
-                ControlPlaneBootstrapOptions::new()
-                    .with_control_endpoint(token)
-                    .with_allow_legacy_config(true),
-            )
+            .connect_control_plane(ControlPlaneBootstrapOptions::new().with_control_endpoint(token))
             .await
             .expect("configured endpoint should stay on the owner-control lane"),
     );
@@ -579,18 +574,4 @@ async fn control_plane_client_does_not_silently_fallback_when_endpoint_fails() {
         }
         other => panic!("expected structured unsupported error, got {other:?}"),
     }
-}
-
-#[tokio::test]
-async fn control_plane_client_explicit_legacy_fallback_is_returned_only_when_requested() {
-    let client = make_client().await;
-    let selection = client
-        .connect_control_plane(ControlPlaneBootstrapOptions::new().with_allow_legacy_config(true))
-        .await
-        .expect("explicit legacy opt-in should return legacy selection");
-
-    assert!(matches!(
-        selection,
-        ControlPlaneConnection::LegacyMeshConfig
-    ));
 }

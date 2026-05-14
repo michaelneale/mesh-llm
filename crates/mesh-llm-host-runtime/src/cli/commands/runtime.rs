@@ -262,11 +262,6 @@ pub(crate) async fn run_control_bootstrap(port: u16, json: bool) -> Result<()> {
                 .unwrap_or(true)
         )
     );
-    println!(
-        "Legacy compatibility enabled: {}",
-        yes_no(payload["allow_legacy_config"].as_bool().unwrap_or(false))
-    );
-
     if payload["enabled"].as_bool().unwrap_or(false) {
         let endpoint = payload["endpoint"].as_str().unwrap_or("pending");
         println!("Endpoint: {endpoint}");
