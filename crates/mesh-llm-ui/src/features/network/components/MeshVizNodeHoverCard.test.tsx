@@ -1,8 +1,11 @@
 import * as HoverCardPrimitive from '@radix-ui/react-hover-card'
 import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { MeshNode, Peer } from '@/features/app-tabs/types'
 import { MeshVizNodeHoverCard } from '@/features/network/components/MeshVizNodeHoverCard'
+
+const NOW_MS = 1_700_004_000_000
+const FIRST_JOINED_MS = NOW_MS - 3_600_000
 
 const node: MeshNode = {
   id: 'node-1',
@@ -14,7 +17,8 @@ const node: MeshNode = {
   subLabel: 'Local node',
   servingModels: ['llama-local-q4'],
   latencyMs: 0.6,
-  vramGB: 16
+  vramGB: 16,
+  firstJoinedMeshTs: FIRST_JOINED_MS
 }
 
 const peer: Peer = {
@@ -29,7 +33,8 @@ const peer: Peer = {
   shortId: 'abcd1234',
   role: 'you',
   nodeState: 'serving',
-  vramGB: 16
+  vramGB: 16,
+  firstJoinedMeshTs: FIRST_JOINED_MS
 }
 
 function renderOpenHoverCard(cardNode: MeshNode, cardPeer?: Peer) {
@@ -46,7 +51,13 @@ function renderOpenHoverCard(cardNode: MeshNode, cardPeer?: Peer) {
 }
 
 describe('MeshVizNodeHoverCard', () => {
-  it('renders peer-backed hover details without changing the current labels', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('renders peer-backed hover details with compact age metadata in the header', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(NOW_MS)
     renderOpenHoverCard(node, peer)
 
     expect(screen.getByRole('tooltip')).toHaveAttribute('id', 'mesh-node-popover-node-1')
@@ -56,6 +67,8 @@ describe('MeshVizNodeHoverCard', () => {
     expect(screen.getByText('You')).toBeInTheDocument()
     expect(screen.getByText('local')).toBeInTheDocument()
     expect(screen.getByText('llama-local-q4')).toBeInTheDocument()
+    expect(screen.getByText('1h')).toBeInTheDocument()
+    expect(screen.queryByText('Age')).not.toBeInTheDocument()
     expect(screen.getByText('52% mesh share · 1 models')).toBeInTheDocument()
   })
 
@@ -67,7 +80,7 @@ describe('MeshVizNodeHoverCard', () => {
 
     expect(screen.getAllByText('Client').length).toBeGreaterThanOrEqual(1)
     expect(screen.getByText('API-only')).toBeInTheDocument()
-    expect(screen.getByText('CLIENT')).toBeInTheDocument()
+    expect(screen.queryByText('CLIENT')).not.toBeInTheDocument()
   })
 
   it('portals the hover card outside the inline mesh host to avoid viewport clipping', () => {
@@ -77,13 +90,15 @@ describe('MeshVizNodeHoverCard', () => {
   })
 
   it('falls back to node fields when peer data is unavailable', () => {
-    renderOpenHoverCard(node)
+    renderOpenHoverCard({ ...node, firstJoinedMeshTs: undefined })
 
     expect(screen.getByText('CARRACK')).toBeInTheDocument()
     expect(screen.getByText('node-1')).toBeInTheDocument()
     expect(screen.getByText('Local node')).toBeInTheDocument()
     expect(screen.getByText('Local')).toBeInTheDocument()
     expect(screen.getByText('<1 ms')).toBeInTheDocument()
+    expect(screen.getByText('N/A')).toBeInTheDocument()
+    expect(screen.queryByText('Age')).not.toBeInTheDocument()
     expect(screen.getByText('16.0 GB')).toBeInTheDocument()
   })
 })

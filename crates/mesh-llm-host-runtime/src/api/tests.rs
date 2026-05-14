@@ -1,8 +1,15 @@
 use super::*;
 use crate::api::status::decode_runtime_model_path;
+use crate::crypto::{default_keystore_path, save_keystore, OwnerKeypair};
 use crate::plugin;
 use crate::plugins::{blackboard, blobstore};
+use base64::Engine;
+use mesh_client::proto::node::{
+    NodeConfigSnapshot, OwnerControlEnvelope, OwnerControlGetConfigResponse, OwnerControlResponse,
+};
 use mesh_llm_plugin::MeshVisibility;
+use mesh_llm_protocol::{decode_owner_control_envelope, write_len_prefixed, ALPN_CONTROL_V1};
+use prost::Message;
 use rmcp::model::ErrorCode;
 use serde_json::json;
 use serial_test::serial;
@@ -776,6 +783,7 @@ async fn build_test_mesh_api_with_api_port(api_port: u16) -> MeshApi {
         model_name: "test-model".to_string(),
         api_port,
         model_size_bytes: 0,
+        owner_key_path: None,
         plugin_manager,
         affinity_router: affinity::AffinityRouter::default(),
         runtime_data_collector,
@@ -805,11 +813,314 @@ async fn build_test_mesh_api_with_plugin_manager(
         model_name: "test-model".to_string(),
         api_port,
         model_size_bytes: 0,
+        owner_key_path: None,
         plugin_manager,
         affinity_router: affinity::AffinityRouter::default(),
         runtime_data_collector,
         runtime_data_producer,
     })
+}
+
+#[tokio::test]
+async fn control_plane_api_exposes_local_endpoint_only() {
+    let state = build_test_mesh_api().await;
+    state
+        .set_control_bootstrap(crate::api::ControlBootstrapPayload {
+            enabled: true,
+            local_only: true,
+            requires_explicit_remote_endpoint: true,
+            endpoint: Some("http://127.0.0.1:7447".to_string()),
+        })
+        .await;
+    let (addr, handle) = spawn_management_test_server(state).await;
+
+    let response = send_management_request(
+        addr,
+        "GET /api/runtime/control-bootstrap HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
+    )
+    .await;
+    let body = json_body(&response);
+
+    assert_eq!(body["enabled"], serde_json::Value::Bool(true));
+    assert_eq!(body["local_only"], serde_json::Value::Bool(true));
+    assert_eq!(
+        body["requires_explicit_remote_endpoint"],
+        serde_json::Value::Bool(true)
+    );
+    assert_eq!(
+        body["endpoint"],
+        serde_json::Value::String("http://127.0.0.1:7447".into())
+    );
+
+    handle.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn status_payload_control_plane_compat() {
+    let state = build_test_mesh_api().await;
+    state
+        .set_control_bootstrap(crate::api::ControlBootstrapPayload {
+            enabled: true,
+            local_only: true,
+            requires_explicit_remote_endpoint: true,
+            endpoint: Some("control-endpoint-token".to_string()),
+        })
+        .await;
+
+    let payload = serde_json::to_value(state.status().await).unwrap();
+    assert!(payload.get("control_bootstrap").is_none());
+    assert!(payload.get("control_endpoint").is_none());
+    assert!(payload["peers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|peer| { peer.get("control_endpoint").is_none() && peer.get("endpoint").is_none() }));
+}
+
+#[tokio::test]
+async fn config_apply_does_not_emit_peer_churn() {
+    let state = build_test_mesh_api().await;
+    let (addr, handle) = spawn_management_test_server(state.clone()).await;
+
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    stream
+        .write_all(b"GET /api/events HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .await
+        .unwrap();
+
+    let initial = read_until_contains(&mut stream, b"data: {", Duration::from_secs(2)).await;
+    let initial_text = String::from_utf8_lossy(&initial);
+    assert!(initial_text.contains("\"peers\":"));
+    assert!(!initial_text.contains("control-endpoint-token"));
+
+    state
+        .set_control_bootstrap(crate::api::ControlBootstrapPayload {
+            enabled: true,
+            local_only: true,
+            requires_explicit_remote_endpoint: true,
+            endpoint: Some("control-endpoint-token".to_string()),
+        })
+        .await;
+    state.push_status().await;
+
+    assert_no_stream_bytes_within(&mut stream, Duration::from_millis(250)).await;
+
+    state.update(true, true).await;
+    let updated =
+        read_until_contains(&mut stream, b"\"llama_ready\":true", Duration::from_secs(2)).await;
+    let updated_text = String::from_utf8_lossy(&updated);
+    assert!(updated_text.contains("\"llama_ready\":true"));
+    assert!(updated_text.contains("\"is_host\":true"));
+
+    drop(stream);
+    handle.abort();
+}
+
+#[tokio::test]
+#[serial]
+async fn control_plane_api_cli_requires_explicit_endpoint_and_runs_local_orchestration() {
+    let temp = tempfile::tempdir().unwrap();
+    std::env::set_var("HOME", temp.path());
+    let owner = OwnerKeypair::generate();
+    let keystore_path = default_keystore_path().unwrap();
+    save_keystore(&keystore_path, &owner, None, true).unwrap();
+
+    let control_server = spawn_owner_control_test_server().await;
+    let state = build_test_mesh_api().await;
+    state.set_owner_key_path(Some(keystore_path)).await;
+    let (addr, handle) = spawn_management_test_server(state.clone()).await;
+
+    let missing_request_body = "{}";
+    let missing = send_management_request(
+        addr,
+        format!(
+            "POST /api/runtime/control/get-config HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            missing_request_body.len(),
+            missing_request_body
+        ),
+    )
+    .await;
+    let missing_body = json_body(&missing);
+    assert_eq!(missing_body["error"]["code"], "control_endpoint_required");
+    handle.await.unwrap().unwrap();
+
+    let (addr, handle) = spawn_management_test_server(state).await;
+    let request_body = json!({ "endpoint": control_server.endpoint_token }).to_string();
+    let response = send_management_request(
+        addr,
+        format!(
+            "POST /api/runtime/control/get-config HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            request_body.len(),
+            request_body
+        ),
+    )
+    .await;
+    let body = json_body(&response);
+    assert_eq!(body["snapshot"]["revision"], 42, "response: {response}");
+    assert_eq!(body["snapshot"]["hostname"], "control-target");
+    assert_eq!(body["snapshot"]["config"]["version"], 1);
+
+    handle.await.unwrap().unwrap();
+    control_server.task.abort();
+}
+
+#[tokio::test]
+#[serial]
+async fn control_plane_api_reports_remote_endpoint_unreachable() {
+    let temp = tempfile::tempdir().unwrap();
+    std::env::set_var("HOME", temp.path());
+    let owner = OwnerKeypair::generate();
+    let keystore_path = default_keystore_path().unwrap();
+    save_keystore(&keystore_path, &owner, None, true).unwrap();
+
+    let endpoint_token = unreachable_owner_control_endpoint_token().await;
+    let state = build_test_mesh_api().await;
+    state.set_owner_key_path(Some(keystore_path)).await;
+    let (addr, handle) = spawn_management_test_server(state).await;
+
+    let request_body = json!({ "endpoint": endpoint_token }).to_string();
+    let response = send_management_request(
+        addr,
+        format!(
+            "POST /api/runtime/control/get-config HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            request_body.len(),
+            request_body
+        ),
+    )
+    .await;
+    let body = json_body(&response);
+    let message = body["error"]["message"].as_str().unwrap_or_default();
+    assert!(response.starts_with("HTTP/1.1 503"), "response: {response}");
+    assert_eq!(body["error"]["code"], "control_unavailable");
+    assert_eq!(body["error"]["legacy_retry_allowed"], false);
+    assert!(
+        message.contains("remote owner-control endpoint is unavailable or unreachable"),
+        "message: {message}"
+    );
+    assert!(
+        !message.contains("mesh-llm console"),
+        "remote reachability failure should not be reported as a local console failure: {message}"
+    );
+
+    handle.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+#[serial]
+async fn control_plane_api_cli_uses_custom_owner_key_path() {
+    let temp = tempfile::tempdir().unwrap();
+    std::env::set_var("HOME", temp.path());
+    let custom_owner_key = temp.path().join("custom-owner.json");
+    save_keystore(&custom_owner_key, &OwnerKeypair::generate(), None, true).unwrap();
+
+    let control_server = spawn_owner_control_test_server().await;
+    let state = build_test_mesh_api().await;
+    state.set_owner_key_path(Some(custom_owner_key)).await;
+    let (addr, handle) = spawn_management_test_server(state).await;
+
+    let request_body = json!({ "endpoint": control_server.endpoint_token }).to_string();
+    let response = send_management_request(
+        addr,
+        format!(
+            "POST /api/runtime/control/get-config HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            request_body.len(),
+            request_body
+        ),
+    )
+    .await;
+    let body = json_body(&response);
+    assert_eq!(body["snapshot"]["revision"], 42, "response: {response}");
+
+    handle.await.unwrap().unwrap();
+    control_server.task.abort();
+}
+
+struct OwnerControlTestServer {
+    endpoint_token: String,
+    task: tokio::task::JoinHandle<()>,
+}
+
+async fn spawn_owner_control_test_server() -> OwnerControlTestServer {
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(iroh::SecretKey::generate())
+        .alpns(vec![ALPN_CONTROL_V1.to_vec()])
+        .relay_mode(iroh::endpoint::RelayMode::Disabled)
+        .bind_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+        .unwrap()
+        .bind()
+        .await
+        .unwrap();
+    let endpoint_token = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(&endpoint.addr()).unwrap());
+    let task = tokio::spawn(async move {
+        let Some(incoming) = endpoint.accept().await else {
+            return;
+        };
+        let mut accepting = incoming.accept().unwrap();
+        let _ = accepting.alpn().await.unwrap();
+        let conn = accepting.await.unwrap();
+        let (mut send, mut recv) = conn.accept_bi().await.unwrap();
+        let handshake = mesh_llm_protocol::read_len_prefixed(&mut recv)
+            .await
+            .unwrap();
+        let _ = decode_owner_control_envelope(&handshake).unwrap();
+        let request = mesh_llm_protocol::read_len_prefixed(&mut recv)
+            .await
+            .unwrap();
+        let envelope = decode_owner_control_envelope(&request).unwrap();
+        let request_id = envelope.request.as_ref().unwrap().request_id;
+        let response = OwnerControlEnvelope {
+            gen: mesh_llm_protocol::NODE_PROTOCOL_GENERATION,
+            handshake: None,
+            request: None,
+            response: Some(OwnerControlResponse {
+                request_id,
+                get_config: Some(OwnerControlGetConfigResponse {
+                    snapshot: Some(mesh_client::proto::node::OwnerControlConfigSnapshot {
+                        node_id: vec![7; 32],
+                        revision: 42,
+                        config_hash: vec![9; 32],
+                        config: Some(NodeConfigSnapshot {
+                            version: 1,
+                            gpu: None,
+                            models: Vec::new(),
+                            plugins: Vec::new(),
+                        }),
+                        hostname: Some("control-target".to_string()),
+                    }),
+                }),
+                watch_config: None,
+                apply_config: None,
+                refresh_inventory: None,
+            }),
+            error: None,
+        };
+        write_len_prefixed(&mut send, &response.encode_to_vec())
+            .await
+            .unwrap();
+        let _ = send.finish();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    });
+    OwnerControlTestServer {
+        endpoint_token,
+        task,
+    }
+}
+
+async fn unreachable_owner_control_endpoint_token() -> String {
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(iroh::SecretKey::generate())
+        .alpns(vec![ALPN_CONTROL_V1.to_vec()])
+        .relay_mode(iroh::endpoint::RelayMode::Disabled)
+        .bind_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+        .unwrap()
+        .bind()
+        .await
+        .unwrap();
+    let token = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(&endpoint.addr()).unwrap());
+    drop(endpoint);
+    token
 }
 
 async fn spawn_management_test_server(
@@ -1250,6 +1561,20 @@ async fn read_until_contains(stream: &mut TcpStream, needle: &[u8], timeout: Dur
         response.extend_from_slice(&chunk[..n]);
     }
     response
+}
+
+async fn assert_no_stream_bytes_within(stream: &mut TcpStream, timeout: Duration) {
+    let mut chunk = [0u8; 4096];
+    match tokio::time::timeout(timeout, stream.read(&mut chunk)).await {
+        Err(_) => {}
+        Ok(Ok(0)) => {}
+        Ok(Ok(n)) => panic!(
+            "unexpected stream bytes within {:?}: {}",
+            timeout,
+            String::from_utf8_lossy(&chunk[..n])
+        ),
+        Ok(Err(error)) => panic!("unexpected stream read error within {:?}: {error}", timeout),
+    }
 }
 
 #[tokio::test]

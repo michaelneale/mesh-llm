@@ -7,6 +7,8 @@
 # syntax=docker/dockerfile:1.7
 
 FROM node:24-alpine AS ui-builder
+ARG VITE_API_URL=https://meshllm.cloud
+ENV VITE_API_URL=$VITE_API_URL
 RUN npm install -g pnpm
 WORKDIR /app
 COPY crates/mesh-llm-ui/package.json crates/mesh-llm-ui/pnpm-lock.yaml crates/mesh-llm-ui/pnpm-workspace.yaml ./
@@ -24,6 +26,7 @@ ENV PATH="/root/.cargo/bin:$PATH"
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates/mesh-llm-ui/ crates/mesh-llm-ui/
+COPY crates/mesh-llm-gpu-bench/ crates/mesh-llm-gpu-bench/
 COPY crates/mesh-llm-identity/ crates/mesh-llm-identity/
 COPY crates/mesh-llm-protocol/ crates/mesh-llm-protocol/
 COPY crates/mesh-llm-routing/ crates/mesh-llm-routing/

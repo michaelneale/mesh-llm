@@ -1,9 +1,10 @@
-import { Activity, Cpu, HardDrive, Hash, type LucideIcon } from 'lucide-react'
+import { Activity, Clock3, Cpu, HardDrive, Hash, type LucideIcon } from 'lucide-react'
 import type { CSSProperties } from 'react'
 import type { MeshVizNodeColors } from '@/features/network/lib/mesh-viz-dot-color-schemes'
 import type { MeshNode, MeshNodeRenderKind, Peer } from '@/features/app-tabs/types'
 import { nonBlankText } from '@/features/network/lib/mesh-node-labels'
 import { LatencySource } from '@/lib/api/types'
+import { formatShortDuration } from '@/lib/format-duration'
 import { formatPeerLatencySummary } from '@/lib/format-latency'
 
 export type HoverMetric = {
@@ -42,6 +43,8 @@ export type DebugNodeShortcut = 1 | 2 | 3
 export type DebugNodePosition = { x: number; y: number }
 
 export const NODE_LABEL_FADE_THRESHOLD = 8
+
+const UNIX_TIMESTAMP_MILLISECONDS_THRESHOLD = 10_000_000_000
 
 const DEBUG_NODE_BLUEPRINTS: [DebugNodeBlueprint, ...DebugNodeBlueprint[]] = [
   {
@@ -299,6 +302,17 @@ export function latencyLabel(node: MeshNode, peer: Peer | undefined) {
   })
 }
 
+export function nodeAgeLabel(node: MeshNode, peer: Peer | undefined, now = Date.now()) {
+  const firstJoinedMeshTs = peer?.firstJoinedMeshTs ?? node.firstJoinedMeshTs
+  if (firstJoinedMeshTs == null || !Number.isFinite(firstJoinedMeshTs)) return 'N/A'
+
+  const firstJoinedMs =
+    firstJoinedMeshTs > UNIX_TIMESTAMP_MILLISECONDS_THRESHOLD ? firstJoinedMeshTs : firstJoinedMeshTs * 1000
+  const seconds = Math.floor((now - firstJoinedMs) / 1000)
+  const formatted = formatShortDuration(seconds)
+  return formatted === '-' ? 'N/A' : formatted
+}
+
 export function hoverCardPlacement(node: MeshNode): HoverCardPlacement {
   return {
     side: node.y > 58 ? 'top' : 'bottom',
@@ -327,6 +341,12 @@ export function nodeMetrics(node: MeshNode, peer: Peer | undefined): HoverMetric
       label: 'Latency',
       value: latencyLabel(node, peer),
       icon: Activity
+    },
+    {
+      id: 'age',
+      label: 'Age',
+      value: nodeAgeLabel(node, peer),
+      icon: Clock3
     },
     {
       id: 'compute',

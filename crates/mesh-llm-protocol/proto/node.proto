@@ -296,43 +296,6 @@ message NodePluginEntry {
   repeated string args = 4;
 }
 
-message ConfigSubscribe {
-  uint32 gen = 1;                         // must equal NODE_PROTOCOL_GENERATION
-  bytes subscriber_id = 2;               // 32 bytes — subscribing node's endpoint id
-  string owner_id = 3;                    // filter: only configs from nodes with this owner_id (embedded client)
-}
-
-message ConfigSnapshotResponse {
-  uint32 gen = 1;                         // must equal NODE_PROTOCOL_GENERATION
-  bytes node_id = 2;                      // 32 bytes — the node this config belongs to
-  string owner_id = 3;                    // owner_id of the node that issued the snapshot (embedded client)
-  uint64 revision = 4;
-  bytes config_hash = 5;                  // SHA-256 of canonical proto bytes (32 bytes)
-  NodeConfigSnapshot config = 6;
-  optional string hostname = 7;           // convenience: node hostname for display
-  optional string error = 8;             // set when an error occurred; config/hash/node_id may be empty
-}
-
-message ConfigUpdateNotification {
-  uint32 gen = 1;
-  bytes node_id = 2;
-  string owner_id = 3;                    // owner_id of the node that pushed the update (embedded client)
-  uint64 revision = 4;
-  bytes config_hash = 5;
-  NodeConfigSnapshot config = 6;
-}
-
-message ConfigPush {
-  uint32 gen = 1;
-  bytes requester_id = 2;
-  bytes target_node_id = 3;
-  string owner_id = 4;                    // owner_id of the requester (embedded client)
-  uint64 expected_revision = 5;
-  NodeConfigSnapshot config = 6;
-  bytes owner_signing_public_key = 7;
-  bytes signature = 8;
-}
-
 enum ConfigApplyMode {
   CONFIG_APPLY_MODE_UNSPECIFIED = 0;
   CONFIG_APPLY_MODE_STAGED = 1;
@@ -340,11 +303,115 @@ enum ConfigApplyMode {
   CONFIG_APPLY_MODE_NOOP = 3;
 }
 
-message ConfigPushResponse {
-  uint32 gen = 1;
-  bool success = 2;
-  uint64 current_revision = 3;
-  bytes config_hash = 4;
-  optional string error = 5;
-  ConfigApplyMode apply_mode = 8;
+message OwnerControlEnvelope {
+  uint32 gen = 1;                         // must equal NODE_PROTOCOL_GENERATION
+  OwnerControlHandshake handshake = 2;
+  OwnerControlRequest request = 3;
+  OwnerControlResponse response = 4;
+  OwnerControlError error = 5;
+}
+
+message OwnerControlHandshake {
+  SignedNodeOwnership ownership = 1;
+}
+
+message OwnerControlRequest {
+  uint64 request_id = 1;
+  OwnerControlGetConfigRequest get_config = 2;
+  OwnerControlWatchConfigRequest watch_config = 3;
+  OwnerControlApplyConfigRequest apply_config = 4;
+  OwnerControlRefreshInventoryRequest refresh_inventory = 5;
+}
+
+message OwnerControlResponse {
+  uint64 request_id = 1;
+  OwnerControlGetConfigResponse get_config = 2;
+  OwnerControlWatchConfigResponse watch_config = 3;
+  OwnerControlApplyConfigResponse apply_config = 4;
+  OwnerControlRefreshInventoryResponse refresh_inventory = 5;
+}
+
+message OwnerControlError {
+  OwnerControlErrorCode code = 1;
+  string message = 2;
+  optional uint64 request_id = 3;
+  optional uint64 current_revision = 4;
+}
+
+enum OwnerControlErrorCode {
+  OWNER_CONTROL_ERROR_CODE_UNSPECIFIED = 0;
+  OWNER_CONTROL_ERROR_CODE_BAD_REQUEST = 1;
+  OWNER_CONTROL_ERROR_CODE_UNAUTHORIZED = 2;
+  OWNER_CONTROL_ERROR_CODE_REVISION_CONFLICT = 3;
+  OWNER_CONTROL_ERROR_CODE_CONTROL_UNSUPPORTED = 4;
+  OWNER_CONTROL_ERROR_CODE_CONTROL_ENDPOINT_REQUIRED = 5;
+  OWNER_CONTROL_ERROR_CODE_CONTROL_UNAVAILABLE = 6;
+  OWNER_CONTROL_ERROR_CODE_UNKNOWN_COMMAND = 7;
+  OWNER_CONTROL_ERROR_CODE_LEGACY_JSON_UNSUPPORTED = 8;
+  OWNER_CONTROL_ERROR_CODE_INVALID_HANDSHAKE = 9;
+  OWNER_CONTROL_ERROR_CODE_TARGET_NODE_MISMATCH = 10;
+}
+
+message OwnerControlGetConfigRequest {
+  bytes requester_node_id = 1;            // exactly 32 bytes
+  bytes target_node_id = 2;               // exactly 32 bytes
+}
+
+message OwnerControlGetConfigResponse {
+  OwnerControlConfigSnapshot snapshot = 1;
+}
+
+message OwnerControlWatchConfigRequest {
+  bytes requester_node_id = 1;            // exactly 32 bytes
+  bytes target_node_id = 2;               // exactly 32 bytes
+  bool include_snapshot = 3;
+}
+
+message OwnerControlWatchConfigResponse {
+  OwnerControlWatchAccepted accepted = 1;
+  OwnerControlConfigSnapshot snapshot = 2;
+  OwnerControlConfigUpdate update = 3;
+}
+
+message OwnerControlWatchAccepted {
+  bytes target_node_id = 1;               // exactly 32 bytes
+}
+
+message OwnerControlApplyConfigRequest {
+  bytes requester_node_id = 1;            // exactly 32 bytes
+  bytes target_node_id = 2;               // exactly 32 bytes
+  uint64 expected_revision = 3;
+  NodeConfigSnapshot config = 4;
+}
+
+message OwnerControlApplyConfigResponse {
+  bool success = 1;
+  uint64 current_revision = 2;
+  bytes config_hash = 3;
+  optional string error = 4;
+  ConfigApplyMode apply_mode = 5;
+}
+
+message OwnerControlRefreshInventoryRequest {
+  bytes requester_node_id = 1;            // exactly 32 bytes
+  bytes target_node_id = 2;               // exactly 32 bytes
+}
+
+message OwnerControlRefreshInventoryResponse {
+  OwnerControlConfigSnapshot snapshot = 1;
+}
+
+message OwnerControlConfigSnapshot {
+  bytes node_id = 1;                      // exactly 32 bytes
+  uint64 revision = 2;
+  bytes config_hash = 3;                  // SHA-256 of canonical proto bytes (32 bytes)
+  NodeConfigSnapshot config = 4;
+  optional string hostname = 5;
+}
+
+message OwnerControlConfigUpdate {
+  bytes node_id = 1;                      // exactly 32 bytes
+  uint64 revision = 2;
+  bytes config_hash = 3;                  // SHA-256 of canonical proto bytes (32 bytes)
+  NodeConfigSnapshot config = 4;
 }

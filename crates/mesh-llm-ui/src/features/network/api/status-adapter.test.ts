@@ -8,6 +8,7 @@ const PUBLIC_STATUS_PAYLOAD: StatusPayload = {
   node_id: '16ce0bb4de',
   node_state: 'serving',
   model_name: 'Hermes-2-Pro-Mistral-7B-Q4_K_M',
+  first_joined_mesh_ts: 1_700_000_000_000,
   peers: [
     {
       id: 'aeac0d8e53',
@@ -20,7 +21,8 @@ const PUBLIC_STATUS_PAYLOAD: StatusPayload = {
       hosted_models: [],
       version: '0.65.0',
       rtt_ms: 7,
-      hostname: '1266a345aeb9'
+      hostname: '1266a345aeb9',
+      first_joined_mesh_ts: 1_700_000_600_000
     }
   ],
   models: [],
@@ -53,10 +55,21 @@ describe('adaptStatusToDashboard', () => {
     )
   })
 
-  it('keeps publication_state precedence over nostr_discovery fallback', () => {
+  it('treats auto-discovery clients as public even before publication_state reports public', () => {
     const dashboard = adaptStatusToDashboard({
       ...PUBLIC_STATUS_PAYLOAD,
       publication_state: 'private',
+      nostr_discovery: true
+    })
+
+    expect(dashboard.hero.title).toBe('Welcome to the public mesh')
+    expect(dashboard.connect.runCommand).toBe('mesh-llm --auto')
+  })
+
+  it('keeps publish failures private even when nostr_discovery is enabled', () => {
+    const dashboard = adaptStatusToDashboard({
+      ...PUBLIC_STATUS_PAYLOAD,
+      publication_state: 'publish_failed',
       nostr_discovery: true
     })
 
@@ -82,7 +95,8 @@ describe('adaptStatusToDashboard', () => {
         id: '16ce0bb4de',
         hostname: 'public-host',
         shortId: '16ce0bb4',
-        role: 'you'
+        role: 'you',
+        firstJoinedMeshTs: 1_700_000_000_000
       }),
       expect.objectContaining({
         id: 'aeac0d8e53',
@@ -93,9 +107,13 @@ describe('adaptStatusToDashboard', () => {
         nodeState: 'client',
         latencyMs: 7,
         vramGB: 0,
-        owner: 'unsigned'
+        owner: 'unsigned',
+        firstJoinedMeshTs: 1_700_000_600_000
       })
     ])
+    expect(dashboard.meshNodeSeeds[0]).toEqual(
+      expect.objectContaining({ id: '16ce0bb4de', firstJoinedMeshTs: 1_700_000_000_000 })
+    )
   })
 
   it('adapts live status into the six-cell dashboard metrics bar', () => {
@@ -204,7 +222,8 @@ describe('adaptStatusToDashboard', () => {
           serving_models: ['Hermes-2-Pro-Mistral-7B-Q4_K_M'],
           hosted_models: ['Hermes-2-Pro-Mistral-7B-Q4_K_M'],
           vram_gb: 24,
-          hostname: 'worker-a'
+          hostname: 'worker-a',
+          first_joined_mesh_ts: 1_700_001_000_000
         },
         {
           id: 'peer-b',
@@ -245,8 +264,11 @@ describe('adaptStatusToDashboard', () => {
     expect(selfNode).toEqual(expect.objectContaining({ id: '16ce0bb4de', x: 50, y: 50 }))
     expect(remoteNodes).toHaveLength(3)
     expect(remoteNodes.map((node) => node.peerId)).toEqual(['peer-a', 'peer-b', 'peer-c'])
+    expect(dashboard.peers.find((peer) => peer.id === 'peer-a')).toEqual(
+      expect.objectContaining({ firstJoinedMeshTs: 1_700_001_000_000 })
+    )
     expect(remoteNodes.find((node) => node.peerId === 'peer-a')).toEqual(
-      expect.objectContaining({ host: true, renderKind: 'serving', meshState: 'serving' })
+      expect.objectContaining({ host: true, renderKind: 'serving', meshState: 'serving', firstJoinedMeshTs: 1_700_001_000_000 })
     )
     expect(remoteNodes.find((node) => node.peerId === 'peer-b')).toEqual(
       expect.objectContaining({ client: false, host: false, renderKind: 'serving', meshState: 'serving' })

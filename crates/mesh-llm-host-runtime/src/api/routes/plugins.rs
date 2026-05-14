@@ -566,6 +566,7 @@ mod tests {
             model_name: "test-model".into(),
             api_port: 3131,
             model_size_bytes: 0,
+            owner_key_path: None,
             plugin_manager,
             affinity_router: affinity::AffinityRouter::default(),
             runtime_data_collector,

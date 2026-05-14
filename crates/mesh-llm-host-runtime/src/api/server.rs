@@ -131,7 +131,7 @@ pub(crate) async fn start_with_listener(
         };
         let state = state.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_request(stream, &state).await {
+            if let Err(e) = Box::pin(handle_request(stream, &state)).await {
                 tracing::debug!("API connection error: {e}");
             }
         });

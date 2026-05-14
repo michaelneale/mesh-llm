@@ -73,6 +73,7 @@ export function RootLayout({ data = SHELL_HARNESS }: RootLayoutProps = {}) {
     () => (liveMode ? resolveLiveTopNavData(statusQuery.data) : resolveHarnessTopNavData(data)),
     [liveMode, statusQuery.data, data]
   )
+  const displayVersion = liveMode ? (statusQuery.data?.version ?? env.appVersion) : env.appVersion
   const apiTargetLiveness = resolveApiTargetLiveness(statusQuery, liveMode)
   const tabHrefs = useMemo(() => tabHrefsForPath(pathname), [pathname])
   const showDevelopmentNavControls = import.meta.env.DEV
@@ -114,7 +115,7 @@ export function RootLayout({ data = SHELL_HARNESS }: RootLayoutProps = {}) {
           onTabChange={onTabChange}
           apiUrl={topNavData.apiUrl}
           apiTargetLiveness={apiTargetLiveness}
-          version={env.appVersion}
+          version={displayVersion}
           theme={theme}
           onThemeChange={setTheme}
           onTogglePreferences={onTogglePreferences}
@@ -146,7 +147,7 @@ export function RootLayout({ data = SHELL_HARNESS }: RootLayoutProps = {}) {
           </main>
         </ChatSessionProvider>
         <Footer
-          version={env.appVersion}
+          version={displayVersion}
           productName={data.productName}
           links={data.footerLinks}
           trailingLink={data.footerTrailingLink}

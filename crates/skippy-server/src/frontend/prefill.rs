@@ -226,3 +226,50 @@ impl PrefillChunkPlanner {
         self.next_adaptive_size = self.next_adaptive_size.saturating_add(*step).min(*max);
     }
 }
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct EmbeddedPrefillDrain {
+    pub(super) drained_replies: usize,
+    pub(super) downstream_wait_ms: f64,
+}
+
+pub(super) fn drain_one_embedded_prefill_reply(
+    downstream: &mut TcpStream,
+    pending_prefill_replies: &mut usize,
+    stats: &mut StageReplyStats,
+) -> OpenAiResult<EmbeddedPrefillDrain> {
+    if *pending_prefill_replies == 0 {
+        return Ok(EmbeddedPrefillDrain::default());
+    }
+    let wait_timer = PhaseTimer::start();
+    let reply = recv_reply(&mut *downstream).map_err(openai_io_error)?;
+    let downstream_wait_ms = wait_timer.elapsed_ms();
+    if reply.kind != WireReplyKind::Ack {
+        return Err(OpenAiError::backend(format!(
+            "expected deferred prefill ACK from downstream, got {:?}",
+            reply.kind
+        )));
+    }
+    stats.merge(reply.stats);
+    *pending_prefill_replies = pending_prefill_replies.saturating_sub(1);
+    Ok(EmbeddedPrefillDrain {
+        drained_replies: 1,
+        downstream_wait_ms,
+    })
+}
+
+pub(super) fn drain_embedded_prefill_replies(
+    downstream: &mut TcpStream,
+    pending_prefill_replies: &mut usize,
+    stats: &mut StageReplyStats,
+) -> OpenAiResult<EmbeddedPrefillDrain> {
+    let mut drained = EmbeddedPrefillDrain::default();
+    while *pending_prefill_replies > 0 {
+        let current = drain_one_embedded_prefill_reply(downstream, pending_prefill_replies, stats)?;
+        drained.drained_replies = drained
+            .drained_replies
+            .saturating_add(current.drained_replies);
+        drained.downstream_wait_ms += current.downstream_wait_ms;
+    }
+    Ok(drained)
+}

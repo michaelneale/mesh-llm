@@ -3801,8 +3801,10 @@ mod tests {
 
     #[test]
     fn chat_stream_normalizer_adds_missing_tool_call_id() {
-        let mut state = ChatStreamNormalizationState::default();
-        state.synthetic_seed = Some(42);
+        let mut state = ChatStreamNormalizationState {
+            synthetic_seed: Some(42),
+            ..Default::default()
+        };
         let normalized = state.normalize_data(
             r#"{"id":"chatcmpl-a","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"type":"function","function":{"name":"read_file","arguments":"{\"path\":\"AGENTS.md\"}"}}]},"finish_reason":null}]}"#,
         );
@@ -3817,8 +3819,10 @@ mod tests {
 
     #[test]
     fn chat_stream_normalizer_keeps_completion_and_tool_ids_stable() {
-        let mut state = ChatStreamNormalizationState::default();
-        state.synthetic_seed = Some(7);
+        let mut state = ChatStreamNormalizationState {
+            synthetic_seed: Some(7),
+            ..Default::default()
+        };
 
         let first = state.normalize_data(
             r#"{"id":"chatcmpl-first","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}"#,

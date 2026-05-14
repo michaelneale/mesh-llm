@@ -228,6 +228,7 @@ pub struct EmbeddedOpenAiArgs {
     pub draft_n_gpu_layers: Option<i32>,
     pub activation_width: i32,
     pub wire_dtype: WireActivationDType,
+    pub reply_credit_limit: Option<usize>,
     pub downstream_connect_timeout_secs: u64,
     pub downstream_wire_condition: WireCondition,
     pub telemetry: Telemetry,
@@ -322,6 +323,7 @@ pub fn embedded_openai_backend(args: EmbeddedOpenAiArgs) -> Result<EmbeddedOpenA
         args.telemetry.clone(),
     )
     .context("create embedded OpenAI persistent downstream lanes")?;
+    let prefill_reply_credit_limit = args.reply_credit_limit.unwrap_or(3);
     let mode = OpenAiBackendMode::EmbeddedStageZero {
         config: args.config.clone(),
         wire_dtype: args.wire_dtype,
@@ -337,6 +339,7 @@ pub fn embedded_openai_backend(args: EmbeddedOpenAiArgs) -> Result<EmbeddedOpenA
         })?,
         activation_width: args.activation_width,
         downstream_wire_condition: args.downstream_wire_condition,
+        prefill_reply_credit_limit,
         lane_pool,
     };
     args.telemetry
@@ -590,6 +593,7 @@ enum OpenAiBackendMode {
         prefill_chunk_policy: PrefillChunkPolicy,
         activation_width: i32,
         downstream_wire_condition: WireCondition,
+        prefill_reply_credit_limit: usize,
         lane_pool: Option<Arc<PersistentStageLanePool>>,
     },
 }
@@ -1377,6 +1381,7 @@ struct EmbeddedStageZeroGeneration<'a> {
     prefill_chunk_policy: &'a PrefillChunkPolicy,
     activation_width: i32,
     downstream_wire_condition: WireCondition,
+    prefill_reply_credit_limit: usize,
     lane_pool: Option<Arc<PersistentStageLanePool>>,
     draft: Option<Arc<Mutex<DraftRunner>>>,
     speculative_window: usize,

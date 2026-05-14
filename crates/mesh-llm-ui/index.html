@@ -1,16 +1,30 @@
 <!doctype html>
-<html lang="en" data-theme="dark" data-accent="blue" data-density="normal" data-panel-style="solid">
+<html
+  lang="en"
+  data-theme="dark"
+  data-theme-preference="auto"
+  data-accent="blue"
+  data-density="normal"
+  data-panel-style="soft"
+>
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="color-scheme" content="dark light" />
     <meta name="theme-color" content="#fbfaf7" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#171b24" media="(prefers-color-scheme: dark)" />
     <meta name="description" content="MeshLLM clean-room app UI" />
     <script>
       ;(() => {
-        const defaults = { theme: 'dark', accent: 'blue', density: 'normal', panelStyle: 'solid' }
+        const defaults = {
+          theme: 'auto',
+          accent: 'blue',
+          density: 'normal',
+          panelStyle: 'soft',
+          panelStyleOverride: false
+        }
         const backgrounds = { dark: 'oklch(0.17 0.015 250)', light: 'oklch(0.985 0.003 80)' }
+        const panelStyles = { dark: 'soft', light: 'solid' }
         const themeColors = { dark: '#171b24', light: '#fbfaf7' }
         const storageKey = 'mesh-llm:preferences:v1'
         const root = document.documentElement
@@ -19,13 +33,20 @@
           return values.indexOf(value) !== -1
         }
 
+        function systemTheme() {
+          return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+        }
+
         function apply(preferences) {
-          root.dataset.theme = preferences.theme
+          const theme = preferences.theme === 'auto' ? systemTheme() : preferences.theme
+          const panelStyle = preferences.panelStyleOverride ? preferences.panelStyle : panelStyles[theme]
+          root.dataset.theme = theme
+          root.dataset.themePreference = preferences.theme
           root.dataset.accent = preferences.accent
           root.dataset.density = preferences.density
-          root.dataset.panelStyle = preferences.panelStyle
-          root.style.setProperty('--initial-background', backgrounds[preferences.theme])
-          root.style.setProperty('--initial-color-scheme', preferences.theme)
+          root.dataset.panelStyle = panelStyle
+          root.style.setProperty('--initial-background', backgrounds[theme])
+          root.style.setProperty('--initial-color-scheme', theme)
           let meta = document.querySelector('meta[name="theme-color"][data-mesh-theme-color="runtime"]')
           if (!meta) {
             meta = document.createElement('meta')
@@ -33,23 +54,31 @@
             meta.setAttribute('data-mesh-theme-color', 'runtime')
             document.head.append(meta)
           }
-          meta.setAttribute('content', themeColors[preferences.theme])
+          meta.setAttribute('content', themeColors[theme])
         }
 
         try {
           const stored = window.localStorage.getItem(storageKey)
           const parsed = stored ? JSON.parse(stored) : defaults
+          const hasMigratedPanelStyle =
+            oneOf(parsed.panelStyle, ['solid', 'soft']) || oneOf(parsed.configPanelStyle, ['solid', 'soft'])
+          const parsedPanelStyle = oneOf(parsed.panelStyle, ['solid', 'soft'])
+            ? parsed.panelStyle
+            : oneOf(parsed.configPanelStyle, ['solid', 'soft'])
+              ? parsed.configPanelStyle
+              : defaults.panelStyle
+          const panelStyleOverride =
+            typeof parsed.panelStyleOverride === 'boolean'
+              ? parsed.panelStyleOverride && oneOf(parsed.panelStyle, ['solid', 'soft'])
+              : hasMigratedPanelStyle && parsedPanelStyle === 'soft'
           apply({
-            theme: oneOf(parsed.theme, ['light', 'dark']) ? parsed.theme : defaults.theme,
+            theme: oneOf(parsed.theme, ['auto', 'light', 'dark']) ? parsed.theme : defaults.theme,
             accent: oneOf(parsed.accent, ['blue', 'cyan', 'violet', 'green', 'amber', 'pink'])
               ? parsed.accent
               : defaults.accent,
             density: oneOf(parsed.density, ['compact', 'normal', 'sparse']) ? parsed.density : defaults.density,
-            panelStyle: oneOf(parsed.panelStyle, ['solid', 'soft'])
-              ? parsed.panelStyle
-              : oneOf(parsed.configPanelStyle, ['solid', 'soft'])
-                ? parsed.configPanelStyle
-                : defaults.panelStyle
+            panelStyle: parsedPanelStyle,
+            panelStyleOverride
           })
         } catch {
           apply(defaults)

@@ -1,8 +1,24 @@
 import * as Popover from '@radix-ui/react-popover'
 import { MessageSquare } from 'lucide-react'
-import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent, type ReactNode } from 'react'
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent,
+  type ReactNode,
+  type RefObject
+} from 'react'
 
 const DESKTOP_SIDEBAR_QUERY = '(min-width: 1024px)'
+const CHAT_LAYOUT_FALLBACK_HEIGHT = 'calc(100dvh - 180px)'
+const CHAT_LAYOUT_MIN_HEIGHT = 320
+const CHAT_LAYOUT_KEYBOARD_GUTTER = 12
+
+type ChatLayoutStyle = CSSProperties & {
+  '--chat-layout-height': string
+}
 
 type ChatLayoutProps = {
   sidebar: ReactNode
@@ -45,6 +61,52 @@ function useDesktopSidebarViewport() {
   return matches
 }
 
+function readChatLayoutHeight(layoutElement: HTMLDivElement, viewport: VisualViewport) {
+  const layoutRect = layoutElement.getBoundingClientRect()
+  const topInsideVisualViewport = Math.max(0, layoutRect.top - viewport.offsetTop)
+  const availableHeight = viewport.height - topInsideVisualViewport - CHAT_LAYOUT_KEYBOARD_GUTTER
+
+  return `${Math.max(CHAT_LAYOUT_MIN_HEIGHT, Math.floor(availableHeight))}px`
+}
+
+function useChatVisualViewportHeight(layoutRef: RefObject<HTMLDivElement | null>) {
+  const [layoutHeight, setLayoutHeight] = useState(CHAT_LAYOUT_FALLBACK_HEIGHT)
+
+  useLayoutEffect(() => {
+    const viewport = window.visualViewport
+    if (!viewport) return undefined
+
+    let animationFrame: number | undefined
+
+    const updateLayoutHeight = () => {
+      const layoutElement = layoutRef.current
+      if (!layoutElement) return
+      setLayoutHeight(readChatLayoutHeight(layoutElement, viewport))
+    }
+
+    const scheduleUpdate = () => {
+      if (animationFrame !== undefined) window.cancelAnimationFrame(animationFrame)
+      animationFrame = window.requestAnimationFrame(updateLayoutHeight)
+    }
+
+    updateLayoutHeight()
+    viewport.addEventListener('resize', scheduleUpdate)
+    viewport.addEventListener('scroll', scheduleUpdate)
+    window.addEventListener('resize', scheduleUpdate)
+    window.addEventListener('orientationchange', scheduleUpdate)
+
+    return () => {
+      if (animationFrame !== undefined) window.cancelAnimationFrame(animationFrame)
+      viewport.removeEventListener('resize', scheduleUpdate)
+      viewport.removeEventListener('scroll', scheduleUpdate)
+      window.removeEventListener('resize', scheduleUpdate)
+      window.removeEventListener('orientationchange', scheduleUpdate)
+    }
+  }, [layoutRef])
+
+  return layoutHeight
+}
+
 export function ChatLayout({
   sidebar,
   sidebarMode = 'auto',
@@ -56,8 +118,10 @@ export function ChatLayout({
   composer,
   onMessageAreaClick
 }: ChatLayoutProps) {
+  const layoutRef = useRef<HTMLDivElement | null>(null)
   const messageListRef = useRef<HTMLDivElement | null>(null)
   const messageEndRef = useRef<HTMLDivElement | null>(null)
+  const chatLayoutHeight = useChatVisualViewportHeight(layoutRef)
   const desktopSidebarViewport = useDesktopSidebarViewport()
   const showDesktopSidebar =
     !hideSidebar && (sidebarMode === 'desktop' || (sidebarMode === 'auto' && desktopSidebarViewport))
@@ -65,6 +129,12 @@ export function ChatLayout({
     if (event.target === event.currentTarget) {
       onMessageAreaClick?.()
     }
+  }
+
+  const chatLayoutStyle: ChatLayoutStyle = {
+    '--chat-layout-height': chatLayoutHeight,
+    height: 'var(--chat-layout-height)',
+    maxHeight: 'var(--chat-layout-height)'
   }
 
   useLayoutEffect(() => {
@@ -86,13 +156,14 @@ export function ChatLayout({
 
   return (
     <div
+      ref={layoutRef}
       className={
         hideSidebar
           ? 'relative grid min-h-0 min-w-0 items-stretch gap-4 overflow-hidden'
           : 'relative grid min-h-0 min-w-0 items-stretch gap-4 overflow-hidden lg:grid-cols-[minmax(240px,28vw)_minmax(0,1fr)] xl:grid-cols-[minmax(280px,320px)_minmax(0,1fr)]'
       }
       data-testid="chat-layout"
-      style={{ height: 'calc(100dvh - 180px)', maxHeight: 'calc(100dvh - 180px)' }}
+      style={chatLayoutStyle}
     >
       {showDesktopSidebar ? <div className="min-h-0 min-w-0 overflow-hidden [&>*]:h-full">{sidebar}</div> : null}
       <section className="panel-shell flex min-h-0 min-w-0 select-none flex-col overflow-hidden rounded-[var(--radius-lg)] border border-border bg-panel">
@@ -119,7 +190,9 @@ export function ChatLayout({
             {children}
             <div aria-hidden={true} data-chat-scroll-anchor="true" ref={messageEndRef} />
           </div>
-          <div className="border-t border-border-soft bg-panel px-4 py-3">{composer}</div>
+          <div className="border-t border-border-soft bg-panel px-4 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-3 sm:py-3">
+            {composer}
+          </div>
         </div>
       </section>
       {!hideSidebar && !showDesktopSidebar ? (
@@ -127,7 +200,7 @@ export function ChatLayout({
           <Popover.Trigger asChild>
             <button
               aria-label="Open chat sidebar"
-              className="ui-control-primary fixed bottom-5 right-5 z-30 inline-flex size-[55px] items-center justify-center rounded-full border shadow-surface-popover outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              className="ui-control-primary fixed bottom-[calc(1.25rem+env(safe-area-inset-bottom))] right-[calc(1.25rem+env(safe-area-inset-right))] z-30 inline-flex size-[55px] items-center justify-center rounded-full border shadow-surface-popover outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               type="button"
             >
               <MessageSquare aria-hidden={true} className="size-[20px]" strokeWidth={1.7} />

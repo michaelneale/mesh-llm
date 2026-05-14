@@ -4,6 +4,9 @@ use super::heartbeat::{
     RELAY_ONLY_RECONNECT_SECS, RELAY_RECONNECT_COOLDOWN_SECS,
 };
 use super::*;
+use crate::api;
+use crate::network::affinity;
+use crate::plugin;
 use crate::proto::node::{GossipFrame, NodeRole, PeerAnnouncement, RouteTableRequest};
 use serial_test::serial;
 use skippy_protocol::proto::stage as skippy_stage_proto;
@@ -150,6 +153,7 @@ async fn make_test_node(role: super::NodeRole) -> Result<Node> {
         display_name: Arc::new(Mutex::new(None)),
         owner_attestation: Arc::new(Mutex::new(None)),
         owner_summary: Arc::new(Mutex::new(OwnershipSummary::default())),
+        control_listener: Arc::new(Mutex::new(None)),
         trust_store: Arc::new(Mutex::new(TrustStore::default())),
         trust_policy: TrustPolicy::Off,
         enumerate_host: false,
@@ -945,6 +949,876 @@ fn verified_owner_summary(owner_id: &str) -> OwnershipSummary {
         verified: true,
         ..OwnershipSummary::default()
     }
+}
+
+async fn build_mesh_api_for_control_tests(node: Node) -> api::MeshApi {
+    let resolved_plugins = plugin::ResolvedPlugins {
+        externals: vec![],
+        inactive: vec![],
+    };
+    let (mesh_tx, _mesh_rx) = tokio::sync::mpsc::channel(1);
+    let plugin_manager = plugin::PluginManager::start(
+        &resolved_plugins,
+        plugin::PluginHostMode {
+            mesh_visibility: mesh_llm_plugin::MeshVisibility::Private,
+        },
+        mesh_tx,
+    )
+    .await
+    .unwrap();
+    let runtime_data_collector = node.runtime_data_collector();
+    let runtime_data_producer =
+        runtime_data_collector.producer(crate::runtime_data::RuntimeDataSource {
+            scope: "runtime",
+            plugin_data_key: None,
+            plugin_endpoint_key: None,
+        });
+    api::MeshApi::new(api::MeshApiConfig {
+        node,
+        model_name: "test-model".to_string(),
+        api_port: 3131,
+        model_size_bytes: 0,
+        owner_key_path: None,
+        plugin_manager,
+        affinity_router: affinity::AffinityRouter::default(),
+        runtime_data_collector,
+        runtime_data_producer,
+    })
+}
+
+#[tokio::test]
+async fn control_plane_listener_starts_with_owner() -> anyhow::Result<()> {
+    let (node, secret_key) = Node::new_for_tests_with_secret(super::NodeRole::Worker).await?;
+    *node.owner_summary.lock().await = verified_owner_summary("owner-a");
+
+    node.maybe_start_control_listener(secret_key, None, None, None)
+        .await?;
+
+    let endpoint = node
+        .control_endpoint()
+        .await
+        .expect("verified owner should start a control listener");
+    let decoded = Node::decode_invite_token(&endpoint)?;
+    assert_eq!(decoded.id, node.endpoint.id());
+    assert_ne!(decoded, node.endpoint.addr());
+    assert!(decoded.addrs.iter().any(|addr| match addr {
+        iroh::TransportAddr::Ip(sock) => sock.ip().is_loopback(),
+        _ => false,
+    }));
+
+    node.shutdown_control_listener().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn control_plane_listener_uses_explicit_advertised_address() -> anyhow::Result<()> {
+    let (node, secret_key) = Node::new_for_tests_with_secret(super::NodeRole::Worker).await?;
+    *node.owner_summary.lock().await = verified_owner_summary("owner-a");
+    let advertised_addr = std::net::SocketAddr::from(([203, 0, 113, 10], 18443));
+
+    node.maybe_start_control_listener(secret_key, None, Some(advertised_addr), None)
+        .await?;
+
+    let endpoint = node
+        .control_endpoint()
+        .await
+        .expect("verified owner should start a control listener");
+    let decoded = Node::decode_invite_token(&endpoint)?;
+    assert_eq!(decoded.id, node.endpoint.id());
+    assert_eq!(decoded.addrs.len(), 1);
+    assert!(decoded
+        .addrs
+        .contains(&iroh::TransportAddr::Ip(advertised_addr)));
+
+    node.shutdown_control_listener().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn control_plane_listener_disabled_without_owner() -> anyhow::Result<()> {
+    let (node, secret_key) = Node::new_for_tests_with_secret(super::NodeRole::Worker).await?;
+
+    node.maybe_start_control_listener(
+        secret_key,
+        Some("127.0.0.1:7447".parse().unwrap()),
+        None,
+        None,
+    )
+    .await?;
+
+    assert!(node.control_endpoint().await.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn control_plane_listener_accepts_only_control_alpn() -> anyhow::Result<()> {
+    let (node, secret_key) = Node::new_for_tests_with_secret(super::NodeRole::Worker).await?;
+    *node.owner_summary.lock().await = verified_owner_summary("owner-a");
+    node.maybe_start_control_listener(secret_key, None, None, None)
+        .await?;
+    let endpoint = Node::decode_invite_token(
+        &node
+            .control_endpoint()
+            .await
+            .expect("verified owner should expose control endpoint"),
+    )?;
+    let client = Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(SecretKey::generate())
+        .alpns(vec![ALPN_CONTROL_V1.to_vec(), ALPN_V1.to_vec()])
+        .relay_mode(iroh::endpoint::RelayMode::Disabled)
+        .bind_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))?
+        .bind()
+        .await?;
+
+    client
+        .connect(endpoint.clone(), ALPN_CONTROL_V1)
+        .await
+        .expect("control endpoint should accept mesh-llm-control/1");
+    assert!(client.connect(endpoint, ALPN_V1).await.is_err());
+
+    node.shutdown_control_listener().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn control_plane_endpoint_not_in_gossip_or_status() -> anyhow::Result<()> {
+    let (node, secret_key) = Node::new_for_tests_with_secret(super::NodeRole::Worker).await?;
+    *node.owner_summary.lock().await = verified_owner_summary("owner-a");
+    node.maybe_start_control_listener(secret_key, None, None, None)
+        .await?;
+    let control_endpoint = node
+        .control_endpoint()
+        .await
+        .expect("verified owner should expose control endpoint");
+
+    let announcements = node.collect_announcements().await;
+    assert!(announcements
+        .iter()
+        .all(|announcement| encode_endpoint_addr_token(&announcement.addr) != control_endpoint));
+
+    let api = build_mesh_api_for_control_tests(node.clone()).await;
+    api.set_control_bootstrap(api::ControlBootstrapPayload {
+        enabled: true,
+        local_only: true,
+        requires_explicit_remote_endpoint: true,
+        endpoint: Some(control_endpoint.clone()),
+    })
+    .await;
+    let status_snapshot = api.status_snapshot_string().await;
+    assert!(!status_snapshot.contains(&control_endpoint));
+
+    node.shutdown_control_listener().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn control_plane_listener_shutdown_stops_listener_task() -> anyhow::Result<()> {
+    let (node, secret_key) = Node::new_for_tests_with_secret(super::NodeRole::Worker).await?;
+    *node.owner_summary.lock().await = verified_owner_summary("owner-a");
+    node.maybe_start_control_listener(secret_key, None, None, None)
+        .await?;
+    let endpoint = Node::decode_invite_token(
+        &node
+            .control_endpoint()
+            .await
+            .expect("verified owner should expose control endpoint"),
+    )?;
+
+    node.shutdown_control_listener().await;
+
+    let client = Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(SecretKey::generate())
+        .alpns(vec![ALPN_CONTROL_V1.to_vec()])
+        .relay_mode(iroh::endpoint::RelayMode::Disabled)
+        .bind_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))?
+        .bind()
+        .await?;
+    assert!(client.connect(endpoint, ALPN_CONTROL_V1).await.is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn control_plane_get_watch_apply_config() -> Result<()> {
+    use crate::proto::node::{
+        ConfigApplyMode, NodeConfigSnapshot, NodeGpuConfig, NodeModelEntry, OwnerControlRequest,
+    };
+
+    let owner_keypair = test_owner_keypair(0x91, 0x92);
+    let tmp =
+        std::env::temp_dir().join(format!("mesh-llm-control-config-{}", rand::random::<u64>()));
+    std::fs::create_dir_all(&tmp).ok();
+
+    let (server, _secret_key, config_path) =
+        start_owner_control_test_server(&owner_keypair, &tmp).await?;
+
+    let (_get_endpoint, mut get_send, mut get_recv, requester_id) =
+        open_owner_control_stream(&server, &owner_keypair).await?;
+    write_len_prefixed(
+        &mut get_send,
+        &crate::proto::node::OwnerControlEnvelope {
+            gen: NODE_PROTOCOL_GENERATION,
+            handshake: None,
+            request: Some(OwnerControlRequest {
+                request_id: 1,
+                get_config: Some(crate::proto::node::OwnerControlGetConfigRequest {
+                    requester_node_id: requester_id.as_bytes().to_vec(),
+                    target_node_id: server.id().as_bytes().to_vec(),
+                }),
+                watch_config: None,
+                apply_config: None,
+                refresh_inventory: None,
+            }),
+            response: None,
+            error: None,
+        }
+        .encode_to_vec(),
+    )
+    .await?;
+    let get_envelope = read_owner_control_envelope(&mut get_recv).await?;
+    let get_response = get_envelope
+        .response
+        .expect("get request should return a response");
+    let initial_snapshot = get_response
+        .get_config
+        .expect("get response should carry get_config")
+        .snapshot
+        .expect("get response should carry a snapshot");
+    assert_eq!(initial_snapshot.revision, 0);
+    assert_eq!(initial_snapshot.node_id, server.id().as_bytes().to_vec());
+
+    let (_watch_endpoint, mut watch_send, mut watch_recv, watch_requester_id) =
+        open_owner_control_stream(&server, &owner_keypair).await?;
+    write_len_prefixed(
+        &mut watch_send,
+        &crate::proto::node::OwnerControlEnvelope {
+            gen: NODE_PROTOCOL_GENERATION,
+            handshake: None,
+            request: Some(OwnerControlRequest {
+                request_id: 2,
+                get_config: None,
+                watch_config: Some(crate::proto::node::OwnerControlWatchConfigRequest {
+                    requester_node_id: watch_requester_id.as_bytes().to_vec(),
+                    target_node_id: server.id().as_bytes().to_vec(),
+                    include_snapshot: true,
+                }),
+                apply_config: None,
+                refresh_inventory: None,
+            }),
+            response: None,
+            error: None,
+        }
+        .encode_to_vec(),
+    )
+    .await?;
+    let watch_initial = read_owner_control_envelope(&mut watch_recv).await?;
+    let watch_initial_snapshot = watch_initial
+        .response
+        .expect("watch should return a response")
+        .watch_config
+        .expect("watch response should carry watch_config")
+        .snapshot
+        .expect("watch should send an initial snapshot first");
+    assert_eq!(watch_initial_snapshot.revision, 0);
+
+    let (_apply_endpoint, mut apply_send, mut apply_recv, apply_requester_id) =
+        open_owner_control_stream(&server, &owner_keypair).await?;
+    let applied_config = NodeConfigSnapshot {
+        version: 1,
+        gpu: Some(NodeGpuConfig {
+            assignment: crate::proto::node::GpuAssignment::Auto as i32,
+        }),
+        models: vec![NodeModelEntry {
+            model: "test-model.gguf".to_string(),
+            mmproj: None,
+            ctx_size: Some(4096),
+            gpu_id: None,
+            model_ref: None,
+            mmproj_ref: None,
+        }],
+        plugins: vec![],
+    };
+    write_len_prefixed(
+        &mut apply_send,
+        &crate::proto::node::OwnerControlEnvelope {
+            gen: NODE_PROTOCOL_GENERATION,
+            handshake: None,
+            request: Some(OwnerControlRequest {
+                request_id: 3,
+                get_config: None,
+                watch_config: None,
+                apply_config: Some(crate::proto::node::OwnerControlApplyConfigRequest {
+                    requester_node_id: apply_requester_id.as_bytes().to_vec(),
+                    target_node_id: server.id().as_bytes().to_vec(),
+                    expected_revision: 0,
+                    config: Some(applied_config.clone()),
+                }),
+                refresh_inventory: None,
+            }),
+            response: None,
+            error: None,
+        }
+        .encode_to_vec(),
+    )
+    .await?;
+    let apply_envelope = read_owner_control_envelope(&mut apply_recv).await?;
+    let apply_response = apply_envelope
+        .response
+        .expect("apply should return a response")
+        .apply_config
+        .expect("apply response should carry apply_config");
+    assert!(apply_response.success);
+    assert_eq!(apply_response.current_revision, 1);
+    assert_eq!(apply_response.apply_mode, ConfigApplyMode::Staged as i32);
+
+    let watch_update = read_owner_control_envelope(&mut watch_recv).await?;
+    let watch_update = watch_update
+        .response
+        .expect("watch update should return a response")
+        .watch_config
+        .expect("watch update should carry watch_config")
+        .update
+        .expect("watch stream should emit an update after apply");
+    assert_eq!(watch_update.revision, 1);
+    assert_eq!(watch_update.config_hash, apply_response.config_hash);
+
+    let persisted_before_noop =
+        std::fs::read_to_string(&config_path).expect("config should exist after staged apply");
+    write_len_prefixed(
+        &mut apply_send,
+        &crate::proto::node::OwnerControlEnvelope {
+            gen: NODE_PROTOCOL_GENERATION,
+            handshake: None,
+            request: Some(OwnerControlRequest {
+                request_id: 4,
+                get_config: None,
+                watch_config: None,
+                apply_config: Some(crate::proto::node::OwnerControlApplyConfigRequest {
+                    requester_node_id: apply_requester_id.as_bytes().to_vec(),
+                    target_node_id: server.id().as_bytes().to_vec(),
+                    expected_revision: 1,
+                    config: Some(applied_config),
+                }),
+                refresh_inventory: None,
+            }),
+            response: None,
+            error: None,
+        }
+        .encode_to_vec(),
+    )
+    .await?;
+    let noop_envelope = read_owner_control_envelope(&mut apply_recv).await?;
+    let noop_response = noop_envelope
+        .response
+        .expect("noop apply should return a response")
+        .apply_config
+        .expect("noop apply should carry apply_config");
+    assert!(noop_response.success);
+    assert_eq!(noop_response.current_revision, 1);
+    assert_eq!(noop_response.apply_mode, ConfigApplyMode::Noop as i32);
+    let persisted_after_noop =
+        std::fs::read_to_string(&config_path).expect("config should still be readable after noop");
+    assert_eq!(persisted_before_noop, persisted_after_noop);
+
+    server.shutdown_control_listener().await;
+    std::fs::remove_dir_all(&tmp).ok();
+    Ok(())
+}
+
+#[tokio::test]
+async fn control_plane_watch_observes_apply_revision() -> Result<()> {
+    use crate::proto::node::{NodeConfigSnapshot, NodeGpuConfig, OwnerControlRequest};
+
+    let owner_keypair = test_owner_keypair(0x93, 0x94);
+    let tmp =
+        std::env::temp_dir().join(format!("mesh-llm-control-watch-{}", rand::random::<u64>()));
+    std::fs::create_dir_all(&tmp).ok();
+    let (server, _secret_key, _config_path) =
+        start_owner_control_test_server(&owner_keypair, &tmp).await?;
+
+    let (_watch_endpoint, mut watch_send, mut watch_recv, watch_requester_id) =
+        open_owner_control_stream(&server, &owner_keypair).await?;
+    write_len_prefixed(
+        &mut watch_send,
+        &crate::proto::node::OwnerControlEnvelope {
+            gen: NODE_PROTOCOL_GENERATION,
+            handshake: None,
+            request: Some(OwnerControlRequest {
+                request_id: 10,
+                get_config: None,
+                watch_config: Some(crate::proto::node::OwnerControlWatchConfigRequest {
+                    requester_node_id: watch_requester_id.as_bytes().to_vec(),
+                    target_node_id: server.id().as_bytes().to_vec(),
+                    include_snapshot: true,
+                }),
+                apply_config: None,
+                refresh_inventory: None,
+            }),
+            response: None,
+            error: None,
+        }
+        .encode_to_vec(),
+    )
+    .await?;
+    let initial = read_owner_control_envelope(&mut watch_recv).await?;
+    let initial_revision = initial
+        .response
+        .expect("watch should return a response")
+        .watch_config
+        .expect("watch should return watch_config")
+        .snapshot
+        .expect("watch should start with a snapshot")
+        .revision;
+
+    let (_apply_endpoint, mut apply_send, mut apply_recv, apply_requester_id) =
+        open_owner_control_stream(&server, &owner_keypair).await?;
+    write_len_prefixed(
+        &mut apply_send,
+        &crate::proto::node::OwnerControlEnvelope {
+            gen: NODE_PROTOCOL_GENERATION,
+            handshake: None,
+            request: Some(OwnerControlRequest {
+                request_id: 11,
+                get_config: None,
+                watch_config: None,
+                apply_config: Some(crate::proto::node::OwnerControlApplyConfigRequest {
+                    requester_node_id: apply_requester_id.as_bytes().to_vec(),
+                    target_node_id: server.id().as_bytes().to_vec(),
+                    expected_revision: initial_revision,
+                    config: Some(NodeConfigSnapshot {
+                        version: 1,
+                        gpu: Some(NodeGpuConfig {
+                            assignment: crate::proto::node::GpuAssignment::Auto as i32,
+                        }),
+                        models: vec![],
+                        plugins: vec![],
+                    }),
+                }),
+                refresh_inventory: None,
+            }),
+            response: None,
+            error: None,
+        }
+        .encode_to_vec(),
+    )
+    .await?;
+    let apply = read_owner_control_envelope(&mut apply_recv).await?;
+    let applied = apply
+        .response
+        .expect("apply should return a response")
+        .apply_config
+        .expect("apply should return apply_config");
+    assert!(applied.success);
+
+    let update = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        read_owner_control_envelope(&mut watch_recv),
+    )
+    .await
+    .expect("watch stream should emit an update within 5 seconds")?;
+    let update = update
+        .response
+        .expect("watch update should return a response")
+        .watch_config
+        .expect("watch update should return watch_config")
+        .update
+        .expect("watch update should carry an update payload");
+    assert_eq!(update.revision, initial_revision + 1);
+    assert_eq!(update.config_hash, applied.config_hash);
+
+    server.shutdown_control_listener().await;
+    std::fs::remove_dir_all(&tmp).ok();
+    Ok(())
+}
+
+#[tokio::test]
+async fn control_plane_watch_without_snapshot_starts_with_accepted() -> Result<()> {
+    use crate::proto::node::OwnerControlRequest;
+
+    let owner_keypair = test_owner_keypair(0xA1, 0xA2);
+    let tmp = std::env::temp_dir().join(format!(
+        "mesh-llm-control-watch-no-snapshot-{}",
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&tmp).ok();
+    let (server, _secret_key, _config_path) =
+        start_owner_control_test_server(&owner_keypair, &tmp).await?;
+
+    let (_watch_endpoint, mut watch_send, mut watch_recv, watch_requester_id) =
+        open_owner_control_stream(&server, &owner_keypair).await?;
+    write_len_prefixed(
+        &mut watch_send,
+        &crate::proto::node::OwnerControlEnvelope {
+            gen: NODE_PROTOCOL_GENERATION,
+            handshake: None,
+            request: Some(OwnerControlRequest {
+                request_id: 12,
+                get_config: None,
+                watch_config: Some(crate::proto::node::OwnerControlWatchConfigRequest {
+                    requester_node_id: watch_requester_id.as_bytes().to_vec(),
+                    target_node_id: server.id().as_bytes().to_vec(),
+                    include_snapshot: false,
+                }),
+                apply_config: None,
+                refresh_inventory: None,
+            }),
+            response: None,
+            error: None,
+        }
+        .encode_to_vec(),
+    )
+    .await?;
+
+    let initial = read_owner_control_envelope(&mut watch_recv).await?;
+    let watch = initial
+        .response
+        .expect("watch should return a response")
+        .watch_config
+        .expect("watch should return watch_config");
+    assert!(watch.snapshot.is_none());
+    assert!(watch.update.is_none());
+    let accepted = watch
+        .accepted
+        .expect("watch without snapshot should start with accepted");
+    assert_eq!(accepted.target_node_id, server.id().as_bytes().to_vec());
+
+    server.shutdown_control_listener().await;
+    std::fs::remove_dir_all(&tmp).ok();
+    Ok(())
+}
+
+#[tokio::test]
+async fn control_plane_watch_without_snapshot_observes_apply_revision() -> Result<()> {
+    use crate::proto::node::{NodeConfigSnapshot, NodeGpuConfig, OwnerControlRequest};
+
+    let owner_keypair = test_owner_keypair(0xA3, 0xA4);
+    let tmp = std::env::temp_dir().join(format!(
+        "mesh-llm-control-watch-no-snapshot-update-{}",
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&tmp).ok();
+    let (server, _secret_key, _config_path) =
+        start_owner_control_test_server(&owner_keypair, &tmp).await?;
+
+    let initial_revision = { server.config_state.lock().await.revision() };
+    let (_watch_endpoint, mut watch_send, mut watch_recv, watch_requester_id) =
+        open_owner_control_stream(&server, &owner_keypair).await?;
+    write_len_prefixed(
+        &mut watch_send,
+        &crate::proto::node::OwnerControlEnvelope {
+            gen: NODE_PROTOCOL_GENERATION,
+            handshake: None,
+            request: Some(OwnerControlRequest {
+                request_id: 13,
+                get_config: None,
+                watch_config: Some(crate::proto::node::OwnerControlWatchConfigRequest {
+                    requester_node_id: watch_requester_id.as_bytes().to_vec(),
+                    target_node_id: server.id().as_bytes().to_vec(),
+                    include_snapshot: false,
+                }),
+                apply_config: None,
+                refresh_inventory: None,
+            }),
+            response: None,
+            error: None,
+        }
+        .encode_to_vec(),
+    )
+    .await?;
+    let accepted = read_owner_control_envelope(&mut watch_recv).await?;
+    assert!(accepted
+        .response
+        .expect("watch should return a response")
+        .watch_config
+        .expect("watch should return watch_config")
+        .accepted
+        .is_some());
+
+    let (_apply_endpoint, mut apply_send, mut apply_recv, apply_requester_id) =
+        open_owner_control_stream(&server, &owner_keypair).await?;
+    write_len_prefixed(
+        &mut apply_send,
+        &crate::proto::node::OwnerControlEnvelope {
+            gen: NODE_PROTOCOL_GENERATION,
+            handshake: None,
+            request: Some(OwnerControlRequest {
+                request_id: 14,
+                get_config: None,
+                watch_config: None,
+                apply_config: Some(crate::proto::node::OwnerControlApplyConfigRequest {
+                    requester_node_id: apply_requester_id.as_bytes().to_vec(),
+                    target_node_id: server.id().as_bytes().to_vec(),
+                    expected_revision: initial_revision,
+                    config: Some(NodeConfigSnapshot {
+                        version: 1,
+                        gpu: Some(NodeGpuConfig {
+                            assignment: crate::proto::node::GpuAssignment::Auto as i32,
+                        }),
+                        models: vec![],
+                        plugins: vec![],
+                    }),
+                }),
+                refresh_inventory: None,
+            }),
+            response: None,
+            error: None,
+        }
+        .encode_to_vec(),
+    )
+    .await?;
+    let apply = read_owner_control_envelope(&mut apply_recv).await?;
+    let applied = apply
+        .response
+        .expect("apply should return a response")
+        .apply_config
+        .expect("apply should return apply_config");
+    assert!(applied.success);
+
+    let update = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        read_owner_control_envelope(&mut watch_recv),
+    )
+    .await
+    .expect("watch stream should emit an update within 5 seconds")?;
+    let update = update
+        .response
+        .expect("watch update should return a response")
+        .watch_config
+        .expect("watch update should return watch_config")
+        .update
+        .expect("watch update should carry an update payload");
+    assert_eq!(update.revision, initial_revision + 1);
+    assert_eq!(update.config_hash, applied.config_hash);
+
+    server.shutdown_control_listener().await;
+    std::fs::remove_dir_all(&tmp).ok();
+    Ok(())
+}
+
+#[tokio::test]
+async fn control_plane_apply_rejects_stale_revision() -> Result<()> {
+    use crate::proto::node::{
+        NodeConfigSnapshot, NodeGpuConfig, OwnerControlErrorCode, OwnerControlRequest,
+    };
+
+    let owner_keypair = test_owner_keypair(0x95, 0x96);
+    let tmp =
+        std::env::temp_dir().join(format!("mesh-llm-control-stale-{}", rand::random::<u64>()));
+    std::fs::create_dir_all(&tmp).ok();
+    let (server, _secret_key, _config_path) =
+        start_owner_control_test_server(&owner_keypair, &tmp).await?;
+
+    let initial_hash = { *server.config_state.lock().await.config_hash() };
+
+    let (_apply_endpoint, mut apply_send, mut apply_recv, apply_requester_id) =
+        open_owner_control_stream(&server, &owner_keypair).await?;
+    let apply_once = |request_id, expected_revision| crate::proto::node::OwnerControlEnvelope {
+        gen: NODE_PROTOCOL_GENERATION,
+        handshake: None,
+        request: Some(OwnerControlRequest {
+            request_id,
+            get_config: None,
+            watch_config: None,
+            apply_config: Some(crate::proto::node::OwnerControlApplyConfigRequest {
+                requester_node_id: apply_requester_id.as_bytes().to_vec(),
+                target_node_id: server.id().as_bytes().to_vec(),
+                expected_revision,
+                config: Some(NodeConfigSnapshot {
+                    version: 1,
+                    gpu: Some(NodeGpuConfig {
+                        assignment: crate::proto::node::GpuAssignment::Auto as i32,
+                    }),
+                    models: vec![crate::proto::node::NodeModelEntry {
+                        model: "stale-test-model.gguf".to_string(),
+                        mmproj: None,
+                        ctx_size: Some(2048),
+                        gpu_id: None,
+                        model_ref: None,
+                        mmproj_ref: None,
+                    }],
+                    plugins: vec![],
+                }),
+            }),
+            refresh_inventory: None,
+        }),
+        response: None,
+        error: None,
+    };
+
+    write_len_prefixed(&mut apply_send, &apply_once(20, 0).encode_to_vec()).await?;
+    let first = read_owner_control_envelope(&mut apply_recv).await?;
+    assert!(
+        first
+            .response
+            .expect("first apply should return a response")
+            .apply_config
+            .expect("first apply should return apply_config")
+            .success
+    );
+
+    let hash_after_first = { *server.config_state.lock().await.config_hash() };
+    write_len_prefixed(&mut apply_send, &apply_once(21, 0).encode_to_vec()).await?;
+    let stale = read_owner_control_envelope(&mut apply_recv).await?;
+    let stale_error = stale
+        .error
+        .expect("stale apply should return an error envelope");
+    assert_eq!(
+        stale_error.code,
+        OwnerControlErrorCode::RevisionConflict as i32
+    );
+    assert_eq!(stale_error.request_id, Some(21));
+    assert_eq!(stale_error.current_revision, Some(1));
+    assert_eq!(
+        { *server.config_state.lock().await.config_hash() },
+        hash_after_first
+    );
+    assert_ne!(initial_hash, hash_after_first);
+
+    server.shutdown_control_listener().await;
+    std::fs::remove_dir_all(&tmp).ok();
+    Ok(())
+}
+
+#[tokio::test]
+async fn owner_control_client_reuses_connection_for_sequential_requests() -> Result<()> {
+    use mesh_client::{
+        ClientBuilder, ControlPlaneBootstrapOptions, ControlPlaneConnection, InviteToken,
+    };
+    use std::str::FromStr;
+
+    let owner_keypair = test_owner_keypair(0x89, 0x8a);
+    let tmp = std::env::temp_dir().join(format!(
+        "mesh-llm-control-client-reuse-{}",
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&tmp).ok();
+    let (server, _secret_key, _config_path) =
+        start_owner_control_test_server(&owner_keypair, &tmp).await?;
+    let endpoint_token = server
+        .control_endpoint()
+        .await
+        .expect("control endpoint should be available for owner-control client test");
+    let client = ClientBuilder::new(
+        owner_keypair.clone(),
+        InviteToken::from_str("mesh-test:owner-control-client-reuse")
+            .map_err(|error| anyhow::anyhow!(error))?,
+    )
+    .build()?;
+    let connection = client
+        .connect_control_plane(
+            ControlPlaneBootstrapOptions::new().with_control_endpoint(endpoint_token),
+        )
+        .await?;
+    let control_client = match connection {
+        ControlPlaneConnection::OwnerControl(control_client) => control_client,
+    };
+
+    let snapshot = control_client.get_config().await?;
+    let config = snapshot
+        .config
+        .clone()
+        .expect("get-config snapshot should include config");
+    let apply = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        control_client.apply_config(snapshot.revision, config),
+    )
+    .await??;
+
+    assert!(apply.success);
+    assert_eq!(apply.current_revision, snapshot.revision + 1);
+
+    server.shutdown_control_listener().await;
+    std::fs::remove_dir_all(&tmp).ok();
+    Ok(())
+}
+
+#[tokio::test]
+#[serial]
+async fn control_plane_refresh_inventory() -> Result<()> {
+    use crate::proto::node::OwnerControlRequest;
+
+    let owner_keypair = test_owner_keypair(0x97, 0x98);
+    let tmp = std::env::temp_dir().join(format!(
+        "mesh-llm-control-refresh-{}",
+        rand::random::<u64>()
+    ));
+    let hf_cache = tmp.join("hf-cache");
+    std::fs::create_dir_all(&hf_cache).ok();
+    let _hf_cache_guard = EnvVarGuard::set("HF_HUB_CACHE", &hf_cache);
+    let gguf_path = hf_cache.join("Refresh-Test-Q4_K_M.gguf");
+    let file = std::fs::File::create(&gguf_path)?;
+    file.set_len(600_000_000)?;
+
+    let (server, _secret_key, _config_path) =
+        start_owner_control_test_server(&owner_keypair, &tmp).await?;
+    let expected_model_ref = crate::models::model_ref_for_path(&gguf_path);
+    let expected_inventory_name = gguf_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .expect("gguf test file should have a valid stem")
+        .to_string();
+    assert!(server.available_models().await.is_empty());
+
+    let (_refresh_endpoint, mut refresh_send, mut refresh_recv, requester_id) =
+        open_owner_control_stream(&server, &owner_keypair).await?;
+    let refresh_request = |request_id| crate::proto::node::OwnerControlEnvelope {
+        gen: NODE_PROTOCOL_GENERATION,
+        handshake: None,
+        request: Some(OwnerControlRequest {
+            request_id,
+            get_config: None,
+            watch_config: None,
+            apply_config: None,
+            refresh_inventory: Some(crate::proto::node::OwnerControlRefreshInventoryRequest {
+                requester_node_id: requester_id.as_bytes().to_vec(),
+                target_node_id: server.id().as_bytes().to_vec(),
+            }),
+        }),
+        response: None,
+        error: None,
+    };
+
+    write_len_prefixed(&mut refresh_send, &refresh_request(30).encode_to_vec()).await?;
+    let first = read_owner_control_envelope(&mut refresh_recv).await?;
+    let first_snapshot = first
+        .response
+        .expect("refresh should return a response")
+        .refresh_inventory
+        .expect("refresh should return refresh_inventory")
+        .snapshot
+        .expect("refresh should include a config snapshot");
+    assert_eq!(first_snapshot.node_id, server.id().as_bytes().to_vec());
+    assert!(server
+        .available_models()
+        .await
+        .contains(&expected_model_ref));
+    let inventory_snapshot = server.runtime_data_collector().local_inventory_snapshot();
+    assert!(inventory_snapshot
+        .model_names
+        .contains(&expected_inventory_name));
+
+    write_len_prefixed(&mut refresh_send, &refresh_request(31).encode_to_vec()).await?;
+    let second = read_owner_control_envelope(&mut refresh_recv).await?;
+    let second_snapshot = second
+        .response
+        .expect("second refresh should return a response")
+        .refresh_inventory
+        .expect("second refresh should return refresh_inventory")
+        .snapshot
+        .expect("second refresh should include a config snapshot");
+    assert_eq!(first_snapshot.revision, second_snapshot.revision);
+    assert_eq!(
+        server
+            .available_models()
+            .await
+            .iter()
+            .filter(|model| *model == &expected_model_ref)
+            .count(),
+        1
+    );
+
+    server.shutdown_control_listener().await;
+    std::fs::remove_dir_all(&tmp).ok();
+    Ok(())
 }
 
 #[tokio::test]
@@ -1842,7 +2716,7 @@ fn gossip_frame_roundtrip_preserves_scanned_model_metadata() {
                 local_file_name: Some("Qwen3-8B-Q4_K_M.gguf".into()),
                 identity_hash: Some("identity-hash".into()),
             },
-            capabilities: Default::default(),
+            capabilities: crate::models::ModelCapabilities::default(),
             topology: None,
         }],
         served_model_runtime: vec![ModelRuntimeDescriptor {
@@ -3777,209 +4651,14 @@ async fn test_on_demand_transitive_peer_connection_completes_gossip() -> Result<
 }
 
 #[test]
-fn config_sync_subscribe_snapshot_encode_decode() {
-    use crate::proto::node::{ConfigSnapshotResponse, NodeConfigSnapshot, NodeGpuConfig};
-
-    let snapshot = ConfigSnapshotResponse {
-        owner_id: String::new(),
-        gen: NODE_PROTOCOL_GENERATION,
-        node_id: vec![0xAA; 32],
-        revision: 7,
-        config_hash: vec![0xBB; 32],
-        config: Some(NodeConfigSnapshot {
-            version: 1,
-            gpu: Some(NodeGpuConfig {
-                assignment: crate::proto::node::GpuAssignment::Auto as i32,
-            }),
-            models: vec![],
-            plugins: vec![],
-        }),
-        hostname: Some("test-host".to_string()),
-        error: None,
-    };
-
-    let encoded = encode_control_frame(STREAM_CONFIG_SUBSCRIBE, &snapshot);
-    let decoded: ConfigSnapshotResponse =
-        decode_control_frame(STREAM_CONFIG_SUBSCRIBE, &encoded).expect("round-trip must succeed");
-
-    assert_eq!(decoded.gen, NODE_PROTOCOL_GENERATION);
-    assert_eq!(decoded.node_id, vec![0xAA; 32]);
-    assert_eq!(decoded.revision, 7);
-    assert_eq!(decoded.config_hash, vec![0xBB; 32]);
-    assert_eq!(decoded.hostname, Some("test-host".to_string()));
-    let cfg = decoded.config.expect("config must be present");
-    assert_eq!(cfg.version, 1);
-    let gpu = cfg.gpu.expect("gpu must be present");
-    assert_eq!(
-        gpu.assignment,
-        crate::proto::node::GpuAssignment::Auto as i32
-    );
-}
-
-#[test]
-fn config_sync_subscribe_not_before_admission() {
+fn legacy_config_stream_ids_are_reserved_and_require_admission() {
     assert!(
         !stream_allowed_before_admission(STREAM_CONFIG_SUBSCRIBE),
-        "STREAM_CONFIG_SUBSCRIBE (0x0b) must require admission — it is an owner-gated config stream"
+        "reserved STREAM_CONFIG_SUBSCRIBE (0x0b) must not bypass admission"
     );
-}
-
-fn test_signing_key() -> (ed25519_dalek::SigningKey, String) {
-    let signing_key = ed25519_dalek::SigningKey::from_bytes(&[0x42u8; 32]);
-    let verifying = signing_key.verifying_key();
-    let owner_id = crate::crypto::owner_id_from_verifying_key(&verifying);
-    (signing_key, owner_id)
-}
-
-#[test]
-fn config_sync_push_signature_payload_deterministic() {
-    use crate::proto::node::{ConfigPush, NodeConfigSnapshot};
-
-    let push = ConfigPush {
-        owner_id: String::new(),
-        gen: NODE_PROTOCOL_GENERATION,
-        requester_id: vec![0xAA; 32],
-        target_node_id: vec![0xBB; 32],
-        owner_signing_public_key: vec![0x42u8; 32],
-        expected_revision: 3,
-        config: Some(NodeConfigSnapshot {
-            version: 1,
-            gpu: None,
-            models: vec![],
-            plugins: vec![],
-        }),
-        signature: vec![0u8; 64],
-    };
-
-    let p1 = config_push_signature_payload(&push);
-    let p2 = config_push_signature_payload(&push);
-    assert_eq!(p1, p2, "payload must be deterministic for the same input");
-    assert!(!p1.is_empty(), "payload must not be empty");
-}
-
-// config_sync_push_wrong_owner_detected was removed: the `owner_id` field no longer
-// exists in ConfigPush. Wrong-owner detection is now handled entirely through the
-// gossip-attested peer identity check in handle_config_push.
-
-#[test]
-fn config_sync_push_bad_signature_bytes_length() {
-    let bad_sig: Vec<u8> = vec![0u8; 32];
-    let result: Result<[u8; 64], _> = bad_sig.as_slice().try_into();
     assert!(
-        result.is_err(),
-        "32-byte slice must not convert to [u8; 64] — wrong-length signature must be rejected"
-    );
-
-    let good_sig: Vec<u8> = vec![0u8; 64];
-    let result: Result<[u8; 64], _> = good_sig.as_slice().try_into();
-    assert!(result.is_ok(), "64-byte slice must convert to [u8; 64]");
-}
-
-#[test]
-fn config_sync_push_roundtrip_encode_decode() {
-    use crate::proto::node::{ConfigApplyMode, ConfigPushResponse};
-    use prost::Message as _;
-
-    let response = ConfigPushResponse {
-        gen: NODE_PROTOCOL_GENERATION,
-        success: true,
-        current_revision: 42,
-        config_hash: vec![0xCC; 32],
-        error: None,
-        apply_mode: ConfigApplyMode::Staged as i32,
-    };
-
-    let encoded = response.encode_to_vec();
-    let decoded = ConfigPushResponse::decode(encoded.as_slice())
-        .expect("ConfigPushResponse must round-trip through encode/decode");
-
-    assert_eq!(decoded.gen, NODE_PROTOCOL_GENERATION);
-    assert!(decoded.success);
-    assert_eq!(decoded.current_revision, 42);
-    assert_eq!(decoded.config_hash, vec![0xCC; 32]);
-    assert!(decoded.error.is_none());
-    assert_eq!(decoded.apply_mode, ConfigApplyMode::Staged as i32);
-}
-
-#[test]
-fn config_sync_sign_and_verify_roundtrip() {
-    use crate::proto::node::{ConfigPush, NodeConfigSnapshot};
-    use ed25519_dalek::Signer as _;
-
-    let (signing_key, owner_id) = test_signing_key();
-    let vk = signing_key.verifying_key();
-
-    let mut push = ConfigPush {
-        owner_id: String::new(),
-        gen: NODE_PROTOCOL_GENERATION,
-        requester_id: vec![0xAA; 32],
-        target_node_id: vec![0xBB; 32],
-        owner_signing_public_key: vk.to_bytes().to_vec(),
-        expected_revision: 0,
-        config: Some(NodeConfigSnapshot {
-            version: 1,
-            gpu: None,
-            models: vec![],
-            plugins: vec![],
-        }),
-        signature: vec![0u8; 64],
-    };
-
-    let payload = config_push_signature_payload(&push);
-    let sig = signing_key.sign(&payload);
-    push.signature = sig.to_bytes().to_vec();
-
-    // Verify: re-derive owner_id from vk and check signature
-    let pk_bytes: [u8; 32] = push.owner_signing_public_key.as_slice().try_into().unwrap();
-    let restored_vk = ed25519_dalek::VerifyingKey::from_bytes(&pk_bytes).unwrap();
-    let derived_id = crate::crypto::owner_id_from_verifying_key(&restored_vk);
-    assert_eq!(derived_id, owner_id, "owner_id must match key fingerprint");
-
-    let payload2 = config_push_signature_payload(&push);
-    let sig_bytes: [u8; 64] = push.signature.as_slice().try_into().unwrap();
-    let sig_obj = ed25519_dalek::Signature::from_bytes(&sig_bytes);
-    restored_vk
-        .verify_strict(&payload2, &sig_obj)
-        .expect("signature must verify against the canonical payload");
-}
-
-#[test]
-fn config_sync_signature_payload_excludes_signature_field() {
-    use crate::proto::node::{ConfigPush, NodeConfigSnapshot};
-
-    let mut push = ConfigPush {
-        owner_id: String::new(),
-        gen: NODE_PROTOCOL_GENERATION,
-        requester_id: vec![0xAA; 32],
-        target_node_id: vec![0xBB; 32],
-        owner_signing_public_key: vec![0x42u8; 32],
-        expected_revision: 0,
-        config: Some(NodeConfigSnapshot {
-            version: 1,
-            gpu: None,
-            models: vec![],
-            plugins: vec![],
-        }),
-        signature: vec![0u8; 64],
-    };
-
-    let payload_with_sig = config_push_signature_payload(&push);
-
-    // Change only the signature field — the canonical payload must not change
-    push.signature = vec![0xFF; 64];
-    let payload_different_sig = config_push_signature_payload(&push);
-
-    assert_eq!(
-        payload_with_sig, payload_different_sig,
-        "payload must be identical regardless of the signature field value"
-    );
-
-    // Change a semantic field — the canonical payload MUST change
-    push.expected_revision = 99;
-    let payload_changed = config_push_signature_payload(&push);
-    assert_ne!(
-        payload_with_sig, payload_changed,
-        "payload must change when a semantic field changes"
+        !stream_allowed_before_admission(STREAM_CONFIG_PUSH),
+        "reserved STREAM_CONFIG_PUSH (0x0c) must not bypass admission"
     );
 }
 
@@ -3988,163 +4667,116 @@ fn test_owner_keypair(signing_seed: u8, encryption_seed: u8) -> crate::crypto::O
         .expect("test owner keypair must be valid")
 }
 
-/// Create a test `Node` with a verified local owner attestation and a
-/// `ConfigState` whose backing file lives in `config_dir`.
-async fn make_test_node_with_owner(
-    role: super::NodeRole,
+fn proto_signed_node_ownership(
+    ownership: &crate::crypto::SignedNodeOwnership,
+) -> crate::proto::node::SignedNodeOwnership {
+    crate::proto::node::SignedNodeOwnership {
+        version: ownership.claim.version,
+        cert_id: ownership.claim.cert_id.clone(),
+        owner_id: ownership.claim.owner_id.clone(),
+        owner_sign_public_key: hex::decode(&ownership.claim.owner_sign_public_key)
+            .expect("test owner_sign_public_key must decode"),
+        node_endpoint_id: hex::decode(&ownership.claim.node_endpoint_id)
+            .expect("test node_endpoint_id must decode"),
+        issued_at_unix_ms: ownership.claim.issued_at_unix_ms,
+        expires_at_unix_ms: ownership.claim.expires_at_unix_ms,
+        node_label: ownership.claim.node_label.clone(),
+        hostname_hint: ownership.claim.hostname_hint.clone(),
+        signature: hex::decode(&ownership.signature).expect("test signature must decode"),
+    }
+}
+
+async fn open_owner_control_stream(
+    target: &Node,
     owner_keypair: &crate::crypto::OwnerKeypair,
-    config_dir: &std::path::Path,
-) -> Result<Node> {
-    use iroh::endpoint::QuicTransportConfig;
-
-    let config_path = config_dir.join("config.toml");
-    let config_state =
-        crate::runtime::config_state::ConfigState::load(&config_path).unwrap_or_default();
-
-    let transport_config = QuicTransportConfig::builder()
-        .max_concurrent_bidi_streams(128u32.into())
-        .build();
+) -> Result<(
+    Endpoint,
+    iroh::endpoint::SendStream,
+    iroh::endpoint::RecvStream,
+    EndpointId,
+)> {
     let endpoint = Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(SecretKey::generate())
-        .alpns(vec![ALPN_V1.to_vec()])
-        .transport_config(transport_config)
+        .alpns(vec![ALPN_CONTROL_V1.to_vec()])
+        .relay_mode(iroh::endpoint::RelayMode::Disabled)
         .bind_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))?
         .bind()
         .await?;
-
-    let (peer_change_tx, peer_change_rx) = watch::channel(0usize);
-    let (inflight_change_tx, _) = watch::channel(0u64);
-    let (tunnel_tx, _tunnel_rx) = tokio::sync::mpsc::channel(8);
-    let (tunnel_http_tx, _tunnel_http_rx) = tokio::sync::mpsc::channel(8);
-    let (stage_transport_tx, _stage_transport_rx) = tokio::sync::mpsc::channel(8);
-    let revision = config_state.revision();
-    let owner_attestation = sign_node_ownership(
+    let ownership = sign_node_ownership(
         owner_keypair,
         endpoint.id().as_bytes(),
         current_time_unix_ms() + DEFAULT_NODE_CERT_LIFETIME_SECS * 1000,
         None,
         None,
     )?;
+    let control_addr = Node::decode_invite_token(
+        &target
+            .control_endpoint()
+            .await
+            .expect("control endpoint should be available for owner-control tests"),
+    )?;
+    let conn = endpoint.connect(control_addr, ALPN_CONTROL_V1).await?;
+    let (mut send, recv) = conn.open_bi().await?;
+    write_len_prefixed(
+        &mut send,
+        &crate::proto::node::OwnerControlEnvelope {
+            gen: NODE_PROTOCOL_GENERATION,
+            handshake: Some(crate::proto::node::OwnerControlHandshake {
+                ownership: Some(proto_signed_node_ownership(&ownership)),
+            }),
+            request: None,
+            response: None,
+            error: None,
+        }
+        .encode_to_vec(),
+    )
+    .await?;
+    let endpoint_id = endpoint.id();
+    Ok((endpoint, send, recv, endpoint_id))
+}
+
+async fn read_owner_control_envelope(
+    recv: &mut iroh::endpoint::RecvStream,
+) -> Result<crate::proto::node::OwnerControlEnvelope> {
+    let bytes = crate::protocol::read_len_prefixed(recv).await?;
+    let envelope = crate::proto::node::OwnerControlEnvelope::decode(bytes.as_slice())?;
+    envelope
+        .validate_frame()
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    Ok(envelope)
+}
+
+async fn start_owner_control_test_server(
+    owner_keypair: &crate::crypto::OwnerKeypair,
+    config_dir: &std::path::Path,
+) -> Result<(Node, SecretKey, std::path::PathBuf)> {
+    let (node, secret_key) =
+        Node::new_for_tests_with_secret(super::NodeRole::Host { http_port: 9337 }).await?;
+    let config_path = config_dir.join("config.toml");
+    *node.config_state.lock().await =
+        crate::runtime::config_state::ConfigState::load(&config_path).unwrap_or_default();
+
+    let ownership = sign_node_ownership(
+        owner_keypair,
+        node.id().as_bytes(),
+        current_time_unix_ms() + DEFAULT_NODE_CERT_LIFETIME_SECS * 1000,
+        None,
+        None,
+    )?;
     let trust_store = TrustStore::default();
     let owner_summary = verify_node_ownership(
-        Some(&owner_attestation),
-        endpoint.id().as_bytes(),
+        Some(&ownership),
+        node.id().as_bytes(),
         &trust_store,
         TrustPolicy::Off,
         current_time_unix_ms(),
     );
-    let runtime_data_producer = crate::runtime_data::RuntimeDataCollector::new().producer(
-        crate::runtime_data::RuntimeDataSource {
-            scope: "routing",
-            plugin_data_key: None,
-            plugin_endpoint_key: None,
-        },
-    );
-
-    let node = Node {
-        endpoint,
-        public_addr: None,
-        state: Arc::new(Mutex::new(MeshState {
-            peers: HashMap::new(),
-            connections: HashMap::new(),
-            remote_tunnel_maps: HashMap::new(),
-            dead_peers: HashMap::new(),
-            peer_down_rejections: HashMap::new(),
-            seen_plugin_messages: HashMap::new(),
-            seen_plugin_message_order: VecDeque::new(),
-            policy_rejected_peers: HashMap::new(),
-        })),
-        role: Arc::new(Mutex::new(role)),
-        models: Arc::new(Mutex::new(Vec::new())),
-        model_source: Arc::new(Mutex::new(None)),
-        serving_models: Arc::new(Mutex::new(Vec::new())),
-        served_model_descriptors: Arc::new(Mutex::new(Vec::new())),
-        model_runtime_descriptors: Arc::new(Mutex::new(Vec::new())),
-        hosted_models: Arc::new(Mutex::new(Vec::new())),
-        llama_ready: Arc::new(Mutex::new(false)),
-        available_models: Arc::new(Mutex::new(Vec::new())),
-        requested_models: Arc::new(Mutex::new(Vec::new())),
-        explicit_model_interests: Arc::new(Mutex::new(Vec::new())),
-        model_demand: Arc::new(std::sync::Mutex::new(HashMap::new())),
-        mesh_id: Arc::new(Mutex::new(None)),
-        first_joined_mesh_ts: Arc::new(Mutex::new(None)),
-        accepting: Arc::new((
-            tokio::sync::Notify::new(),
-            std::sync::atomic::AtomicBool::new(false),
-        )),
-        vram_bytes: 64 * 1024 * 1024 * 1024,
-        peer_change_tx,
-        peer_change_rx,
-        inflight_requests: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-        inflight_change_tx,
-        routing_metrics: crate::network::metrics::RoutingMetrics::default(),
-        routing_telemetry: Arc::new(std::sync::Mutex::new(None)),
-        local_request_metrics: Arc::new(LocalRequestMetricsSampler::default()),
-        runtime_data_producer,
-        tunnel_tx,
-        tunnel_http_tx,
-        stage_transport_tx,
-        stage_control_tx: Arc::new(Mutex::new(None)),
-        stage_transport_bridges: Arc::new(Mutex::new(HashMap::new())),
-        stage_topologies: Arc::new(Mutex::new(StageTopologyState::default())),
-        plugin_manager: Arc::new(Mutex::new(None)),
-        display_name: Arc::new(Mutex::new(None)),
-        owner_attestation: Arc::new(Mutex::new(Some(owner_attestation))),
-        owner_summary: Arc::new(Mutex::new(owner_summary)),
-        trust_store: Arc::new(Mutex::new(trust_store)),
-        trust_policy: TrustPolicy::Off,
-        enumerate_host: false,
-        gpu_name: None,
-        hostname: None,
-        is_soc: None,
-        gpu_vram: None,
-        gpu_reserved_bytes: None,
-        gpu_mem_bandwidth_gbps: Arc::new(tokio::sync::Mutex::new(None)),
-        gpu_compute_tflops_fp32: Arc::new(tokio::sync::Mutex::new(None)),
-        gpu_compute_tflops_fp16: Arc::new(tokio::sync::Mutex::new(None)),
-        config_state: Arc::new(tokio::sync::Mutex::new(config_state)),
-        config_revision_tx: {
-            let (tx, _rx) = tokio::sync::watch::channel(revision);
-            Arc::new(tx)
-        },
-    };
-
-    let accept_node = node.clone();
-    tokio::spawn(async move {
-        accept_node.accept_loop().await;
-    });
-
-    Ok(node)
-}
-
-/// Helper: build and sign a ConfigPush proto for the given node/owner/config.
-/// Build a `ConfigPush` proto that is correctly signed with `signing_key`.
-///
-/// The resulting push targets `target_node_id`, is attributed to `requester_id`,
-/// and carries `expected_revision` for CAS enforcement. The signature covers the
-/// canonical protobuf encoding of the push with the `signature` field cleared.
-fn build_signed_config_push(
-    owner_keypair: &crate::crypto::OwnerKeypair,
-    requester_id: &EndpointId,
-    target_node_id: &EndpointId,
-    expected_revision: u64,
-    config: crate::proto::node::NodeConfigSnapshot,
-) -> crate::proto::node::ConfigPush {
-    let vk = owner_keypair.verifying_key();
-
-    let mut push = crate::proto::node::ConfigPush {
-        owner_id: String::new(),
-        gen: NODE_PROTOCOL_GENERATION,
-        requester_id: requester_id.as_bytes().to_vec(),
-        target_node_id: target_node_id.as_bytes().to_vec(),
-        owner_signing_public_key: vk.to_bytes().to_vec(),
-        expected_revision,
-        config: Some(config),
-        signature: vec![0u8; 64],
-    };
-    let payload = config_push_signature_payload(&push);
-    push.signature = owner_keypair.sign_bytes(&payload).to_vec();
-    push
+    *node.owner_attestation.lock().await = Some(ownership);
+    *node.owner_summary.lock().await = owner_summary;
+    *node.trust_store.lock().await = trust_store;
+    node.maybe_start_control_listener(secret_key.clone(), None, None, None)
+        .await?;
+    Ok((node, secret_key, config_path))
 }
 
 /// Wait until `node` has `target` in its peers list. Times out after 5 s.
@@ -4165,1240 +4797,165 @@ async fn wait_for_peer(node: &Node, target: EndpointId) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn config_subscribe_matching_owner_receives_snapshot() -> Result<()> {
-    let owner_keypair = test_owner_keypair(0x11, 0x12);
+async fn control_plane_legacy_compat_new_client_prefers_control_alpn() -> Result<()> {
+    use crate::proto::node::OwnerControlRequest;
 
-    let tmp = std::env::temp_dir().join(format!("mesh-llm-cfg-sub-{}", rand::random::<u64>()));
-    std::fs::create_dir_all(tmp.join("server")).ok();
-    std::fs::create_dir_all(tmp.join("client")).ok();
+    let owner_keypair = test_owner_keypair(0xa3, 0xa4);
+    let tmp = std::env::temp_dir().join(format!(
+        "mesh-llm-control-plane-prefers-control-{}",
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&tmp).ok();
 
-    let server = make_test_node_with_owner(
-        super::NodeRole::Host { http_port: 9337 },
-        &owner_keypair,
-        &tmp.join("server"),
-    )
-    .await?;
-    let client =
-        make_test_node_with_owner(super::NodeRole::Worker, &owner_keypair, &tmp.join("client"))
-            .await?;
+    let (server, _secret_key, _config_path) =
+        start_owner_control_test_server(&owner_keypair, &tmp).await?;
+    let control_addr = Node::decode_invite_token(
+        &server
+            .control_endpoint()
+            .await
+            .expect("owner-controlled node should expose control endpoint"),
+    )?;
 
-    server
-        .set_mesh_id("cfg-subscribe-mesh-01".to_string())
-        .await;
-    client
-        .set_mesh_id("cfg-subscribe-mesh-01".to_string())
-        .await;
-    server.start_accepting();
-    client.start_accepting();
-
-    let server_id = server.id();
-    let server_addr = server.endpoint.addr();
-    let invite =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&server_addr)?);
-
-    client.join(&invite).await?;
-    wait_for_peer(&client, server_id).await;
-    wait_for_peer(&server, client.id()).await;
-
-    let conn = {
-        let state = client.state.lock().await;
-        state
-            .connections
-            .get(&server_id)
-            .cloned()
-            .expect("connection to server must exist after join")
-    };
-
-    let (snapshot, _notif_rx) = client.subscribe_to_config(&conn).await?;
-
-    assert_eq!(
-        snapshot.node_id,
-        server_id.as_bytes().to_vec(),
-        "snapshot node_id must be the server's endpoint id"
-    );
-    assert_eq!(
-        snapshot.config_hash.len(),
-        32,
-        "config_hash must be 32 bytes"
-    );
-    assert!(
-        snapshot.config.is_some(),
-        "snapshot must include config payload"
-    );
-    assert!(
-        snapshot.error.is_none() || snapshot.error.as_deref() == Some(""),
-        "snapshot must not carry an error"
-    );
-
-    std::fs::remove_dir_all(&tmp).ok();
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn config_subscribe_wrong_owner_returns_error() -> Result<()> {
-    let server_owner = test_owner_keypair(0x22, 0x23);
-    let client_owner = test_owner_keypair(0x33, 0x34);
-
-    let tmp = std::env::temp_dir().join(format!("mesh-llm-cfg-wrong-{}", rand::random::<u64>()));
-    std::fs::create_dir_all(tmp.join("server")).ok();
-    std::fs::create_dir_all(tmp.join("client")).ok();
-
-    let server = make_test_node_with_owner(
-        super::NodeRole::Host { http_port: 9337 },
-        &server_owner,
-        &tmp.join("server"),
-    )
-    .await?;
-    let client =
-        make_test_node_with_owner(super::NodeRole::Worker, &client_owner, &tmp.join("client"))
-            .await?;
-
-    server
-        .set_mesh_id("cfg-wrong-owner-mesh-01".to_string())
-        .await;
-    client
-        .set_mesh_id("cfg-wrong-owner-mesh-01".to_string())
-        .await;
-    server.start_accepting();
-    client.start_accepting();
-
-    let server_id = server.id();
-    let server_addr = server.endpoint.addr();
-    let invite =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&server_addr)?);
-
-    client.join(&invite).await?;
-    wait_for_peer(&client, server_id).await;
-    wait_for_peer(&server, client.id()).await;
-
-    let conn = {
-        let state = client.state.lock().await;
-        state
-            .connections
-            .get(&server_id)
-            .cloned()
-            .expect("connection to server must exist after join")
-    };
-
-    // Subscribe - the subscriber's attested owner doesn't match the server's owner
-    let result = client.subscribe_to_config(&conn).await;
-    assert!(
-        result.is_err(),
-        "subscribing with wrong owner_id must return an error"
-    );
-    let err_msg = result.unwrap_err().to_string();
-    assert!(
-        err_msg.contains("owner_id mismatch") || err_msg.contains("rejected"),
-        "error must mention owner mismatch, got: {err_msg}"
-    );
-
-    std::fs::remove_dir_all(&tmp).ok();
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn config_subscribe_unowned_node_returns_error() -> Result<()> {
-    let client_owner = test_owner_keypair(0x44, 0x45);
-
-    let tmp = std::env::temp_dir().join(format!("mesh-llm-cfg-unowned-{}", rand::random::<u64>()));
-    std::fs::create_dir_all(tmp.join("client")).ok();
-
-    // server has NO owner key (make_test_node, not make_test_node_with_owner)
-    let server = make_test_node(super::NodeRole::Host { http_port: 9337 }).await?;
-    let client =
-        make_test_node_with_owner(super::NodeRole::Worker, &client_owner, &tmp.join("client"))
-            .await?;
-
-    server.set_mesh_id("cfg-unowned-mesh-01".to_string()).await;
-    client.set_mesh_id("cfg-unowned-mesh-01".to_string()).await;
-    server.start_accepting();
-    client.start_accepting();
-
-    let server_id = server.id();
-    let server_addr = server.endpoint.addr();
-    let invite =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&server_addr)?);
-
-    client.join(&invite).await?;
-    wait_for_peer(&client, server_id).await;
-    wait_for_peer(&server, client.id()).await;
-
-    let conn = {
-        let state = client.state.lock().await;
-        state
-            .connections
-            .get(&server_id)
-            .cloned()
-            .expect("connection to server must exist after join")
-    };
-
-    let result = client.subscribe_to_config(&conn).await;
-    assert!(
-        result.is_err(),
-        "subscribing to an unowned node must return an error"
-    );
-    let err_msg = result.unwrap_err().to_string();
-    assert!(
-        err_msg.contains("no local owner") || err_msg.contains("rejected"),
-        "error must mention missing owner, got: {err_msg}"
-    );
-
-    std::fs::remove_dir_all(&tmp).ok();
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn config_subscribe_rejects_pinned_snapshot_for_older_peer() -> Result<()> {
-    let owner_keypair = test_owner_keypair(0x13, 0x14);
-
-    let tmp = std::env::temp_dir().join(format!("mesh-llm-cfg-sub-old-{}", rand::random::<u64>()));
-    std::fs::create_dir_all(tmp.join("server")).ok();
-    std::fs::create_dir_all(tmp.join("client")).ok();
-
-    let server = make_test_node_with_owner(
-        super::NodeRole::Host { http_port: 9337 },
-        &owner_keypair,
-        &tmp.join("server"),
-    )
-    .await?;
-    let client =
-        make_test_node_with_owner(super::NodeRole::Worker, &owner_keypair, &tmp.join("client"))
-            .await?;
-
-    server.set_mesh_id("cfg-sub-old-mesh-01".to_string()).await;
-    client.set_mesh_id("cfg-sub-old-mesh-01".to_string()).await;
-    server.start_accepting();
-    client.start_accepting();
-
-    let server_id = server.id();
-    let server_addr = server.endpoint.addr();
-    let invite =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&server_addr)?);
-
-    client.join(&invite).await?;
-    wait_for_peer(&client, server_id).await;
-    wait_for_peer(&server, client.id()).await;
-
-    {
-        let mut state = server.state.lock().await;
-        state
-            .peers
-            .get_mut(&client.id())
-            .expect("server must track client peer")
-            .version = Some("0.58.0".to_string());
-    }
-
-    {
-        let mut state = server.config_state.lock().await;
-        let expected_revision = state.revision();
-        let result = state.apply(
-            crate::plugin::MeshConfig {
-                version: Some(1),
-                gpu: crate::plugin::GpuConfig {
-                    assignment: crate::plugin::GpuAssignment::Pinned,
-                    ..Default::default()
-                },
-                telemetry: Default::default(),
-                models: vec![crate::plugin::ModelConfigEntry {
-                    model: "Qwen3-8B-Q4_K_M".into(),
-                    mmproj: None,
-                    ctx_size: Some(8192),
-                    gpu_id: Some("pci:0000:65:00.0".into()),
-                    parallel: None,
-                    cache_type_k: None,
-                    cache_type_v: None,
-                    batch: None,
-                    ubatch: None,
-                    flash_attention: None,
-                }],
-                plugins: vec![],
-            },
-            expected_revision,
-        );
-        assert!(matches!(
-            result,
-            crate::runtime::config_state::ApplyResult::Applied { .. }
-        ));
-    }
-
-    let conn = {
-        let state = client.state.lock().await;
-        state
-            .connections
-            .get(&server_id)
-            .cloned()
-            .expect("connection to server must exist after join")
-    };
-
-    let err = client
-        .subscribe_to_config(&conn)
+    let wrong_alpn_client = Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(SecretKey::generate())
+        .alpns(vec![ALPN_CONTROL_V1.to_vec(), ALPN_V1.to_vec()])
+        .relay_mode(iroh::endpoint::RelayMode::Disabled)
+        .bind_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))?
+        .bind()
+        .await?;
+    assert!(wrong_alpn_client
+        .connect(control_addr.clone(), ALPN_V1)
         .await
-        .expect_err("older peer must be rejected for pinned config subscribe")
-        .to_string();
-    assert!(
-        err.contains("pinned gpu config sync requires mesh-llm >= 0.59.0"),
-        "error must mention pinned config compatibility gate, got: {err}"
-    );
+        .is_err());
 
-    std::fs::remove_dir_all(&tmp).ok();
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn config_subscribe_rejects_pinned_snapshot_for_malformed_peer_version() -> Result<()> {
-    let owner_keypair = test_owner_keypair(0x33, 0x34);
-
-    let tmp = std::env::temp_dir().join(format!(
-        "mesh-llm-cfg-sub-bad-ver-{}",
-        rand::random::<u64>()
-    ));
-    std::fs::create_dir_all(tmp.join("server")).ok();
-    std::fs::create_dir_all(tmp.join("client")).ok();
-
-    let server = make_test_node_with_owner(
-        super::NodeRole::Host { http_port: 9337 },
-        &owner_keypair,
-        &tmp.join("server"),
-    )
-    .await?;
-    let client =
-        make_test_node_with_owner(super::NodeRole::Worker, &owner_keypair, &tmp.join("client"))
-            .await?;
-
-    server
-        .set_mesh_id("cfg-sub-bad-ver-mesh-01".to_string())
-        .await;
-    client
-        .set_mesh_id("cfg-sub-bad-ver-mesh-01".to_string())
-        .await;
-    server.start_accepting();
-    client.start_accepting();
-
-    let server_id = server.id();
-    let server_addr = server.endpoint.addr();
-    let invite =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&server_addr)?);
-
-    client.join(&invite).await?;
-    wait_for_peer(&client, server_id).await;
-    wait_for_peer(&server, client.id()).await;
-
-    {
-        let mut state = server.state.lock().await;
-        state
-            .peers
-            .get_mut(&client.id())
-            .expect("server must track client peer")
-            .version = Some("dev".to_string());
-    }
-
-    {
-        let mut state = server.config_state.lock().await;
-        let expected_revision = state.revision();
-        let result = state.apply(
-            crate::plugin::MeshConfig {
-                version: Some(1),
-                gpu: crate::plugin::GpuConfig {
-                    assignment: crate::plugin::GpuAssignment::Pinned,
-                    ..Default::default()
-                },
-                telemetry: Default::default(),
-                models: vec![crate::plugin::ModelConfigEntry {
-                    model: "Qwen3-8B-Q4_K_M".into(),
-                    mmproj: None,
-                    ctx_size: Some(8192),
-                    gpu_id: Some("pci:0000:65:00.0".into()),
-                    parallel: None,
-                    cache_type_k: None,
-                    cache_type_v: None,
-                    batch: None,
-                    ubatch: None,
-                    flash_attention: None,
-                }],
-                plugins: vec![],
-            },
-            expected_revision,
-        );
-        assert!(matches!(
-            result,
-            crate::runtime::config_state::ApplyResult::Applied { .. }
-        ));
-    }
-
-    let conn = {
-        let state = client.state.lock().await;
-        state
-            .connections
-            .get(&server_id)
-            .cloned()
-            .expect("connection to server must exist after join")
-    };
-
-    let err = client
-        .subscribe_to_config(&conn)
-        .await
-        .expect_err("malformed-version peer must be rejected for pinned config subscribe")
-        .to_string();
-    assert!(
-        err.contains("pinned gpu config sync requires mesh-llm >= 0.59.0"),
-        "error must mention pinned config compatibility gate, got: {err}"
-    );
-
-    std::fs::remove_dir_all(&tmp).ok();
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn config_subscribe_allows_pinned_snapshot_for_same_release_prerelease_peer() -> Result<()> {
-    let owner_keypair = test_owner_keypair(0x37, 0x38);
-
-    let tmp =
-        std::env::temp_dir().join(format!("mesh-llm-cfg-sub-rc-ver-{}", rand::random::<u64>()));
-    std::fs::create_dir_all(tmp.join("server")).ok();
-    std::fs::create_dir_all(tmp.join("client")).ok();
-
-    let server = make_test_node_with_owner(
-        super::NodeRole::Host { http_port: 9337 },
-        &owner_keypair,
-        &tmp.join("server"),
-    )
-    .await?;
-    let client =
-        make_test_node_with_owner(super::NodeRole::Worker, &owner_keypair, &tmp.join("client"))
-            .await?;
-
-    server
-        .set_mesh_id("cfg-sub-rc-ver-mesh-01".to_string())
-        .await;
-    client
-        .set_mesh_id("cfg-sub-rc-ver-mesh-01".to_string())
-        .await;
-    server.start_accepting();
-    client.start_accepting();
-
-    let server_id = server.id();
-    let server_addr = server.endpoint.addr();
-    let invite =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&server_addr)?);
-
-    client.join(&invite).await?;
-    wait_for_peer(&client, server_id).await;
-    wait_for_peer(&server, client.id()).await;
-
-    {
-        let mut state = server.state.lock().await;
-        state
-            .peers
-            .get_mut(&client.id())
-            .expect("server must track client peer")
-            .version = Some("0.59.0-rc.1".to_string());
-    }
-
-    {
-        let mut state = server.config_state.lock().await;
-        let expected_revision = state.revision();
-        let result = state.apply(
-            crate::plugin::MeshConfig {
-                version: Some(1),
-                gpu: crate::plugin::GpuConfig {
-                    assignment: crate::plugin::GpuAssignment::Pinned,
-                    ..Default::default()
-                },
-                telemetry: Default::default(),
-                models: vec![crate::plugin::ModelConfigEntry {
-                    model: "Qwen3-8B-Q4_K_M".into(),
-                    mmproj: None,
-                    ctx_size: Some(8192),
-                    gpu_id: Some("pci:0000:65:00.0".into()),
-                    parallel: None,
-                    cache_type_k: None,
-                    cache_type_v: None,
-                    batch: None,
-                    ubatch: None,
-                    flash_attention: None,
-                }],
-                plugins: vec![],
-            },
-            expected_revision,
-        );
-        assert!(matches!(
-            result,
-            crate::runtime::config_state::ApplyResult::Applied { .. }
-        ));
-    }
-
-    let conn = {
-        let state = client.state.lock().await;
-        state
-            .connections
-            .get(&server_id)
-            .cloned()
-            .expect("connection to server must exist after join")
-    };
-
-    let (snapshot, _notif_rx) = client.subscribe_to_config(&conn).await?;
-    assert!(snapshot.error.is_none() || snapshot.error.as_deref() == Some(""));
-    assert!(
-        snapshot.config.is_some(),
-        "same-release prerelease peer should receive pinned config snapshot"
-    );
-
-    std::fs::remove_dir_all(&tmp).ok();
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn config_subscribe_auto_snapshot_still_allowed_for_older_peer() -> Result<()> {
-    let owner_keypair = test_owner_keypair(0x15, 0x16);
-
-    let tmp = std::env::temp_dir().join(format!(
-        "mesh-llm-cfg-sub-auto-old-{}",
-        rand::random::<u64>()
-    ));
-    std::fs::create_dir_all(tmp.join("server")).ok();
-    std::fs::create_dir_all(tmp.join("client")).ok();
-
-    let server = make_test_node_with_owner(
-        super::NodeRole::Host { http_port: 9337 },
-        &owner_keypair,
-        &tmp.join("server"),
-    )
-    .await?;
-    let client =
-        make_test_node_with_owner(super::NodeRole::Worker, &owner_keypair, &tmp.join("client"))
-            .await?;
-
-    server
-        .set_mesh_id("cfg-sub-auto-old-mesh-01".to_string())
-        .await;
-    client
-        .set_mesh_id("cfg-sub-auto-old-mesh-01".to_string())
-        .await;
-    server.start_accepting();
-    client.start_accepting();
-
-    let server_id = server.id();
-    let server_addr = server.endpoint.addr();
-    let invite =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&server_addr)?);
-
-    client.join(&invite).await?;
-    wait_for_peer(&client, server_id).await;
-    wait_for_peer(&server, client.id()).await;
-
-    {
-        let mut state = server.state.lock().await;
-        state
-            .peers
-            .get_mut(&client.id())
-            .expect("server must track client peer")
-            .version = Some("0.58.0".to_string());
-    }
-
-    let conn = {
-        let state = client.state.lock().await;
-        state
-            .connections
-            .get(&server_id)
-            .cloned()
-            .expect("connection to server must exist after join")
-    };
-
-    let (snapshot, _notif_rx) = client.subscribe_to_config(&conn).await?;
-    assert!(snapshot.error.is_none() || snapshot.error.as_deref() == Some(""));
-    assert!(
-        snapshot.config.is_some(),
-        "auto config snapshot should still be sent"
-    );
-
-    std::fs::remove_dir_all(&tmp).ok();
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn config_subscribe_closes_when_revision_becomes_pinned_for_malformed_peer_version(
-) -> Result<()> {
-    let owner_keypair = test_owner_keypair(0x35, 0x36);
-
-    let tmp = std::env::temp_dir().join(format!(
-        "mesh-llm-cfg-sub-update-bad-ver-{}",
-        rand::random::<u64>()
-    ));
-    std::fs::create_dir_all(tmp.join("server")).ok();
-    std::fs::create_dir_all(tmp.join("client")).ok();
-
-    let server = make_test_node_with_owner(
-        super::NodeRole::Host { http_port: 9337 },
-        &owner_keypair,
-        &tmp.join("server"),
-    )
-    .await?;
-    let client =
-        make_test_node_with_owner(super::NodeRole::Worker, &owner_keypair, &tmp.join("client"))
-            .await?;
-
-    server
-        .set_mesh_id("cfg-sub-update-bad-ver-mesh-01".to_string())
-        .await;
-    client
-        .set_mesh_id("cfg-sub-update-bad-ver-mesh-01".to_string())
-        .await;
-    server.start_accepting();
-    client.start_accepting();
-
-    let server_id = server.id();
-    let server_addr = server.endpoint.addr();
-    let invite =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&server_addr)?);
-
-    client.join(&invite).await?;
-    wait_for_peer(&client, server_id).await;
-    wait_for_peer(&server, client.id()).await;
-
-    {
-        let mut state = server.state.lock().await;
-        state
-            .peers
-            .get_mut(&client.id())
-            .expect("server must track client peer")
-            .version = Some("dev".to_string());
-    }
-
-    let conn = {
-        let state = client.state.lock().await;
-        state
-            .connections
-            .get(&server_id)
-            .cloned()
-            .expect("connection to server must exist after join")
-    };
-
-    let (_snapshot, mut notif_rx) = client.subscribe_to_config(&conn).await?;
-
-    let new_revision = {
-        let mut state = server.config_state.lock().await;
-        let expected_revision = state.revision();
-        let result = state.apply(
-            crate::plugin::MeshConfig {
-                version: Some(1),
-                gpu: crate::plugin::GpuConfig {
-                    assignment: crate::plugin::GpuAssignment::Pinned,
-                    ..Default::default()
-                },
-                telemetry: Default::default(),
-                models: vec![crate::plugin::ModelConfigEntry {
-                    model: "Qwen3-8B-Q4_K_M".into(),
-                    mmproj: None,
-                    ctx_size: Some(8192),
-                    gpu_id: Some("pci:0000:65:00.0".into()),
-                    parallel: None,
-                    cache_type_k: None,
-                    cache_type_v: None,
-                    batch: None,
-                    ubatch: None,
-                    flash_attention: None,
-                }],
-                plugins: vec![],
-            },
-            expected_revision,
-        );
-        match result {
-            crate::runtime::config_state::ApplyResult::Applied { revision, .. } => revision,
-            other => panic!("pinned config state update must apply in test, got {other:?}"),
+    let (_endpoint, mut send, mut recv, requester_id) =
+        open_owner_control_stream(&server, &owner_keypair).await?;
+    write_len_prefixed(
+        &mut send,
+        &crate::proto::node::OwnerControlEnvelope {
+            gen: NODE_PROTOCOL_GENERATION,
+            handshake: None,
+            request: Some(OwnerControlRequest {
+                request_id: 41,
+                get_config: Some(crate::proto::node::OwnerControlGetConfigRequest {
+                    requester_node_id: requester_id.as_bytes().to_vec(),
+                    target_node_id: server.id().as_bytes().to_vec(),
+                }),
+                watch_config: None,
+                apply_config: None,
+                refresh_inventory: None,
+            }),
+            response: None,
+            error: None,
         }
-    };
+        .encode_to_vec(),
+    )
+    .await?;
 
-    let _ = server.config_revision_tx.send(new_revision);
+    let envelope = read_owner_control_envelope(&mut recv).await?;
+    let snapshot = envelope
+        .response
+        .expect("owner-control request should receive response")
+        .get_config
+        .expect("response should carry get_config result")
+        .snapshot
+        .expect("get_config should return initial snapshot");
+    assert_eq!(snapshot.node_id, server.id().as_bytes().to_vec());
 
-    let changed = tokio::time::timeout(std::time::Duration::from_secs(5), notif_rx.changed())
-        .await
-        .expect("config subscribe stream must react within 5 seconds");
-    assert!(
-        changed.is_err(),
-        "malformed-version subscriber stream should close instead of receiving pinned update"
-    );
-
+    server.shutdown_control_listener().await;
     std::fs::remove_dir_all(&tmp).ok();
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn config_subscribe_closes_when_revision_becomes_pinned_for_older_peer() -> Result<()> {
-    let owner_keypair = test_owner_keypair(0x17, 0x18);
-
+async fn control_plane_legacy_compat_control_alpn_rejects_legacy_frames() -> Result<()> {
+    let owner_keypair = test_owner_keypair(0xa5, 0xa6);
     let tmp = std::env::temp_dir().join(format!(
-        "mesh-llm-cfg-sub-update-old-{}",
+        "mesh-llm-control-plane-legacy-json-{}",
         rand::random::<u64>()
     ));
-    std::fs::create_dir_all(tmp.join("server")).ok();
-    std::fs::create_dir_all(tmp.join("client")).ok();
+    std::fs::create_dir_all(&tmp).ok();
 
-    let server = make_test_node_with_owner(
-        super::NodeRole::Host { http_port: 9337 },
-        &owner_keypair,
-        &tmp.join("server"),
-    )
-    .await?;
-    let client =
-        make_test_node_with_owner(super::NodeRole::Worker, &owner_keypair, &tmp.join("client"))
-            .await?;
+    let (server, _secret_key, _config_path) =
+        start_owner_control_test_server(&owner_keypair, &tmp).await?;
+    let control_addr = Node::decode_invite_token(
+        &server
+            .control_endpoint()
+            .await
+            .expect("owner-controlled node should expose control endpoint"),
+    )?;
 
-    server
-        .set_mesh_id("cfg-sub-update-old-mesh-01".to_string())
-        .await;
-    client
-        .set_mesh_id("cfg-sub-update-old-mesh-01".to_string())
-        .await;
-    server.start_accepting();
-    client.start_accepting();
+    let client = Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(SecretKey::generate())
+        .alpns(vec![ALPN_CONTROL_V1.to_vec()])
+        .relay_mode(iroh::endpoint::RelayMode::Disabled)
+        .bind_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))?
+        .bind()
+        .await?;
+    let conn = client.connect(control_addr, ALPN_CONTROL_V1).await?;
+    let (mut send, mut recv) = conn.open_bi().await?;
+    write_len_prefixed(&mut send, br#"{"request_id":7,"command":"GetConfig"}"#).await?;
 
-    let server_id = server.id();
-    let server_addr = server.endpoint.addr();
-    let invite =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&server_addr)?);
-
-    client.join(&invite).await?;
-    wait_for_peer(&client, server_id).await;
-    wait_for_peer(&server, client.id()).await;
-
-    {
-        let mut state = server.state.lock().await;
-        state
-            .peers
-            .get_mut(&client.id())
-            .expect("server must track client peer")
-            .version = Some("0.58.0".to_string());
-    }
-
-    let conn = {
-        let state = client.state.lock().await;
-        state
-            .connections
-            .get(&server_id)
-            .cloned()
-            .expect("connection to server must exist after join")
-    };
-
-    let (_snapshot, mut notif_rx) = client.subscribe_to_config(&conn).await?;
-
-    let new_revision = {
-        let mut state = server.config_state.lock().await;
-        let expected_revision = state.revision();
-        let result = state.apply(
-            crate::plugin::MeshConfig {
-                version: Some(1),
-                gpu: crate::plugin::GpuConfig {
-                    assignment: crate::plugin::GpuAssignment::Pinned,
-                    ..Default::default()
-                },
-                telemetry: Default::default(),
-                models: vec![crate::plugin::ModelConfigEntry {
-                    model: "Qwen3-8B-Q4_K_M".into(),
-                    mmproj: None,
-                    ctx_size: Some(8192),
-                    gpu_id: Some("pci:0000:65:00.0".into()),
-                    parallel: None,
-                    cache_type_k: None,
-                    cache_type_v: None,
-                    batch: None,
-                    ubatch: None,
-                    flash_attention: None,
-                }],
-                plugins: vec![],
-            },
-            expected_revision,
-        );
-        match result {
-            crate::runtime::config_state::ApplyResult::Applied { revision, .. } => revision,
-            other => panic!("pinned config state update must apply in test, got {other:?}"),
-        }
-    };
-
-    let _ = server.config_revision_tx.send(new_revision);
-
-    let changed = tokio::time::timeout(std::time::Duration::from_secs(5), notif_rx.changed())
-        .await
-        .expect("config subscribe stream must react within 5 seconds");
-    assert!(
-        changed.is_err(),
-        "older subscriber stream should close instead of receiving pinned update"
+    let rejection = read_owner_control_envelope(&mut recv).await?;
+    assert_eq!(
+        crate::proto::node::OwnerControlErrorCode::try_from(
+            rejection
+                .error
+                .expect("legacy json should be rejected")
+                .code,
+        )
+        .unwrap(),
+        crate::proto::node::OwnerControlErrorCode::LegacyJsonUnsupported
     );
 
+    server.shutdown_control_listener().await;
     std::fs::remove_dir_all(&tmp).ok();
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn config_subscribe_keeps_stream_open_when_revision_becomes_pinned_for_same_release_prerelease_peer(
-) -> Result<()> {
-    let owner_keypair = test_owner_keypair(0x39, 0x3a);
-
+async fn control_plane_validation_error_preserves_request_id() -> Result<()> {
+    let owner_keypair = test_owner_keypair(0xb5, 0xb6);
     let tmp = std::env::temp_dir().join(format!(
-        "mesh-llm-cfg-sub-update-rc-ver-{}",
+        "mesh-llm-control-plane-invalid-command-{}",
         rand::random::<u64>()
     ));
-    std::fs::create_dir_all(tmp.join("server")).ok();
-    std::fs::create_dir_all(tmp.join("client")).ok();
+    std::fs::create_dir_all(&tmp).ok();
 
-    let server = make_test_node_with_owner(
-        super::NodeRole::Host { http_port: 9337 },
-        &owner_keypair,
-        &tmp.join("server"),
-    )
-    .await?;
-    let client =
-        make_test_node_with_owner(super::NodeRole::Worker, &owner_keypair, &tmp.join("client"))
-            .await?;
-
-    server
-        .set_mesh_id("cfg-sub-update-rc-ver-mesh-01".to_string())
-        .await;
-    client
-        .set_mesh_id("cfg-sub-update-rc-ver-mesh-01".to_string())
-        .await;
-    server.start_accepting();
-    client.start_accepting();
-
-    let server_id = server.id();
-    let server_addr = server.endpoint.addr();
-    let invite =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&server_addr)?);
-
-    client.join(&invite).await?;
-    wait_for_peer(&client, server_id).await;
-    wait_for_peer(&server, client.id()).await;
-
-    {
-        let mut state = server.state.lock().await;
-        state
-            .peers
-            .get_mut(&client.id())
-            .expect("server must track client peer")
-            .version = Some("0.59.0-rc.1".to_string());
-    }
-
-    let conn = {
-        let state = client.state.lock().await;
-        state
-            .connections
-            .get(&server_id)
-            .cloned()
-            .expect("connection to server must exist after join")
-    };
-
-    let (_snapshot, mut notif_rx) = client.subscribe_to_config(&conn).await?;
-
-    let new_revision = {
-        let mut state = server.config_state.lock().await;
-        let expected_revision = state.revision();
-        let result = state.apply(
-            crate::plugin::MeshConfig {
-                version: Some(1),
-                gpu: crate::plugin::GpuConfig {
-                    assignment: crate::plugin::GpuAssignment::Pinned,
-                    ..Default::default()
-                },
-                telemetry: Default::default(),
-                models: vec![crate::plugin::ModelConfigEntry {
-                    model: "Qwen3-8B-Q4_K_M".into(),
-                    mmproj: None,
-                    ctx_size: Some(8192),
-                    gpu_id: Some("pci:0000:65:00.0".into()),
-                    parallel: None,
-                    cache_type_k: None,
-                    cache_type_v: None,
-                    batch: None,
-                    ubatch: None,
-                    flash_attention: None,
-                }],
-                plugins: vec![],
-            },
-            expected_revision,
-        );
-        match result {
-            crate::runtime::config_state::ApplyResult::Applied { revision, .. } => revision,
-            other => panic!("pinned config state update must apply in test, got {other:?}"),
+    let (server, _secret_key, _config_path) =
+        start_owner_control_test_server(&owner_keypair, &tmp).await?;
+    let (_endpoint, mut send, mut recv, _endpoint_id) =
+        open_owner_control_stream(&server, &owner_keypair).await?;
+    write_len_prefixed(
+        &mut send,
+        &crate::proto::node::OwnerControlEnvelope {
+            gen: NODE_PROTOCOL_GENERATION,
+            handshake: None,
+            request: Some(crate::proto::node::OwnerControlRequest {
+                request_id: 7,
+                get_config: None,
+                watch_config: None,
+                apply_config: None,
+                refresh_inventory: None,
+            }),
+            response: None,
+            error: None,
         }
-    };
-
-    let _ = server.config_revision_tx.send(new_revision);
-
-    tokio::time::timeout(std::time::Duration::from_secs(5), notif_rx.changed())
-        .await
-        .expect("config subscribe stream must react within 5 seconds")
-        .expect("same-release prerelease subscriber stream should remain open");
-
-    std::fs::remove_dir_all(&tmp).ok();
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn config_push_valid_signature_accepted() -> Result<()> {
-    use crate::proto::node::{NodeConfigSnapshot, NodeGpuConfig};
-    use crate::protocol::write_len_prefixed;
-    use prost::Message as _;
-
-    let owner_keypair = test_owner_keypair(0x55, 0x56);
-
-    let tmp = std::env::temp_dir().join(format!("mesh-llm-cfg-push-ok-{}", rand::random::<u64>()));
-    std::fs::create_dir_all(tmp.join("server")).ok();
-    std::fs::create_dir_all(tmp.join("client")).ok();
-
-    let server = make_test_node_with_owner(
-        super::NodeRole::Host { http_port: 9337 },
-        &owner_keypair,
-        &tmp.join("server"),
+        .encode_to_vec(),
     )
     .await?;
-    let client =
-        make_test_node_with_owner(super::NodeRole::Worker, &owner_keypair, &tmp.join("client"))
-            .await?;
 
-    server.set_mesh_id("cfg-push-ok-mesh-01".to_string()).await;
-    client.set_mesh_id("cfg-push-ok-mesh-01".to_string()).await;
-    server.start_accepting();
-    client.start_accepting();
-
-    let server_id = server.id();
-    let server_addr = server.endpoint.addr();
-    let invite =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&server_addr)?);
-
-    client.join(&invite).await?;
-    wait_for_peer(&client, server_id).await;
-    wait_for_peer(&server, client.id()).await;
-
-    let client_id = client.id();
-    let conn = {
-        let state = client.state.lock().await;
-        state
-            .connections
-            .get(&server_id)
-            .cloned()
-            .expect("connection to server must exist after join")
-    };
-
-    let new_config = NodeConfigSnapshot {
-        version: 1,
-        gpu: Some(NodeGpuConfig {
-            assignment: crate::proto::node::GpuAssignment::Auto as i32,
-        }),
-        models: vec![],
-        plugins: vec![],
-    };
-
-    let push = build_signed_config_push(&owner_keypair, &client_id, &server_id, 0, new_config);
-
-    let (mut send, mut recv) = conn.open_bi().await?;
-    send.write_all(&[STREAM_CONFIG_PUSH]).await?;
-    write_len_prefixed(&mut send, &push.encode_to_vec()).await?;
-    send.finish()?;
-
-    let buf = crate::protocol::read_len_prefixed(&mut recv).await?;
-    let response = crate::proto::node::ConfigPushResponse::decode(buf.as_slice())?;
-
-    assert!(
-        response.success,
-        "valid signed push must be accepted: {:?}",
-        response.error
-    );
+    let rejection = read_owner_control_envelope(&mut recv).await?;
+    let error = rejection
+        .error
+        .expect("invalid command should be rejected with an error envelope");
     assert_eq!(
-        response.current_revision, 1,
-        "revision must be bumped to 1 after first push"
+        crate::proto::node::OwnerControlErrorCode::try_from(error.code).unwrap(),
+        crate::proto::node::OwnerControlErrorCode::UnknownCommand
     );
-    assert_eq!(
-        response.config_hash.len(),
-        32,
-        "response config_hash must be 32 bytes"
-    );
-    assert_eq!(
-        response.apply_mode,
-        crate::proto::node::ConfigApplyMode::Staged as i32,
-        "config push should report staged apply mode"
-    );
+    assert_eq!(error.request_id, Some(7));
 
-    std::fs::remove_dir_all(&tmp).ok();
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn config_push_revision_conflict_rejected() -> Result<()> {
-    use crate::proto::node::{NodeConfigSnapshot, NodeGpuConfig};
-    use crate::protocol::write_len_prefixed;
-    use prost::Message as _;
-
-    let owner_keypair = test_owner_keypair(0x66, 0x67);
-
-    let tmp = std::env::temp_dir().join(format!("mesh-llm-cfg-conflict-{}", rand::random::<u64>()));
-    std::fs::create_dir_all(tmp.join("server")).ok();
-    std::fs::create_dir_all(tmp.join("client")).ok();
-
-    let server = make_test_node_with_owner(
-        super::NodeRole::Host { http_port: 9337 },
-        &owner_keypair,
-        &tmp.join("server"),
-    )
-    .await?;
-    let client =
-        make_test_node_with_owner(super::NodeRole::Worker, &owner_keypair, &tmp.join("client"))
-            .await?;
-
-    server.set_mesh_id("cfg-conflict-mesh-01".to_string()).await;
-    client.set_mesh_id("cfg-conflict-mesh-01".to_string()).await;
-    server.start_accepting();
-    client.start_accepting();
-
-    let server_id = server.id();
-    let server_addr = server.endpoint.addr();
-    let invite =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&server_addr)?);
-
-    client.join(&invite).await?;
-    wait_for_peer(&client, server_id).await;
-    wait_for_peer(&server, client.id()).await;
-
-    let client_id = client.id();
-    let conn = {
-        let state = client.state.lock().await;
-        state
-            .connections
-            .get(&server_id)
-            .cloned()
-            .expect("connection to server must exist after join")
-    };
-
-    let good_config = NodeConfigSnapshot {
-        version: 1,
-        gpu: Some(NodeGpuConfig {
-            assignment: crate::proto::node::GpuAssignment::Auto as i32,
-        }),
-        models: vec![],
-        plugins: vec![],
-    };
-
-    // First push (revision 0 → 1) — must succeed
-    let push1 = build_signed_config_push(
-        &owner_keypair,
-        &client_id,
-        &server_id,
-        0,
-        good_config.clone(),
-    );
-    let (mut send1, mut recv1) = conn.open_bi().await?;
-    send1.write_all(&[STREAM_CONFIG_PUSH]).await?;
-    write_len_prefixed(&mut send1, &push1.encode_to_vec()).await?;
-    send1.finish()?;
-    let buf1 = crate::protocol::read_len_prefixed(&mut recv1).await?;
-    let resp1 = crate::proto::node::ConfigPushResponse::decode(buf1.as_slice())?;
-    assert!(resp1.success, "first push must succeed: {:?}", resp1.error);
-
-    // Second push with stale expected_revision=0 — must be rejected
-    let push2 = build_signed_config_push(&owner_keypair, &client_id, &server_id, 0, good_config);
-    let (mut send2, mut recv2) = conn.open_bi().await?;
-    send2.write_all(&[STREAM_CONFIG_PUSH]).await?;
-    write_len_prefixed(&mut send2, &push2.encode_to_vec()).await?;
-    send2.finish()?;
-    let buf2 = crate::protocol::read_len_prefixed(&mut recv2).await?;
-    let resp2 = crate::proto::node::ConfigPushResponse::decode(buf2.as_slice())?;
-
-    assert!(!resp2.success, "push with stale revision must be rejected");
-    assert_eq!(
-        resp2.current_revision, 1,
-        "rejection response must carry the current revision"
-    );
-    let err = resp2.error.as_deref().unwrap_or("");
-    assert!(
-        err.contains("revision conflict"),
-        "error must mention revision conflict, got: {err}"
-    );
-
-    std::fs::remove_dir_all(&tmp).ok();
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn config_push_bad_signature_rejected() -> Result<()> {
-    use crate::proto::node::{NodeConfigSnapshot, NodeGpuConfig};
-    use crate::protocol::write_len_prefixed;
-    use prost::Message as _;
-
-    let owner_keypair = test_owner_keypair(0x77, 0x78);
-
-    let tmp = std::env::temp_dir().join(format!("mesh-llm-cfg-badsig-{}", rand::random::<u64>()));
-    std::fs::create_dir_all(tmp.join("server")).ok();
-    std::fs::create_dir_all(tmp.join("client")).ok();
-
-    let server = make_test_node_with_owner(
-        super::NodeRole::Host { http_port: 9337 },
-        &owner_keypair,
-        &tmp.join("server"),
-    )
-    .await?;
-    let client =
-        make_test_node_with_owner(super::NodeRole::Worker, &owner_keypair, &tmp.join("client"))
-            .await?;
-
-    server.set_mesh_id("cfg-badsig-mesh-01".to_string()).await;
-    client.set_mesh_id("cfg-badsig-mesh-01".to_string()).await;
-    server.start_accepting();
-    client.start_accepting();
-
-    let server_id = server.id();
-    let server_addr = server.endpoint.addr();
-    let invite =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&server_addr)?);
-
-    client.join(&invite).await?;
-    wait_for_peer(&client, server_id).await;
-    wait_for_peer(&server, client.id()).await;
-
-    let client_id = client.id();
-    let conn = {
-        let state = client.state.lock().await;
-        state
-            .connections
-            .get(&server_id)
-            .cloned()
-            .expect("connection to server must exist after join")
-    };
-
-    let config = NodeConfigSnapshot {
-        version: 1,
-        gpu: Some(NodeGpuConfig {
-            assignment: crate::proto::node::GpuAssignment::Auto as i32,
-        }),
-        models: vec![],
-        plugins: vec![],
-    };
-
-    // Build a push but corrupt the signature
-    let mut push = build_signed_config_push(&owner_keypair, &client_id, &server_id, 0, config);
-    push.signature = vec![0xDE; 64]; // garbage signature
-
-    let (mut send, mut recv) = conn.open_bi().await?;
-    send.write_all(&[STREAM_CONFIG_PUSH]).await?;
-    write_len_prefixed(&mut send, &push.encode_to_vec()).await?;
-    send.finish()?;
-
-    let buf = crate::protocol::read_len_prefixed(&mut recv).await?;
-    let response = crate::proto::node::ConfigPushResponse::decode(buf.as_slice())?;
-
-    assert!(
-        !response.success,
-        "push with invalid signature must be rejected"
-    );
-    let err = response.error.as_deref().unwrap_or("");
-    assert!(
-        err.contains("signature"),
-        "error must mention signature verification, got: {err}"
-    );
-
-    std::fs::remove_dir_all(&tmp).ok();
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn config_subscribe_delivers_update_notification_after_push() -> Result<()> {
-    use crate::proto::node::{NodeConfigSnapshot, NodeGpuConfig};
-    use crate::protocol::write_len_prefixed;
-    use prost::Message as _;
-
-    let owner_keypair = test_owner_keypair(0x88, 0x89);
-
-    let tmp = std::env::temp_dir().join(format!("mesh-llm-cfg-notif-{}", rand::random::<u64>()));
-    std::fs::create_dir_all(tmp.join("server")).ok();
-    std::fs::create_dir_all(tmp.join("client")).ok();
-
-    let server = make_test_node_with_owner(
-        super::NodeRole::Host { http_port: 9337 },
-        &owner_keypair,
-        &tmp.join("server"),
-    )
-    .await?;
-    let client =
-        make_test_node_with_owner(super::NodeRole::Worker, &owner_keypair, &tmp.join("client"))
-            .await?;
-
-    server.set_mesh_id("cfg-notif-mesh-01".to_string()).await;
-    client.set_mesh_id("cfg-notif-mesh-01".to_string()).await;
-    server.start_accepting();
-    client.start_accepting();
-
-    let server_id = server.id();
-    let server_addr = server.endpoint.addr();
-    let invite =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&server_addr)?);
-
-    client.join(&invite).await?;
-    wait_for_peer(&client, server_id).await;
-    wait_for_peer(&server, client.id()).await;
-
-    let client_id = client.id();
-    let conn = {
-        let state = client.state.lock().await;
-        state
-            .connections
-            .get(&server_id)
-            .cloned()
-            .expect("connection to server must exist after join")
-    };
-
-    // Subscribe to config on the server from the client
-    let (initial_snapshot, mut notif_rx) = client.subscribe_to_config(&conn).await?;
-    let initial_revision = initial_snapshot.revision;
-
-    // Now push a config change to the server from the client
-    let new_config = NodeConfigSnapshot {
-        version: 1,
-        gpu: Some(NodeGpuConfig {
-            assignment: crate::proto::node::GpuAssignment::Auto as i32,
-        }),
-        models: vec![crate::proto::node::NodeModelEntry {
-            model: "test-model.gguf".to_string(),
-            mmproj: None,
-            ctx_size: None,
-            gpu_id: None,
-            model_ref: None,
-            mmproj_ref: None,
-        }],
-        plugins: vec![],
-    };
-    let push = build_signed_config_push(
-        &owner_keypair,
-        &client_id,
-        &server_id,
-        initial_revision,
-        new_config,
-    );
-    let (mut send, mut recv) = conn.open_bi().await?;
-    send.write_all(&[STREAM_CONFIG_PUSH]).await?;
-    write_len_prefixed(&mut send, &push.encode_to_vec()).await?;
-    send.finish()?;
-    let buf = crate::protocol::read_len_prefixed(&mut recv).await?;
-    let push_resp = crate::proto::node::ConfigPushResponse::decode(buf.as_slice())?;
-    assert!(
-        push_resp.success,
-        "push must be accepted for notification test: {:?}",
-        push_resp.error
-    );
-
-    // The subscribe stream must deliver a ConfigUpdateNotification for the change
-    tokio::time::timeout(std::time::Duration::from_secs(5), notif_rx.changed())
-        .await
-        .expect("ConfigUpdateNotification must arrive within 5 s")
-        .expect("notification channel must not be closed");
-
-    let notif = notif_rx.borrow_and_update().clone();
-    assert_eq!(
-        notif.revision,
-        initial_revision + 1,
-        "notification revision must be initial + 1"
-    );
-    assert!(
-        !notif.config_hash.is_empty(),
-        "notification must carry config_hash"
-    );
-
+    server.shutdown_control_listener().await;
     std::fs::remove_dir_all(&tmp).ok();
     Ok(())
 }

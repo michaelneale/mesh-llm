@@ -288,6 +288,7 @@ fn write_sampling_config(mut writer: impl Write, sampling: &StageSamplingConfig)
     write_f32(&mut writer, sampling.temperature)?;
     write_f32(&mut writer, sampling.top_p)?;
     write_i32(&mut writer, sampling.top_k)?;
+    write_f32(&mut writer, sampling.min_p)?;
     write_f32(&mut writer, sampling.presence_penalty)?;
     write_f32(&mut writer, sampling.frequency_penalty)?;
     write_f32(&mut writer, sampling.repeat_penalty)?;
@@ -308,6 +309,7 @@ fn read_sampling_config(mut reader: impl Read) -> io::Result<StageSamplingConfig
         temperature: read_f32(&mut reader)?,
         top_p: read_f32(&mut reader)?,
         top_k: read_i32(&mut reader)?,
+        min_p: read_f32(&mut reader)?,
         presence_penalty: read_f32(&mut reader)?,
         frequency_penalty: read_f32(&mut reader)?,
         repeat_penalty: read_f32(&mut reader)?,

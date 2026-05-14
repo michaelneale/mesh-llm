@@ -459,93 +459,169 @@ pub struct NodePluginEntry {
     #[prost(string, repeated, tag = "4")]
     pub args: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ConfigSubscribe {
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OwnerControlEnvelope {
     /// must equal NODE_PROTOCOL_GENERATION
     #[prost(uint32, tag = "1")]
     pub r#gen: u32,
-    /// 32 bytes — subscribing node's endpoint id
-    #[prost(bytes = "vec", tag = "2")]
-    pub subscriber_id: ::prost::alloc::vec::Vec<u8>,
-    /// filter: only configs from nodes with this owner_id (embedded client)
-    #[prost(string, tag = "3")]
-    pub owner_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub handshake: ::core::option::Option<OwnerControlHandshake>,
+    #[prost(message, optional, tag = "3")]
+    pub request: ::core::option::Option<OwnerControlRequest>,
+    #[prost(message, optional, tag = "4")]
+    pub response: ::core::option::Option<OwnerControlResponse>,
+    #[prost(message, optional, tag = "5")]
+    pub error: ::core::option::Option<OwnerControlError>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ConfigSnapshotResponse {
-    /// must equal NODE_PROTOCOL_GENERATION
-    #[prost(uint32, tag = "1")]
-    pub r#gen: u32,
-    /// 32 bytes — the node this config belongs to
+pub struct OwnerControlHandshake {
+    #[prost(message, optional, tag = "1")]
+    pub ownership: ::core::option::Option<SignedNodeOwnership>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OwnerControlRequest {
+    #[prost(uint64, tag = "1")]
+    pub request_id: u64,
+    #[prost(message, optional, tag = "2")]
+    pub get_config: ::core::option::Option<OwnerControlGetConfigRequest>,
+    #[prost(message, optional, tag = "3")]
+    pub watch_config: ::core::option::Option<OwnerControlWatchConfigRequest>,
+    #[prost(message, optional, tag = "4")]
+    pub apply_config: ::core::option::Option<OwnerControlApplyConfigRequest>,
+    #[prost(message, optional, tag = "5")]
+    pub refresh_inventory: ::core::option::Option<OwnerControlRefreshInventoryRequest>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OwnerControlResponse {
+    #[prost(uint64, tag = "1")]
+    pub request_id: u64,
+    #[prost(message, optional, tag = "2")]
+    pub get_config: ::core::option::Option<OwnerControlGetConfigResponse>,
+    #[prost(message, optional, tag = "3")]
+    pub watch_config: ::core::option::Option<OwnerControlWatchConfigResponse>,
+    #[prost(message, optional, tag = "4")]
+    pub apply_config: ::core::option::Option<OwnerControlApplyConfigResponse>,
+    #[prost(message, optional, tag = "5")]
+    pub refresh_inventory: ::core::option::Option<OwnerControlRefreshInventoryResponse>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OwnerControlError {
+    #[prost(enumeration = "OwnerControlErrorCode", tag = "1")]
+    pub code: i32,
+    #[prost(string, tag = "2")]
+    pub message: ::prost::alloc::string::String,
+    #[prost(uint64, optional, tag = "3")]
+    pub request_id: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "4")]
+    pub current_revision: ::core::option::Option<u64>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OwnerControlGetConfigRequest {
+    /// exactly 32 bytes
+    #[prost(bytes = "vec", tag = "1")]
+    pub requester_node_id: ::prost::alloc::vec::Vec<u8>,
+    /// exactly 32 bytes
     #[prost(bytes = "vec", tag = "2")]
+    pub target_node_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OwnerControlGetConfigResponse {
+    #[prost(message, optional, tag = "1")]
+    pub snapshot: ::core::option::Option<OwnerControlConfigSnapshot>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OwnerControlWatchConfigRequest {
+    /// exactly 32 bytes
+    #[prost(bytes = "vec", tag = "1")]
+    pub requester_node_id: ::prost::alloc::vec::Vec<u8>,
+    /// exactly 32 bytes
+    #[prost(bytes = "vec", tag = "2")]
+    pub target_node_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bool, tag = "3")]
+    pub include_snapshot: bool,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OwnerControlWatchConfigResponse {
+    #[prost(message, optional, tag = "1")]
+    pub accepted: ::core::option::Option<OwnerControlWatchAccepted>,
+    #[prost(message, optional, tag = "2")]
+    pub snapshot: ::core::option::Option<OwnerControlConfigSnapshot>,
+    #[prost(message, optional, tag = "3")]
+    pub update: ::core::option::Option<OwnerControlConfigUpdate>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OwnerControlWatchAccepted {
+    /// exactly 32 bytes
+    #[prost(bytes = "vec", tag = "1")]
+    pub target_node_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OwnerControlApplyConfigRequest {
+    /// exactly 32 bytes
+    #[prost(bytes = "vec", tag = "1")]
+    pub requester_node_id: ::prost::alloc::vec::Vec<u8>,
+    /// exactly 32 bytes
+    #[prost(bytes = "vec", tag = "2")]
+    pub target_node_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "3")]
+    pub expected_revision: u64,
+    #[prost(message, optional, tag = "4")]
+    pub config: ::core::option::Option<NodeConfigSnapshot>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OwnerControlApplyConfigResponse {
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+    #[prost(uint64, tag = "2")]
+    pub current_revision: u64,
+    #[prost(bytes = "vec", tag = "3")]
+    pub config_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, optional, tag = "4")]
+    pub error: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(enumeration = "ConfigApplyMode", tag = "5")]
+    pub apply_mode: i32,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OwnerControlRefreshInventoryRequest {
+    /// exactly 32 bytes
+    #[prost(bytes = "vec", tag = "1")]
+    pub requester_node_id: ::prost::alloc::vec::Vec<u8>,
+    /// exactly 32 bytes
+    #[prost(bytes = "vec", tag = "2")]
+    pub target_node_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OwnerControlRefreshInventoryResponse {
+    #[prost(message, optional, tag = "1")]
+    pub snapshot: ::core::option::Option<OwnerControlConfigSnapshot>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OwnerControlConfigSnapshot {
+    /// exactly 32 bytes
+    #[prost(bytes = "vec", tag = "1")]
     pub node_id: ::prost::alloc::vec::Vec<u8>,
-    /// owner_id of the node that issued the snapshot (embedded client)
-    #[prost(string, tag = "3")]
-    pub owner_id: ::prost::alloc::string::String,
-    #[prost(uint64, tag = "4")]
+    #[prost(uint64, tag = "2")]
     pub revision: u64,
     /// SHA-256 of canonical proto bytes (32 bytes)
-    #[prost(bytes = "vec", tag = "5")]
-    pub config_hash: ::prost::alloc::vec::Vec<u8>,
-    #[prost(message, optional, tag = "6")]
-    pub config: ::core::option::Option<NodeConfigSnapshot>,
-    /// convenience: node hostname for display
-    #[prost(string, optional, tag = "7")]
-    pub hostname: ::core::option::Option<::prost::alloc::string::String>,
-    /// set when an error occurred; config/hash/node_id may be empty
-    #[prost(string, optional, tag = "8")]
-    pub error: ::core::option::Option<::prost::alloc::string::String>,
-}
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ConfigUpdateNotification {
-    #[prost(uint32, tag = "1")]
-    pub r#gen: u32,
-    #[prost(bytes = "vec", tag = "2")]
-    pub node_id: ::prost::alloc::vec::Vec<u8>,
-    /// owner_id of the node that pushed the update (embedded client)
-    #[prost(string, tag = "3")]
-    pub owner_id: ::prost::alloc::string::String,
-    #[prost(uint64, tag = "4")]
-    pub revision: u64,
-    #[prost(bytes = "vec", tag = "5")]
-    pub config_hash: ::prost::alloc::vec::Vec<u8>,
-    #[prost(message, optional, tag = "6")]
-    pub config: ::core::option::Option<NodeConfigSnapshot>,
-}
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ConfigPush {
-    #[prost(uint32, tag = "1")]
-    pub r#gen: u32,
-    #[prost(bytes = "vec", tag = "2")]
-    pub requester_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes = "vec", tag = "3")]
-    pub target_node_id: ::prost::alloc::vec::Vec<u8>,
-    /// owner_id of the requester (embedded client)
-    #[prost(string, tag = "4")]
-    pub owner_id: ::prost::alloc::string::String,
-    #[prost(uint64, tag = "5")]
-    pub expected_revision: u64,
-    #[prost(message, optional, tag = "6")]
-    pub config: ::core::option::Option<NodeConfigSnapshot>,
-    #[prost(bytes = "vec", tag = "7")]
-    pub owner_signing_public_key: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes = "vec", tag = "8")]
-    pub signature: ::prost::alloc::vec::Vec<u8>,
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ConfigPushResponse {
-    #[prost(uint32, tag = "1")]
-    pub r#gen: u32,
-    #[prost(bool, tag = "2")]
-    pub success: bool,
-    #[prost(uint64, tag = "3")]
-    pub current_revision: u64,
-    #[prost(bytes = "vec", tag = "4")]
     pub config_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "4")]
+    pub config: ::core::option::Option<NodeConfigSnapshot>,
     #[prost(string, optional, tag = "5")]
-    pub error: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(enumeration = "ConfigApplyMode", tag = "8")]
-    pub apply_mode: i32,
+    pub hostname: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OwnerControlConfigUpdate {
+    /// exactly 32 bytes
+    #[prost(bytes = "vec", tag = "1")]
+    pub node_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "2")]
+    pub revision: u64,
+    /// SHA-256 of canonical proto bytes (32 bytes)
+    #[prost(bytes = "vec", tag = "3")]
+    pub config_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "4")]
+    pub config: ::core::option::Option<NodeConfigSnapshot>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -735,6 +811,56 @@ impl ConfigApplyMode {
             "CONFIG_APPLY_MODE_STAGED" => Some(Self::Staged),
             "CONFIG_APPLY_MODE_LIVE" => Some(Self::Live),
             "CONFIG_APPLY_MODE_NOOP" => Some(Self::Noop),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum OwnerControlErrorCode {
+    Unspecified = 0,
+    BadRequest = 1,
+    Unauthorized = 2,
+    RevisionConflict = 3,
+    ControlUnsupported = 4,
+    ControlEndpointRequired = 5,
+    ControlUnavailable = 6,
+    UnknownCommand = 7,
+    LegacyJsonUnsupported = 8,
+    InvalidHandshake = 9,
+    TargetNodeMismatch = 10,
+}
+impl OwnerControlErrorCode {
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "OWNER_CONTROL_ERROR_CODE_UNSPECIFIED",
+            Self::BadRequest => "OWNER_CONTROL_ERROR_CODE_BAD_REQUEST",
+            Self::Unauthorized => "OWNER_CONTROL_ERROR_CODE_UNAUTHORIZED",
+            Self::RevisionConflict => "OWNER_CONTROL_ERROR_CODE_REVISION_CONFLICT",
+            Self::ControlUnsupported => "OWNER_CONTROL_ERROR_CODE_CONTROL_UNSUPPORTED",
+            Self::ControlEndpointRequired => "OWNER_CONTROL_ERROR_CODE_CONTROL_ENDPOINT_REQUIRED",
+            Self::ControlUnavailable => "OWNER_CONTROL_ERROR_CODE_CONTROL_UNAVAILABLE",
+            Self::UnknownCommand => "OWNER_CONTROL_ERROR_CODE_UNKNOWN_COMMAND",
+            Self::LegacyJsonUnsupported => "OWNER_CONTROL_ERROR_CODE_LEGACY_JSON_UNSUPPORTED",
+            Self::InvalidHandshake => "OWNER_CONTROL_ERROR_CODE_INVALID_HANDSHAKE",
+            Self::TargetNodeMismatch => "OWNER_CONTROL_ERROR_CODE_TARGET_NODE_MISMATCH",
+        }
+    }
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "OWNER_CONTROL_ERROR_CODE_UNSPECIFIED" => Some(Self::Unspecified),
+            "OWNER_CONTROL_ERROR_CODE_BAD_REQUEST" => Some(Self::BadRequest),
+            "OWNER_CONTROL_ERROR_CODE_UNAUTHORIZED" => Some(Self::Unauthorized),
+            "OWNER_CONTROL_ERROR_CODE_REVISION_CONFLICT" => Some(Self::RevisionConflict),
+            "OWNER_CONTROL_ERROR_CODE_CONTROL_UNSUPPORTED" => Some(Self::ControlUnsupported),
+            "OWNER_CONTROL_ERROR_CODE_CONTROL_ENDPOINT_REQUIRED" => {
+                Some(Self::ControlEndpointRequired)
+            }
+            "OWNER_CONTROL_ERROR_CODE_CONTROL_UNAVAILABLE" => Some(Self::ControlUnavailable),
+            "OWNER_CONTROL_ERROR_CODE_UNKNOWN_COMMAND" => Some(Self::UnknownCommand),
+            "OWNER_CONTROL_ERROR_CODE_LEGACY_JSON_UNSUPPORTED" => Some(Self::LegacyJsonUnsupported),
+            "OWNER_CONTROL_ERROR_CODE_INVALID_HANDSHAKE" => Some(Self::InvalidHandshake),
+            "OWNER_CONTROL_ERROR_CODE_TARGET_NODE_MISMATCH" => Some(Self::TargetNodeMismatch),
             _ => None,
         }
     }

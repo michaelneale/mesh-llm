@@ -46,6 +46,7 @@ uuid = { version = "1", features = ["v4"] }
 ed25519-dalek = { version = "=3.0.0-pre.7", features = ["rand_core"] }
 crypto_box = "0.9"
 rand = "0.10"
+base64 = "0.22"
 
 [dev-dependencies]
 hex = "0.4"

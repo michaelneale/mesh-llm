@@ -8,6 +8,7 @@ const navigateSpy = vi.hoisted(() => vi.fn())
 const useStatusStreamSpy = vi.hoisted(() => vi.fn())
 const useStatusQuerySpy = vi.hoisted(() => vi.fn())
 const topNavSpy = vi.hoisted(() => vi.fn())
+const footerSpy = vi.hoisted(() => vi.fn())
 const EventSourceStub = vi.hoisted(() => vi.fn())
 
 vi.mock('@tanstack/react-router', () => ({
@@ -38,7 +39,10 @@ vi.mock('@/features/shell/components/PreferencesPanel', () => ({
 }))
 
 vi.mock('@/features/shell/components/Footer', () => ({
-  Footer: () => <div>Footer</div>
+  Footer: (props: unknown) => {
+    footerSpy(props)
+    return <div>Footer</div>
+  }
 }))
 
 vi.mock('@/features/shell/hooks/useUiPreferences', () => ({
@@ -78,6 +82,7 @@ describe('RootLayout', () => {
     useStatusStreamSpy.mockReset()
     useStatusQuerySpy.mockReset()
     topNavSpy.mockReset()
+    footerSpy.mockReset()
     useStatusQuerySpy.mockReturnValue({ data: undefined })
     vi.stubGlobal('EventSource', EventSourceStub)
   })
@@ -108,7 +113,8 @@ describe('RootLayout', () => {
         gpus: [],
         serving_models: [],
         hostname: 'mesh.local',
-        token: 'invite-token-123'
+        token: 'invite-token-123',
+        version: '0.99.0'
       }
     })
 
@@ -119,6 +125,7 @@ describe('RootLayout', () => {
       expect.objectContaining({
         apiUrl: 'http://127.0.0.1:3131/v1',
         apiTargetLiveness: 'live',
+        version: '0.99.0',
         joinCommands: expect.arrayContaining([
           expect.objectContaining({ label: 'Invite token', value: 'invite-token-123' }),
           expect.objectContaining({
@@ -132,6 +139,7 @@ describe('RootLayout', () => {
         ])
       })
     )
+    expect(footerSpy.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ version: '0.99.0' }))
   })
 
   it('does not replace the configured API target with a public mesh node id', () => {

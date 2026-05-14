@@ -492,9 +492,12 @@ describe('ChatPage', () => {
     )
 
     expect(screen.getByTestId('chat-layout')).toHaveStyle({
-      height: 'calc(100dvh - 180px)',
-      maxHeight: 'calc(100dvh - 180px)'
+      height: 'var(--chat-layout-height)',
+      maxHeight: 'var(--chat-layout-height)'
     })
+    expect(screen.getByTestId('chat-layout').style.getPropertyValue('--chat-layout-height')).toBe(
+      'calc(100dvh - 180px)'
+    )
     expect(screen.getByTestId('chat-message-list')).toHaveClass(
       'chat-message-scrollbar',
       'overflow-y-auto',
@@ -526,7 +529,7 @@ describe('ChatPage', () => {
 
     renderChatPage({ mode: 'live' })
 
-    expect(await screen.findByText('Start your first conversation')).toBeInTheDocument()
+    expect(await screen.findByText('Start Chatting')).toBeInTheDocument()
     expect(screen.queryByText('Harness persisted only')).not.toBeInTheDocument()
   })
 
@@ -971,7 +974,7 @@ describe('ChatPage', () => {
     expect(chatMock.stopCalls).toHaveLength(0)
     expect(chatMock.hookUnmounts.slice(hookUnmountsBeforeSwitch)).not.toContain(streamingConversationId)
     expect(screen.getByLabelText('Generating response')).toBeInTheDocument()
-    expect(screen.getByText('Start with a clean routing context')).toBeInTheDocument()
+    expect(screen.getByText('Start Chatting')).toBeInTheDocument()
     expect(screen.queryByText('Partial assistant reply')).not.toBeInTheDocument()
 
     await user.click(screen.getAllByRole('button', { name: /Write a long story/i })[0])
@@ -1084,7 +1087,7 @@ describe('ChatPage', () => {
     expect(chatMock.stopCalls).toHaveLength(0)
     expect(chatMock.hookUnmounts.slice(hookUnmountsBeforeThirdChat)).not.toContain(firstStreamingConversationId)
     expect(chatMock.hookUnmounts.slice(hookUnmountsBeforeThirdChat)).not.toContain(secondStreamingConversationId)
-    expect(screen.getByText('Start with a clean routing context')).toBeInTheDocument()
+    expect(screen.getByText('Start Chatting')).toBeInTheDocument()
   })
 
   it('keeps the third chat composer draft isolated while both live lanes stream', async () => {
@@ -1188,7 +1191,7 @@ describe('ChatPage', () => {
     const hookUnmountsBeforeDelete = chatMock.hookUnmounts.length
 
     await user.click(screen.getByRole('button', { name: 'New' }))
-    expect(screen.getByText('Start with a clean routing context')).toBeInTheDocument()
+    expect(screen.getByText('Start Chatting')).toBeInTheDocument()
     expect(screen.queryByText('Partial assistant reply')).not.toBeInTheDocument()
 
     await user.click(await screen.findByRole('button', { name: 'Open actions for New chat' }))
@@ -1485,6 +1488,23 @@ describe('ChatPage', () => {
     expect(screen.queryByRole('tablist', { name: 'Chat sidebar views' })).not.toBeInTheDocument()
   })
 
+  it('does not show the floating sidebar control when the sidebar is hidden', () => {
+    render(
+      <ChatLayout
+        actions={null}
+        composer={<textarea aria-label="Prompt" />}
+        hideSidebar
+        sidebar={<div role="tablist" aria-label="Chat sidebar views" />}
+        sidebarMode="compact"
+        title="Chat"
+      >
+        <div data-testid="message-content">Messages</div>
+      </ChatLayout>
+    )
+
+    expect(screen.queryByRole('button', { name: 'Open chat sidebar' })).not.toBeInTheDocument()
+  })
+
   it('hides route disclosure text by default', () => {
     renderChatPage()
 
@@ -1526,7 +1546,7 @@ describe('ChatPage', () => {
     await user.click(screen.getByRole('button', { name: /new/i }))
 
     expect(await screen.findAllByText(/New chat/)).not.toHaveLength(0)
-    expect(await screen.findByText('Start with a clean routing context')).toBeInTheDocument()
+    expect(await screen.findByText('Start Chatting')).toBeInTheDocument()
     expect(screen.queryByText('Partial assistant reply')).not.toBeInTheDocument()
     expect(screen.getByText(`0 messages · ${shortTimestamp(new Date())}`)).toBeInTheDocument()
     await waitFor(() => expect(screen.getByLabelText('Prompt')).toHaveFocus())

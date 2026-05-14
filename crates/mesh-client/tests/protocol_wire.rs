@@ -2,14 +2,20 @@
 // These tests verify the portable protocol layer that is safe to use on mobile targets.
 
 use mesh_client::proto::node::{
-    GossipFrame, MeshSubprotocol, MeshSubprotocolOpen, NodeRole, PeerAnnouncement, PeerDown,
-    PeerLeaving, RouteTable, RouteTableRequest,
+    GossipFrame, MeshSubprotocol, MeshSubprotocolOpen, NodeRole, OwnerControlEnvelope,
+    OwnerControlErrorCode, OwnerControlGetConfigRequest, OwnerControlRequest, PeerAnnouncement,
+    PeerDown, PeerLeaving, RouteTable, RouteTableRequest,
 };
 use mesh_client::protocol::{
-    decode_control_frame, decode_legacy_tunnel_map_frame, encode_control_frame, ControlFrameError,
-    ControlProtocol, ALPN_V0, ALPN_V1, MAX_CONTROL_FRAME_BYTES, NODE_PROTOCOL_GENERATION,
-    STREAM_CONFIG_PUSH, STREAM_CONFIG_SUBSCRIBE, STREAM_GOSSIP, STREAM_PEER_DOWN,
-    STREAM_PEER_LEAVING, STREAM_ROUTE_REQUEST, STREAM_SUBPROTOCOL, STREAM_TUNNEL_MAP,
+    decode_control_frame, decode_legacy_tunnel_map_frame, decode_owner_control_envelope,
+    encode_control_frame, encode_owner_control_envelope, owner_control_rejection_envelope,
+    ControlFrameError, ControlProtocol, ALPN_CONTROL_V1, ALPN_V0, ALPN_V1, MAX_CONTROL_FRAME_BYTES,
+    NODE_PROTOCOL_GENERATION, STREAM_CONFIG_PUSH, STREAM_CONFIG_SUBSCRIBE, STREAM_GOSSIP,
+    STREAM_PEER_DOWN, STREAM_PEER_LEAVING, STREAM_ROUTE_REQUEST, STREAM_SUBPROTOCOL,
+    STREAM_TUNNEL_MAP,
+};
+use mesh_client::{
+    ConfigTransportSelection, ControlPlaneBootstrapOptions, ControlPlaneRetryPolicy,
 };
 
 // ── ALPN constants ──────────────────────────────────────────────────────────
@@ -22,6 +28,11 @@ fn alpn_v0_is_correct() {
 #[test]
 fn alpn_v1_is_correct() {
     assert_eq!(ALPN_V1, b"mesh-llm/1");
+}
+
+#[test]
+fn control_alpn_is_correct() {
+    assert_eq!(ALPN_CONTROL_V1, b"mesh-llm-control/1");
 }
 
 // ── ControlProtocol ─────────────────────────────────────────────────────────
@@ -74,6 +85,39 @@ fn node_protocol_generation_is_one() {
 #[test]
 fn max_control_frame_bytes_is_eight_mib() {
     assert_eq!(MAX_CONTROL_FRAME_BYTES, 8 * 1024 * 1024);
+}
+
+#[test]
+fn config_stream_constants_remain_stable() {
+    assert_eq!(STREAM_CONFIG_SUBSCRIBE, 0x0b);
+    assert_eq!(STREAM_CONFIG_PUSH, 0x0c);
+    assert_eq!(STREAM_SUBPROTOCOL, 0x0d);
+}
+
+#[test]
+fn control_plane_bootstrap_requires_explicit_endpoint_by_default() {
+    let err = ControlPlaneBootstrapOptions::new()
+        .select_transport()
+        .expect_err("new config clients should require explicit owner-control endpoints");
+
+    assert_eq!(err.code, OwnerControlErrorCode::ControlEndpointRequired);
+    assert!(!err.legacy_retry_allowed);
+}
+
+#[test]
+fn control_plane_bootstrap_uses_explicit_control_endpoint() {
+    let selection = ControlPlaneBootstrapOptions::new()
+        .with_control_endpoint("https://control.example.test")
+        .select_transport()
+        .expect("configured control endpoint should stay on owner-control lane");
+
+    assert_eq!(
+        selection,
+        ConfigTransportSelection::OwnerControl {
+            endpoint: "https://control.example.test".to_string(),
+            retry_policy: ControlPlaneRetryPolicy::NoSilentLegacyDowngrade,
+        }
+    );
 }
 
 // ── Control frame encode / decode roundtrip ──────────────────────────────────
@@ -314,4 +358,70 @@ fn control_frame_error_display_bad_generation() {
 fn control_frame_error_implements_std_error() {
     let err: Box<dyn std::error::Error> = Box::new(ControlFrameError::BadGeneration { got: 0 });
     assert!(err.to_string().contains("0"));
+}
+
+#[test]
+fn owner_control_envelope_roundtrip() {
+    let envelope = OwnerControlEnvelope {
+        gen: NODE_PROTOCOL_GENERATION,
+        handshake: None,
+        request: Some(OwnerControlRequest {
+            request_id: 5,
+            get_config: Some(OwnerControlGetConfigRequest {
+                requester_node_id: vec![0x10; 32],
+                target_node_id: vec![0x20; 32],
+            }),
+            watch_config: None,
+            apply_config: None,
+            refresh_inventory: None,
+        }),
+        response: None,
+        error: None,
+    };
+    let decoded = decode_owner_control_envelope(&encode_owner_control_envelope(&envelope))
+        .expect("valid owner-control envelope must decode");
+    assert_eq!(decoded.request.unwrap().request_id, 5);
+}
+
+#[test]
+fn owner_control_unknown_command_rejects_with_structured_error() {
+    let envelope = OwnerControlEnvelope {
+        gen: NODE_PROTOCOL_GENERATION,
+        handshake: None,
+        request: Some(OwnerControlRequest {
+            request_id: 6,
+            get_config: None,
+            watch_config: None,
+            apply_config: None,
+            refresh_inventory: None,
+        }),
+        response: None,
+        error: None,
+    };
+    let bytes = encode_owner_control_envelope(&envelope);
+    let err = decode_owner_control_envelope(&bytes)
+        .expect_err("missing command variant must be rejected");
+    let rejection = owner_control_rejection_envelope(&bytes, Some(6), &err);
+    let error = rejection
+        .error
+        .expect("structured rejection must carry an error");
+    assert_eq!(
+        OwnerControlErrorCode::try_from(error.code).unwrap(),
+        OwnerControlErrorCode::UnknownCommand
+    );
+}
+
+#[test]
+fn owner_control_legacy_json_rejects_with_structured_error() {
+    let legacy_json = br#"{"request_id":6,"command":"GetConfig"}"#;
+    let err = decode_owner_control_envelope(legacy_json)
+        .expect_err("legacy json must be rejected on protobuf-only control plane");
+    let rejection = owner_control_rejection_envelope(legacy_json, Some(6), &err);
+    let error = rejection
+        .error
+        .expect("structured rejection must carry an error");
+    assert_eq!(
+        OwnerControlErrorCode::try_from(error.code).unwrap(),
+        OwnerControlErrorCode::LegacyJsonUnsupported
+    );
 }

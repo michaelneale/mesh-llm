@@ -32,7 +32,7 @@ export function HeaderHoverCard({
   description,
   children,
   align = 'end',
-  contentClassName = 'space-y-3 p-4',
+  contentClassName = 'max-h-[min(28rem,calc(100vh-2rem))] space-y-3 overflow-y-auto p-4 pr-5 [scrollbar-gutter:stable]',
   showHeader = true,
   triggerMode = 'hover'
 }: HeaderHoverCardProps) {

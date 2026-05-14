@@ -1,9 +1,11 @@
 use crate::mesh;
 use crate::network::affinity;
+use crate::network::discovery::MeshDiscoveryMode;
 use crate::plugin;
 use crate::runtime_data;
 use serde::{Serialize, Serializer};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -85,6 +87,26 @@ pub struct RuntimeProcessPayload {
     pub context_length: Option<u32>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ControlBootstrapPayload {
+    pub enabled: bool,
+    pub local_only: bool,
+    pub requires_explicit_remote_endpoint: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+}
+
+impl Default for ControlBootstrapPayload {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            local_only: true,
+            requires_explicit_remote_endpoint: true,
+            endpoint: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct LocalModelInterest {
     pub model_ref: String,
@@ -118,9 +140,12 @@ pub(super) struct ApiInner {
     pub(super) mesh_name: Option<String>,
     pub(super) latest_version: Option<String>,
     pub(super) nostr_relays: Vec<String>,
+    pub(super) mesh_discovery_mode: MeshDiscoveryMode,
     pub(super) nostr_discovery: bool,
     pub(super) publication_state: PublicationState,
     pub(super) runtime_control: Option<tokio::sync::mpsc::UnboundedSender<RuntimeControlRequest>>,
+    pub(super) control_bootstrap: ControlBootstrapPayload,
+    pub(super) owner_key_path: Option<PathBuf>,
     pub(super) local_processes: Vec<RuntimeProcessPayload>,
     pub(super) sse_clients: Vec<tokio::sync::mpsc::UnboundedSender<String>>,
     pub(super) model_interests: HashMap<String, LocalModelInterest>,

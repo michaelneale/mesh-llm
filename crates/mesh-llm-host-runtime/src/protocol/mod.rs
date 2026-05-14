@@ -10,6 +10,7 @@ pub(crate) use convert::*;
 use iroh::endpoint::Connection;
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 use prost::Message;
+pub const ALPN_CONTROL_V1: &[u8] = b"mesh-llm-control/1";
 pub const ALPN_V1: &[u8] = b"mesh-llm/1";
 #[cfg(test)]
 pub const ALPN: &[u8] = ALPN_V1;
@@ -25,10 +26,19 @@ pub(crate) const STREAM_PEER_DOWN: u8 = 0x06;
 pub(crate) const STREAM_PEER_LEAVING: u8 = 0x07;
 pub(crate) const STREAM_PLUGIN_CHANNEL: u8 = 0x08;
 pub(crate) const STREAM_PLUGIN_BULK_TRANSFER: u8 = 0x09;
+/// Reserved legacy mesh-plane config subscription stream ID.
+///
+/// Config and inventory control now live exclusively on `mesh-llm-control/1`;
+/// keep 0x0b reserved so old wire values are not accidentally reused.
 pub(crate) const STREAM_CONFIG_SUBSCRIBE: u8 = 0x0b;
+/// Reserved legacy mesh-plane config push stream ID.
+///
+/// Config and inventory control now live exclusively on `mesh-llm-control/1`;
+/// keep 0x0c reserved so old wire values are not accidentally reused.
 pub(crate) const STREAM_CONFIG_PUSH: u8 = 0x0c;
 pub(crate) const STREAM_SUBPROTOCOL: u8 = 0x0d;
 const _: () = {
+    let _ = ALPN_CONTROL_V1;
     let _ = STREAM_CONFIG_SUBSCRIBE;
     let _ = STREAM_CONFIG_PUSH;
     let _ = STREAM_SUBPROTOCOL;
@@ -55,6 +65,7 @@ pub(crate) enum ControlFrameError {
         got: usize,
     },
     MissingHttpPort,
+    MissingControlOwnerId,
     InvalidConfigHashLength {
         got: usize,
     },
@@ -67,6 +78,14 @@ pub(crate) enum ControlFrameError {
         got: usize,
     },
     MissingConfig,
+    MissingControlEnvelope,
+    MissingControlCommand,
+    MissingControlResult,
+    MissingControlOwnership,
+    MissingRequestId,
+    InvalidOwnerControlErrorCode {
+        got: i32,
+    },
     #[cfg(test)]
     DecodeError(String),
     #[cfg(test)]
@@ -100,6 +119,9 @@ impl std::fmt::Display for ControlFrameError {
             ControlFrameError::MissingHttpPort => {
                 write!(f, "HOST-role peer annotation missing http_port")
             }
+            ControlFrameError::MissingControlOwnerId => {
+                write!(f, "owner control handshake missing owner_id")
+            }
             ControlFrameError::InvalidConfigHashLength { got } => {
                 write!(f, "invalid config_hash length: expected 32, got {}", got)
             }
@@ -115,6 +137,30 @@ impl std::fmt::Display for ControlFrameError {
             }
             ControlFrameError::MissingConfig => {
                 write!(f, "config field is required but missing")
+            }
+            ControlFrameError::MissingControlEnvelope => {
+                write!(f, "owner control envelope requires exactly one payload")
+            }
+            ControlFrameError::MissingControlCommand => {
+                write!(
+                    f,
+                    "owner control request requires exactly one command variant"
+                )
+            }
+            ControlFrameError::MissingControlResult => {
+                write!(
+                    f,
+                    "owner control response requires exactly one result variant"
+                )
+            }
+            ControlFrameError::MissingControlOwnership => {
+                write!(f, "owner control handshake missing ownership attestation")
+            }
+            ControlFrameError::MissingRequestId => {
+                write!(f, "owner control request_id must be non-zero")
+            }
+            ControlFrameError::InvalidOwnerControlErrorCode { got } => {
+                write!(f, "invalid owner control error code: {got}")
             }
             #[cfg(test)]
             ControlFrameError::DecodeError(msg) => write!(f, "protobuf decode error: {}", msg),
@@ -228,38 +274,225 @@ impl ValidateControlFrame for crate::proto::node::PeerLeaving {
     }
 }
 
-impl ValidateControlFrame for crate::proto::node::ConfigSubscribe {
+impl ValidateControlFrame for crate::proto::node::OwnerControlEnvelope {
     fn validate_frame(&self) -> Result<(), ControlFrameError> {
         if self.gen != NODE_PROTOCOL_GENERATION {
             return Err(ControlFrameError::BadGeneration { got: self.gen });
         }
-        validate_endpoint_id_length(self.subscriber_id.len())?;
+        let payloads = [
+            self.handshake.is_some(),
+            self.request.is_some(),
+            self.response.is_some(),
+            self.error.is_some(),
+        ];
+        if payloads.into_iter().filter(|present| *present).count() != 1 {
+            return Err(ControlFrameError::MissingControlEnvelope);
+        }
+        if let Some(handshake) = &self.handshake {
+            handshake.validate_frame()?;
+        }
+        if let Some(request) = &self.request {
+            request.validate_frame()?;
+        }
+        if let Some(response) = &self.response {
+            response.validate_frame()?;
+        }
+        if let Some(error) = &self.error {
+            error.validate_frame()?;
+        }
         Ok(())
     }
 }
 
-impl ValidateControlFrame for crate::proto::node::ConfigSnapshotResponse {
+impl ValidateControlFrame for crate::proto::node::OwnerControlHandshake {
     fn validate_frame(&self) -> Result<(), ControlFrameError> {
-        if self.gen != NODE_PROTOCOL_GENERATION {
-            return Err(ControlFrameError::BadGeneration { got: self.gen });
+        let ownership = self
+            .ownership
+            .as_ref()
+            .ok_or(ControlFrameError::MissingControlOwnership)?;
+        if ownership.owner_id.trim().is_empty() {
+            return Err(ControlFrameError::MissingControlOwnerId);
         }
-        let is_error = matches!(self.error.as_deref(), Some(s) if !s.is_empty());
-        if !is_error {
-            validate_endpoint_id_length(self.node_id.len())?;
+        validate_public_key_length(ownership.owner_sign_public_key.len())?;
+        validate_endpoint_id_length(ownership.node_endpoint_id.len())?;
+        if ownership.signature.is_empty() {
+            return Err(ControlFrameError::MissingSignature);
+        }
+        if ownership.signature.len() != 64 {
+            return Err(ControlFrameError::InvalidSignatureLength {
+                got: ownership.signature.len(),
+            });
+        }
+        Ok(())
+    }
+}
+
+impl ValidateControlFrame for crate::proto::node::OwnerControlRequest {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        if self.request_id == 0 {
+            return Err(ControlFrameError::MissingRequestId);
+        }
+        let commands = [
+            self.get_config.is_some(),
+            self.watch_config.is_some(),
+            self.apply_config.is_some(),
+            self.refresh_inventory.is_some(),
+        ];
+        if commands.into_iter().filter(|present| *present).count() != 1 {
+            return Err(ControlFrameError::MissingControlCommand);
+        }
+        if let Some(request) = &self.get_config {
+            request.validate_frame()?;
+        }
+        if let Some(request) = &self.watch_config {
+            request.validate_frame()?;
+        }
+        if let Some(request) = &self.apply_config {
+            request.validate_frame()?;
+        }
+        if let Some(request) = &self.refresh_inventory {
+            request.validate_frame()?;
+        }
+        Ok(())
+    }
+}
+
+impl ValidateControlFrame for crate::proto::node::OwnerControlResponse {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        if self.request_id == 0 {
+            return Err(ControlFrameError::MissingRequestId);
+        }
+        let results = [
+            self.get_config.is_some(),
+            self.watch_config.is_some(),
+            self.apply_config.is_some(),
+            self.refresh_inventory.is_some(),
+        ];
+        if results.into_iter().filter(|present| *present).count() != 1 {
+            return Err(ControlFrameError::MissingControlResult);
+        }
+        if let Some(response) = &self.get_config {
+            response.validate_frame()?;
+        }
+        if let Some(response) = &self.watch_config {
+            response.validate_frame()?;
+        }
+        if let Some(response) = &self.apply_config {
+            response.validate_frame()?;
+        }
+        if let Some(response) = &self.refresh_inventory {
+            response.validate_frame()?;
+        }
+        Ok(())
+    }
+}
+
+impl ValidateControlFrame for crate::proto::node::OwnerControlError {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        if matches!(
+            crate::proto::node::OwnerControlErrorCode::try_from(self.code),
+            Err(_) | Ok(crate::proto::node::OwnerControlErrorCode::Unspecified)
+        ) {
+            return Err(ControlFrameError::InvalidOwnerControlErrorCode { got: self.code });
+        }
+        Ok(())
+    }
+}
+
+impl ValidateControlFrame for crate::proto::node::OwnerControlGetConfigRequest {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        validate_endpoint_id_length(self.requester_node_id.len())?;
+        validate_endpoint_id_length(self.target_node_id.len())?;
+        Ok(())
+    }
+}
+
+impl ValidateControlFrame for crate::proto::node::OwnerControlGetConfigResponse {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        self.snapshot
+            .as_ref()
+            .ok_or(ControlFrameError::MissingConfig)?
+            .validate_frame()
+    }
+}
+
+impl ValidateControlFrame for crate::proto::node::OwnerControlWatchConfigRequest {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        validate_endpoint_id_length(self.requester_node_id.len())?;
+        validate_endpoint_id_length(self.target_node_id.len())?;
+        Ok(())
+    }
+}
+
+impl ValidateControlFrame for crate::proto::node::OwnerControlWatchConfigResponse {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        let results = [
+            self.accepted.is_some(),
+            self.snapshot.is_some(),
+            self.update.is_some(),
+        ];
+        if results.into_iter().filter(|present| *present).count() != 1 {
+            return Err(ControlFrameError::MissingControlResult);
+        }
+        if let Some(accepted) = &self.accepted {
+            accepted.validate_frame()?;
+        }
+        if let Some(snapshot) = &self.snapshot {
+            snapshot.validate_frame()?;
+        }
+        if let Some(update) = &self.update {
+            update.validate_frame()?;
+        }
+        Ok(())
+    }
+}
+
+impl ValidateControlFrame for crate::proto::node::OwnerControlWatchAccepted {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        validate_endpoint_id_length(self.target_node_id.len())?;
+        Ok(())
+    }
+}
+
+impl ValidateControlFrame for crate::proto::node::OwnerControlApplyConfigRequest {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        validate_endpoint_id_length(self.requester_node_id.len())?;
+        validate_endpoint_id_length(self.target_node_id.len())?;
+        if self.config.is_none() {
+            return Err(ControlFrameError::MissingConfig);
+        }
+        Ok(())
+    }
+}
+
+impl ValidateControlFrame for crate::proto::node::OwnerControlApplyConfigResponse {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        if self.success || !self.config_hash.is_empty() {
             validate_config_hash_length(self.config_hash.len())?;
-            if self.config.is_none() {
-                return Err(ControlFrameError::MissingConfig);
-            }
         }
         Ok(())
     }
 }
 
-impl ValidateControlFrame for crate::proto::node::ConfigUpdateNotification {
+impl ValidateControlFrame for crate::proto::node::OwnerControlRefreshInventoryRequest {
     fn validate_frame(&self) -> Result<(), ControlFrameError> {
-        if self.gen != NODE_PROTOCOL_GENERATION {
-            return Err(ControlFrameError::BadGeneration { got: self.gen });
-        }
+        validate_endpoint_id_length(self.requester_node_id.len())?;
+        validate_endpoint_id_length(self.target_node_id.len())?;
+        Ok(())
+    }
+}
+
+impl ValidateControlFrame for crate::proto::node::OwnerControlRefreshInventoryResponse {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        self.snapshot
+            .as_ref()
+            .ok_or(ControlFrameError::MissingConfig)?
+            .validate_frame()
+    }
+}
+
+impl ValidateControlFrame for crate::proto::node::OwnerControlConfigSnapshot {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
         validate_endpoint_id_length(self.node_id.len())?;
         validate_config_hash_length(self.config_hash.len())?;
         if self.config.is_none() {
@@ -269,36 +502,12 @@ impl ValidateControlFrame for crate::proto::node::ConfigUpdateNotification {
     }
 }
 
-impl ValidateControlFrame for crate::proto::node::ConfigPush {
+impl ValidateControlFrame for crate::proto::node::OwnerControlConfigUpdate {
     fn validate_frame(&self) -> Result<(), ControlFrameError> {
-        if self.gen != NODE_PROTOCOL_GENERATION {
-            return Err(ControlFrameError::BadGeneration { got: self.gen });
-        }
-        validate_endpoint_id_length(self.requester_id.len())?;
-        validate_endpoint_id_length(self.target_node_id.len())?;
-        validate_public_key_length(self.owner_signing_public_key.len())?;
-        if self.signature.is_empty() {
-            return Err(ControlFrameError::MissingSignature);
-        }
-        if self.signature.len() != 64 {
-            return Err(ControlFrameError::InvalidSignatureLength {
-                got: self.signature.len(),
-            });
-        }
+        validate_endpoint_id_length(self.node_id.len())?;
+        validate_config_hash_length(self.config_hash.len())?;
         if self.config.is_none() {
             return Err(ControlFrameError::MissingConfig);
-        }
-        Ok(())
-    }
-}
-
-impl ValidateControlFrame for crate::proto::node::ConfigPushResponse {
-    fn validate_frame(&self) -> Result<(), ControlFrameError> {
-        if self.gen != NODE_PROTOCOL_GENERATION {
-            return Err(ControlFrameError::BadGeneration { got: self.gen });
-        }
-        if self.success || !self.config_hash.is_empty() {
-            validate_config_hash_length(self.config_hash.len())?;
         }
         Ok(())
     }
@@ -480,10 +689,9 @@ mod tests {
     use crate::crypto::OwnershipSummary;
     use crate::mesh::{resolve_peer_down, resolve_peer_leaving, PeerInfo};
     use crate::proto::node::{
-        ConfigPush, ConfigPushResponse, ConfigSnapshotResponse, ConfigSubscribe,
-        ConfigUpdateNotification, ConfiguredModelRef, GossipFrame, MeshSubprotocolOpen,
-        NodeConfigSnapshot, NodeGpuConfig, NodeModelEntry, NodePluginEntry, NodeRole,
-        PeerAnnouncement, RouteTableRequest,
+        ConfiguredModelRef, GossipFrame, MeshSubprotocolOpen, NodeConfigSnapshot, NodeGpuConfig,
+        NodeModelEntry, NodePluginEntry, NodeRole, OwnerControlError, OwnerControlErrorCode,
+        OwnerControlHandshake, PeerAnnouncement, RouteTableRequest, SignedNodeOwnership,
     };
     use iroh::{EndpointAddr, EndpointId, SecretKey};
     use std::collections::{HashMap, HashSet};
@@ -531,11 +739,58 @@ mod tests {
         }
     }
 
-    fn make_valid_config_subscribe() -> ConfigSubscribe {
-        ConfigSubscribe {
-            owner_id: String::new(),
-            gen: NODE_PROTOCOL_GENERATION,
-            subscriber_id: vec![0xAA; 32],
+    fn make_valid_owner_control_handshake() -> OwnerControlHandshake {
+        OwnerControlHandshake {
+            ownership: Some(SignedNodeOwnership {
+                version: 1,
+                cert_id: "cert-1".to_string(),
+                owner_id: "owner-1".to_string(),
+                owner_sign_public_key: vec![0x11; 32],
+                node_endpoint_id: vec![0x22; 32],
+                issued_at_unix_ms: 1,
+                expires_at_unix_ms: 2,
+                node_label: Some("node-01".to_string()),
+                hostname_hint: Some("node-01".to_string()),
+                signature: vec![0x33; 64],
+            }),
+        }
+    }
+
+    #[test]
+    fn owner_control_handshake_empty_owner_id_uses_handshake_error() {
+        let mut handshake = make_valid_owner_control_handshake();
+        handshake
+            .ownership
+            .as_mut()
+            .expect("test handshake must include ownership")
+            .owner_id = "   ".to_string();
+
+        let err = handshake
+            .validate_frame()
+            .expect_err("handshake with blank owner_id must be rejected");
+        assert!(matches!(err, ControlFrameError::MissingControlOwnerId));
+        assert_eq!(err.to_string(), "owner control handshake missing owner_id");
+    }
+
+    #[test]
+    fn owner_control_error_rejects_invalid_error_code() {
+        for code in [OwnerControlErrorCode::Unspecified as i32, 9999] {
+            let err = OwnerControlError {
+                code,
+                message: "invalid".to_string(),
+                request_id: Some(1),
+                current_revision: None,
+            }
+            .validate_frame()
+            .expect_err("invalid owner-control error code must be rejected");
+            assert!(matches!(
+                err,
+                ControlFrameError::InvalidOwnerControlErrorCode { got } if got == code
+            ));
+            assert_eq!(
+                err.to_string(),
+                format!("invalid owner control error code: {code}")
+            );
         }
     }
 
@@ -625,280 +880,6 @@ mod tests {
         let err = decode_control_frame::<MeshSubprotocolOpen>(STREAM_SUBPROTOCOL, &encoded)
             .expect_err("empty subprotocol names must be rejected");
         assert!(matches!(err, ControlFrameError::InvalidSubprotocol));
-    }
-
-    #[test]
-    fn config_frames_roundtrip_and_validation() {
-        let snapshot = make_config_snapshot();
-        let config_hash = vec![0xA5; 32];
-        let node_id = vec![0x42; 32];
-
-        let subscribe = make_valid_config_subscribe();
-        let encoded = encode_control_frame(STREAM_CONFIG_SUBSCRIBE, &subscribe);
-        let _decoded: ConfigSubscribe = decode_control_frame(STREAM_CONFIG_SUBSCRIBE, &encoded)
-            .expect("valid config subscribe must decode");
-
-        let snapshot_response = ConfigSnapshotResponse {
-            owner_id: String::new(),
-            gen: NODE_PROTOCOL_GENERATION,
-            node_id: node_id.clone(),
-            revision: 7,
-            config_hash: config_hash.clone(),
-            config: Some(snapshot.clone()),
-            hostname: Some("node-01".to_string()),
-            error: None,
-        };
-        let encoded = encode_control_frame(STREAM_CONFIG_SUBSCRIBE, &snapshot_response);
-        let decoded: ConfigSnapshotResponse =
-            decode_control_frame(STREAM_CONFIG_SUBSCRIBE, &encoded)
-                .expect("valid snapshot response must decode");
-        assert_eq!(decoded.revision, 7);
-        assert_eq!(decoded.config_hash, config_hash);
-        assert_eq!(decoded.hostname.as_deref(), Some("node-01"));
-
-        let update = ConfigUpdateNotification {
-            owner_id: String::new(),
-            gen: NODE_PROTOCOL_GENERATION,
-            node_id: node_id.clone(),
-            revision: 8,
-            config_hash: config_hash.clone(),
-            config: Some(snapshot.clone()),
-        };
-        let encoded = encode_control_frame(STREAM_CONFIG_SUBSCRIBE, &update);
-        let decoded: ConfigUpdateNotification =
-            decode_control_frame(STREAM_CONFIG_SUBSCRIBE, &encoded)
-                .expect("valid update notification must decode");
-        assert_eq!(decoded.revision, 8);
-
-        let push = ConfigPush {
-            owner_id: String::new(),
-            gen: NODE_PROTOCOL_GENERATION,
-            requester_id: vec![0x10; 32],
-            target_node_id: node_id.clone(),
-            expected_revision: 8,
-            config: Some(snapshot.clone()),
-            owner_signing_public_key: vec![0x02; 32],
-            signature: vec![0x03; 64],
-        };
-        let encoded = encode_control_frame(STREAM_CONFIG_PUSH, &push);
-        let decoded: ConfigPush = decode_control_frame(STREAM_CONFIG_PUSH, &encoded)
-            .expect("valid config push must decode");
-        assert_eq!(decoded.expected_revision, 8);
-
-        let push_response = ConfigPushResponse {
-            gen: NODE_PROTOCOL_GENERATION,
-            success: true,
-            current_revision: 9,
-            config_hash: config_hash.clone(),
-            error: None,
-            apply_mode: 1,
-        };
-        let encoded = encode_control_frame(STREAM_CONFIG_PUSH, &push_response);
-        let decoded: ConfigPushResponse = decode_control_frame(STREAM_CONFIG_PUSH, &encoded)
-            .expect("valid push response must decode");
-        assert!(decoded.success);
-        assert_eq!(decoded.current_revision, 9);
-    }
-
-    #[test]
-    fn config_frames_validation_rejects_bad_data() {
-        let mut subscribe = make_valid_config_subscribe();
-        subscribe.gen = 0;
-        let encoded = encode_control_frame(STREAM_CONFIG_SUBSCRIBE, &subscribe);
-        let err = decode_control_frame::<ConfigSubscribe>(STREAM_CONFIG_SUBSCRIBE, &encoded)
-            .expect_err("bad generation must be rejected");
-        assert!(matches!(err, ControlFrameError::BadGeneration { got: 0 }));
-
-        let mut subscribe = make_valid_config_subscribe();
-        subscribe.subscriber_id = vec![0x01; 16];
-        let encoded = encode_control_frame(STREAM_CONFIG_SUBSCRIBE, &subscribe);
-        let err = decode_control_frame::<ConfigSubscribe>(STREAM_CONFIG_SUBSCRIBE, &encoded)
-            .expect_err("invalid subscriber id length must be rejected");
-        assert!(matches!(err, ControlFrameError::InvalidEndpointId { .. }));
-
-        let snapshot_response = ConfigSnapshotResponse {
-            owner_id: String::new(),
-            gen: NODE_PROTOCOL_GENERATION,
-            node_id: vec![0x01; 16],
-            revision: 1,
-            config_hash: vec![0x02; 32],
-            config: Some(make_config_snapshot()),
-            hostname: None,
-            error: None,
-        };
-        let encoded = encode_control_frame(STREAM_CONFIG_SUBSCRIBE, &snapshot_response);
-        let err = decode_control_frame::<ConfigSnapshotResponse>(STREAM_CONFIG_SUBSCRIBE, &encoded)
-            .expect_err("invalid node id must be rejected");
-        assert!(matches!(err, ControlFrameError::InvalidEndpointId { .. }));
-
-        let snapshot_response = ConfigSnapshotResponse {
-            owner_id: String::new(),
-            gen: NODE_PROTOCOL_GENERATION,
-            node_id: vec![0xAA; 32],
-            revision: 1,
-            config_hash: vec![0x02; 16],
-            config: Some(make_config_snapshot()),
-            hostname: None,
-            error: None,
-        };
-        let encoded = encode_control_frame(STREAM_CONFIG_SUBSCRIBE, &snapshot_response);
-        let err = decode_control_frame::<ConfigSnapshotResponse>(STREAM_CONFIG_SUBSCRIBE, &encoded)
-            .expect_err("invalid config hash length must be rejected");
-        assert!(matches!(
-            err,
-            ControlFrameError::InvalidConfigHashLength { .. }
-        ));
-
-        let update = ConfigUpdateNotification {
-            owner_id: String::new(),
-            gen: NODE_PROTOCOL_GENERATION,
-            node_id: vec![0xBB; 32],
-            revision: 2,
-            config_hash: vec![0xCC; 16],
-            config: Some(make_config_snapshot()),
-        };
-        let encoded = encode_control_frame(STREAM_CONFIG_SUBSCRIBE, &update);
-        let err =
-            decode_control_frame::<ConfigUpdateNotification>(STREAM_CONFIG_SUBSCRIBE, &encoded)
-                .expect_err("invalid config hash for update must be rejected");
-        assert!(matches!(
-            err,
-            ControlFrameError::InvalidConfigHashLength { .. }
-        ));
-
-        let mut push = ConfigPush {
-            owner_id: String::new(),
-            gen: NODE_PROTOCOL_GENERATION,
-            requester_id: vec![0x01; 32],
-            target_node_id: vec![0x02; 32],
-            expected_revision: 2,
-            config: Some(make_config_snapshot()),
-            owner_signing_public_key: vec![0x03; 16],
-            signature: vec![0x04],
-        };
-        let encoded = encode_control_frame(STREAM_CONFIG_PUSH, &push);
-        let err = decode_control_frame::<ConfigPush>(STREAM_CONFIG_PUSH, &encoded)
-            .expect_err("short public key must be rejected");
-        assert!(matches!(
-            err,
-            ControlFrameError::InvalidPublicKeyLength { .. }
-        ));
-
-        push.owner_signing_public_key = vec![0x06; 32];
-        push.signature = vec![];
-        let encoded = encode_control_frame(STREAM_CONFIG_PUSH, &push);
-        let err = decode_control_frame::<ConfigPush>(STREAM_CONFIG_PUSH, &encoded)
-            .expect_err("empty signature must be rejected");
-        assert!(matches!(err, ControlFrameError::MissingSignature));
-
-        let push_response = ConfigPushResponse {
-            gen: 0,
-            success: false,
-            current_revision: 2,
-            config_hash: vec![0x07; 32],
-            error: Some("fail".to_string()),
-            apply_mode: 0,
-        };
-        let encoded = encode_control_frame(STREAM_CONFIG_PUSH, &push_response);
-        let err = decode_control_frame::<ConfigPushResponse>(STREAM_CONFIG_PUSH, &encoded)
-            .expect_err("bad gen must be rejected");
-        assert!(matches!(err, ControlFrameError::BadGeneration { got: 0 }));
-    }
-
-    #[test]
-    fn config_snapshot_response_error_shape_passes_validation() {
-        // Error responses from handle_config_subscribe have empty node_id / config_hash
-        // and no config payload. Validation must pass so callers can surface the error.
-        let error_snapshot = ConfigSnapshotResponse {
-            owner_id: String::new(),
-            gen: NODE_PROTOCOL_GENERATION,
-            node_id: vec![],
-            revision: 0,
-            config_hash: vec![],
-            config: None,
-            hostname: None,
-            error: Some("node has no local owner".to_string()),
-        };
-        let encoded = encode_control_frame(STREAM_CONFIG_SUBSCRIBE, &error_snapshot);
-        decode_control_frame::<ConfigSnapshotResponse>(STREAM_CONFIG_SUBSCRIBE, &encoded)
-            .expect("error-shaped snapshot must pass validation");
-    }
-
-    #[test]
-    fn config_push_response_error_shape_passes_validation() {
-        // Error responses from send_push_error have an empty config_hash.
-        let error_response = crate::proto::node::ConfigPushResponse {
-            gen: NODE_PROTOCOL_GENERATION,
-            success: false,
-            current_revision: 0,
-            config_hash: vec![],
-            error: Some("not the owner of this node".to_string()),
-            apply_mode: 0,
-        };
-        let encoded = encode_control_frame(STREAM_CONFIG_PUSH, &error_response);
-        decode_control_frame::<crate::proto::node::ConfigPushResponse>(
-            STREAM_CONFIG_PUSH,
-            &encoded,
-        )
-        .expect("error-shaped push response must pass validation");
-    }
-
-    #[test]
-    fn config_push_valid_64_byte_signature_passes_validation() {
-        let push_with_64_bytes = ConfigPush {
-            owner_id: String::new(),
-            gen: NODE_PROTOCOL_GENERATION,
-            requester_id: vec![0x01; 32],
-            target_node_id: vec![0x02; 32],
-            expected_revision: 0,
-            config: Some(make_config_snapshot()),
-            owner_signing_public_key: vec![0x03; 32],
-            signature: vec![0x04; 64],
-        };
-        let encoded = encode_control_frame(STREAM_CONFIG_PUSH, &push_with_64_bytes);
-        decode_control_frame::<ConfigPush>(STREAM_CONFIG_PUSH, &encoded)
-            .expect("push with 64-byte signature must pass validation");
-    }
-
-    #[test]
-    fn config_push_wrong_length_signature_rejected() {
-        // 32-byte signature must be rejected
-        let push_32 = ConfigPush {
-            owner_id: String::new(),
-            gen: NODE_PROTOCOL_GENERATION,
-            requester_id: vec![0x01; 32],
-            target_node_id: vec![0x02; 32],
-            expected_revision: 0,
-            config: Some(make_config_snapshot()),
-            owner_signing_public_key: vec![0x03; 32],
-            signature: vec![0x04; 32],
-        };
-        let encoded = encode_control_frame(STREAM_CONFIG_PUSH, &push_32);
-        let err = decode_control_frame::<ConfigPush>(STREAM_CONFIG_PUSH, &encoded)
-            .expect_err("32-byte signature must be rejected");
-        assert!(
-            matches!(err, ControlFrameError::InvalidSignatureLength { got: 32 }),
-            "expected InvalidSignatureLength {{got: 32}}, got {err:?}"
-        );
-
-        // 1-byte signature must also be rejected
-        let push_1 = ConfigPush {
-            owner_id: String::new(),
-            gen: NODE_PROTOCOL_GENERATION,
-            requester_id: vec![0x01; 32],
-            target_node_id: vec![0x02; 32],
-            expected_revision: 0,
-            config: Some(make_config_snapshot()),
-            owner_signing_public_key: vec![0x03; 32],
-            signature: vec![0x04; 1],
-        };
-        let encoded = encode_control_frame(STREAM_CONFIG_PUSH, &push_1);
-        let err = decode_control_frame::<ConfigPush>(STREAM_CONFIG_PUSH, &encoded)
-            .expect_err("1-byte signature must be rejected");
-        assert!(
-            matches!(err, ControlFrameError::InvalidSignatureLength { got: 1 }),
-            "expected InvalidSignatureLength {{got: 1}}, got {err:?}"
-        );
     }
 
     #[test]
@@ -1657,6 +1638,7 @@ mod tests {
                 assignment: GpuAssignment::Auto,
                 parallel: None,
             },
+            owner_control: Default::default(),
             telemetry: Default::default(),
             models: vec![ModelConfigEntry {
                 model: "Qwen3-8B.gguf".to_string(),
@@ -1714,6 +1696,7 @@ mod tests {
                 assignment: GpuAssignment::Auto,
                 parallel: None,
             },
+            owner_control: Default::default(),
             telemetry: Default::default(),
             models: vec![ModelConfigEntry {
                 model: "test.gguf".to_string(),
@@ -1741,6 +1724,7 @@ mod tests {
                 assignment: GpuAssignment::Auto,
                 parallel: None,
             },
+            owner_control: Default::default(),
             telemetry: Default::default(),
             models: vec![ModelConfigEntry {
                 model: "other.gguf".to_string(),
@@ -1771,6 +1755,7 @@ mod tests {
                 assignment: GpuAssignment::Pinned,
                 parallel: None,
             },
+            owner_control: Default::default(),
             telemetry: Default::default(),
             models: vec![ModelConfigEntry {
                 model: "Qwen3-8B-Q4_K_M".to_string(),
@@ -1868,187 +1853,6 @@ mod tests {
         assert_eq!(restored.models.len(), 1);
         assert_eq!(restored.models[0].gpu_id, None);
         assert_eq!(restored.models[0].ctx_size, Some(4096));
-    }
-
-    #[test]
-    fn config_sync_push_signature_roundtrip() {
-        use ed25519_dalek::{Signer, SigningKey};
-
-        let signing_key = SigningKey::from_bytes(&[0x42u8; 32]);
-        let verifying_key = signing_key.verifying_key();
-
-        let push = ConfigPush {
-            owner_id: String::new(),
-            gen: NODE_PROTOCOL_GENERATION,
-            requester_id: vec![0x01; 32],
-            target_node_id: vec![0x02; 32],
-            expected_revision: 0,
-            config: Some(NodeConfigSnapshot {
-                version: 1,
-                ..Default::default()
-            }),
-            owner_signing_public_key: verifying_key.to_bytes().to_vec(),
-            signature: vec![0u8; 64],
-        };
-
-        let payload = crate::mesh::config_push_signature_payload(&push);
-        let sig = signing_key.sign(&payload);
-        let mut push_signed = push.clone();
-        push_signed.signature = sig.to_bytes().to_vec();
-
-        let vk = ed25519_dalek::VerifyingKey::from_bytes(
-            &push_signed
-                .owner_signing_public_key
-                .as_slice()
-                .try_into()
-                .unwrap(),
-        )
-        .unwrap();
-        let payload2 = crate::mesh::config_push_signature_payload(&push_signed);
-        let sig2 = ed25519_dalek::Signature::from_bytes(
-            &push_signed.signature.as_slice().try_into().unwrap(),
-        );
-        assert!(
-            vk.verify_strict(&payload2, &sig2).is_ok(),
-            "valid signature must verify"
-        );
-    }
-
-    #[test]
-    fn config_sync_push_tampered_payload_rejected() {
-        use ed25519_dalek::{Signer, SigningKey};
-
-        let signing_key = SigningKey::from_bytes(&[0x43u8; 32]);
-        let verifying_key = signing_key.verifying_key();
-
-        let push = ConfigPush {
-            owner_id: String::new(),
-            gen: NODE_PROTOCOL_GENERATION,
-            requester_id: vec![0x01; 32],
-            target_node_id: vec![0x02; 32],
-            expected_revision: 0,
-            config: Some(NodeConfigSnapshot {
-                version: 1,
-                ..Default::default()
-            }),
-            owner_signing_public_key: verifying_key.to_bytes().to_vec(),
-            signature: vec![0u8; 64],
-        };
-
-        let payload = crate::mesh::config_push_signature_payload(&push);
-        let sig = signing_key.sign(&payload);
-        let mut push_signed = push.clone();
-        push_signed.signature = sig.to_bytes().to_vec();
-
-        let mut push_tampered = push_signed.clone();
-        push_tampered.expected_revision += 1;
-
-        let vk = ed25519_dalek::VerifyingKey::from_bytes(
-            &push_tampered
-                .owner_signing_public_key
-                .as_slice()
-                .try_into()
-                .unwrap(),
-        )
-        .unwrap();
-        let payload_tampered = crate::mesh::config_push_signature_payload(&push_tampered);
-        let sig2 = ed25519_dalek::Signature::from_bytes(
-            &push_signed.signature.as_slice().try_into().unwrap(),
-        );
-        assert!(
-            vk.verify_strict(&payload_tampered, &sig2).is_err(),
-            "tampered payload must fail verification"
-        );
-    }
-    #[test]
-    fn config_sync_push_validates_signature_length_too_short() {
-        use crate::proto::node::ConfigPush;
-        let push = ConfigPush {
-            owner_id: String::new(),
-            gen: NODE_PROTOCOL_GENERATION,
-            requester_id: vec![0x01; 32],
-            target_node_id: vec![0x02; 32],
-            expected_revision: 0,
-            config: Some(make_config_snapshot()),
-            owner_signing_public_key: vec![0x03; 32],
-            signature: vec![0x04; 10],
-        };
-        let encoded = encode_control_frame(STREAM_CONFIG_PUSH, &push);
-        let err = decode_control_frame::<ConfigPush>(STREAM_CONFIG_PUSH, &encoded)
-            .expect_err("short signature must be rejected");
-        assert!(
-            matches!(err, ControlFrameError::InvalidSignatureLength { got: 10 }),
-            "expected InvalidSignatureLength{{got:10}}, got {:?}",
-            err
-        );
-    }
-
-    #[test]
-    fn config_sync_push_validates_signature_length_empty() {
-        use crate::proto::node::ConfigPush;
-        let push = ConfigPush {
-            owner_id: String::new(),
-            gen: NODE_PROTOCOL_GENERATION,
-            requester_id: vec![0x01; 32],
-            target_node_id: vec![0x02; 32],
-            expected_revision: 0,
-            config: Some(make_config_snapshot()),
-            owner_signing_public_key: vec![0x03; 32],
-            signature: vec![],
-        };
-        let encoded = encode_control_frame(STREAM_CONFIG_PUSH, &push);
-        let err = decode_control_frame::<ConfigPush>(STREAM_CONFIG_PUSH, &encoded)
-            .expect_err("empty signature must be rejected");
-        assert!(
-            matches!(err, ControlFrameError::MissingSignature),
-            "expected MissingSignature, got {:?}",
-            err
-        );
-    }
-
-    #[test]
-    fn config_sync_snapshot_response_validates_config_present() {
-        use crate::proto::node::ConfigSnapshotResponse;
-        let response = ConfigSnapshotResponse {
-            owner_id: String::new(),
-            gen: NODE_PROTOCOL_GENERATION,
-            node_id: vec![0x01; 32],
-            revision: 1,
-            config_hash: vec![0x02; 32],
-            config: None,
-            hostname: None,
-            error: None,
-        };
-        let encoded = encode_control_frame(STREAM_CONFIG_SUBSCRIBE, &response);
-        let err = decode_control_frame::<ConfigSnapshotResponse>(STREAM_CONFIG_SUBSCRIBE, &encoded)
-            .expect_err("snapshot response with config=None must be rejected");
-        assert!(
-            matches!(err, ControlFrameError::MissingConfig),
-            "expected MissingConfig, got {:?}",
-            err
-        );
-    }
-
-    #[test]
-    fn config_sync_update_notification_validates_config_present() {
-        use crate::proto::node::ConfigUpdateNotification;
-        let notification = ConfigUpdateNotification {
-            owner_id: String::new(),
-            gen: NODE_PROTOCOL_GENERATION,
-            node_id: vec![0x01; 32],
-            revision: 1,
-            config_hash: vec![0x02; 32],
-            config: None,
-        };
-        let encoded = encode_control_frame(STREAM_CONFIG_SUBSCRIBE, &notification);
-        let err =
-            decode_control_frame::<ConfigUpdateNotification>(STREAM_CONFIG_SUBSCRIBE, &encoded)
-                .expect_err("update notification with config=None must be rejected");
-        assert!(
-            matches!(err, ControlFrameError::MissingConfig),
-            "expected MissingConfig, got {:?}",
-            err
-        );
     }
 
     #[test]

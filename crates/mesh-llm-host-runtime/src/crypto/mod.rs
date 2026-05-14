@@ -16,7 +16,8 @@ pub use self::keystore::{
 pub use self::ownership::{
     certificate_needs_renewal, default_node_ownership_path, default_trust_store_path,
     load_node_ownership, load_trust_store, save_node_ownership, save_trust_store,
-    sign_node_ownership, verify_node_ownership, NodeOwnershipClaim, OwnershipStatus,
+    sign_node_ownership, verify_control_plane_peer_ownership, verify_control_plane_target_node,
+    verify_node_ownership, ControlPlaneAuthError, NodeOwnershipClaim, OwnershipStatus,
     OwnershipSummary, SignedNodeOwnership, TrustPolicy, TrustStore,
     DEFAULT_NODE_CERT_LIFETIME_SECS, DEFAULT_NODE_CERT_RENEW_WINDOW_SECS,
 };

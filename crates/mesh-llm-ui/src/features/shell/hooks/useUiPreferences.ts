@@ -7,6 +7,7 @@ export type UiPreferences = {
   accent: Accent
   density: Density
   panelStyle: PanelStyle
+  panelStyleOverride: boolean
 }
 
 export const UI_PREFERENCES_STORAGE_KEY = APP_STORAGE_KEYS.preferences
@@ -21,7 +22,13 @@ export const DEFAULT_UI_PREFERENCES: UiPreferences = {
   theme: 'auto',
   accent: 'blue',
   density: 'normal',
-  panelStyle: 'solid'
+  panelStyle: 'soft',
+  panelStyleOverride: false
+}
+
+const DEFAULT_PANEL_STYLE_BY_THEME: Record<ResolvedTheme, PanelStyle> = {
+  dark: 'soft',
+  light: 'solid'
 }
 
 type LegacyMediaQueryList = {
@@ -52,21 +59,33 @@ function isPanelStyle(value: unknown): value is PanelStyle {
   return value === 'solid' || value === 'soft'
 }
 
+function isBoolean(value: unknown): value is boolean {
+  return typeof value === 'boolean'
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function normalizeUiPreferences(value: unknown): UiPreferences {
   if (!isRecord(value)) return DEFAULT_UI_PREFERENCES
+  const hasMigratedPanelStyle = isPanelStyle(value.panelStyle) || isPanelStyle(value.configPanelStyle)
+  const migratedPanelStyle = isPanelStyle(value.panelStyle)
+    ? value.panelStyle
+    : isPanelStyle(value.configPanelStyle)
+      ? value.configPanelStyle
+      : DEFAULT_UI_PREFERENCES.panelStyle
+  const storedPanelStyleOverride = isBoolean(value.panelStyleOverride) ? value.panelStyleOverride : undefined
+  const panelStyleOverride = storedPanelStyleOverride !== undefined
+    ? storedPanelStyleOverride && isPanelStyle(value.panelStyle)
+    : hasMigratedPanelStyle && migratedPanelStyle === 'soft'
+
   return {
     theme: isTheme(value.theme) ? value.theme : DEFAULT_UI_PREFERENCES.theme,
     accent: isAccent(value.accent) ? value.accent : DEFAULT_UI_PREFERENCES.accent,
     density: isDensity(value.density) ? value.density : DEFAULT_UI_PREFERENCES.density,
-    panelStyle: isPanelStyle(value.panelStyle)
-      ? value.panelStyle
-      : isPanelStyle(value.configPanelStyle)
-        ? value.configPanelStyle
-        : DEFAULT_UI_PREFERENCES.panelStyle
+    panelStyle: migratedPanelStyle,
+    panelStyleOverride
   }
 }
 
@@ -102,6 +121,10 @@ export function resolveThemePreference(theme: Theme, systemTheme: ResolvedTheme 
   return theme === 'auto' ? systemTheme : theme
 }
 
+export function resolvePanelStylePreference(preferences: UiPreferences, resolvedTheme: ResolvedTheme): PanelStyle {
+  return preferences.panelStyleOverride ? preferences.panelStyle : DEFAULT_PANEL_STYLE_BY_THEME[resolvedTheme]
+}
+
 function addSystemThemeListener(mediaQuery: MediaQueryList, listener: () => void): () => void {
   if (typeof mediaQuery.addEventListener === 'function') {
     mediaQuery.addEventListener('change', listener)
@@ -132,11 +155,12 @@ function applyUiPreferencesToDocument(preferences: UiPreferences, resolvedTheme:
   if (typeof document === 'undefined') return
 
   const root = document.documentElement
+  const panelStyle = resolvePanelStylePreference(preferences, resolvedTheme)
   root.dataset.theme = resolvedTheme
   root.dataset.themePreference = preferences.theme
   root.dataset.accent = preferences.accent
   root.dataset.density = preferences.density
-  root.dataset.panelStyle = preferences.panelStyle
+  root.dataset.panelStyle = panelStyle
   delete root.dataset.configPanelStyle
   applyThemeColor(resolvedTheme)
 }
@@ -145,6 +169,7 @@ export function useUIPreferences() {
   const [preferences, setPreferences] = useState<UiPreferences>(() => readStoredUiPreferences())
   const [systemTheme, setSystemTheme] = useState<ResolvedTheme>(() => readSystemTheme())
   const resolvedTheme = resolveThemePreference(preferences.theme, systemTheme)
+  const panelStyle = resolvePanelStylePreference(preferences, resolvedTheme)
 
   useEffect(() => {
     applyUiPreferencesToDocument(preferences, resolvedTheme)
@@ -193,11 +218,12 @@ export function useUIPreferences() {
   }, [])
 
   const setPanelStyle = useCallback((panelStyle: PanelStyle) => {
-    setPreferences((current) => ({ ...current, panelStyle }))
+    setPreferences((current) => ({ ...current, panelStyle, panelStyleOverride: true }))
   }, [])
 
   return {
     ...preferences,
+    panelStyle,
     resolvedTheme,
     setTheme,
     setAccent,

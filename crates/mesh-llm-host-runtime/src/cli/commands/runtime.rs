@@ -1,14 +1,80 @@
 use anyhow::{Context, Result};
+use serde_json::json;
+use std::path::Path;
 
 use crate::cli::runtime::RuntimeCommand;
+use crate::plugin::MeshConfig;
 
 pub(crate) async fn dispatch_runtime_command(command: Option<&RuntimeCommand>) -> Result<()> {
     match command {
         Some(RuntimeCommand::Status { port }) => run_status(*port).await,
+        Some(RuntimeCommand::Bootstrap { port, json }) => run_control_bootstrap(*port, *json).await,
+        Some(RuntimeCommand::GetConfig {
+            endpoint,
+            port,
+            json,
+        }) => run_control_get_config(endpoint, *port, *json).await,
+        Some(RuntimeCommand::RefreshInventory {
+            endpoint,
+            port,
+            json,
+        }) => run_control_refresh_inventory(endpoint, *port, *json).await,
+        Some(RuntimeCommand::ApplyConfig {
+            endpoint,
+            expected_revision,
+            config,
+            port,
+            json,
+        }) => run_control_apply_config(endpoint, *expected_revision, config, *port, *json).await,
         Some(RuntimeCommand::Load { name, port }) => run_load(name, *port).await,
         Some(RuntimeCommand::Unload { name, port }) => run_drop(name, *port).await,
         None => run_status(3131).await,
     }
+}
+
+pub(crate) async fn run_control_get_config(
+    endpoint: &str,
+    port: u16,
+    json_output: bool,
+) -> Result<()> {
+    let body = post_runtime_payload(
+        port,
+        "/api/runtime/control/get-config",
+        &build_control_endpoint_request(endpoint),
+    )
+    .await?;
+    print_control_response("Owner-control config snapshot", &body, json_output)
+}
+
+pub(crate) async fn run_control_refresh_inventory(
+    endpoint: &str,
+    port: u16,
+    json_output: bool,
+) -> Result<()> {
+    let body = post_runtime_payload(
+        port,
+        "/api/runtime/control/refresh-inventory",
+        &build_control_endpoint_request(endpoint),
+    )
+    .await?;
+    print_control_response("Owner-control inventory refresh", &body, json_output)
+}
+
+pub(crate) async fn run_control_apply_config(
+    endpoint: &str,
+    expected_revision: u64,
+    config_path: &Path,
+    port: u16,
+    json_output: bool,
+) -> Result<()> {
+    let config = load_mesh_config_file(config_path)?;
+    let body = post_runtime_payload(
+        port,
+        "/api/runtime/control/apply-config",
+        &build_apply_config_request(endpoint, expected_revision, &config),
+    )
+    .await?;
+    print_control_response("Owner-control config apply", &body, json_output)
 }
 
 pub(crate) async fn run_drop(model_name: &str, port: u16) -> Result<()> {
@@ -174,6 +240,106 @@ pub(crate) async fn run_status(port: u16) -> Result<()> {
     Ok(())
 }
 
+pub(crate) async fn run_control_bootstrap(port: u16, json: bool) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()?;
+    let payload = fetch_runtime_payload(&client, port, "/api/runtime/control-bootstrap").await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(());
+    }
+
+    println!("🔐 Owner-control bootstrap");
+    println!();
+    println!("Scope: Local node only");
+    println!(
+        "Remote control requires explicit endpoint: {}",
+        yes_no(
+            payload["requires_explicit_remote_endpoint"]
+                .as_bool()
+                .unwrap_or(true)
+        )
+    );
+    if payload["enabled"].as_bool().unwrap_or(false) {
+        let endpoint = payload["endpoint"].as_str().unwrap_or("pending");
+        println!("Endpoint: {endpoint}");
+    } else {
+        println!("Endpoint: disabled");
+    }
+
+    Ok(())
+}
+
+fn build_control_endpoint_request(endpoint: &str) -> serde_json::Value {
+    json!({ "endpoint": endpoint })
+}
+
+fn build_apply_config_request(
+    endpoint: &str,
+    expected_revision: u64,
+    config: &MeshConfig,
+) -> serde_json::Value {
+    json!({
+        "endpoint": endpoint,
+        "expected_revision": expected_revision,
+        "config": config,
+    })
+}
+
+fn load_mesh_config_file(path: &Path) -> Result<MeshConfig> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read config file {}", path.display()))?;
+    toml::from_str(&raw).with_context(|| format!("Invalid config TOML in {}", path.display()))
+}
+
+async fn post_runtime_payload(
+    port: u16,
+    path: &str,
+    body: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+    let url = format!("http://127.0.0.1:{port}{path}");
+    let response = client.post(&url).json(body).send().await.with_context(|| {
+        format!("Can't connect to mesh-llm console on port {port}. Is it running?")
+    })?;
+    let status = response.status();
+    let body = response
+        .json::<serde_json::Value>()
+        .await
+        .unwrap_or(serde_json::Value::Null);
+    if status.is_success() {
+        Ok(body)
+    } else {
+        let reason = body
+            .get("error")
+            .and_then(|value| value.get("message").or(Some(value)))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown error");
+        anyhow::bail!("{reason}");
+    }
+}
+
+fn print_control_response(title: &str, body: &serde_json::Value, json_output: bool) -> Result<()> {
+    if !json_output {
+        println!("🔐 {title}");
+        println!();
+    }
+    println!("{}", serde_json::to_string_pretty(body)?);
+    Ok(())
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value {
+        "yes"
+    } else {
+        "no"
+    }
+}
+
 fn display_runtime_state(value: &str) -> &'static str {
     match value {
         "ready" => "Ready",
@@ -229,7 +395,10 @@ fn find_pid(processes: &[serde_json::Value], model: &serde_json::Value) -> Optio
 
 #[cfg(test)]
 mod tests {
-    use super::runtime_success_lines;
+    use super::{
+        build_apply_config_request, build_control_endpoint_request, runtime_success_lines, yes_no,
+    };
+    use crate::plugin::{GpuAssignment, GpuConfig, MeshConfig};
     use serde_json::json;
 
     #[test]
@@ -280,6 +449,44 @@ mod tests {
                 "Model: Qwen3-8B".to_string(),
                 "Scope: Local node".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn control_plane_bootstrap_yes_no_labels_are_stable() {
+        assert_eq!(yes_no(true), "yes");
+        assert_eq!(yes_no(false), "no");
+    }
+
+    #[test]
+    fn control_plane_api_cli_builds_explicit_endpoint_request_body() {
+        assert_eq!(
+            build_control_endpoint_request("endpoint-token"),
+            json!({ "endpoint": "endpoint-token" })
+        );
+    }
+
+    #[test]
+    fn control_plane_api_cli_builds_apply_request_body() {
+        let config = MeshConfig {
+            version: Some(1),
+            gpu: GpuConfig {
+                assignment: GpuAssignment::Auto,
+                parallel: None,
+            },
+            models: Vec::new(),
+            plugins: Vec::new(),
+            owner_control: Default::default(),
+            telemetry: Default::default(),
+        };
+
+        assert_eq!(
+            build_apply_config_request("endpoint-token", 7, &config),
+            json!({
+                "endpoint": "endpoint-token",
+                "expected_revision": 7,
+                "config": config,
+            })
         );
     }
 }

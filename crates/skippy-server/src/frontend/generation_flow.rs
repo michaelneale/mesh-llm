@@ -96,6 +96,7 @@ impl StageOpenAiBackend {
                 prefill_chunk_policy,
                 activation_width,
                 downstream_wire_condition,
+                prefill_reply_credit_limit,
                 lane_pool,
             } => self.generate_embedded_stage_zero_tokens(
                 EmbeddedStageZeroGeneration {
@@ -104,6 +105,7 @@ impl StageOpenAiBackend {
                     prefill_chunk_policy: &prefill_chunk_policy,
                     activation_width,
                     downstream_wire_condition,
+                    prefill_reply_credit_limit,
                     lane_pool,
                     draft: self.draft.clone(),
                     speculative_window: self.speculative_window,

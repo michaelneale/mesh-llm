@@ -106,7 +106,7 @@ describe('useUIPreferences', () => {
     await waitFor(() => {
       expect(document.documentElement.dataset.theme).toBe('dark')
       expect(document.documentElement.dataset.themePreference).toBe(DEFAULT_UI_PREFERENCES.theme)
-      expect(document.documentElement.dataset.panelStyle).toBe(DEFAULT_UI_PREFERENCES.panelStyle)
+      expect(document.documentElement.dataset.panelStyle).toBe('soft')
       expect(runtimeThemeColorMeta()?.content).toBe(UI_THEME_COLORS.dark)
       expect(window.localStorage.getItem(UI_PREFERENCES_STORAGE_KEY)).toBe(JSON.stringify(DEFAULT_UI_PREFERENCES))
     })
@@ -119,6 +119,8 @@ describe('useUIPreferences', () => {
       expect(result.current.theme).toBe('auto')
       expect(result.current.resolvedTheme).toBe('dark')
       expect(document.documentElement.dataset.theme).toBe('dark')
+      expect(result.current.panelStyle).toBe('soft')
+      expect(document.documentElement.dataset.panelStyle).toBe('soft')
       expect(runtimeThemeColorMeta()?.content).toBe(UI_THEME_COLORS.dark)
     })
 
@@ -131,6 +133,8 @@ describe('useUIPreferences', () => {
       expect(result.current.resolvedTheme).toBe('light')
       expect(document.documentElement.dataset.theme).toBe('light')
       expect(document.documentElement.dataset.themePreference).toBe('auto')
+      expect(result.current.panelStyle).toBe('solid')
+      expect(document.documentElement.dataset.panelStyle).toBe('solid')
       expect(runtimeThemeColorMeta()?.content).toBe(UI_THEME_COLORS.light)
     })
   })
@@ -146,6 +150,8 @@ describe('useUIPreferences', () => {
       expect(result.current.theme).toBe('light')
       expect(result.current.resolvedTheme).toBe('light')
       expect(document.documentElement.dataset.theme).toBe('light')
+      expect(result.current.panelStyle).toBe('solid')
+      expect(document.documentElement.dataset.panelStyle).toBe('solid')
     })
 
     act(() => {
@@ -157,6 +163,7 @@ describe('useUIPreferences', () => {
       expect(result.current.resolvedTheme).toBe('light')
       expect(document.documentElement.dataset.theme).toBe('light')
       expect(document.documentElement.dataset.themePreference).toBe('light')
+      expect(document.documentElement.dataset.panelStyle).toBe('solid')
       expect(runtimeThemeColorMeta()?.content).toBe(UI_THEME_COLORS.light)
     })
   })
@@ -200,6 +207,31 @@ describe('useUIPreferences', () => {
     expect(result.current.panelStyle).toBe(DEFAULT_UI_PREFERENCES.panelStyle)
   })
 
+  it('treats old solid panel preferences as theme defaults', async () => {
+    window.localStorage.setItem(
+      UI_PREFERENCES_STORAGE_KEY,
+      JSON.stringify({ theme: 'auto', accent: 'blue', density: 'normal', panelStyle: 'solid' })
+    )
+
+    const { result } = renderHook(() => useUIPreferences())
+
+    await waitFor(() => {
+      expect(result.current.theme).toBe('auto')
+      expect(result.current.resolvedTheme).toBe('dark')
+      expect(result.current.panelStyle).toBe('soft')
+      expect(document.documentElement.dataset.panelStyle).toBe('soft')
+      expect(window.localStorage.getItem(UI_PREFERENCES_STORAGE_KEY)).toBe(
+        JSON.stringify({
+          theme: 'auto',
+          accent: 'blue',
+          density: 'normal',
+          panelStyle: 'solid',
+          panelStyleOverride: false
+        })
+      )
+    })
+  })
+
   it('preserves valid fields when saved preferences are partially invalid', () => {
     window.localStorage.setItem(
       UI_PREFERENCES_STORAGE_KEY,
@@ -222,7 +254,7 @@ describe('useUIPreferences', () => {
     expect(result.current.theme).toBe('light')
     expect(result.current.accent).toBe(DEFAULT_UI_PREFERENCES.accent)
     expect(result.current.density).toBe(DEFAULT_UI_PREFERENCES.density)
-    expect(result.current.panelStyle).toBe(DEFAULT_UI_PREFERENCES.panelStyle)
+    expect(result.current.panelStyle).toBe('solid')
   })
 
   it('persists preference updates', async () => {
@@ -243,7 +275,13 @@ describe('useUIPreferences', () => {
       expect(document.documentElement.dataset.panelStyle).toBe('soft')
       expect(runtimeThemeColorMeta()?.content).toBe(UI_THEME_COLORS.light)
       expect(window.localStorage.getItem(UI_PREFERENCES_STORAGE_KEY)).toBe(
-        JSON.stringify({ theme: 'light', accent: 'violet', density: 'compact', panelStyle: 'soft' })
+        JSON.stringify({
+          theme: 'light',
+          accent: 'violet',
+          density: 'compact',
+          panelStyle: 'soft',
+          panelStyleOverride: true
+        })
       )
     })
   })
@@ -286,5 +324,42 @@ describe('useUIPreferences', () => {
     const { result } = renderHook(() => useUIPreferences())
 
     expect(result.current.panelStyle).toBe('soft')
+  })
+
+  it('persists explicit panel style overrides across auto theme changes', async () => {
+    const { result } = renderHook(() => useUIPreferences())
+
+    await waitFor(() => {
+      expect(result.current.resolvedTheme).toBe('dark')
+      expect(result.current.panelStyle).toBe('soft')
+    })
+
+    act(() => {
+      result.current.setPanelStyle('solid')
+    })
+
+    await waitFor(() => {
+      expect(result.current.panelStyle).toBe('solid')
+      expect(document.documentElement.dataset.panelStyle).toBe('solid')
+      expect(window.localStorage.getItem(UI_PREFERENCES_STORAGE_KEY)).toBe(
+        JSON.stringify({
+          theme: 'auto',
+          accent: 'blue',
+          density: 'normal',
+          panelStyle: 'solid',
+          panelStyleOverride: true
+        })
+      )
+    })
+
+    act(() => {
+      systemTheme.setMatches(false)
+    })
+
+    await waitFor(() => {
+      expect(result.current.resolvedTheme).toBe('light')
+      expect(result.current.panelStyle).toBe('solid')
+      expect(document.documentElement.dataset.panelStyle).toBe('solid')
+    })
   })
 })

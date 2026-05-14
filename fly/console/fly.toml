@@ -5,6 +5,7 @@ primary_region = "syd"
   dockerfile = "../Dockerfile"
 
 [build.args]
+  VITE_API_URL = "https://meshllm.cloud"
 
 [http_service]
   internal_port = 3131

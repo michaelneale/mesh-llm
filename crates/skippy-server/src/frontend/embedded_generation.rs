@@ -54,6 +54,10 @@ impl StageOpenAiBackend {
             let mut prefill_output_activation_bytes = 0usize;
             let mut prefill_forward_activation_bytes = 0usize;
             let mut prefill_downstream_wait_ms = 0.0;
+            let mut pending_prefill_replies = 0usize;
+            let mut prefill_credit_wait_count = 0usize;
+            let mut prefill_deferred_replies_drained = 0usize;
+            let mut prefill_pending_replies_max = 0usize;
             let mut prefill_stage0_cache_hits = 0usize;
             let mut prefill_stage0_cache_misses = 0usize;
             let mut prefill_stage0_cache_errors = 0usize;
@@ -118,6 +122,11 @@ impl StageOpenAiBackend {
                         .cancellation
                         .is_some_and(openai_frontend::CancellationToken::is_cancelled)
                     {
+                        drain_embedded_prefill_replies(
+                            downstream,
+                            &mut pending_prefill_replies,
+                            &mut prefill_chain_cache_stats,
+                        )?;
                         return Ok(());
                     }
                     let chunk_size = prefill_planner.chunk_size_for(chunk_index);
@@ -139,6 +148,7 @@ impl StageOpenAiBackend {
                         },
                     )?;
                     let stage0_timer = PhaseTimer::start();
+                    let pending_prefill_replies_before = pending_prefill_replies;
                     let mut output = self.restore_embedded_stage0_prefill(
                         &session_key,
                         request.ids,
@@ -228,25 +238,109 @@ impl StageOpenAiBackend {
                     .map_err(openai_io_error)?;
                     let chunk_forward_write_ms = write_timer.elapsed_ms();
                     prefill_forward_write_ms += chunk_forward_write_ms;
-                    let wait_timer = PhaseTimer::start();
-                    let reply = recv_reply(&mut *downstream).map_err(openai_io_error)?;
-                    let chunk_downstream_wait_ms = wait_timer.elapsed_ms();
-                    prefill_downstream_wait_ms += chunk_downstream_wait_ms;
-                    if reply.kind != WireReplyKind::Ack {
-                        return Err(OpenAiError::backend(format!(
-                            "expected prefill ACK from downstream, got {:?}",
-                            reply.kind
-                        )));
+                    let mut chunk_downstream_wait_ms = 0.0;
+                    let mut chunk_deferred_replies_drained = 0usize;
+                    let mut chunk_credit_wait_count = 0usize;
+                    if request.prefill_reply_credit_limit == 0 {
+                        let wait_timer = PhaseTimer::start();
+                        let reply = recv_reply(&mut *downstream).map_err(openai_io_error)?;
+                        chunk_downstream_wait_ms = wait_timer.elapsed_ms();
+                        if reply.kind != WireReplyKind::Ack {
+                            return Err(OpenAiError::backend(format!(
+                                "expected prefill ACK from downstream, got {:?}",
+                                reply.kind
+                            )));
+                        }
+                        prefill_chain_cache_stats.merge(reply.stats);
+                    } else {
+                        while pending_prefill_replies >= request.prefill_reply_credit_limit {
+                            prefill_credit_wait_count = prefill_credit_wait_count.saturating_add(1);
+                            chunk_credit_wait_count = chunk_credit_wait_count.saturating_add(1);
+                            let drained = drain_one_embedded_prefill_reply(
+                                downstream,
+                                &mut pending_prefill_replies,
+                                &mut prefill_chain_cache_stats,
+                            )?;
+                            prefill_deferred_replies_drained = prefill_deferred_replies_drained
+                                .saturating_add(drained.drained_replies);
+                            chunk_deferred_replies_drained = chunk_deferred_replies_drained
+                                .saturating_add(drained.drained_replies);
+                            chunk_downstream_wait_ms += drained.downstream_wait_ms;
+                        }
+                        pending_prefill_replies = pending_prefill_replies.saturating_add(1);
+                        prefill_pending_replies_max =
+                            prefill_pending_replies_max.max(pending_prefill_replies);
                     }
+                    prefill_downstream_wait_ms += chunk_downstream_wait_ms;
                     prefill_planner.observe(PrefillChunkObservation {
                         compute_ms: chunk_stage0_compute_ms,
                         forward_write_ms: chunk_forward_write_ms,
                         downstream_wait_ms: chunk_downstream_wait_ms,
                     });
+                    let mut chunk_attrs = self.openai_attrs(request.ids);
+                    chunk_attrs
+                        .insert("llama_stage.message_kind".to_string(), json!("PrefillEmbd"));
+                    chunk_attrs.insert("llama_stage.seq_id".to_string(), json!(chunk_index));
+                    chunk_attrs.insert("llama_stage.pos_start".to_string(), json!(pos_start));
+                    chunk_attrs.insert("llama_stage.token_count".to_string(), json!(chunk.len()));
+                    chunk_attrs.insert(
+                        "llama_stage.stage0_compute_ms".to_string(),
+                        json!(chunk_stage0_compute_ms),
+                    );
+                    chunk_attrs.insert(
+                        "llama_stage.forward_write_ms".to_string(),
+                        json!(chunk_forward_write_ms),
+                    );
+                    chunk_attrs.insert(
+                        "llama_stage.downstream_wait_ms".to_string(),
+                        json!(chunk_downstream_wait_ms),
+                    );
+                    chunk_attrs.insert(
+                        "llama_stage.output_activation_bytes".to_string(),
+                        json!(output.payload.len()),
+                    );
+                    chunk_attrs.insert(
+                        "llama_stage.forward_activation_bytes".to_string(),
+                        json!(forwarded.activation.len()),
+                    );
+                    chunk_attrs.insert(
+                        "skippy.prefill_credit_limit".to_string(),
+                        json!(request.prefill_reply_credit_limit),
+                    );
+                    chunk_attrs.insert(
+                        "skippy.prefill_pending_replies_before".to_string(),
+                        json!(pending_prefill_replies_before),
+                    );
+                    chunk_attrs.insert(
+                        "skippy.prefill_pending_replies_after".to_string(),
+                        json!(pending_prefill_replies),
+                    );
+                    chunk_attrs.insert(
+                        "skippy.prefill_credit_wait_count".to_string(),
+                        json!(chunk_credit_wait_count),
+                    );
+                    chunk_attrs.insert(
+                        "skippy.prefill_deferred_replies_drained".to_string(),
+                        json!(chunk_deferred_replies_drained),
+                    );
+                    self.telemetry.emit_debug_span(
+                        "stage.openai_prefill_chunk",
+                        chunk_attrs,
+                        stage0_timer.start_unix_nanos,
+                        now_unix_nanos() as u64,
+                    );
                     prefill_chunks += 1;
                     pos_start = end;
                     chunk_index += 1;
                 }
+                let drained = drain_embedded_prefill_replies(
+                    downstream,
+                    &mut pending_prefill_replies,
+                    &mut prefill_chain_cache_stats,
+                )?;
+                prefill_deferred_replies_drained =
+                    prefill_deferred_replies_drained.saturating_add(drained.drained_replies);
+                prefill_downstream_wait_ms += drained.downstream_wait_ms;
                 if !prefill_chain_cache_restored {
                     prefill_stage0_full_recorded = self.record_embedded_stage0_full_prefill(
                         &session_key,
@@ -323,6 +417,26 @@ impl StageOpenAiBackend {
             prefill_attrs.insert(
                 "llama_stage.downstream_wait_ms".to_string(),
                 json!(prefill_downstream_wait_ms),
+            );
+            prefill_attrs.insert(
+                "skippy.prefill_credit_limit".to_string(),
+                json!(request.prefill_reply_credit_limit),
+            );
+            prefill_attrs.insert(
+                "skippy.prefill_pending_replies_max".to_string(),
+                json!(prefill_pending_replies_max),
+            );
+            prefill_attrs.insert(
+                "skippy.prefill_pending_replies_after".to_string(),
+                json!(pending_prefill_replies),
+            );
+            prefill_attrs.insert(
+                "skippy.prefill_credit_wait_count".to_string(),
+                json!(prefill_credit_wait_count),
+            );
+            prefill_attrs.insert(
+                "skippy.prefill_deferred_replies_drained".to_string(),
+                json!(prefill_deferred_replies_drained),
             );
             prefill_attrs.insert(
                 "skippy.kv.stage0_cache_hits".to_string(),

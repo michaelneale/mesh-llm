@@ -771,15 +771,6 @@ export function DashboardPage({
         >
           Models
         </a>
-        <span>·</span>
-        <a
-          href={`${DOCS_URL}/#running`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="underline-offset-2 hover:text-foreground hover:underline"
-        >
-          Common patterns
-        </a>
       </div>
     </div>
   )

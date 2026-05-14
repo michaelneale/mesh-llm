@@ -7,6 +7,7 @@ import { ModelCatalog } from '@/features/network/components/ModelCatalog'
 import { NetworkHeroBanner } from '@/features/network/components/NetworkHeroBanner'
 import { PeersTable } from '@/features/network/components/PeersTable'
 import { LiveDataUnavailableOverlay } from '@/components/ui/LiveDataUnavailableOverlay'
+import { resolveOpenAIBaseUrl } from '@/app/layout/shell-adapter'
 import { DashboardLayout } from '@/features/network/layouts/DashboardLayout'
 import {
   DASHBOARD_MESH_ID,
@@ -18,7 +19,6 @@ import { NodeDrawer } from '@/features/drawers/components/NodeDrawer'
 import { StatusStrip } from '@/features/status/components/StatusStrip'
 import { DASHBOARD_HARNESS } from '@/features/app-tabs/data'
 import type { DashboardHarnessData, MeshNode, ModelSummary, Peer } from '@/features/app-tabs/types'
-import { env } from '@/lib/env'
 import { useDataMode } from '@/lib/data-mode'
 import { useClipboardCopy } from '@/lib/useClipboardCopy'
 import { useStatusQuery } from '@/features/network/api/use-status-query'
@@ -85,6 +85,7 @@ function DashboardPageContent({
     () => (statusQuery.data ? adaptStatusToDashboard(statusQuery.data, liveModels ?? []) : undefined),
     [liveModels, statusQuery.data]
   )
+  const connectApiUrl = liveMode ? resolveOpenAIBaseUrl(statusQuery.data) : resolveOpenAIBaseUrl()
   const resolvedData = liveMode ? liveData : data
   const displayData = resolvedData ?? data
   const hasLiveData = Boolean(liveData)
@@ -243,7 +244,7 @@ function DashboardPageContent({
       connect={
         <ConnectBlock
           installHref={displayData.connect.installHref}
-          apiUrl={env.apiUrl}
+          apiUrl={connectApiUrl}
           apiStatus={displayData.connect.apiStatus}
           apiTargetLiveness={connectApiTargetLiveness}
           runCommand={displayData.connect.runCommand}

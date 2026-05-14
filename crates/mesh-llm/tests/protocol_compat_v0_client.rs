@@ -4,7 +4,13 @@
 //! the correct codec, and the wire-format ALPN byte sequences are stable.
 //! All assertions run against the public API of `mesh-client::protocol`.
 
-use mesh_client::protocol::{protocol_from_alpn, ControlProtocol, ALPN_V0, ALPN_V1};
+use mesh_client::protocol::{
+    protocol_from_alpn, ControlProtocol, ALPN_CONTROL_V1, ALPN_V0, ALPN_V1, STREAM_CONFIG_PUSH,
+    STREAM_CONFIG_SUBSCRIBE,
+};
+use mesh_client::{
+    ConfigTransportSelection, ControlPlaneBootstrapOptions, ControlPlaneRetryPolicy,
+};
 
 #[test]
 fn alpn_v0_byte_sequence_is_stable() {
@@ -17,8 +23,54 @@ fn alpn_v1_byte_sequence_is_stable() {
 }
 
 #[test]
+fn control_alpn_byte_sequence_is_stable() {
+    assert_eq!(ALPN_CONTROL_V1, b"mesh-llm-control/1");
+}
+
+#[test]
 fn alpn_v0_and_v1_are_distinct() {
     assert_ne!(ALPN_V0, ALPN_V1);
+}
+
+#[test]
+fn control_alpn_is_distinct_from_public_mesh_alpns() {
+    assert_ne!(ALPN_CONTROL_V1, ALPN_V0);
+    assert_ne!(ALPN_CONTROL_V1, ALPN_V1);
+}
+
+#[test]
+fn legacy_config_stream_constants_remain_stable() {
+    assert_eq!(STREAM_CONFIG_SUBSCRIBE, 0x0b);
+    assert_eq!(STREAM_CONFIG_PUSH, 0x0c);
+}
+
+#[test]
+fn explicit_control_endpoint_selects_owner_control() {
+    let selection = ControlPlaneBootstrapOptions::new()
+        .with_control_endpoint("https://control.example.test")
+        .select_transport()
+        .expect("explicit endpoint should stay on owner-control lane");
+
+    assert_eq!(
+        selection,
+        ConfigTransportSelection::OwnerControl {
+            endpoint: "https://control.example.test".to_string(),
+            retry_policy: ControlPlaneRetryPolicy::NoSilentLegacyDowngrade,
+        }
+    );
+}
+
+#[test]
+fn missing_control_endpoint_rejects_config_bootstrap() {
+    let err = ControlPlaneBootstrapOptions::new()
+        .select_transport()
+        .expect_err("owner-control endpoint must be explicit");
+
+    assert_eq!(
+        err.code,
+        mesh_client::proto::node::OwnerControlErrorCode::ControlEndpointRequired
+    );
+    assert!(!err.legacy_retry_allowed);
 }
 
 /// Old peers advertising only `mesh-llm/0` must be accepted with the JSON codec.
