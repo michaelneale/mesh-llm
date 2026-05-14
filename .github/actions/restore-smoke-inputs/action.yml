@@ -1,0 +1,78 @@
+name: Restore smoke inputs
+description: Restore a built mesh-llm artifact and optional cached smoke model.
+
+inputs:
+  artifact_name:
+    description: GitHub Actions artifact containing the mesh-llm binary.
+    required: true
+  artifact_path:
+    description: Directory where the artifact is downloaded.
+    required: true
+  binary_name:
+    description: Binary name inside the downloaded artifact.
+    required: false
+    default: mesh-llm
+  staged_binary_path:
+    description: Destination path for the executable binary used by smoke scripts.
+    required: true
+  model_url:
+    description: Model URL to download when the model cache misses.
+    required: false
+    default: ''
+  model_file:
+    description: Model filename under ~/.models.
+    required: false
+    default: ''
+  model_cache_scope:
+    description: Cache scope shared by smoke lanes that can reuse the same model.
+    required: false
+    default: smoke-model
+  cache_key_prefix:
+    description: Optional cache key prefix.
+    required: false
+    default: ''
+  save_model_cache:
+    description: Whether to save model cache misses.
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Download built mesh-llm artifact
+      uses: actions/download-artifact@v7
+      with:
+        name: ${{ inputs.artifact_name }}
+        path: ${{ inputs.artifact_path }}
+
+    - name: Stage mesh-llm binary
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p "$(dirname "${{ inputs.staged_binary_path }}")"
+        cp "${{ inputs.artifact_path }}/${{ inputs.binary_name }}" "${{ inputs.staged_binary_path }}"
+        chmod +x "${{ inputs.staged_binary_path }}"
+        test -x "${{ inputs.staged_binary_path }}"
+
+    - name: Restore integration model cache
+      id: cache-model
+      uses: actions/cache/restore@v5
+      with:
+        path: ~/.models/${{ inputs.model_file }}
+        key: ${{ inputs.cache_key_prefix }}mesh-llm-${{ runner.os }}-${{ inputs.model_cache_scope }}-${{ inputs.model_file }}-${{ hashFiles('.github/cache-version.txt') }}
+
+    - name: Download integration model
+      if: ${{ steps.cache-model.outputs.cache-hit != 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p ~/.models
+        curl -fSL "${{ inputs.model_url }}" -o "$HOME/.models/${{ inputs.model_file }}"
+        ls -lh "$HOME/.models/${{ inputs.model_file }}"
+
+    - name: Save integration model cache
+      if: ${{ inputs.save_model_cache == 'true' && steps.cache-model.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@v5
+      with:
+        path: ~/.models/${{ inputs.model_file }}
+        key: ${{ steps.cache-model.outputs.cache-primary-key }}

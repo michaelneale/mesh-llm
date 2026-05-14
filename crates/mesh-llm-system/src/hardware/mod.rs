@@ -180,7 +180,7 @@ fn read_system_ram_bytes() -> u64 {
     .unwrap_or(0)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", any(feature = "skippy-devices", test)))]
 fn apply_cpu_only_runtime_budget(survey: &mut HardwareSurvey, metrics: &[Metric], system_ram: u64) {
     if metrics.contains(&Metric::VramBytes) && system_ram > 0 {
         survey.vram_bytes = (system_ram as f64 * 0.75) as u64;

@@ -33,7 +33,6 @@ Use [SKIPPY_SPLITS.md](SKIPPY_SPLITS.md) for Skippy split-serving workflows.
 | Doc or directory | What belongs there |
 |---|---|
 | [BENCHMARKS.md](BENCHMARKS.md) | Current benchmark numbers and performance context |
-| [CI_GUIDANCE.md](CI_GUIDANCE.md) | CI workflow responsibilities and path filtering guidance |
 | [design/](design/) | Architecture notes, protocol design, testing playbooks, carried llama.cpp patch documentation |
 | [plugins/](plugins/) | Plugin architecture and implementation planning |
 | [plans/](plans/) | Narrow implementation plans that are not yet general design docs |

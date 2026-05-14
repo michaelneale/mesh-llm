@@ -146,7 +146,6 @@ jobs:
       artifact_name: release-linux-inference-binary
       mesh_binary_target: target/release/mesh-llm
       cache_key_prefix: release-
-      workflow_cache_file: .github/workflows/release.yml
 
   build_linux_arm64:
     name: Build Linux ARM64 CPU

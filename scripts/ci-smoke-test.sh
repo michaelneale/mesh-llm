@@ -39,8 +39,8 @@ if [[ ! -f "$MODEL" ]]; then
 fi
 
 ARGS=(
-    serve
     --log-format json
+    serve
     --model "$MODEL"
     --no-draft
     --device CPU
@@ -179,6 +179,7 @@ HEADLESS_API_PORT="${MESH_CI_HEADLESS_API_PORT:-9338}"
 HEADLESS_CONSOLE_PORT="${MESH_CI_HEADLESS_CONSOLE_PORT:-3132}"
 HEADLESS_LOG="${MESH_CI_HEADLESS_LOG:-/tmp/mesh-llm-ci-headless.log}"
 HEADLESS_ARGS=(
+    --log-format json
     serve
     --model "$MODEL"
     --no-draft

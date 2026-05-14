@@ -4,11 +4,16 @@ use super::GpuFacts;
 use std::sync::{Mutex, OnceLock};
 
 #[cfg(test)]
-static TEST_GPU_FACTS_RESULT: OnceLock<Mutex<Option<anyhow::Result<Vec<GpuFacts>, String>>>> =
-    OnceLock::new();
+type TestGpuFactsResult = anyhow::Result<Vec<GpuFacts>, String>;
 
 #[cfg(test)]
-fn test_gpu_facts_result() -> &'static Mutex<Option<anyhow::Result<Vec<GpuFacts>, String>>> {
+type TestGpuFactsOverride = Mutex<Option<TestGpuFactsResult>>;
+
+#[cfg(test)]
+static TEST_GPU_FACTS_RESULT: OnceLock<TestGpuFactsOverride> = OnceLock::new();
+
+#[cfg(test)]
+fn test_gpu_facts_result() -> &'static TestGpuFactsOverride {
     TEST_GPU_FACTS_RESULT.get_or_init(|| Mutex::new(None))
 }
 

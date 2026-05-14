@@ -41,6 +41,7 @@ if [[ ! -f "$MODEL" ]]; then
 fi
 
 "$MESH_LLM" \
+    --log-format json \
     serve \
     --model "$MODEL" \
     --no-draft \

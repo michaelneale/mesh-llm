@@ -84,6 +84,7 @@ cleanup() {
 trap cleanup EXIT
 
 "$MESH_LLM" \
+    --log-format json \
     serve \
     --model "$MODEL" \
     --no-draft \
@@ -143,6 +144,7 @@ print(data[0].get("id", "") if data else "")'
 done
 
 "$MESH_LLM" \
+    --log-format json \
     client \
     --join "$TOKEN" \
     --port "$CLIENT_API_PORT" \
