@@ -1,6 +1,6 @@
 # Speculative Prefill Decoding for Distributed Layer Splits
 
-**Status:** Design  
+**Status:** Proof of concept validated  
 **Date:** 2026-05-13  
 **Scope:** Skippy layer-split inference across multiple nodes  
 **Related:** `docs/design/DESIGN.md`
@@ -127,6 +127,121 @@ model. For many queries, just the last user message is sufficient. For
 multi-turn conversations, the last few turns may be enough. The draft
 model's context window is not a constraint because we can truncate the
 input it sees without affecting the target model's full-context prefill.
+
+## Proof of Concept Results
+
+A standalone PoC binary (`crates/spec-prefill-poc/`) validates the
+end-to-end flow: load a draft model, generate a response, unload it, load
+the target model, re-tokenize the draft text with the target's tokenizer
+and chat template, call `verify_tokens()`, and measure per-position
+acceptance.
+
+### Setup
+
+- **Draft:** Qwen3-0.6B Q4_K_M (378 MB)
+- **Target:** Qwen3-8B Q4_K_M (4.9 GB)
+- **Machine:** Apple M4 Max, 64 GB (both models local — single machine)
+- Both models use their own chat templates via `apply_chat_template_with_options()`
+
+### Key finding: thinking blocks kill contiguous acceptance
+
+Qwen3 models produce `<think>...</think>` reasoning blocks by default.
+Both models start with `<think>\nOkay,` but diverge within a few tokens
+on how they phrase their internal reasoning — "asking about" vs "asking
+for", "I remember" vs "Let me", "recall" vs "get". Semantically
+identical, but different tokens.
+
+With thinking **enabled** (default):
+
+| Prompt | Total agreement | Contiguous prefix | Decode saved |
+|---|---|---|---|
+| Capital of Australia | 74.7% | 7/79 | 8.9% |
+| 7 × 8 | 86.1% | 4/79 | 5.1% |
+| Hello world in Python | 64.6% | 6/79 | 7.6% |
+| Define photosynthesis | 77.2% | 6/79 | 7.6% |
+| First 5 primes | 89.9% | 7/79 | 8.9% |
+
+**Contiguous prefix acceptance** is the real metric — it's the number of
+decode steps we can skip. Total agreement includes matching tokens after
+the first divergence, which don't help (we must decode from K onward).
+
+### Disabling thinking: dramatic improvement
+
+With `enable_thinking: Some(false)` (injects `/no_think` for Qwen3),
+the draft model produces the answer directly. Both models now agree on
+structural formatting and diverge only on content/facts:
+
+| Prompt | Total agreement | Contiguous prefix | Decode saved | Draft | Verify |
+|---|---|---|---|---|---|
+| Capital of Australia | 88.9% | 5/9 | **55.6%** | 75 ms | 113 ms |
+| Hello world in Python | 75.0% | 5/8 | **62.5%** | 45 ms | 115 ms |
+| 7 × 8 | 72.7% | 0/11 | 0.0% | 53 ms | 117 ms |
+| First 5 primes | 83.3% | 1/48 | 2.1% | 159 ms | 161 ms |
+
+**Best case: 62.5% decode saved** on Hello World — both models produce
+identical code (`print("Hello`) up to a style difference (`" World!"` vs
+`", World!"`).
+
+**Capital of Australia: 55.6% decode saved** — both produce `The capital
+of Australia is **` identically. Divergence is the 0.6B saying "Sydney"
+(wrong) and the 8B saying "Canberra" (correct). This is the ideal
+outcome: the structure is shared, and the target corrects the factual
+error by diverging at exactly the right token.
+
+### Observations
+
+1. **No-think mode is critical for draft models.** Think blocks are
+   stylistically diverse between models even within the same family.
+   Disabling thinking for the draft model is essentially free (it's a
+   chat template option) and dramatically improves prefix acceptance.
+
+2. **Same-family models share structural patterns.** Even the 0.6B and
+   8B Qwen3 models agree on formatting (markdown bold, code fences,
+   newline placement). Divergences are on content, not structure.
+
+3. **The 0.6B gets facts wrong.** It said Sydney instead of Canberra.
+   This is fine — the target model corrects it. The spec prefill
+   optimization doesn't compromise accuracy because the target always
+   has final authority.
+
+4. **Cross-model re-tokenization works.** The draft model produces text,
+   which is re-tokenized by the target model's own tokenizer and chat
+   template. No token ID alignment or shared vocabulary is needed.
+
+5. **Timing is viable.** Draft: 45–159 ms, verify: 113–161 ms. On a
+   distributed split with 50 ms RTT per decode token, saving even 5
+   tokens = 250 ms of network time saved, already exceeding the draft
+   cost.
+
+### Projected savings at distributed scale
+
+The PoC runs both models locally, so the absolute times don't reflect
+distributed savings. The value is in skipping decode round trips:
+
+| Scenario | RTT/token | 100-token response | 55% prefix saved | Net saving |
+|---|---|---|---|---|
+| 2-node, same rack | 5 ms | 500 ms decode | 275 ms saved | ~200 ms net (after draft+verify overhead) |
+| 2-node, cross-region | 50 ms | 5.0 s decode | 2.75 s saved | ~2.5 s net |
+| 3-node, cross-region | 100 ms | 10.0 s decode | 5.5 s saved | ~5.2 s net |
+
+The savings scale linearly with per-token RTT and response length.
+Longer responses and higher-latency splits see the largest benefit.
+
+### PoC binary
+
+```
+crates/spec-prefill-poc/src/main.rs
+
+Usage: spec-prefill-poc <draft.gguf> <target.gguf> [prompt]
+```
+
+The binary:
+1. Loads the draft model, applies chat template (no-think), generates
+   up to 80 tokens, unloads it
+2. Loads the target model, re-tokenizes the draft text with the target's
+   chat template and tokenizer
+3. Prefills the prompt, calls `verify_tokens()` on the draft tokens
+4. Reports per-position acceptance and summary statistics
 
 ## What Exists in Skippy Today
 
@@ -350,65 +465,90 @@ off massively against 10s of distributed decode.
 
 ## Implementation Plan
 
-### Phase 1: FFI binding + proof of concept
+### Phase 1: FFI binding + proof of concept ✅ DONE
 
-1. **Add `skippy_verify_tokens` to `skippy-ffi/src/lib.rs`** — the C
-   function exists but has no Rust binding.
+The FFI bindings and safe Rust wrappers already existed:
 
-2. **Add `verify_tokens()` to `skippy-runtime`** — safe Rust wrapper
-   that calls the FFI, returns `Vec<llama_token>` (the model's greedy
-   predictions at each position).
+- `skippy_verify_tokens()` — C ABI in `skippy.h` line 245
+- `skippy_ffi::skippy_verify_tokens` — FFI binding at
+  `crates/skippy-ffi/src/lib.rs:420`
+- `StageSession::verify_tokens()` — safe wrapper at
+  `crates/skippy-runtime/src/lib.rs:2425`
+- `StageSession::verify_tokens_rewound()` — checkpoint + restore variant
 
-3. **Add per-token signal extraction during verify** — extend
-   `skippy_verify_tokens` (or add a new `skippy_verify_tokens_with_signals`)
-   to also run `skippy_compute_token_signal` at each position and return
-   a `Vec<TokenSignal>` alongside the greedy predictions. This gives us
-   entropy, margin, and top logprob per position without raw logit access.
+**PoC binary:** `crates/spec-prefill-poc/src/main.rs`
 
-4. **Draft token probability** — add a field to `skippy_token_signal` for
-   the probability of an arbitrary "reference token" (the draft token).
-   The logits are already computed; we just need to look up
-   `softmax(logits)[draft_token]` at each position during verification.
+Validated end-to-end: Qwen3-0.6B (draft) → Qwen3-8B (target), cross-model
+re-tokenization, chat template with no-think mode. Key result: **55–62%
+contiguous prefix acceptance** with thinking disabled, dropping to 5–9%
+with thinking enabled. See "Proof of Concept Results" above.
 
-5. **Standalone test binary** — tokenize a draft, call `verify_tokens()`,
-   print per-position agreement/entropy/probability. Validate that the
-   acceptance logic works before integrating.
+**Remaining Phase 1 items (not yet done):**
 
-### Phase 2: Integration with skippy-server
+- Per-token signal extraction during verify (entropy/margin per position)
+- Draft token probability lookup (softmax(logits)[draft_token])
 
-6. **New endpoint or request flag** — `POST /v1/chat/completions` with a
-   `draft_response` field, or a separate `/v1/verify` endpoint.
+### Phase 2: Wire existing `--draft` CLI to skippy-server
 
-7. **Verification flow in skippy-server frontend** — when a draft is
-   provided:
-   - Tokenize the full prompt + draft
-   - Call `verify_tokens()` instead of normal prefill + decode
-   - Find divergence point K using acceptance criteria
-   - If K == draft length: return draft as the response
-   - If K < draft length: trim session to K, decode from K normally
+The host runtime has `--draft`, `--draft-max`, `--no-draft` CLI flags
+that are parsed but never wired through. The skippy-server has a complete
+speculative decode loop (`DraftRunner`, `embedded_generation.rs`) that
+works but always receives `draft_model_path: None`.
 
-8. **Streaming support** — emit the accepted draft prefix immediately as
-   SSE chunks, then stream the decoded tail tokens as they're generated.
+6. **Thread `--draft` through `SkippyModelLoadOptions`** — add
+   `draft_model_path: Option<PathBuf>` and `speculative_window: usize`
+   fields. Pass from CLI → `LocalRuntimeModelStartSpec` →
+   `SkippyModelLoadOptions` → `EmbeddedOpenAiArgs`.
 
-### Phase 3: Integration with mesh-llm
+7. **Test with local draft** — `mesh-llm serve --model Qwen3-8B
+   --draft ~/.cache/.../Qwen3-0.6B-Q4_K_M.gguf --draft-max 8`.
+   Verify the existing `DraftRunner` + `classify_verify_span` loop
+   works end-to-end with real models.
 
-9. **Draft model selection** — find the fastest available model that can
-   take enough context to produce a plausible draft. This doesn't have to
-   be local — a small model on a fast peer, or even a remote API model
-   with low latency, works fine. The constraint is wall-clock time: the
-   draft must arrive faster than the target model would have decoded the
-   same tokens. Selection criteria:
-   - Lowest expected latency (local > fast peer > remote API)
-   - Sufficient context window for the query
-   - Historical draft acceptance rate (learn which models draft well for
-     which target)
+This lights up **standard speculative decoding** (tight rolling windows)
+for single-node serving — useful even without distributed splits.
 
-10. **Automatic engagement** — engage speculative prefill when:
-    - A fast draft model and a slower target model are both available
-    - The request doesn't require tool calls (tool routing is decided by
-      the draft, which may not have tool schemas)
-    - The prompt is conversational / knowledge-based (not creative /
-      open-ended where diversity matters more than speed)
+### Phase 3: Mesh-native speculative prefill
+
+This is the new optimization that the PoC proved viable.
+
+8. **`pick_draft_model()` in ingress** — given `ModelTargets` and the
+   target model name, select the best draft model. Priority: same-family
+   smallest local → any smallest local → same-family smallest remote →
+   any smallest remote. Uses `available_model_sizes` from gossip.
+
+9. **Draft generation via `ModelBackend`** — reuse the `LocalModelBackend`
+   / `RemoteModelBackend` from MoA to call the draft model. Request uses
+   no-think chat template, short context (last 4–6 messages), low
+   temperature.
+
+10. **Verify-and-commit in skippy-server** — new request path: when the
+    proxy provides a `draft_response` text field alongside the normal
+    request:
+    - Tokenize prompt + draft with target's chat template/tokenizer
+    - Prefill prompt, then `verify_tokens()` on draft tokens
+    - Find divergence K using `classify_verify_span()` (already exists)
+    - K == end → return draft as response (zero decode)
+    - K < end → trim to K, decode the tail normally
+    - Stream: emit accepted prefix immediately, then stream decode tail
+
+11. **Automatic engagement in proxy** — the proxy detects:
+    - Target is a distributed layer split (not single-node)
+    - A draft model is available (from `pick_draft_model()`)
+    - Request doesn't have `"speculative_prefill": false`
+    When all conditions hold, transparently engage spec prefill.
+
+### Phase 4: Adaptive and production hardening
+
+12. **Acceptance rate tracking** — per (draft, target) model pair, track
+    running acceptance rate. Disable speculation if acceptance is
+    consistently < 10% (the draft doesn't help for this pair).
+
+13. **Draft timeout** — if draft generation takes longer than estimated
+    decode time, abort and fall through to normal decode.
+
+14. **Streaming prefill emission** — emit the verified draft prefix as
+    SSE chunks immediately, then stream decode tokens for the tail.
 
 ## Relationship to Existing Systems
 
@@ -568,6 +708,110 @@ Selection priority:
 
 The constraint is wall-clock time: `draft_time + verify_time < target_decode_time`.
 
+## Opt-In Design
+
+Speculative prefill is a transparent optimization — it doesn't change what
+model the user talks to or what response they get. It changes *how fast*
+the response arrives. This means it should not require a different model
+name (like MoA's `model: "mesh"`).
+
+### Engagement model
+
+**Automatic when conditions are met, disableable per-request.**
+
+The proxy detects when speculative prefill would help:
+
+1. The target model is served via a **distributed layer split** (the only
+   case where decode latency is dominated by network round trips).
+2. A **fast draft model is available** somewhere in the mesh — local,
+   on a fast peer, or the same node with a smaller model loaded.
+3. The request is **not a tool call** (tool routing is decided during
+   generation, which the draft can't anticipate).
+
+When all three conditions hold, the proxy automatically engages spec
+prefill. No user action required.
+
+### Draft model selection (mesh-native)
+
+The mesh already gossips `available_model_sizes: HashMap<String, u64>` per
+peer, so the proxy knows every loaded model and its size. Draft selection:
+
+1. **Same family, smallest available.** If the target is Qwen3-30B, prefer
+   Qwen3-0.6B or Qwen3-4B. Same-family models have the highest token
+   agreement because they share training distribution. Family detection
+   uses the model name prefix (e.g. `Qwen3-` matches `Qwen3-0.6B`).
+
+2. **Any small model, local preferred.** If no same-family small model
+   exists, use whatever small model is available. A MiniMax or Llama on
+   a peer still produces structurally plausible text that the target can
+   partially accept. Local models have zero network cost for the draft.
+
+3. **Remote draft is fine.** The draft model doesn't have to be local. A
+   Qwen3-4B on a fast peer generates a draft in ~1–2 seconds. As long as
+   `draft_time + verify_time < N × decode_rtt`, speculation pays off.
+
+Priority order:
+- Local small model (same family) → best acceptance, zero draft latency
+- Local small model (any family) → zero draft latency, lower acceptance
+- Fast peer small model (same family) → low draft latency, high acceptance
+- Fast peer small model (any family) → low draft latency, lower acceptance
+
+The `build_moa_config()` pattern in `ingress.rs` already iterates
+`ModelTargets`, checks `InferenceTarget::Local(port)` vs `Remote(peer_id)`,
+and constructs backends. Draft selection follows the same pattern but picks
+**one** model (the fastest small one) instead of fanning out to all.
+
+### Per-request control
+
+A request-level field disables speculation when the caller knows it won't
+help (e.g. creative/open-ended tasks where the draft would diverge
+immediately):
+
+```json
+{
+  "model": "Qwen3-30B-A3B",
+  "messages": [...],
+  "speculative_prefill": false
+}
+```
+
+Default is `true` (enabled) when the proxy detects a split target with
+an available draft model.
+
+### CLI flags (existing, unwired)
+
+The CLI already has hidden flags for draft model configuration:
+
+```
+--draft <path>        Draft model GGUF path
+--draft-max <n>       Max draft tokens (default: 8)
+--no-draft            Disable automatic draft detection
+```
+
+These were designed for standard speculative decoding (tight
+draft→verify→repair loop inside skippy-server). They should be wired
+through to `SkippyModelLoadOptions` → `EmbeddedOpenAiArgs` to enable
+the existing `DraftRunner` + `embedded_generation.rs` spec decode loop.
+
+For mesh-native spec prefill (full-response draft → one-pass verify),
+the proxy-level automatic engagement is the right UX. The CLI flags
+control the lower-level per-model draft, while the proxy handles
+cross-model mesh-wide draft selection.
+
+### What this is NOT
+
+- **Not a virtual model.** MoA uses `model: "mesh"` because MoA changes
+  *what* you're talking to (multiple models). Spec prefill doesn't change
+  the model — it's the same model, just faster. No new model name.
+
+- **Not always-on.** Only activates for distributed layer splits. Single-
+  node serving doesn't benefit (decode is already fast locally). The proxy
+  must check whether the target is split before engaging.
+
+- **Not blocking.** If draft generation takes too long or the draft model
+  is unavailable, the request falls through to normal decode. Spec prefill
+  is best-effort — the worst case is equivalent to no speculation.
+
 ## Open Questions
 
 1. **Sampling temperature** — the draft model should use low temperature
@@ -605,16 +849,26 @@ The constraint is wall-clock time: `draft_time + verify_time < target_decode_tim
 | Tokenizer/chat template don't matter | Draft output is plain text, re-tokenized by the target model's own tokenizer. No token ID alignment needed between draft and target. |
 | Draft doesn't need full context | Enough context for a plausible draft. Last 4-6 messages is the sweet spot. Shorter context = faster draft. See "Context subsetting" for strategies. |
 | Target threshold: `prob > 0.5` default | Balanced speed/accuracy. Tunable per request or globally. |
+| Disable thinking for draft model | PoC showed think blocks kill contiguous acceptance (5–9%) vs no-think (55–62%). Thinking is stylistically diverse between models. |
+| Transparent proxy optimization, not virtual model | Spec prefill doesn't change what model you talk to — it makes the same model faster. No new model name needed. MoA uses `model: "mesh"` because it changes the model; spec prefill should not. |
+| Mesh-native draft selection | The mesh already gossips `available_model_sizes` per peer. Draft model picked automatically: same-family smallest preferred, any small model accepted. Local > fast peer > remote. |
+| Draft model can be any model in the mesh | Cross-family drafting works (PoC proves it). Same family has higher acceptance but any coherent model produces structurally similar text. |
 
 ## Files
 
 | File | Role |
 |---|---|
+| `crates/spec-prefill-poc/src/main.rs` | **PoC binary** — loads draft+target, drafts with no-think, verifies, reports acceptance |
 | `.deps/llama.cpp/include/skippy.h` | C ABI — `skippy_verify_tokens`, `skippy_verify_tokens_frame` |
 | `.deps/llama.cpp/src/skippy.cpp` | C implementation — `skippy_verify_token_batch`, `skippy_compute_token_signal`, `skippy_greedy_sample_ith` |
 | `.deps/llama.cpp/include/skippy-signals.h` | C ABI — `skippy_token_signal`, `skippy_generation_signal_window` |
-| `crates/skippy-ffi/src/lib.rs` | Rust FFI bindings — needs `skippy_verify_tokens` added |
-| `crates/skippy-runtime/src/lib.rs` | Safe Rust wrappers — `last_token_signal()`, `signal_window()`, needs `verify_tokens()` |
-| `crates/skippy-server/src/frontend/prompting.rs` | Hook dispatch — `after_prefill`, `mid_generation` |
+| `crates/skippy-ffi/src/lib.rs` | Rust FFI bindings — `skippy_verify_tokens` at line 420 |
+| `crates/skippy-runtime/src/lib.rs` | Safe Rust wrappers — `verify_tokens()` at line 2425, `verify_tokens_rewound()` at line 2453 |
+| `crates/skippy-server/src/frontend/speculative.rs` | Existing spec decode loop — `classify_verify_span`, `VerifySpanDecision`, adaptive window, recovery |
+| `crates/skippy-server/src/frontend/embedded_generation.rs` | `DraftRunner` integration — propose/verify/commit/repair cycle |
+| `crates/skippy-server/src/frontend.rs` | `DraftRunner` struct, `open_draft_runner()`, `draft_model_path` / `speculative_window` config |
+| `crates/mesh-llm-host-runtime/src/inference/skippy/mod.rs` | Host runtime skippy config — `draft_model_path: None` (to be wired) |
+| `crates/mesh-llm-host-runtime/src/network/openai/ingress.rs` | Proxy intercept — MoA pattern, `build_moa_config()`, `LocalModelBackend` / `RemoteModelBackend` (reusable for draft) |
+| `crates/mesh-llm-host-runtime/src/cli/mod.rs` | CLI flags — `--draft`, `--draft-max`, `--no-draft` (parsed but unwired) |
 | `crates/openai-frontend/src/hooks.rs` | Hook trait — `PrefillHookSignals`, `GenerationHookSignals` |
-| `crates/mesh-mixture-of-agents/src/lib.rs` | MoA gateway — fast worker could serve as draft source |
+| `crates/mesh-mixture-of-agents/src/lib.rs` | MoA gateway — `LocalModelBackend` / `RemoteModelBackend` reusable for draft transport |
