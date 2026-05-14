@@ -36,6 +36,7 @@ members = [
     "crates/skippy-bench",
     "crates/skippy-prompt",
     "crates/mesh-mixture-of-agents",
+    "crates/spec-prefill-poc",
     "tools/xtask",
 ]
 default-members = [
