@@ -437,4 +437,17 @@ mod tests {
             "unsloth/LTX-2.3-GGUF:distilled-1.1"
         );
     }
+
+    #[test]
+    fn parses_split_gguf_shard_info() {
+        assert_eq!(
+            split_gguf_shard_info("Qwen3-30B-A3B-Q4_K_M-00001-of-00004.gguf"),
+            Some(SplitGgufShard {
+                prefix: "Qwen3-30B-A3B-Q4_K_M",
+                part: "00001",
+                total: "00004",
+            })
+        );
+        assert_eq!(split_gguf_shard_info("Qwen3-30B-A3B-Q4_K_M.gguf"), None);
+    }
 }

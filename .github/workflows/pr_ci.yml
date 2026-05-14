@@ -1,13 +1,13 @@
-name: CI
+name: PR CI
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CACHE_NAMESPACE: mesh-llm
@@ -38,6 +38,8 @@ jobs:
       all_rust: ${{ steps.compute.outputs.all_rust }}
       docs_only: ${{ steps.compute.outputs.docs_only }}
       rust_changed: ${{ steps.compute.outputs.rust_changed }}
+      backend_changed: ${{ steps.compute.outputs.backend_changed }}
+      sdk_smoke_required: ${{ steps.compute.outputs.sdk_smoke_required }}
       ui_dist_cache_key: ${{ steps.ui_key.outputs.ui_dist_cache_key }}
     steps:
       - uses: actions/checkout@v5
@@ -56,7 +58,8 @@ jobs:
               - 'scripts/**'
               - 'third_party/llama.cpp/**'
               - '.github/cache-version.txt'
-              - '.github/workflows/ci.yml'
+              - '.github/workflows/pr_ci.yml'
+              - '.github/workflows/pr_quality.yml'
               - '.github/workflows/smoke.yml'
 
             ui:
@@ -66,7 +69,7 @@ jobs:
               - 'crates/llama-spec-bench/**'
               - 'crates/mesh-llm-gpu-bench/**'
               - '.github/workflows/benchmark-smoke.yml'
-              - '.github/workflows/ci.yml'
+              - '.github/workflows/pr_ci.yml'
             sdk:
               - 'crates/mesh-api/**'
               - 'crates/mesh-api-ffi/**'
@@ -81,7 +84,7 @@ jobs:
               - 'scripts/ci-kotlin-sdk-smoke.sh'
               - 'scripts/ci-swift-sdk-smoke.sh'
               - 'scripts/ci-sdk-fixture.sh'
-              - '.github/workflows/ci.yml'
+              - '.github/workflows/pr_ci.yml'
             docker:
               - '.dockerignore'
               - 'docker/**'
@@ -89,7 +92,7 @@ jobs:
               - 'crates/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
-              - '.github/workflows/docker.yml'
+              - '.github/workflows/pr_docker.yml'
             windows_cpu:
               - 'crates/skippy-ffi/**'
               - 'scripts/build-windows.ps1'
@@ -98,7 +101,7 @@ jobs:
               - 'Cargo.lock'
               - 'Justfile'
               - '.github/cache-version.txt'
-              - '.github/workflows/ci.yml'
+              - '.github/workflows/pr_ci.yml'
               - '.github/workflows/windows-warm-caches.yml'
             windows_gpu:
               - 'crates/skippy-ffi/**'
@@ -108,7 +111,7 @@ jobs:
               - 'Justfile'
               - '.github/cache-version.txt'
               - '.github/actions/setup-windows-rocm-sdk/**'
-              - '.github/workflows/ci.yml'
+              - '.github/workflows/pr_ci.yml'
               - '.github/workflows/windows-warm-caches.yml'
 
             docs:
@@ -120,8 +123,8 @@ jobs:
         uses: ./.github/actions/compute-changes
         with:
           event_name: ${{ github.event_name }}
-          base_sha: ''
-          head_sha: ''
+          base_sha: ${{ github.event.pull_request.base.sha || '' }}
+          head_sha: ${{ github.event.pull_request.head.sha || '' }}
       - name: Compute UI dist cache key
         id: ui_key
         run: |
@@ -336,6 +339,7 @@ jobs:
           name: ci-linux-inference-binaries
           path: target/debug/mesh-llm
           if-no-files-found: error
+          retention-days: 3
 
       - name: Show sccache stats
         if: always()
@@ -383,7 +387,7 @@ jobs:
       artifact_name: ci-linux-inference-binaries
       mesh_binary_target: target/debug/mesh-llm
       cache_key_prefix: ''
-      workflow_cache_file: .github/workflows/ci.yml
+      workflow_cache_file: .github/workflows/pr_ci.yml
 
   agent_live_smokes:
     needs: [changes, linux]
@@ -454,7 +458,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ~/.models/${{ env.MODEL_FILE }}
-          key: ${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-two-node-model-${{ env.MODEL_FILE }}-${{ hashFiles('.github/cache-version.txt', '.github/workflows/ci.yml') }}
+          key: ${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-two-node-model-${{ env.MODEL_FILE }}-${{ hashFiles('.github/cache-version.txt', '.github/workflows/pr_ci.yml') }}
       - name: Download integration model
         if: steps.cache-two-node-model.outputs.cache-hit != 'true'
         run: mkdir -p ~/.models && curl -fSL "$MODEL_URL" -o "$HOME/.models/$MODEL_FILE"
@@ -468,8 +472,8 @@ jobs:
         run: scripts/ci-two-node-client-serving-smoke.sh target/debug/mesh-llm ci-artifacts/linux "$HOME/.models/$MODEL_FILE"
 
   native_sdk_smoke:
-    needs: [changes, linux, inference_smoke_tests]
-    if: ${{ needs.inference_smoke_tests.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.sdk == 'true') && needs.changes.outputs.docs_only != 'true' }}
+    needs: [changes, linux]
+    if: ${{ needs.linux.result == 'success' && needs.changes.outputs.sdk_smoke_required == 'true' && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -500,7 +504,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ~/.models/${{ env.MODEL_FILE }}
-          key: ${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-sdk-model-${{ env.MODEL_FILE }}-${{ hashFiles('.github/cache-version.txt', '.github/workflows/ci.yml') }}
+          key: ${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-sdk-model-${{ env.MODEL_FILE }}-${{ hashFiles('.github/cache-version.txt', '.github/workflows/pr_ci.yml') }}
       - name: Download integration model
         if: steps.cache-model.outputs.cache-hit != 'true'
         run: mkdir -p ~/.models && curl -fSL "$MODEL_URL" -o "$HOME/.models/$MODEL_FILE"
@@ -514,8 +518,8 @@ jobs:
         run: scripts/ci-native-sdk-smoke.sh target/debug/mesh-llm ci-artifacts/linux "$HOME/.models/$MODEL_FILE"
 
   kotlin_sdk_smoke:
-    needs: [changes, linux, inference_smoke_tests]
-    if: ${{ needs.inference_smoke_tests.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.sdk == 'true') && needs.changes.outputs.docs_only != 'true' }}
+    needs: [changes, linux]
+    if: ${{ needs.linux.result == 'success' && needs.changes.outputs.sdk_smoke_required == 'true' && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -547,7 +551,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ~/.models/${{ env.MODEL_FILE }}
-          key: ${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-kotlin-sdk-model-${{ env.MODEL_FILE }}-${{ hashFiles('.github/cache-version.txt', '.github/workflows/ci.yml') }}
+          key: ${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-kotlin-sdk-model-${{ env.MODEL_FILE }}-${{ hashFiles('.github/cache-version.txt', '.github/workflows/pr_ci.yml') }}
       - name: Download integration model
         if: steps.cache-model.outputs.cache-hit != 'true'
         run: mkdir -p ~/.models && curl -fSL "$MODEL_URL" -o "$HOME/.models/$MODEL_FILE"
@@ -555,59 +559,26 @@ jobs:
         run: scripts/ci-kotlin-sdk-smoke.sh target/debug/mesh-llm ci-artifacts/linux "$HOME/.models/$MODEL_FILE"
 
   swift_sdk_smoke:
-    needs: [changes, inference_smoke_tests]
-    if: ${{ needs.inference_smoke_tests.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.sdk == 'true') && needs.changes.outputs.docs_only != 'true' }}
+    needs: [changes, macos]
+    if: ${{ needs.macos.result == 'success' && needs.changes.outputs.sdk_smoke_required == 'true' && needs.changes.outputs.docs_only != 'true' }}
     runs-on: macos-14
-    env:
-      LLAMA_STAGE_BACKEND: metal
-      LLAMA_STAGE_BUILD_DIR: .deps/llama.cpp/build-stage-abi-metal
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v7
         with:
-          workspaces: . -> target
-          cache-bin: "false"
-          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ runner.os }}-${{ hashFiles('.github/cache-version.txt') }}
-          shared-key: swift-sdk
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Install tools
-        run: brew install cmake ninja jq lld
-      - name: Configure macOS Rust linker
+          name: ci-macos-inference-binaries
+          path: ci-artifacts/macos
+      - name: Stage binary
         run: |
-          mkdir -p .cargo
-          lld_prefix="$(brew --prefix lld)"
-          cat > .cargo/config.toml <<EOF
-          [target.aarch64-apple-darwin]
-          rustflags = ["-C", "link-arg=-fuse-ld=$lld_prefix/bin/ld64.lld"]
-
-          [target.x86_64-apple-darwin]
-          rustflags = ["-C", "link-arg=-fuse-ld=$lld_prefix/bin/ld64.lld"]
-          EOF
-      - name: Build UI placeholder
-        run: mkdir -p crates/mesh-llm-ui/dist && printf '<html></html>' > crates/mesh-llm-ui/dist/index.html
-      - name: Ensure ABI cache directory
-        run: mkdir -p "$LLAMA_STAGE_BUILD_DIR"
-      - name: Cache patched llama.cpp ABI build
-        id: llama_cache
-        uses: actions/cache@v5
-        with:
-          path: .deps/llama.cpp/build-stage-abi-metal
-          key: ${{ env.CACHE_NAMESPACE }}-macos-14-skippy-abi-metal-${{ hashFiles('scripts/build-mac.sh', 'scripts/build-llama.sh', 'third_party/llama.cpp/upstream.txt', 'third_party/llama.cpp/patches/**', 'Justfile', '.github/cache-version.txt') }}
-      - name: Prepare patched llama.cpp ABI checkout
-        if: steps.llama_cache.outputs.cache-hit != 'true'
-        run: scripts/prepare-llama.sh pinned
-      - name: Build patched llama.cpp ABI libraries
-        if: steps.llama_cache.outputs.cache-hit != 'true'
-        run: scripts/build-llama.sh
-      - name: Build mesh-llm binary (debug)
-        run: cargo build -p mesh-llm --bin mesh-llm
+          mkdir -p target/debug
+          cp ci-artifacts/macos/mesh-llm target/debug/mesh-llm
+          chmod +x target/debug/mesh-llm
       - name: Cache integration model
         id: cache-model
         uses: actions/cache/restore@v5
         with:
           path: ~/.models/${{ env.MODEL_FILE }}
-          key: ${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-swift-sdk-model-${{ env.MODEL_FILE }}-${{ hashFiles('.github/cache-version.txt', '.github/workflows/ci.yml') }}
+          key: ${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-swift-sdk-model-${{ env.MODEL_FILE }}-${{ hashFiles('.github/cache-version.txt', '.github/workflows/pr_ci.yml') }}
       - name: Download integration model
         if: steps.cache-model.outputs.cache-hit != 'true'
         run: mkdir -p ~/.models && curl -fSL "$MODEL_URL" -o "$HOME/.models/$MODEL_FILE"
@@ -723,13 +694,20 @@ jobs:
         run: |
           target/debug/mesh-llm --version
           target/debug/mesh-llm --help | head -5
+      - name: Upload macOS inference binary
+        uses: actions/upload-artifact@v6
+        with:
+          name: ci-macos-inference-binaries
+          path: target/debug/mesh-llm
+          if-no-files-found: error
+          retention-days: 3
       - name: Mark benchmark artifact unavailable
         id: benchmark_artifact_ready
         run: echo "ready=false" >> "$GITHUB_OUTPUT"
 
   linux_cuda:
     needs: changes
-    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.benchmarks == 'true') && needs.changes.outputs.docs_only != 'true' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend_changed == 'true' || needs.changes.outputs.benchmarks == 'true') && needs.changes.outputs.docs_only != 'true' }}
     name: Linux CUDA slim
     runs-on: ubuntu-latest
     outputs:
@@ -793,7 +771,7 @@ jobs:
 
   linux_rocm:
     needs: changes
-    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.benchmarks == 'true') && needs.changes.outputs.docs_only != 'true' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend_changed == 'true' || needs.changes.outputs.benchmarks == 'true') && needs.changes.outputs.docs_only != 'true' }}
     name: Linux ROCm slim
     runs-on: ubuntu-latest
     outputs:
@@ -851,7 +829,7 @@ jobs:
 
   linux_vulkan:
     needs: changes
-    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') && needs.changes.outputs.docs_only != 'true' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend_changed == 'true') && needs.changes.outputs.docs_only != 'true' }}
     name: Linux Vulkan
     runs-on: ubuntu-latest
     env:
@@ -899,7 +877,7 @@ jobs:
         run: target/release/mesh-llm --version
   windows_cpu:
     needs: changes
-    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') && needs.changes.outputs.docs_only != 'true' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.all_rust == 'true' || needs.changes.outputs.windows_cpu == 'true') && needs.changes.outputs.docs_only != 'true' }}
     name: Windows CPU
     runs-on: windows-2022
     env:
@@ -963,7 +941,7 @@ jobs:
 
   windows_gpu:
     needs: changes
-    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') && needs.changes.outputs.docs_only != 'true' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.all_rust == 'true' || needs.changes.outputs.windows_gpu == 'true') && needs.changes.outputs.docs_only != 'true' }}
     name: Windows ${{ matrix.name }}
     runs-on: windows-2022
     env:

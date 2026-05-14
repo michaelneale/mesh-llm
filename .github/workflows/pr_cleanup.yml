@@ -1,4 +1,4 @@
-name: Cleanup GitHub Actions caches on closed pull requests
+name: PR Cache Cleanup
 
 on:
   pull_request_target:

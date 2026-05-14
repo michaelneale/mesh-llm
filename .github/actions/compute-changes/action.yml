@@ -1,0 +1,172 @@
+name: Compute changed files
+description: 'Compute changed files and affected crates for CI routing'
+
+inputs:
+  event_name:
+    description: 'GitHub event name (pull_request, push, workflow_dispatch)'
+    required: true
+  base_sha:
+    description: 'PR base SHA (empty for non-PR events)'
+    required: false
+    default: ''
+  head_sha:
+    description: 'PR head SHA (empty for non-PR events)'
+    required: false
+    default: ''
+
+outputs:
+  changed_files:
+    description: 'Newline-delimited list of changed files'
+    value: ${{ steps.derive.outputs.changed_files }}
+  affected_crates:
+    description: 'JSON array of affected crate names'
+    value: ${{ steps.derive.outputs.affected_crates }}
+  test_crates:
+    description: 'JSON array of crates to test'
+    value: ${{ steps.derive.outputs.test_crates }}
+  batches_json:
+    description: 'JSON array of test batches'
+    value: ${{ steps.derive.outputs.batches_json }}
+  clippy_batches_json:
+    description: 'JSON array of deterministic clippy matrix batches'
+    value: ${{ steps.derive.outputs.clippy_batches_json }}
+  all_rust:
+    description: 'Boolean: true if all changed files are Rust'
+    value: ${{ steps.derive.outputs.all_rust }}
+  ui_changed:
+    description: 'Boolean: true if UI files changed'
+    value: ${{ steps.derive.outputs.ui_changed }}
+  docs_only:
+    description: 'Boolean: true if only docs changed'
+    value: ${{ steps.derive.outputs.docs_only }}
+  rust_changed:
+    description: 'Boolean: true if Rust files changed'
+    value: ${{ steps.derive.outputs.rust_changed }}
+  backend_changed:
+    description: 'Boolean: true if PR platform/backend binaries must rebuild'
+    value: ${{ steps.derive.outputs.backend_changed }}
+  sdk_smoke_required:
+    description: 'Boolean: true if SDK smoke tests should run as soon as a binary is ready'
+    value: ${{ steps.derive.outputs.sdk_smoke_required }}
+
+runs:
+  using: composite
+  steps:
+    - name: Compute changed file list
+      id: files
+      shell: bash
+      run: |
+        if [[ "${{ inputs.event_name }}" == "pull_request" ]]; then
+          # For pull_request: use base_sha...head_sha
+          git diff --name-only "${{ inputs.base_sha }}...${{ inputs.head_sha }}" > /tmp/changed_files.txt
+        elif [[ "${{ inputs.event_name }}" == "push" ]]; then
+          # For push: use HEAD^ HEAD
+          git diff --name-only HEAD^ HEAD > /tmp/changed_files.txt
+        elif [[ "${{ inputs.event_name }}" == "workflow_dispatch" ]]; then
+          # For workflow_dispatch: force all by using a known Rust file
+          echo "__force_all__" > /tmp/changed_files.txt
+        else
+          echo "Unknown event type: ${{ inputs.event_name }}" >&2
+          exit 1
+        fi
+        
+        cat /tmp/changed_files.txt
+
+    - name: Run affected-crates.sh
+      id: crates
+      shell: bash
+      run: |
+        # Handle __force_all__ sentinel: if present, use a known Rust file to trigger all_rust=true
+        if grep -q "^__force_all__$" /tmp/changed_files.txt; then
+          echo "Cargo.lock" | bash scripts/affected-crates.sh --stdin > /tmp/crates_output.json
+        else
+          cat /tmp/changed_files.txt | bash scripts/affected-crates.sh --stdin > /tmp/crates_output.json
+        fi
+        
+        cat /tmp/crates_output.json
+
+    - name: Derive outputs
+      id: derive
+      shell: bash
+      run: |
+        # Read the JSON output from affected-crates.sh
+        CRATES_JSON=$(cat /tmp/crates_output.json)
+        
+        # Extract fields from JSON
+        AFFECTED_CRATES=$(echo "$CRATES_JSON" | jq -c '.affected // []')
+        TEST_CRATES=$(echo "$CRATES_JSON" | jq -c '.test_crates // []')
+        BATCHES=$(echo "$CRATES_JSON" | jq -c '.batches // []')
+        ALL_RUST=$(echo "$CRATES_JSON" | jq -r '.all_rust // false')
+        UI_CHANGED=$(echo "$CRATES_JSON" | jq -r '.ui_changed // false')
+
+        if [[ "$ALL_RUST" == "true" ]]; then
+          CLIPPY_BATCHES=$(bash scripts/plan-clippy-batches.sh --all)
+        else
+          CLIPPY_BATCHES=$(bash scripts/plan-clippy-batches.sh --crates-json "$AFFECTED_CRATES")
+        fi
+        
+        # Read changed files for docs_only and rust_changed logic
+        CHANGED_FILES=$(cat /tmp/changed_files.txt | grep -v "^__force_all__$" || true)
+        
+        # Determine docs_only: true if all_rust=false AND ui_changed=false AND all files match docs patterns
+        DOCS_ONLY="false"
+        if [[ "$ALL_RUST" == "false" ]] && [[ "$UI_CHANGED" == "false" ]]; then
+          # Check if all changed files match docs patterns (*.md or docs/**)
+          if [[ -n "$CHANGED_FILES" ]]; then
+            NON_DOCS=$(echo "$CHANGED_FILES" | grep -v -E '(\.md$|^docs/)' || true)
+            if [[ -z "$NON_DOCS" ]]; then
+              DOCS_ONLY="true"
+            fi
+          fi
+        fi
+        
+        # Determine rust_changed: true if all_rust=true OR affected_crates is non-empty
+        RUST_CHANGED="false"
+        if [[ "$ALL_RUST" == "true" ]]; then
+          RUST_CHANGED="true"
+        elif [[ $(echo "$AFFECTED_CRATES" | jq 'length') -gt 0 ]]; then
+          RUST_CHANGED="true"
+        fi
+
+        # Backend/platform lanes rebuild only for all-rust escalations or files
+        # that can alter the native ABI/backend build products.
+        BACKEND_CHANGED="false"
+        if [[ "$ALL_RUST" == "true" ]]; then
+          BACKEND_CHANGED="true"
+        elif [[ -n "$CHANGED_FILES" ]]; then
+          BACKEND_INPUTS=$(echo "$CHANGED_FILES" | grep -E '(^third_party/llama\.cpp/|^crates/skippy-ffi/|^scripts/(build-llama|prepare-llama|build-linux|build-mac|build-windows|install-windows-sdk)\.|^\.github/actions/setup-windows-rocm-sdk/|^\.github/workflows/pr_ci\.yml$|^\.github/workflows/pr_quality\.yml$|^\.github/cache-version\.txt$|^Justfile$)' || true)
+          if [[ -n "$BACKEND_INPUTS" ]]; then
+            BACKEND_CHANGED="true"
+          fi
+        fi
+
+        # SDK smokes are consumer tests: run for workflow dispatch, direct SDK
+        # files, or when affected crate analysis reaches the SDK/API crates.
+        SDK_SMOKE_REQUIRED="false"
+        if [[ "${{ inputs.event_name }}" == "workflow_dispatch" ]]; then
+          SDK_SMOKE_REQUIRED="true"
+        elif [[ -n "$CHANGED_FILES" ]]; then
+          DIRECT_SDK_INPUTS=$(echo "$CHANGED_FILES" | grep -E '(^sdk/|^Package\.swift$|^scripts/ci-(native|kotlin|swift)-sdk-smoke\.sh$|^scripts/ci-sdk-fixture\.sh$)' || true)
+          if [[ -n "$DIRECT_SDK_INPUTS" ]]; then
+            SDK_SMOKE_REQUIRED="true"
+          elif echo "$AFFECTED_CRATES" | jq -e 'index("mesh-llm-client") or index("mesh-api") or index("mesh-api-ffi") or index("mesh-llm-protocol") or index("mesh-llm-routing") or index("mesh-llm-types")' >/dev/null; then
+            SDK_SMOKE_REQUIRED="true"
+          fi
+        fi
+
+        # Set outputs using GITHUB_OUTPUT
+        {
+          echo "changed_files<<EOF"
+          cat /tmp/changed_files.txt | grep -v "^__force_all__$" || true
+          echo "EOF"
+          echo "affected_crates=$AFFECTED_CRATES"
+          echo "test_crates=$TEST_CRATES"
+          echo "batches_json=$BATCHES"
+          echo "clippy_batches_json=$CLIPPY_BATCHES"
+          echo "all_rust=$ALL_RUST"
+          echo "ui_changed=$UI_CHANGED"
+          echo "docs_only=$DOCS_ONLY"
+          echo "rust_changed=$RUST_CHANGED"
+          echo "backend_changed=$BACKEND_CHANGED"
+          echo "sdk_smoke_required=$SDK_SMOKE_REQUIRED"
+        } >> "$GITHUB_OUTPUT"

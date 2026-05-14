@@ -972,12 +972,10 @@ fn model_family_key(repo_id: &str) -> String {
         .filter(|token| !token.is_empty())
         .collect::<Vec<_>>();
 
-    if tokens.iter().any(|token| *token == "kimi") {
+    if tokens.contains(&"kimi") {
         return "kimi".to_string();
     }
-    if tokens.iter().any(|token| *token == "deepseek")
-        || tokens.windows(2).any(|window| window == ["deep", "seek"])
-    {
+    if tokens.contains(&"deepseek") || tokens.windows(2).any(|window| window == ["deep", "seek"]) {
         return "deepseek".to_string();
     }
     if tokens
@@ -986,7 +984,7 @@ fn model_family_key(repo_id: &str) -> String {
     {
         return "qwen".to_string();
     }
-    if tokens.iter().any(|token| *token == "llama") {
+    if tokens.contains(&"llama") {
         return "llama".to_string();
     }
     if tokens.iter().any(|token| token.starts_with("gemma")) {
@@ -998,13 +996,13 @@ fn model_family_key(repo_id: &str) -> String {
     if tokens.iter().any(|token| token.starts_with("mixtral")) {
         return "mixtral".to_string();
     }
-    if tokens.iter().any(|token| *token == "glm") {
+    if tokens.contains(&"glm") {
         return "glm".to_string();
     }
-    if tokens.iter().any(|token| *token == "phi") {
+    if tokens.contains(&"phi") {
         return "phi".to_string();
     }
-    if tokens.iter().any(|token| *token == "nemotron") {
+    if tokens.contains(&"nemotron") {
         return "nemotron".to_string();
     }
     if tokens.windows(2).any(|window| window == ["gpt", "oss"]) {
