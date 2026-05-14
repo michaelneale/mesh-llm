@@ -639,45 +639,6 @@ fn relay_map_from_endpoint_addr(addr: &EndpointAddr) -> Option<iroh::RelayMap> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::str::FromStr;
-
-    #[test]
-    fn owner_control_client_binds_wildcard_for_direct_remote_endpoints() {
-        let bind_addr = owner_control_client_bind_addr();
-
-        assert_eq!(bind_addr.port(), 0);
-        assert!(
-            bind_addr.ip().is_unspecified(),
-            "owner-control clients must not be loopback-bound when dialing explicit remote endpoints"
-        );
-    }
-
-    #[test]
-    fn relay_mode_uses_custom_relays_from_endpoint_addr() {
-        let addr = EndpointAddr::new(iroh::SecretKey::generate().public()).with_relay_url(
-            iroh::RelayUrl::from_str("https://relay.example.com").expect("relay URL parses"),
-        );
-
-        assert!(matches!(
-            relay_mode_from_endpoint_addr(&addr),
-            iroh::endpoint::RelayMode::Custom(_)
-        ));
-    }
-
-    #[test]
-    fn relay_mode_is_disabled_without_endpoint_relays() {
-        let addr = EndpointAddr::new(iroh::SecretKey::generate().public());
-
-        assert!(matches!(
-            relay_mode_from_endpoint_addr(&addr),
-            iroh::endpoint::RelayMode::Disabled
-        ));
-    }
-}
-
 fn sign_node_ownership_proto(
     owner: &OwnerKeypair,
     node_endpoint_id: &[u8; 32],
@@ -760,4 +721,43 @@ fn current_time_unix_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    #[test]
+    fn owner_control_client_binds_wildcard_for_direct_remote_endpoints() {
+        let bind_addr = owner_control_client_bind_addr();
+
+        assert_eq!(bind_addr.port(), 0);
+        assert!(
+            bind_addr.ip().is_unspecified(),
+            "owner-control clients must not be loopback-bound when dialing explicit remote endpoints"
+        );
+    }
+
+    #[test]
+    fn relay_mode_uses_custom_relays_from_endpoint_addr() {
+        let addr = EndpointAddr::new(iroh::SecretKey::generate().public()).with_relay_url(
+            iroh::RelayUrl::from_str("https://relay.example.com").expect("relay URL parses"),
+        );
+
+        assert!(matches!(
+            relay_mode_from_endpoint_addr(&addr),
+            iroh::endpoint::RelayMode::Custom(_)
+        ));
+    }
+
+    #[test]
+    fn relay_mode_is_disabled_without_endpoint_relays() {
+        let addr = EndpointAddr::new(iroh::SecretKey::generate().public());
+
+        assert!(matches!(
+            relay_mode_from_endpoint_addr(&addr),
+            iroh::endpoint::RelayMode::Disabled
+        ));
+    }
 }
