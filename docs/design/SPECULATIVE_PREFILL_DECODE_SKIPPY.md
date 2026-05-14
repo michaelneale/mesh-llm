@@ -1,27 +1,45 @@
-# Speculative Prefill Decoding via Skippy
+# Speculative Prefill Decoding for Distributed Layer Splits
 
 **Status:** Design  
 **Date:** 2026-05-13  
-**Related:** `docs/design/MOA_GATEWAY.md`, `docs/design/DESIGN.md`
+**Scope:** Skippy layer-split inference across multiple nodes  
+**Related:** `docs/design/DESIGN.md`
 
 ## Summary
 
-A fast model generates a full draft response from the user's prompt.
-That draft is injected into the prompt for the large distributed model, which
-runs a single prefill pass — computing logits at every token position — to
-verify whether it agrees with the draft. If the large model agrees, we skip
-decode entirely and return the draft. If it diverges at position K, we
-truncate the draft there and decode only from K onward with the large model.
+**This optimization targets skippy layer-split distributed inference
+specifically** — where a large model is sharded across multiple nodes and
+each decode step requires a network round trip between them. This is the
+dominant latency bottleneck for distributed serving: a 200-token response
+on a 2-node split at 50ms RTT costs 10 seconds of pure network wait
+during decode.
 
-This exploits the asymmetry that makes distributed inference slow: **prefill
-is parallel and GPU-saturating** (one network round across layer-split nodes,
-regardless of sequence length), while **decode is sequential** (one network
-round per token). Trading many slow distributed decode steps for one fast
-local draft plus one distributed prefill verification is a massive latency
-win.
+The solution: a fast model generates a full draft response. That draft is
+injected into the prompt for the large distributed model, which runs a
+single prefill pass — computing logits at every token position — to verify
+whether it agrees. If it agrees, we skip decode entirely and return the
+draft. If it diverges at position K, we truncate there and decode only
+from K onward.
 
-This is a standalone optimization for distributed inference. It does not
-depend on MoA — any local small model can serve as the draft source.
+**Why this is specific to skippy layer splits:**
+
+- Prefill across a layer split is **one network round** regardless of
+  sequence length — all tokens processed in a single batched forward pass
+  through each node's layer range.
+- Decode across a layer split is **one network round per token** — each
+  generated token must flow through every node's layers sequentially.
+- This asymmetry means prefill is cheap but decode is expensive. Standard
+  single-machine inference doesn't have this asymmetry (decode is fast
+  locally), so this optimization doesn't help there.
+
+Standard speculative decoding (draft-verify in tight loops) still applies
+to single-machine and single-node inference. This design is **net new and
+complementary** — it addresses the specific problem of distributed decode
+latency over skippy layer splits, which standard spec decode was not
+designed for.
+
+This is a standalone optimization. It does not depend on MoA or any other
+mesh feature — any fast model can serve as the draft source.
 
 ## Motivation
 
@@ -396,14 +414,32 @@ off massively against 10s of distributed decode.
 
 ### vs. Standard speculative decoding (llama.cpp)
 
-Standard spec decode operates within a single forward-pass context: draft N
-tokens, verify in one batch, accept prefix, re-draft. It's designed for
-single-machine inference where decode is already fast.
+Standard spec decode operates within a single machine: draft N tokens,
+verify in one batch, accept prefix, re-draft in tight sequential rounds.
+It's designed for single-machine inference where decode is already fast —
+the speedup comes from verifying N tokens in parallel instead of generating
+them one by one.
 
-Speculative prefill decoding is designed for **distributed inference** where
-decode is expensive (network RTT per token) but prefill is cheap (one round
-trip regardless of length). The draft is a complete response, not a few
-tokens. Verification is one prefill pass, not iterative rounds.
+Speculative prefill decoding solves a **different problem**: distributed
+decode latency across skippy layer splits. On a single machine, decode is
+fast (microseconds per token locally). Across a layer split, decode is
+slow (network RTT per token). Standard spec decode doesn't help here
+because even the verification rounds still require distributed forward
+passes.
+
+The key differences:
+
+| | Standard Spec Decode | Speculative Prefill (this design) |
+|---|---|---|
+| Problem | Single-machine decode throughput | Distributed decode latency |
+| Draft size | N tokens (small batches) | Full response |
+| Verification | Iterative rounds | One prefill pass |
+| When it helps | Always (local speedup) | Only with layer splits (network RTT) |
+| Complementary? | Yes — still applies to single-node | Yes — this is additive |
+
+Both can coexist. Standard spec decode optimizes local single-node
+inference. Speculative prefill optimizes distributed multi-node inference.
+They target different bottlenecks.
 
 ### vs. MoA (Mixture of Agents)
 
