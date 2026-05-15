@@ -10,6 +10,7 @@ gpu-bench-intel = ["mesh-llm-host-runtime/gpu-bench-intel"]
 
 [dependencies]
 mesh-llm-host-runtime = { path = "../mesh-llm-host-runtime" }
+mesh-llm-system = { path = "../mesh-llm-system" }
 tokio = { version = "1", features = ["full"] }
 
 [dev-dependencies]

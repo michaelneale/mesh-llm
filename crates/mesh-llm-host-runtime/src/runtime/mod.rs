@@ -4224,6 +4224,8 @@ pub(crate) async fn run_plugin_mcp(cli: &Cli) -> Result<()> {
     .await?;
     node.start_accepting();
     node.set_display_name(node_display_name(cli, &node)).await;
+    node.set_security_posture(mesh_llm_system::hardening::harden_runtime())
+        .await;
     node.start_heartbeat();
     node.start_rtt_refresh();
     node.start_relay_health_monitor();
@@ -4350,6 +4352,15 @@ async fn run_auto(
     .await;
     node.start_accepting();
     node.set_display_name(node_display_name(&cli, &node)).await;
+    // Runtime hardening: deny debugger, disable core dumps, check SIP/RDMA, hash binary.
+    let posture = mesh_llm_system::hardening::harden_runtime();
+    tracing::info!(
+        sip = posture.sip_enabled,
+        debugger_blocked = posture.debugger_blocked,
+        core_dumps_disabled = posture.core_dumps_disabled,
+        "security posture"
+    );
+    node.set_security_posture(posture).await;
     let (plugin_mesh_tx, plugin_mesh_rx) = tokio::sync::mpsc::channel(256);
     let plugin_manager =
         plugin::PluginManager::start(&resolved_plugins, plugin_host_mode(&cli), plugin_mesh_tx)

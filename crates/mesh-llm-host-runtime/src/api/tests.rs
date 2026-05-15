@@ -637,6 +637,8 @@ fn make_test_state_peer(seed: u8, role: mesh::NodeRole) -> mesh::PeerInfo {
         first_joined_mesh_ts: None,
         display_rtt: None,
         propagated_latency: None,
+        inference_public_key: None,
+        security_posture: None,
     }
 }
 
@@ -1216,6 +1218,8 @@ fn make_test_peer(
         owner_summary: crate::crypto::OwnershipSummary::default(),
         display_rtt: None,
         propagated_latency: None,
+        inference_public_key: None,
+        security_posture: None,
     }
 }
 

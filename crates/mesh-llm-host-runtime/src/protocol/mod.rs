@@ -835,6 +835,8 @@ mod tests {
             owner_summary: OwnershipSummary::default(),
             display_rtt: None,
             propagated_latency: None,
+            inference_public_key: None,
+            security_posture: None,
         }
     }
 
@@ -1269,6 +1271,8 @@ mod tests {
             latency_source: None,
             latency_age_ms: None,
             latency_observer_id: None,
+            inference_public_key: None,
+            security_posture: None,
         };
         let proto_pa = local_ann_to_proto_ann(&ann);
         let skippy = proto_pa
@@ -1349,6 +1353,8 @@ mod tests {
             latency_source: None,
             latency_age_ms: None,
             latency_observer_id: None,
+            inference_public_key: None,
+            security_posture: None,
         };
 
         let proto_pa = local_ann_to_proto_ann(&ann);
@@ -1900,6 +1906,8 @@ mod tests {
             latency_source: None,
             latency_age_ms: None,
             latency_observer_id: None,
+            inference_public_key: None,
+            security_posture: None,
         };
 
         let proto_pa = local_ann_to_proto_ann(&ann_with_timestamp);
@@ -1950,6 +1958,8 @@ mod tests {
             latency_source: None,
             latency_age_ms: None,
             latency_observer_id: None,
+            inference_public_key: None,
+            security_posture: None,
         };
 
         let proto_pa = local_ann_to_proto_ann(&ann_without_timestamp);

@@ -242,6 +242,10 @@ async fn make_test_node(role: super::NodeRole) -> Result<Node> {
             let (tx, _rx) = tokio::sync::watch::channel(0u64);
             Arc::new(tx)
         },
+        inference_keypair: Arc::new(
+            crate::crypto::inference_encryption::InferenceKeypair::generate(),
+        ),
+        local_security_posture: Arc::new(Mutex::new(None)),
     };
 
     let accept_node = node.clone();
@@ -917,6 +921,8 @@ fn make_test_peer_info(peer_id: EndpointId) -> PeerInfo {
         owner_summary: OwnershipSummary::default(),
         display_rtt: None,
         propagated_latency: None,
+        inference_public_key: None,
+        security_posture: None,
     }
 }
 
@@ -2802,6 +2808,8 @@ fn gossip_frame_roundtrip_preserves_scanned_model_metadata() {
         latency_source: None,
         latency_age_ms: None,
         latency_observer_id: None,
+        inference_public_key: None,
+        security_posture: None,
     };
 
     let proto_pa = local_ann_to_proto_ann(&local_ann);
@@ -3030,6 +3038,8 @@ fn transitive_peer_update_refreshes_metadata_fields() {
         latency_source: None,
         latency_age_ms: None,
         latency_observer_id: None,
+        inference_public_key: None,
+        security_posture: None,
     };
 
     apply_transitive_ann(&mut existing, &addr, &ann, make_test_endpoint_id(0xee));
@@ -3114,6 +3124,8 @@ fn transitive_peer_merge_preserves_richer_direct_address() {
         latency_source: None,
         latency_age_ms: None,
         latency_observer_id: None,
+        inference_public_key: None,
+        security_posture: None,
     };
 
     apply_transitive_ann(&mut existing, &weak_addr, &ann, make_test_endpoint_id(0xee));
@@ -3172,6 +3184,8 @@ fn transitive_peer_merge_preserves_richer_direct_address() {
         latency_source: None,
         latency_age_ms: None,
         latency_observer_id: None,
+        inference_public_key: None,
+        security_posture: None,
     };
     apply_transitive_ann(
         &mut existing,
@@ -3753,6 +3767,8 @@ fn transitive_peer_update_refreshes_last_mentioned() {
         latency_source: None,
         latency_age_ms: None,
         latency_observer_id: None,
+        inference_public_key: None,
+        security_posture: None,
     };
 
     apply_transitive_ann(&mut peer, &addr, &ann, make_test_endpoint_id(0xee));
@@ -4502,6 +4518,8 @@ fn make_test_peer(id: EndpointId, rtt_ms: Option<u32>, vram_gb: u64) -> PeerInfo
         owner_summary: OwnershipSummary::default(),
         display_rtt: None,
         propagated_latency: None,
+        inference_public_key: None,
+        security_posture: None,
     }
 }
 

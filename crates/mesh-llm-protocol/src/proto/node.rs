@@ -116,6 +116,25 @@ pub struct PeerAnnouncement {
     pub latency_age_ms: ::core::option::Option<u32>,
     #[prost(bytes = "vec", optional, tag = "43")]
     pub latency_observer_id: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+    /// X25519 public key (base64) for E2E inference encryption
+    #[prost(string, optional, tag = "44")]
+    pub inference_public_key: ::core::option::Option<::prost::alloc::string::String>,
+    /// Runtime security posture
+    #[prost(message, optional, tag = "45")]
+    pub security_posture: ::core::option::Option<SecurityPosture>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SecurityPosture {
+    #[prost(bool, tag = "1")]
+    pub sip_enabled: bool,
+    #[prost(bool, tag = "2")]
+    pub rdma_disabled: bool,
+    #[prost(bool, tag = "3")]
+    pub debugger_blocked: bool,
+    #[prost(bool, tag = "4")]
+    pub core_dumps_disabled: bool,
+    #[prost(string, optional, tag = "5")]
+    pub binary_hash: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MeshSubprotocol {

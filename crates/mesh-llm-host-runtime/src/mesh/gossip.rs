@@ -112,6 +112,12 @@ pub(super) fn apply_transitive_ann(
     existing.served_model_runtime = ann.served_model_runtime.clone();
     existing.artifact_transfer_supported = ann.artifact_transfer_supported;
     existing.stage_status_list_supported = ann.stage_status_list_supported;
+    if ann.inference_public_key.is_some() {
+        existing.inference_public_key = ann.inference_public_key.clone();
+    }
+    if ann.security_posture.is_some() {
+        existing.security_posture = ann.security_posture.clone();
+    }
     if ann.experts_summary.is_some() {
         existing.experts_summary = ann.experts_summary.clone();
     }
@@ -667,6 +673,7 @@ impl Node {
         let my_mesh_id = self.mesh_id.lock().await.clone();
         let my_owner_attestation = self.owner_attestation.lock().await.clone();
         let my_owner_summary = self.owner_summary.lock().await.clone();
+        let my_security_posture = self.local_security_posture.lock().await.clone();
         let my_demand = self.get_demand();
         let stale_cutoff =
             std::time::Instant::now() - std::time::Duration::from_secs(PEER_STALE_SECS);
@@ -728,6 +735,8 @@ impl Node {
                         }),
                         latency_age_ms: Some(latency.age_ms),
                         latency_observer_id: latency.observer_id,
+                        inference_public_key: p.inference_public_key.clone(),
+                        security_posture: p.security_posture.clone(),
                     }
                 })
                 .collect()
@@ -800,6 +809,8 @@ impl Node {
             latency_source: None,
             latency_age_ms: None,
             latency_observer_id: None,
+            inference_public_key: Some(self.inference_keypair.public_key_base64()),
+            security_posture: my_security_posture,
         });
         announcements
     }
@@ -859,6 +870,8 @@ mod tests {
             latency_source: None,
             latency_age_ms: None,
             latency_observer_id: None,
+            inference_public_key: None,
+            security_posture: None,
         }
     }
 

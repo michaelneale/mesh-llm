@@ -872,6 +872,8 @@ pub(crate) struct PeerAnnouncement {
     pub(crate) latency_source: Option<crate::proto::node::LatencySource>,
     pub(crate) latency_age_ms: Option<u64>,
     pub(crate) latency_observer_id: Option<EndpointId>,
+    pub(crate) inference_public_key: Option<String>,
+    pub(crate) security_posture: Option<mesh_llm_system::hardening::SecurityPosture>,
 }
 
 /// A single direct RTT measurement (e.g. from gossip exchange).
@@ -964,6 +966,8 @@ pub struct PeerInfo {
     /// Latency propagated via transitive gossip.
     pub propagated_latency: Option<PropagatedLatencyObservation>,
     pub owner_summary: OwnershipSummary,
+    pub inference_public_key: Option<String>,
+    pub security_posture: Option<mesh_llm_system::hardening::SecurityPosture>,
 }
 
 #[derive(Debug)]
@@ -1033,6 +1037,8 @@ impl PeerInfo {
             display_rtt: None,
             propagated_latency: None,
             owner_summary,
+            inference_public_key: ann.inference_public_key.clone(),
+            security_posture: ann.security_posture.clone(),
         }
     }
 
@@ -1369,6 +1375,8 @@ pub struct Node {
     pub gpu_compute_tflops_fp16: Arc<tokio::sync::Mutex<Option<Vec<f64>>>>,
     config_state: Arc<tokio::sync::Mutex<crate::runtime::config_state::ConfigState>>,
     config_revision_tx: Arc<tokio::sync::watch::Sender<u64>>,
+    inference_keypair: Arc<crate::crypto::inference_encryption::InferenceKeypair>,
+    local_security_posture: Arc<Mutex<Option<mesh_llm_system::hardening::SecurityPosture>>>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -2541,6 +2549,10 @@ impl Node {
                 let (tx, _rx) = tokio::sync::watch::channel(config_revision_init);
                 Arc::new(tx)
             },
+            inference_keypair: Arc::new(
+                crate::crypto::inference_encryption::InferenceKeypair::generate(),
+            ),
+            local_security_posture: Arc::new(Mutex::new(None)),
         };
 
         node.maybe_start_control_listener(
@@ -2684,6 +2696,10 @@ impl Node {
                 let (tx, _rx) = tokio::sync::watch::channel(0);
                 Arc::new(tx)
             },
+            inference_keypair: Arc::new(
+                crate::crypto::inference_encryption::InferenceKeypair::generate(),
+            ),
+            local_security_posture: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -2883,6 +2899,38 @@ impl Node {
     /// Connect to a peer without gossip exchange — for passive nodes (clients/standby).
     pub fn id(&self) -> EndpointId {
         self.endpoint.id()
+    }
+
+    /// The node's X25519 inference public key (base64).
+    /// Used by API status and future challenge-response attestation.
+    #[allow(dead_code)]
+    pub fn inference_public_key_base64(&self) -> String {
+        self.inference_keypair.public_key_base64()
+    }
+
+    /// Get the inference keypair for encrypting/decrypting.
+    /// Used by tunnel proxy when E2E encryption is wired into the request path.
+    #[allow(dead_code)]
+    pub fn inference_keypair(&self) -> &crate::crypto::inference_encryption::InferenceKeypair {
+        &self.inference_keypair
+    }
+
+    /// Set the local security posture (from hardening checks).
+    pub async fn set_security_posture(&self, posture: mesh_llm_system::hardening::SecurityPosture) {
+        *self.local_security_posture.lock().await = Some(posture);
+    }
+
+    /// Look up a peer's inference public key for E2E encryption.
+    /// Used by tunnel proxy when E2E encryption is wired into the request path.
+    #[allow(dead_code)]
+    pub async fn peer_inference_public_key(
+        &self,
+        peer_id: EndpointId,
+    ) -> Option<crypto_box::PublicKey> {
+        let state = self.state.lock().await;
+        let peer = state.peers.get(&peer_id)?;
+        let key_b64 = peer.inference_public_key.as_ref()?;
+        crate::crypto::inference_encryption::parse_public_key(key_b64).ok()
     }
 
     pub async fn role(&self) -> NodeRole {

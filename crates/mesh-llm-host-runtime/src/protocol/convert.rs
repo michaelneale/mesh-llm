@@ -545,6 +545,16 @@ pub(crate) fn local_ann_to_proto_ann(
             ann.artifact_transfer_supported,
             ann.stage_status_list_supported,
         ),
+        inference_public_key: ann.inference_public_key.clone(),
+        security_posture: ann.security_posture.as_ref().map(|p| {
+            crate::proto::node::SecurityPosture {
+                sip_enabled: p.sip_enabled,
+                rdma_disabled: p.rdma_disabled,
+                debugger_blocked: p.debugger_blocked,
+                core_dumps_disabled: p.core_dumps_disabled,
+                binary_hash: p.binary_hash.clone(),
+            }
+        }),
     }
 }
 
@@ -714,6 +724,16 @@ pub(crate) fn proto_ann_to_local(
         latency_observer_id: pa.latency_observer_id.as_ref().and_then(|bytes| {
             let arr: [u8; 32] = bytes.as_slice().try_into().ok()?;
             iroh::PublicKey::from_bytes(&arr).ok()
+        }),
+        inference_public_key: pa.inference_public_key.clone(),
+        security_posture: pa.security_posture.as_ref().map(|p| {
+            mesh_llm_system::hardening::SecurityPosture {
+                sip_enabled: p.sip_enabled,
+                rdma_disabled: p.rdma_disabled,
+                debugger_blocked: p.debugger_blocked,
+                core_dumps_disabled: p.core_dumps_disabled,
+                binary_hash: p.binary_hash.clone(),
+            }
         }),
     };
     crate::mesh::backfill_legacy_descriptors(&mut ann);
