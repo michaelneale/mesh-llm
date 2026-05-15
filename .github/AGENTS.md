@@ -31,6 +31,9 @@ reason about.
 - Gate macOS and Docker packaging work on platform/package inputs, while still
   running macOS CPU when Swift SDK smoke needs a macOS artifact. Do not make
   every Rust source change rebuild every non-Linux artifact.
+- Keep Swift XCFramework production parallel to macOS binary production; Swift
+  smoke should consume the produced XCFramework artifact rather than rebuilding
+  it after the macOS CPU row completes.
 - Workflow file edits are validated by local/PR YAML and consistency checks; do
   not self-trigger heavyweight Docker or platform builds just because their
   workflow definition changed.

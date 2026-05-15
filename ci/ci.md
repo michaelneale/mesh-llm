@@ -43,6 +43,7 @@ subgraph PRCI["pr_ci.yml · PR Builds"]
             LinuxTargets["linux_targets matrix\nCPU row: debug mesh-llm · binary smokes\nCUDA / ROCm / Vulkan rows build when backend_changed\nCPU → ci-linux-inference-binaries"]
             WindowsTargets["windows_targets matrix\nCPU / CUDA / ROCm / Vulkan\nCPU checks unless Windows CPU changed"]
             MacTargets["macos_targets matrix\nmacOS/UI/Swift/backend-scoped CPU build · CLI smoke\nCUDA / ROCm / Vulkan explicit skips\nCPU → ci-macos-inference-binaries"]
+            SwiftXCFramework["swift_xcframework\nhost macOS XCFramework artifact"]
         end
 
         subgraph Smokes["artifact-consuming smokes"]
@@ -63,6 +64,7 @@ subgraph PRCI["pr_ci.yml · PR Builds"]
     Backend --> MacTargets
     LinuxTargets -- "CPU artifact: ci-linux-inference-binaries" --> Restore
     MacTargets -- "CPU artifact: ci-macos-inference-binaries" --> Restore
+    SwiftXCFramework -- "ci-swift-xcframework" --> SDKSmoke
     Restore --> Inference
     Restore --> Scripted
     Restore --> SDKSmoke
@@ -107,6 +109,9 @@ subgraph PRCI["pr_ci.yml · PR Builds"]
   can produce the smoke artifact without serializing every Rust test on the
   binary-build critical path. Linux, macOS, and Windows are top-level matrices;
   Linux and macOS CPU rows upload the binaries that downstream smoke jobs consume.
+  Swift XCFramework production runs in parallel with the macOS CPU row so Swift
+  SDK smoke consumes a built XCFramework artifact instead of rebuilding it after
+  the macOS binary is ready.
 - `pr_docker.yml` validates the PR Docker client image without publishing when
   Docker packaging inputs change. Workflow-only edits are covered by the shared
   YAML/consistency validation instead of self-triggering a heavyweight image
@@ -141,7 +146,8 @@ subgraph PRCI["pr_ci.yml · PR Builds"]
 - Smoke jobs restore binaries through `.github/actions/restore-smoke-inputs` and
   reusable workflows instead of rebuilding `mesh-llm` or patched llama.cpp.
 - Linux CPU artifacts feed inference, two-node, native SDK, and Kotlin SDK
-  smokes. macOS CPU artifacts feed Swift SDK smokes.
+  smokes. macOS CPU artifacts and the parallel Swift XCFramework artifact feed
+  Swift SDK smokes.
 - PR and smoke-only CI artifacts use `retention-days: 1`; PR cleanup removes
   matched PR-run artifacts proactively.
 - Direct `mesh-llm` invocations in workflows and CI scripts must include
