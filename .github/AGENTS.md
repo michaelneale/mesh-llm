@@ -20,7 +20,7 @@ reason about.
 - Route PR work from `.github/actions/compute-changes` outputs; do not add heavy
   jobs that ignore `docs_only`, `rust_changed`, `backend_changed`, or
   `sdk_smoke_required`.
-- Keep Linux, macOS, and Windows as top-level target matrices in `pr_ci.yml`.
+- Keep Linux, macOS, and Windows as top-level target matrices in `pr_builds.yml`.
   Linux/macOS CPU rows are the producer rows for downstream smoke artifacts.
 - Keep macOS CUDA, ROCm, and Vulkan rows as explicit unsupported-backend skips.
 - Gate backend lanes on backend inputs, not every Rust change.

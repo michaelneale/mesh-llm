@@ -134,7 +134,7 @@ runs:
         if [[ "$ALL_RUST" == "true" ]]; then
           BACKEND_CHANGED="true"
         elif [[ -n "$CHANGED_FILES" ]]; then
-          BACKEND_INPUTS=$(echo "$CHANGED_FILES" | grep -E '(^third_party/llama\.cpp/|^crates/skippy-ffi/|^scripts/(build-llama|prepare-llama|build-linux|build-mac|build-windows|install-windows-sdk)\.|^\.github/actions/setup-windows-rocm-sdk/|^\.github/workflows/pr_ci\.yml$|^\.github/workflows/pr_quality\.yml$|^\.github/cache-version\.txt$|^Justfile$)' || true)
+          BACKEND_INPUTS=$(echo "$CHANGED_FILES" | grep -E '(^third_party/llama\.cpp/|^crates/skippy-ffi/|^scripts/(build-llama|prepare-llama|build-linux|build-mac|build-windows|install-windows-sdk)\.|^\.github/actions/setup-windows-rocm-sdk/|^\.github/workflows/pr_builds\.yml$|^\.github/workflows/pr_quality\.yml$|^\.github/cache-version\.txt$|^Justfile$)' || true)
           if [[ -n "$BACKEND_INPUTS" ]]; then
             BACKEND_CHANGED="true"
           fi

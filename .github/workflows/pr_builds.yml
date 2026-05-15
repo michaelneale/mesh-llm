@@ -83,7 +83,7 @@ jobs:
               - 'scripts/ci-kotlin-sdk-smoke.sh'
               - 'scripts/ci-swift-sdk-smoke.sh'
               - 'scripts/ci-sdk-fixture.sh'
-              - '.github/workflows/pr_ci.yml'
+              - '.github/workflows/pr_builds.yml'
             docker:
               - '.dockerignore'
               - 'docker/**'
@@ -100,7 +100,7 @@ jobs:
               - 'Cargo.lock'
               - 'Justfile'
               - '.github/cache-version.txt'
-              - '.github/workflows/pr_ci.yml'
+              - '.github/workflows/pr_builds.yml'
               - '.github/workflows/windows-warm-caches.yml'
             windows_gpu:
               - 'crates/skippy-ffi/**'
@@ -110,7 +110,7 @@ jobs:
               - 'Justfile'
               - '.github/cache-version.txt'
               - '.github/actions/setup-windows-rocm-sdk/**'
-              - '.github/workflows/pr_ci.yml'
+              - '.github/workflows/pr_builds.yml'
               - '.github/workflows/windows-warm-caches.yml'
 
             docs:
