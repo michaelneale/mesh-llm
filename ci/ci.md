@@ -10,6 +10,7 @@ flowchart TD
         ClippyBins["clippy binpack\nplan-clippy-batches.sh"]
         Backend["backend_changed?"]
         PRWorkflow["pr_workflow_only?"]
+        ReactUI["react_ui_only?"]
         SDK["sdk_smoke_required?"]
         Docs["docs_only?"]
     end
@@ -18,6 +19,7 @@ flowchart TD
     Affected --> ClippyBins
     Files --> Backend
     Files --> PRWorkflow
+    Files --> ReactUI
     Affected --> SDK
     Files --> Docs
 
@@ -58,6 +60,7 @@ subgraph PRCI["pr_ci.yml · PR Builds"]
 
     Docs -. "true: gate heavy jobs" .-> PRCI
     PRWorkflow -. "true: keep to routing validation" .-> PRCI
+    ReactUI -. "true: UI quality/build only" .-> PRCI
     Affected --> LinuxCrateTests
     Affected --> LinuxTargets
     Affected --> SkippySmoke
@@ -119,6 +122,10 @@ subgraph PRCI["pr_ci.yml · PR Builds"]
   Swift XCFramework production runs in parallel with the macOS CPU row so Swift
   SDK smoke consumes a built XCFramework artifact instead of rebuilding it after
   the macOS binary is ready.
+- React-only UI changes under `crates/mesh-llm-ui/` that do not touch UI Cargo or
+  Rust files use `react_ui_only` routing: `pr_quality.yml` runs lint, typecheck,
+  React build, and tests, while `pr_ci.yml` skips embedded Rust binary producers
+  and smoke consumers.
 - `pr_docker.yml` validates the PR Docker client image without publishing when
   Docker packaging inputs change. Workflow-only edits are covered by the shared
   YAML/consistency validation instead of self-triggering a heavyweight image

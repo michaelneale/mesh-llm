@@ -27,6 +27,9 @@ reason about.
 - Gate backend lanes on backend inputs, not every Rust change.
 - Benchmark crate changes should validate through Rust/quality lanes; do not use
   benchmark-only changes as a proxy for native backend rebuilds.
+- React-only UI changes under `crates/mesh-llm-ui/` that do not touch Cargo or
+  Rust files should run UI quality/build checks only. Do not rebuild embedded
+  Rust binaries or smoke artifacts for those changes.
 - Keep crate tests out of binary producer critical paths when they can run in a
   parallel matrix without weakening the required checks.
 - Gate macOS and Docker packaging work on platform/package inputs, while still
