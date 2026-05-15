@@ -270,6 +270,37 @@ fn materialize_stage_bind_addr_replaces_ephemeral_port() {
     assert_ne!(bind_addr.port(), 0);
 }
 
+#[test]
+fn stage_load_failure_context_identifies_split_stage_shape() {
+    let mut request = load_request();
+    request.stage_id = "stage-1".to_string();
+    request.stage_index = 1;
+    request.layer_start = 12;
+    request.layer_end = 24;
+    request.bind_addr = "127.0.0.1:4242".to_string();
+
+    let context = stage_load_failure_context(
+        &request,
+        "binary stage ready handshake failed",
+        Some("native loader exited while mapping tensors"),
+    );
+
+    assert!(context.contains("model=model-a"));
+    assert!(context.contains("topology=topology-a"));
+    assert!(context.contains("run=run-a"));
+    assert!(context.contains("stage=stage-1"));
+    assert!(context.contains("index=1"));
+    assert!(context.contains("layers=12..24"));
+    assert!(context.contains("mode=RuntimeSlice"));
+    assert!(context.contains("bind=127.0.0.1:4242"));
+    assert!(context.contains("ctx=8192"));
+    assert!(context.contains("lanes=3"));
+    assert!(context.contains("source_bytes=68719476736"));
+    assert!(context.contains("device=CUDA0"));
+    assert!(context.contains("error=binary stage ready handshake failed"));
+    assert!(context.contains("last_error=native loader exited while mapping tensors"));
+}
+
 #[tokio::test]
 async fn binary_stage_ready_probe_waits_for_wire_handshake() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
