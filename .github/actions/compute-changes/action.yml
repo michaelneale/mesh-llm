@@ -36,6 +36,9 @@ outputs:
   ui_changed:
     description: 'Boolean: true if UI files changed'
     value: ${{ steps.derive.outputs.ui_changed }}
+  react_ui_only:
+    description: 'Boolean: true if changes are limited to React UI files and UI config'
+    value: ${{ steps.derive.outputs.react_ui_only }}
   docs_only:
     description: 'Boolean: true if only docs changed'
     value: ${{ steps.derive.outputs.docs_only }}
@@ -122,6 +125,18 @@ runs:
             PR_WORKFLOW_ONLY="true"
           fi
         fi
+
+        # React-only UI changes should validate through UI quality/build checks
+        # without forcing embedded Rust binaries or smoke tests. Keep native UI
+        # crate inputs (Cargo/Rust/build scripts) out of this fast path.
+        REACT_UI_ONLY="false"
+        if [[ -n "$CHANGED_FILES" ]]; then
+          NON_UI_FILE=$(echo "$CHANGED_FILES" | grep -v -E '^crates/mesh-llm-ui/' || true)
+          UI_RUST_INPUT=$(echo "$CHANGED_FILES" | grep -E '(^crates/mesh-llm-ui/(Cargo\.toml|build\.rs)$|^crates/mesh-llm-ui/.*\.rs$)' || true)
+          if [[ -z "$NON_UI_FILE" && -z "$UI_RUST_INPUT" ]]; then
+            REACT_UI_ONLY="true"
+          fi
+        fi
         
         # Determine docs_only: true if all_rust=false AND ui_changed=false AND all files match docs patterns
         DOCS_ONLY="false"
@@ -180,6 +195,7 @@ runs:
           echo "clippy_batches_json=$CLIPPY_BATCHES"
           echo "all_rust=$ALL_RUST"
           echo "ui_changed=$UI_CHANGED"
+          echo "react_ui_only=$REACT_UI_ONLY"
           echo "docs_only=$DOCS_ONLY"
           echo "rust_changed=$RUST_CHANGED"
           echo "backend_changed=$BACKEND_CHANGED"

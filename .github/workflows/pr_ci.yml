@@ -39,6 +39,7 @@ jobs:
       all_rust: ${{ steps.compute.outputs.all_rust }}
       docs_only: ${{ steps.compute.outputs.docs_only }}
       rust_changed: ${{ steps.compute.outputs.rust_changed }}
+      react_ui_only: ${{ steps.compute.outputs.react_ui_only }}
       backend_changed: ${{ steps.compute.outputs.backend_changed }}
       pr_workflow_only: ${{ steps.compute.outputs.pr_workflow_only }}
       sdk_smoke_required: ${{ steps.compute.outputs.sdk_smoke_required }}
@@ -135,7 +136,7 @@ jobs:
 
   linux_crate_tests:
     needs: changes
-    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') && needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.pr_workflow_only != 'true' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust_changed == 'true') && needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.pr_workflow_only != 'true' && needs.changes.outputs.react_ui_only != 'true' }}
     name: Linux crate tests (${{ matrix.group }})
     runs-on: ubuntu-latest
     container:
@@ -266,7 +267,7 @@ jobs:
 
   linux_targets:
     needs: changes
-    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' || needs.changes.outputs.backend_changed == 'true') && needs.changes.outputs.docs_only != 'true' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust_changed == 'true' || needs.changes.outputs.ui == 'true' || needs.changes.outputs.backend_changed == 'true') && needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.react_ui_only != 'true' }}
     name: Linux ${{ matrix.name }}
     runs-on: ubuntu-latest
     container:
@@ -301,7 +302,7 @@ jobs:
             cache_key: linux-vulkan
             build_dir: .deps/llama-build/build-stage-abi-vulkan
     env:
-      RUN_LINUX_CPU: ${{ matrix.backend == 'cpu' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true') }}
+      RUN_LINUX_CPU: ${{ matrix.backend == 'cpu' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust_changed == 'true' || needs.changes.outputs.ui == 'true') && needs.changes.outputs.react_ui_only != 'true' }}
       RUN_LINUX_BACKEND: ${{ matrix.backend != 'cpu' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend_changed == 'true') }}
       LLAMA_STAGE_BACKEND: ${{ matrix.backend }}
       LLAMA_STAGE_BUILD_DIR: ${{ matrix.build_dir }}
@@ -538,7 +539,7 @@ jobs:
 
   linux_binary_smoke:
     needs: [changes, linux_targets]
-    if: ${{ needs.linux_targets.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true') && needs.changes.outputs.docs_only != 'true' }}
+    if: ${{ needs.linux_targets.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust_changed == 'true' || needs.changes.outputs.ui == 'true') && needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.react_ui_only != 'true' }}
     name: Linux binary smoke
     runs-on: ubuntu-latest
     steps:
@@ -772,7 +773,7 @@ jobs:
 
   macos_targets:
     needs: changes
-    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' || needs.changes.outputs.macos == 'true' || needs.changes.outputs.backend_changed == 'true' || needs.changes.outputs.sdk_smoke_required == 'true') && needs.changes.outputs.docs_only != 'true' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' || needs.changes.outputs.macos == 'true' || needs.changes.outputs.backend_changed == 'true' || needs.changes.outputs.sdk_smoke_required == 'true') && needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.react_ui_only != 'true' }}
     name: macOS ${{ matrix.name }}
     runs-on: macos-14
     strategy:
@@ -788,7 +789,7 @@ jobs:
           - name: Vulkan
             backend: vulkan
     env:
-      RUN_MACOS_CPU: ${{ matrix.backend == 'cpu' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' || needs.changes.outputs.macos == 'true' || needs.changes.outputs.backend_changed == 'true' || needs.changes.outputs.sdk_smoke_required == 'true') }}
+      RUN_MACOS_CPU: ${{ matrix.backend == 'cpu' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' || needs.changes.outputs.macos == 'true' || needs.changes.outputs.backend_changed == 'true' || needs.changes.outputs.sdk_smoke_required == 'true') && needs.changes.outputs.react_ui_only != 'true' }}
       LLAMA_STAGE_BACKEND: metal
       LLAMA_STAGE_BUILD_DIR: .deps/llama.cpp/build-stage-abi-metal
     steps:

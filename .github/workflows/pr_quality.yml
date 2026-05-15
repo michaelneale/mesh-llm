@@ -29,6 +29,7 @@ jobs:
       clippy_batches_json: ${{ steps.compute.outputs.clippy_batches_json }}
       all_rust: ${{ steps.compute.outputs.all_rust }}
       ui_changed: ${{ steps.compute.outputs.ui_changed }}
+      react_ui_only: ${{ steps.compute.outputs.react_ui_only }}
       docs_only: ${{ steps.compute.outputs.docs_only }}
       rust_changed: ${{ steps.compute.outputs.rust_changed }}
       pr_workflow_only: ${{ steps.compute.outputs.pr_workflow_only }}
@@ -124,6 +125,8 @@ jobs:
         run: pnpm run lint
       - name: Type check
         run: pnpm run typecheck
+      - name: Build React app
+        run: pnpm run build
       - name: Test
         run: pnpm test
 
