@@ -533,6 +533,8 @@ scripts/qa-control-plane-mixed-version.sh \
 ```
 
 The harness writes a timestamped run directory containing logs, status payloads, owner-control bootstrap evidence, owner-control get-config evidence, and a markdown/json summary.
+It also writes `manifest.json`, `commands.jsonl`, `results.jsonl`, `versions/*.txt`, and grouped `status/`, `models/`, `chat/`, and `control/` payloads so a reviewer can audit which binaries, commands, and local endpoints produced the evidence.
+Use `--print-plan` when CI or review automation needs to validate the planned checks without starting mesh processes or writing evidence; planned check names match the `name` values emitted to `results.jsonl`.
 
 Expected checks:
 
@@ -564,10 +566,11 @@ Failure interpretation:
 
 Config-only result interpretation:
 
-- `PASS config-missing-endpoint-required`: executable proof that config bootstrap without an explicit owner-control endpoint is rejected.
-- `PASS config-new-client-owner-control`: executable proof that new clients prefer `mesh-llm-control/1`.
-- `PASS config-control-rejects-legacy-frames`: executable proof that owner-control does not silently accept legacy frames on the wrong ALPN.
-- `PREREQ config-*`: loopback coexistence worked, but runtime owner-control requests could not be proven because the local node did not expose a signed owner-control endpoint.
+- `config-missing-endpoint-required`: executable proof that config bootstrap without an explicit owner-control endpoint is rejected when cargo-backed protocol tests run.
+- `config-new-client-owner-control`: executable proof that new clients prefer `mesh-llm-control/1` when cargo-backed protocol tests run.
+- `config-control-rejects-legacy-frames`: executable proof that owner-control does not silently accept legacy frames on the wrong ALPN when cargo-backed protocol tests run.
+- `PREREQ config-cargo-tests`: cargo-backed protocol tests were skipped or cargo was unavailable.
+- `PREREQ config-runtime-bootstrap`: runtime owner-control requests could not be proven because the local node did not expose a signed owner-control endpoint.
 
 Reserved-ID note: mesh-plane stream IDs 0x0b and 0x0c are kept reserved, but current nodes should not advertise or rely on legacy config subscribe/push behavior there.
 

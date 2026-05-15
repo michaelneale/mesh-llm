@@ -420,11 +420,15 @@ scripts/qa-control-plane-mixed-version.sh \
   --config-only
 ```
 
+To validate the harness contract without starting processes or writing evidence, add `--print-plan`; it prints the planned public, loopback, and owner-control result names as JSON.
+
 `--config-only` skips public-mesh probes and focuses on the owner-control migration lane:
 
 - loopback released/current private-mesh coexistence in both directions
 - current-branch proof that new clients prefer `mesh-llm-control/1`
 - current-branch proof that missing endpoints fail with `ControlEndpointRequired`
 - current-node `runtime bootstrap` / `runtime get-config` evidence when owner-control is enabled
+
+Each real run writes a timestamped evidence directory with `manifest.json`, `commands.jsonl`, `results.jsonl`, `summary.md`, `summary.json`, `versions/*.txt`, process logs, and grouped status/model/chat/control payloads.
 
 If the local bootstrap payload reports `enabled=false`, the harness records a `PREREQ` result explaining that a signed same-owner keystore is required before runtime owner-control requests can be proven on that machine. That is an explicit prerequisite report, not a silent pass.
