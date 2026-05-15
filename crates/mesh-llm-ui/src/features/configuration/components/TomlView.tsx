@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useState, type CSSProperties, type ReactNode } from 'react'
 import { cn } from '@/lib/cn'
 import { Copy } from 'lucide-react'
 import { buildTOML } from '@/features/configuration/lib/build-toml'
@@ -32,12 +32,14 @@ type TomlPanelProps = {
   highlighted: ReactNode
   scrollOffset: { left: number; top: number }
   setScrollOffset: (offset: { left: number; top: number }) => void
-  sourceHeight?: string
+  sourceStyle?: TomlSourceStyle
   copyLabel: string
   onCopy: () => void
   reviewMode: boolean
   configPath?: string
 }
+
+type TomlSourceStyle = CSSProperties & { '--toml-line-count'?: number }
 
 function TomlEditorPanel({
   toml,
@@ -45,7 +47,7 @@ function TomlEditorPanel({
   highlighted,
   scrollOffset,
   setScrollOffset,
-  sourceHeight,
+  sourceStyle,
   copyLabel,
   onCopy,
   reviewMode,
@@ -53,57 +55,52 @@ function TomlEditorPanel({
 }: TomlPanelProps) {
   return (
     <section
-      className={[
-        'panel-shell overflow-hidden rounded-[var(--radius-lg)] border border-border bg-panel',
-        reviewMode ? 'flex h-full min-h-0 flex-col' : ''
-      ]
-        .filter(Boolean)
-        .join(' ')}
+      className={cn('toml-panel panel-shell overflow-hidden rounded-lg border border-border bg-panel', {
+        'flex h-full min-h-0 flex-col': reviewMode
+      })}
     >
-      <header className="panel-divider flex min-h-[46px] items-center justify-between border-b border-border-soft px-[14px] py-[10px]">
-        <div className="flex min-w-0 items-baseline gap-1">
+      <header className="toml-panel-header panel-divider flex items-center justify-between border-b border-border-soft">
+        <div className="toml-panel-heading flex min-w-0 items-baseline">
           <h2 className="type-panel-title shrink-0">{reviewMode ? 'Generated TOML' : 'Configuration TOML'}</h2>
           {reviewMode && configPath ? (
-            <span className="truncate font-mono text-[11px] font-normal text-fg-faint">{configPath}</span>
+            <span className="toml-config-path mono truncate font-normal text-fg-faint">{configPath}</span>
           ) : null}
         </div>
-        <div className="flex shrink-0 items-center gap-2.5">
-          <span className="text-[11px] text-fg-faint">{lineCount} lines</span>
+        <div className="toml-panel-actions flex shrink-0 items-center">
+          <span className="type-caption tabular-nums text-fg-faint">{lineCount} lines</span>
           {reviewMode ? (
-            <span className="rounded-full border border-border-soft px-2 py-0.5 text-[10.5px] text-fg-faint">
+            <span className="toml-review-badge rounded-full border border-border-soft text-fg-faint">
               edits this node only
             </span>
           ) : null}
           <button
-            className="ui-control inline-flex size-7 shrink-0 items-center justify-center rounded-[var(--radius)] border p-1.5"
+            className="toml-copy-button ui-control inline-flex shrink-0 items-center justify-center rounded border"
             onClick={onCopy}
             type="button"
             aria-label={copyLabel}
             title={copyLabel}
           >
-            <Copy className="size-3.5" strokeWidth={1.75} />
+            <Copy className="toml-copy-icon" strokeWidth={1.75} />
           </button>
         </div>
       </header>
       <div
-        className={[
-          'relative overflow-hidden bg-background font-mono text-[length:var(--density-type-caption-lg)] leading-[1.6]',
-          reviewMode ? 'min-h-0 flex-1' : ''
-        ]
-          .filter(Boolean)
-          .join(' ')}
-        style={{ height: sourceHeight }}
+        className={cn('toml-source relative overflow-hidden bg-background font-mono', {
+          'min-h-0 flex-1': reviewMode,
+          'toml-source-standalone': !reviewMode
+        })}
+        style={sourceStyle}
       >
         <pre
           aria-hidden="true"
-          className="pointer-events-none absolute inset-0 m-0 whitespace-pre px-[14px] py-3 text-fg-dim"
+          className="toml-source-content pointer-events-none absolute inset-0 m-0 whitespace-pre text-fg-dim"
           style={{ transform: `translate(${-scrollOffset.left}px, ${-scrollOffset.top}px)` }}
         >
           {highlighted}
         </pre>
         <textarea
           aria-label="Configuration TOML source"
-          className="absolute inset-0 block h-full w-full resize-none overflow-auto bg-transparent px-[14px] py-3 font-mono leading-[1.6] text-transparent caret-transparent outline-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+          className="toml-source-content toml-source-input absolute inset-0 block h-full w-full resize-none overflow-auto bg-transparent font-mono text-transparent caret-transparent"
           onScroll={(event) =>
             setScrollOffset({ left: event.currentTarget.scrollLeft, top: event.currentTarget.scrollTop })
           }
@@ -119,9 +116,9 @@ function TomlEditorPanel({
 function ReviewPanel({ title, children, className }: { title: string; children: ReactNode; className?: string }) {
   return (
     <section
-      className={cn('panel-shell overflow-hidden rounded-[var(--radius-lg)] border border-border bg-panel', className)}
+      className={cn('toml-panel panel-shell overflow-hidden rounded-lg border border-border bg-panel', className)}
     >
-      <header className="border-b border-border-soft px-[14px] py-[10px]">
+      <header className="toml-panel-header border-b border-border-soft">
         <h3 className="type-panel-title">{title}</h3>
       </header>
       {children}
@@ -130,17 +127,16 @@ function ReviewPanel({ title, children, className }: { title: string; children: 
 }
 
 function warningDotClass(kind: TomlValidationWarning['kind']): string {
-  if (kind === 'ok')
-    return 'mt-1.5 size-[7px] shrink-0 rounded-full bg-[var(--color-good)] shadow-[0_0_7px_var(--color-good)]'
-  if (kind === 'warn') return 'mt-1.5 size-[7px] shrink-0 rounded-full bg-[var(--color-warn)]'
-  return 'mt-1.5 size-[7px] shrink-0 rounded-full bg-fg-faint'
+  if (kind === 'ok') return 'toml-status-dot toml-status-dot-ok shrink-0 rounded-full'
+  if (kind === 'warn') return 'toml-status-dot toml-status-dot-warn shrink-0 rounded-full'
+  return 'toml-status-dot shrink-0 rounded-full bg-fg-faint'
 }
 
 function WarningItem({ kind, text }: TomlValidationWarning) {
   return (
-    <div className="flex items-start gap-2 border-t border-border-soft px-[14px] py-2 first:border-t-0">
+    <div className="toml-warning-item flex items-start border-t border-border-soft first:border-t-0">
       <span aria-hidden="true" className={warningDotClass(kind)} />
-      <span className="text-[11.5px] leading-[1.55] text-fg-dim">{text}</span>
+      <span className="type-caption text-fg-dim">{text}</span>
     </div>
   )
 }
@@ -160,7 +156,7 @@ function ValidationPanel({ warnings, className }: { warnings?: TomlValidationWar
 
   return (
     <ReviewPanel title="Validation" className={className}>
-      <div className="py-2">
+      <div className="toml-warning-list">
         {resolvedWarnings.map((warning) => (
           <WarningItem key={`${warning.kind}-${warning.text}`} kind={warning.kind} text={warning.text} />
         ))}
@@ -199,13 +195,11 @@ function LaunchSummaryPanel({
 
   return (
     <ReviewPanel title="Effective launch summary" className={className}>
-      <div className="px-[14px] py-[10px] text-[11.5px] leading-[1.7] text-fg-dim">
+      <div className="toml-summary-list type-caption text-fg-dim">
         {rows.map(([label, value]) => (
-          <div key={label}>
+          <div className="toml-summary-row" key={label}>
             <span className="text-fg-faint">{label}</span>{' '}
-            <span
-              className={label === 'flash attn:' ? 'font-mono text-[var(--color-good)]' : 'font-mono text-foreground'}
-            >
+            <span className={cn('font-mono', label === 'flash attn:' ? 'toml-summary-value-good' : 'text-foreground')}>
               {value}
             </span>
           </div>
@@ -232,7 +226,7 @@ export function TomlView({
   const copyLabel = copyStateLabel(copyState, 'TOML')
   const lines = toml.split('\n')
   const lineCount = lines.length
-  const sourceHeight = reviewMode ? undefined : `min(1040px, max(440px, calc(${lineCount} * 1.6em + 1.5rem)))`
+  const sourceStyle: TomlSourceStyle | undefined = reviewMode ? undefined : { '--toml-line-count': lineCount }
   const highlighted = <HighlightedTomlLines toml={toml} />
 
   const editor = (
@@ -242,7 +236,7 @@ export function TomlView({
       highlighted={highlighted}
       scrollOffset={scrollOffset}
       setScrollOffset={setScrollOffset}
-      sourceHeight={sourceHeight}
+      sourceStyle={sourceStyle}
       copyLabel={copyLabel}
       onCopy={() => {
         void copyText(toml)
@@ -255,9 +249,9 @@ export function TomlView({
   if (!reviewMode) return editor
 
   return (
-    <div className="grid min-h-[700px] gap-[14px] xl:grid-cols-[minmax(0,1fr)_360px] xl:items-stretch">
+    <div className="toml-review-layout grid xl:items-stretch">
       {editor}
-      <aside className="flex flex-col gap-3" aria-label="TOML review actions">
+      <aside className="toml-review-aside flex flex-col" aria-label="TOML review actions">
         <ValidationPanel warnings={validationWarnings} className="flex-1 min-h-0" />
         <LaunchSummaryPanel
           nodes={nodes}

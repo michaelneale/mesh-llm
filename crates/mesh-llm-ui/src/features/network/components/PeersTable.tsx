@@ -159,15 +159,15 @@ export function PeersTable({
 
   return (
     <section className="panel-shell min-w-0 overflow-hidden rounded-[var(--radius-lg)] border border-border bg-panel [contain:inline-size]">
-      <header className="flex items-center justify-between gap-3 border-b border-border-soft px-3.5 py-2.5">
+      <header className="flex items-center justify-between gap-3 border-b border-border-soft px-4 py-3">
         <h2 className="type-panel-title">Connected peers</h2>
-        <div className="flex min-w-0 items-center gap-2 text-[length:var(--density-type-caption)] text-fg-faint">
+        <div className="flex min-w-0 items-center gap-2 text-[length:var(--density-type-caption-lg)] text-fg-faint">
           {showPagination && (
             <div className="flex items-center gap-1.5">
               <button
                 type="button"
                 aria-label="Previous peers page"
-                className="grid size-6 place-items-center rounded-full border border-border text-fg-dim transition-colors hover:border-border-strong hover:text-fg disabled:pointer-events-none disabled:opacity-40"
+                className="grid size-7 place-items-center rounded-full border border-border text-fg-dim transition-colors hover:border-border-strong hover:text-fg disabled:pointer-events-none disabled:opacity-40"
                 disabled={currentPage === 0}
                 onClick={() => setPage((previous) => clampPage(previous - 1, pageCount))}
               >
@@ -179,7 +179,7 @@ export function PeersTable({
               <button
                 type="button"
                 aria-label="Next peers page"
-                className="grid size-6 place-items-center rounded-full border border-border text-fg-dim transition-colors hover:border-border-strong hover:text-fg disabled:pointer-events-none disabled:opacity-40"
+                className="grid size-7 place-items-center rounded-full border border-border text-fg-dim transition-colors hover:border-border-strong hover:text-fg disabled:pointer-events-none disabled:opacity-40"
                 disabled={currentPage >= pageCount - 1}
                 onClick={() => setPage((previous) => clampPage(previous + 1, pageCount))}
               >
@@ -214,7 +214,7 @@ export function PeersTable({
       </header>
       <div className="max-w-full overflow-x-auto [contain:inline-size]">
         <div
-          className="type-label hidden min-w-[760px] border-b border-border-soft px-3.5 py-2 text-fg-faint lg:grid lg:gap-x-4"
+          className="type-label hidden min-w-[760px] border-b border-border-soft px-4 py-2.5 text-fg-faint lg:grid lg:gap-x-4"
           style={{ gridTemplateColumns: PEERS_TABLE_GRID_COLUMNS }}
         >
           {columns.map((column) => {
@@ -250,7 +250,7 @@ export function PeersTable({
             />
           ))
         ) : (
-          <div className="px-3.5 py-8 text-center">
+          <div className="px-4 py-8 text-center">
             <p className="text-[length:var(--density-type-control)] font-semibold text-fg">
               {activeFilterGroups > 0 ? 'No peers match these filters.' : 'No connected peers yet.'}
             </p>

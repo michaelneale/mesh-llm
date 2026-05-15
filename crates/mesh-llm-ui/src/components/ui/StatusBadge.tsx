@@ -46,13 +46,13 @@ export function StatusBadge({ children, className, dot = false, size = 'label', 
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-[5px] rounded-full px-2 py-px font-medium',
+        'inline-flex items-center gap-[5px] rounded-full px-2.5 py-0.5 font-medium',
         sizeClass[size],
         className
       )}
       style={statusBadgeStyle(tone)}
     >
-      {dot ? <span className="size-[5px] rounded-full bg-current" /> : null}
+      {dot ? <span className="size-[6px] rounded-full bg-current" /> : null}
       {children}
     </span>
   )

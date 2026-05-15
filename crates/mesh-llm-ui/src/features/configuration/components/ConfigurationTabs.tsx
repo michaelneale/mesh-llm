@@ -37,7 +37,9 @@ export function ConfigurationTabs({ value, onValueChange, tabs }: ConfigurationT
   return (
     <TabPanel
       ariaLabel="Configuration sections"
+      contentClassName="px-0 pt-0"
       iconClassName={configurationNavigationIconClassName}
+      tabBarClassName="px-0"
       onValueChange={onValueChange}
       tabs={tabPanelItems}
       value={value}

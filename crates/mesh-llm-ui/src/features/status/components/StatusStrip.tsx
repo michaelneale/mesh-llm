@@ -146,11 +146,9 @@ function toneClass(tone?: StatusBadgeTone) {
 
 export function StatusTile({ metric }: { metric: StatusMetric }) {
   const { sparkline, badge } = metric
+  const hasFooter = (sparkline && sparkline.length > 0) || badge || metric.meta
   return (
-    <div
-      className="grid min-w-0 flex-1 grid-rows-[14px_22px_18px] gap-y-1 border-r border-border-soft px-3.5 py-[12px] last:border-r-0"
-      style={{ minHeight: 70 }}
-    >
+    <div className="flex min-w-0 flex-1 flex-col gap-y-2 border-r border-border-soft px-4 py-3.5 last:border-r-0">
       <div className="flex min-w-0 items-center gap-1.5 text-[length:var(--density-type-label)] font-medium uppercase leading-none tracking-[0.6px] text-fg-faint">
         {metric.icon}
         <span className="truncate">{metric.label}</span>
@@ -168,26 +166,28 @@ export function StatusTile({ metric }: { metric: StatusMetric }) {
           </span>
         )}
       </div>
-      <div className="flex min-w-0 items-center gap-2 overflow-hidden">
-        {sparkline && sparkline.length > 0 && (
-          <Sparkline
-            values={sparkline}
-            color={metric.id === 'inflight' ? 'var(--color-warn)' : 'var(--color-accent)'}
-          />
-        )}
-        {badge && (
-          <span
-            className={cn(
-              'inline-flex items-center gap-[5px] text-[length:var(--density-type-label)] font-medium',
-              'before:size-[5px] before:shrink-0 before:rounded-full before:content-[""]',
-              toneClass(badge.tone)
-            )}
-          >
-            {badge.label}
-          </span>
-        )}
-        {metric.meta && <span className="text-[length:var(--density-type-label)] text-fg-faint">{metric.meta}</span>}
-      </div>
+      {hasFooter && (
+        <div className="flex min-w-0 items-center gap-2 overflow-hidden">
+          {sparkline && sparkline.length > 0 && (
+            <Sparkline
+              values={sparkline}
+              color={metric.id === 'inflight' ? 'var(--color-warn)' : 'var(--color-accent)'}
+            />
+          )}
+          {badge && (
+            <span
+              className={cn(
+                'inline-flex items-center gap-[5px] text-[length:var(--density-type-label)] font-medium',
+                'before:size-[5px] before:shrink-0 before:rounded-full before:content-[""]',
+                toneClass(badge.tone)
+              )}
+            >
+              {badge.label}
+            </span>
+          )}
+          {metric.meta && <span className="text-[length:var(--density-type-label)] text-fg-faint">{metric.meta}</span>}
+        </div>
+      )}
     </div>
   )
 }

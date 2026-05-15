@@ -314,11 +314,7 @@ export function MessageRow({
   const canRemoveQueued = isQueued && onRemoveQueued != null
   const routeMetadata = showRouteMetadata && ((isUser && routeNode) || (isResponse && route))
   const displayModel = isQueued ? 'Queued' : model
-  const rowClassName = cn(
-    'relative -mx-2 mb-5 block w-[calc(100%+16px)] select-none rounded-[var(--radius-lg)] border-0 bg-transparent px-2 py-1 text-left transition-[background,box-shadow] duration-150',
-    canInspect &&
-      'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent'
-  )
+  const rowClassName = 'relative -mx-2 mb-5 block w-[calc(100%+16px)] select-none rounded-[var(--radius-lg)] border-0 bg-transparent px-2 py-1 text-left transition-[background,box-shadow] duration-150'
   const rowStyle: CSSProperties = {
     ...(inspected ? { background: 'color-mix(in oklab, var(--color-accent) 4%, transparent)' } : {})
   }
@@ -362,12 +358,28 @@ export function MessageRow({
           <>
             <span>·</span>
             {isUser && routeNode ? (
-              <span
-                className="inline-flex items-center gap-[5px]"
-                style={{ color: inspected ? 'var(--color-accent)' : 'var(--color-fg-dim)' }}
-              >
-                <Send className="size-[10px]" /> sent to <span className="font-mono">{routeNode}</span>
-              </span>
+              canInspect ? (
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-[5px] outline-none transition-colors hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                  style={{ color: inspected ? 'var(--color-accent)' : 'var(--color-fg-dim)' }}
+                  aria-label={accessibleInspectLabel}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    inspect?.()
+                  }}
+                >
+                  <Send className="size-[10px]" aria-hidden={true} /> sent to{' '}
+                  <span className="font-mono">{routeNode}</span>
+                </button>
+              ) : (
+                <span
+                  className="inline-flex items-center gap-[5px]"
+                  style={{ color: inspected ? 'var(--color-accent)' : 'var(--color-fg-dim)' }}
+                >
+                  <Send className="size-[10px]" /> sent to <span className="font-mono">{routeNode}</span>
+                </span>
+              )
             ) : isResponse && route ? (
               <span
                 className="inline-flex items-center gap-[5px]"
@@ -379,15 +391,17 @@ export function MessageRow({
             ) : null}
           </>
         ) : null}
-        {canInspect && !hasAttachmentActions ? (
+        {canInspect && isUser && !routeNode ? (
           <button
             type="button"
-            className="ui-control ml-auto inline-flex h-7 items-center gap-1.5 rounded-[var(--radius)] border px-2 text-[length:var(--density-type-caption)] font-medium text-fg-muted outline-none transition-[background,color,box-shadow,transform] hover:text-fg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            className="inline-flex items-center gap-1 text-fg-faint outline-none transition-colors hover:text-fg-dim focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
             aria-label={accessibleInspectLabel}
-            title={accessibleInspectLabel}
-            onClick={inspect}
+            onClick={(event) => {
+              event.stopPropagation()
+              inspect?.()
+            }}
           >
-            <Eye className="size-3.5" aria-hidden={true} />
+            <Eye className="size-3" aria-hidden={true} />
             <span>Inspect</span>
           </button>
         ) : null}
@@ -433,7 +447,14 @@ export function MessageRow({
         ) : null}
       </div>
       {isResponse && !isError ? (
-        <ResponseStatsBar tokens={tokens} tokPerSec={tokPerSec} ttft={ttft} stopped={isStopped} />
+        <ResponseStatsBar
+          tokens={tokens}
+          tokPerSec={tokPerSec}
+          ttft={ttft}
+          stopped={isStopped}
+          inspect={inspect}
+          inspectLabel={accessibleInspectLabel}
+        />
       ) : null}
     </>
   )
@@ -462,24 +483,9 @@ export function MessageRow({
           <X className="size-4" aria-hidden={true} strokeWidth={1.8} />
         </button>
       ) : null}
-      {hasAttachmentActions ? (
-        <span className="flex shrink-0 flex-col items-end justify-center gap-1.5">
-          {inspect ? (
-            <button
-              type="button"
-              className="ui-control inline-flex h-8 max-w-[12rem] items-center gap-1.5 rounded-[var(--radius)] border px-2.5 text-[length:var(--density-type-caption)] font-medium text-fg-muted outline-none transition-[background,color,box-shadow,transform] hover:text-fg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-              aria-label={accessibleInspectLabel}
-              title={accessibleInspectLabel}
-              onClick={(event) => {
-                event.stopPropagation()
-                inspect()
-              }}
-            >
-              <Eye className="size-3.5" aria-hidden={true} />
-              <span className="truncate">Inspect</span>
-            </button>
-          ) : null}
-          {attachments.map((attachment) => (
+        {hasAttachmentActions ? (
+          <span className="flex shrink-0 flex-col items-end justify-center gap-1.5">
+            {attachments.map((attachment) => (
             <button
               key={attachment.id}
               type="button"

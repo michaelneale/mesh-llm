@@ -20,7 +20,7 @@ export function DashboardLayout({ hero, status, topology, catalog, peers, connec
       {hero}
       {status}
       <div
-        className={`grid min-w-0 gap-[14px] xl:grid-cols-[minmax(0,1fr)_minmax(300px,360px)] xl:items-stretch ${DASHBOARD_TOPOLOGY_ROW_HEIGHT_CLASS}`}
+        className={`grid min-w-0 gap-[14px] xl:grid-cols-[minmax(0,1fr)_minmax(340px,420px)] xl:items-stretch ${DASHBOARD_TOPOLOGY_ROW_HEIGHT_CLASS}`}
       >
         <div className={`flex min-h-0 min-w-0 flex-col ${DASHBOARD_TOPOLOGY_PANEL_HEIGHT_CLASS}`}>{topology}</div>
         <div className={`flex min-h-0 min-w-0 flex-col ${DASHBOARD_TOPOLOGY_PANEL_HEIGHT_CLASS}`}>{catalog}</div>

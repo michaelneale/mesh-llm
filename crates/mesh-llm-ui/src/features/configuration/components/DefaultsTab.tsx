@@ -407,7 +407,11 @@ function SettingControl({
   onChange: (value: string) => void
 }) {
   return (
-    <div aria-disabled={disabled ? 'true' : undefined} data-setting-control-disabled={disabled ? 'true' : undefined}>
+    <div
+      aria-disabled={disabled ? 'true' : undefined}
+      className={cn('min-w-0', setting.id === 'kv-cache' && 'flex flex-col items-stretch md:items-end')}
+      data-setting-control-disabled={disabled ? 'true' : undefined}
+    >
       {setting.control.kind === 'choice' && setting.control.presentation === 'select' ? (
         <NativeSelect
           ariaLabel={setting.label}
@@ -533,7 +537,7 @@ export function DefaultsTab({ data, values, onSettingValueChange, onResetAll, co
   return (
     <section
       aria-labelledby="defaults-summary-heading"
-      className="space-y-3.5 pt-2"
+      className="space-y-[14px]"
       data-screen-label="Configuration · defaults"
     >
       <SettingsSummaryBanner
@@ -565,7 +569,7 @@ export function DefaultsTab({ data, values, onSettingValueChange, onResetAll, co
         title="Inherited defaults"
       />
 
-      <div className="grid min-w-0 gap-4 xl:grid-cols-[200px_minmax(0,1fr)_280px]">
+      <div className="grid min-w-0 gap-[14px] xl:grid-cols-[250px_minmax(0,1fr)_minmax(280px,340px)]">
         <SettingsCategoryRail
           activeId={activeCategoryId}
           categories={categories}
@@ -580,7 +584,7 @@ export function DefaultsTab({ data, values, onSettingValueChange, onResetAll, co
           onSelect={selectCategory}
         />
 
-        <div className="min-w-0 space-y-3.5">
+        <div className="min-w-0 space-y-[14px]">
           {data.categories.map((category) => (
             <DefaultsSection
               category={category}

@@ -270,7 +270,7 @@ export function ChatSidebar({
       label: 'Conversations',
       icon: MessageSquare,
       accessory: (
-        <span className="rounded-full border border-border-soft px-[5px] font-mono text-[length:var(--density-type-annotation)] text-fg-faint">
+        <span className="rounded-full border border-border-soft px-[5px] font-mono text-[length:var(--density-type-caption)] text-fg-faint">
           {conversations.length}
         </span>
       ),
@@ -291,29 +291,31 @@ export function ChatSidebar({
   ]
 
   return (
-    <TabPanel
-      ariaLabel="Chat sidebar views"
-      className="panel-shell flex min-h-0 flex-col overflow-hidden rounded-[var(--radius-lg)] border border-border bg-panel"
-      contentClassName="flex-1 overflow-auto px-3.5 py-3"
-      iconClassName="size-3"
-      listClassName="min-w-0 flex-1"
-      onValueChange={(value) => {
-        onTabChange(value)
-      }}
-      tabBarAccessory={
-        tab === 'conversations' && onNewChat ? (
+    <div className="panel-shell flex min-h-0 flex-col overflow-hidden rounded-[var(--radius-lg)] border border-border bg-panel">
+      <TabPanel
+        ariaLabel="Chat sidebar views"
+        className="min-h-0 flex-1 overflow-hidden"
+        contentClassName="flex-1 overflow-auto px-3.5 py-3"
+        listClassName="min-w-0 flex-1"
+        stretchTabs
+        onValueChange={(value) => {
+          onTabChange(value)
+        }}
+        tabBarClassName="border-border-soft pl-0 pr-0"
+        tabs={tabItems}
+        value={tab}
+      />
+      {onNewChat ? (
+        <div className="border-t border-border-soft px-3 pb-3 pt-2.5">
           <button
             onClick={onNewChat}
             type="button"
-            className="ui-control inline-flex h-7 items-center gap-1.5 rounded-[var(--radius)] border px-3 text-[length:var(--density-type-control-lg)] font-medium outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+            className="ui-control inline-flex w-full items-center justify-center gap-2 rounded-[var(--radius)] border px-3 py-2 text-[length:var(--density-type-control-lg)] font-medium outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
           >
             <Plus className="size-3.5" /> New
           </button>
-        ) : null
-      }
-      tabBarClassName="border-border-soft pl-0 pr-2.5"
-      tabs={tabItems}
-      value={tab}
-    />
+        </div>
+      ) : null}
+    </div>
   )
 }

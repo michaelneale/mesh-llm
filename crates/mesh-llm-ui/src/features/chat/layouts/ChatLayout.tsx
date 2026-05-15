@@ -64,7 +64,17 @@ function useDesktopSidebarViewport() {
 function readChatLayoutHeight(layoutElement: HTMLDivElement, viewport: VisualViewport) {
   const layoutRect = layoutElement.getBoundingClientRect()
   const topInsideVisualViewport = Math.max(0, layoutRect.top - viewport.offsetTop)
-  const availableHeight = viewport.height - topInsideVisualViewport - CHAT_LAYOUT_KEYBOARD_GUTTER
+
+  let lowerBound = viewport.height
+  const mainEl = layoutElement.closest('main')
+  if (mainEl) {
+    const mainRect = mainEl.getBoundingClientRect()
+    const mainPaddingBottom = parseFloat(getComputedStyle(mainEl).paddingBottom) || 0
+    const mainBottomInVisualViewport = mainRect.bottom - viewport.offsetTop - mainPaddingBottom
+    lowerBound = Math.min(lowerBound, mainBottomInVisualViewport)
+  }
+
+  const availableHeight = lowerBound - topInsideVisualViewport - CHAT_LAYOUT_KEYBOARD_GUTTER
 
   return `${Math.max(CHAT_LAYOUT_MIN_HEIGHT, Math.floor(availableHeight))}px`
 }
@@ -167,16 +177,24 @@ export function ChatLayout({
     >
       {showDesktopSidebar ? <div className="min-h-0 min-w-0 overflow-hidden [&>*]:h-full">{sidebar}</div> : null}
       <section className="panel-shell flex min-h-0 min-w-0 select-none flex-col overflow-hidden rounded-[var(--radius-lg)] border border-border bg-panel">
-        <header className="flex flex-wrap items-start justify-between gap-2 border-b border-border-soft px-3.5 py-2.5 md:flex-nowrap">
-          <div className="flex min-w-0 shrink-0 items-center self-stretch md:block md:self-auto">
-            <h1 className="text-[length:var(--density-type-control)] font-semibold tracking-[0.02em]">{title}</h1>
+        <header className="flex min-h-[58px] flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border-soft px-4 py-2 md:flex-nowrap">
+          <div className="flex min-w-0 shrink-0 flex-col justify-center">
             {subtitle ? (
-              <div className="mt-0.5 hidden text-[length:var(--density-type-label)] text-fg-faint md:block">
-                {subtitle}
-              </div>
-            ) : null}
+              <>
+                <span className="text-[length:var(--density-type-label)] font-medium uppercase tracking-[0.08em] text-fg-faint">
+                  {title}
+                </span>
+                <h1 className="truncate text-[length:var(--density-type-title)] font-semibold leading-snug tracking-[-0.01em]">
+                  {subtitle}
+                </h1>
+              </>
+            ) : (
+              <h1 className="text-[length:var(--density-type-control-lg)] font-semibold tracking-[0.01em]">
+                {title}
+              </h1>
+            )}
           </div>
-          <div className="ml-3 flex min-w-0 flex-1 flex-wrap items-center justify-start gap-2 md:ml-0 md:justify-end">
+          <div className="flex min-w-0 flex-1 flex-wrap items-center justify-start gap-2 md:justify-end">
             {actions}
           </div>
         </header>

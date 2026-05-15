@@ -1,3 +1,4 @@
+import { Eye } from 'lucide-react'
 import { Fragment } from 'react'
 
 type ResponseStatsBarProps = {
@@ -5,6 +6,8 @@ type ResponseStatsBarProps = {
   tokPerSec?: string
   ttft?: string
   stopped?: boolean
+  inspect?: () => void
+  inspectLabel?: string
 }
 
 type ResponseStat = {
@@ -22,8 +25,15 @@ function splitNumericValue(value: string): { number: string; unit: string } {
   return { number: match[1], unit: match[2] }
 }
 
-export function ResponseStatsBar({ tokens, tokPerSec, ttft, stopped = false }: ResponseStatsBarProps) {
-  if (!tokens && !tokPerSec && !ttft && !stopped) return null
+export function ResponseStatsBar({
+  tokens,
+  tokPerSec,
+  ttft,
+  stopped = false,
+  inspect,
+  inspectLabel
+}: ResponseStatsBarProps) {
+  if (!tokens && !tokPerSec && !ttft && !stopped && !inspect) return null
 
   const stats: ResponseStat[] = [
     { label: 'tokens', value: tokens ?? '0 tok' },
@@ -49,6 +59,23 @@ export function ResponseStatsBar({ tokens, tokPerSec, ttft, stopped = false }: R
           </Fragment>
         )
       })}
+      {inspect ? (
+        <>
+          <span aria-hidden="true">·</span>
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 text-fg-faint outline-none transition-colors hover:text-fg-dim focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+            aria-label={inspectLabel ?? 'Inspect message'}
+            onClick={(event) => {
+              event.stopPropagation()
+              inspect()
+            }}
+          >
+            <Eye className="size-3" aria-hidden={true} />
+            <span>Inspect</span>
+          </button>
+        </>
+      ) : null}
     </span>
   )
 }
