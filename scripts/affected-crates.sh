@@ -99,21 +99,15 @@ main() {
       break
     fi
     
-    # Escalation patterns
+    # Escalation patterns. PR workflow/control-plane files are intentionally
+    # excluded here; compute-changes routes those without forcing all Rust
+    # crates and every platform/backend build.
     if [[ "$file" =~ ^Cargo\.lock$ ]] || \
        [[ "$file" =~ ^Cargo\.toml$ ]] || \
        [[ "$file" =~ ^third_party/llama\.cpp/ ]] || \
        [[ "$file" =~ ^scripts/(build-llama|prepare-llama|build-mac|build-windows|skippy-ci-smoke)\. ]] || \
        [[ "$file" =~ ^Justfile$ ]] || \
        [[ "$file" =~ ^\.github/cache-version\.txt$ ]] || \
-       [[ "$file" =~ ^\.github/workflows/ci\.yml$ ]] || \
-       [[ "$file" =~ ^\.github/workflows/pr_ci\.yml$ ]] || \
-       [[ "$file" =~ ^\.github/workflows/pr_quality\.yml$ ]] || \
-       [[ "$file" =~ ^\.github/workflows/pr_docker\.yml$ ]] || \
-       [[ "$file" =~ ^\.github/workflows/pr_cleanup\.yml$ ]] || \
-       [[ "$file" =~ ^\.github/workflows/smoke\.yml$ ]] || \
-       [[ "$file" =~ ^scripts/affected-crates\.sh$ ]] || \
-       [[ "$file" =~ ^scripts/plan-clippy-batches\.sh$ ]] || \
        [[ "$file" =~ ^rust-toolchain(\.toml)?$ ]]; then
       escalate=true
       break

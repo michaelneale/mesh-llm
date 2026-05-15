@@ -42,6 +42,7 @@ jobs:
           cache-bin: "false"
           prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
           shared-key: hf-download-smoke
+          cache-targets: ${{ github.event_name != 'pull_request' }}
           save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
       - name: HuggingFace download integration tests
         run: scripts/ci-hf-download-smoke.sh

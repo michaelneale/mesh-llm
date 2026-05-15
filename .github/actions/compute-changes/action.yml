@@ -45,6 +45,9 @@ outputs:
   backend_changed:
     description: 'Boolean: true if PR platform/backend binaries must rebuild'
     value: ${{ steps.derive.outputs.backend_changed }}
+  pr_workflow_only:
+    description: 'Boolean: true if changes are limited to PR workflow/control-plane files'
+    value: ${{ steps.derive.outputs.pr_workflow_only }}
   sdk_smoke_required:
     description: 'Boolean: true if SDK smoke tests should run as soon as a binary is ready'
     value: ${{ steps.derive.outputs.sdk_smoke_required }}
@@ -107,6 +110,18 @@ runs:
         
         # Read changed files for docs_only and rust_changed logic
         CHANGED_FILES=$(cat /tmp/changed_files.txt | grep -v "^__force_all__$" || true)
+
+        # PR workflow/control-plane-only changes should validate the routing
+        # surface without fanning out every platform/backend build. Keep this
+        # intentionally limited to GitHub Actions config, CI scripts, and CI
+        # docs so real source changes still go through affected-crate routing.
+        PR_WORKFLOW_ONLY="false"
+        if [[ -n "$CHANGED_FILES" ]]; then
+          NON_PR_WORKFLOW=$(echo "$CHANGED_FILES" | grep -v -E '(^\.github/(AGENTS\.md|actions/[^/]+/action\.yml|workflows/[^/]+\.yml)$|^(CONTRIBUTING\.md|ci/ci\.md|docs/(README|CI_GUIDANCE)\.md)$|^scripts/(affected-crates|plan-clippy-batches|ci-[A-Za-z0-9_-]+)\.sh$)' || true)
+          if [[ -z "$NON_PR_WORKFLOW" ]]; then
+            PR_WORKFLOW_ONLY="true"
+          fi
+        fi
         
         # Determine docs_only: true if all_rust=false AND ui_changed=false AND all files match docs patterns
         DOCS_ONLY="false"
@@ -131,10 +146,10 @@ runs:
         # Backend/platform lanes rebuild only for all-rust escalations or files
         # that can alter the native ABI/backend build products.
         BACKEND_CHANGED="false"
-        if [[ "$ALL_RUST" == "true" ]]; then
+        if [[ "$ALL_RUST" == "true" && "$PR_WORKFLOW_ONLY" != "true" ]]; then
           BACKEND_CHANGED="true"
         elif [[ -n "$CHANGED_FILES" ]]; then
-          BACKEND_INPUTS=$(echo "$CHANGED_FILES" | grep -E '(^third_party/llama\.cpp/|^crates/skippy-ffi/|^scripts/(build-llama|prepare-llama|build-linux|build-mac|build-windows|install-windows-sdk)\.|^\.github/actions/setup-windows-rocm-sdk/|^\.github/workflows/pr_ci\.yml$|^\.github/workflows/pr_quality\.yml$|^\.github/cache-version\.txt$|^Justfile$)' || true)
+          BACKEND_INPUTS=$(echo "$CHANGED_FILES" | grep -E '(^third_party/llama\.cpp/|^crates/skippy-ffi/|^scripts/(build-llama|prepare-llama|build-linux|build-mac|build-windows|install-windows-sdk)\.|^\.github/cache-version\.txt$|^Justfile$)' || true)
           if [[ -n "$BACKEND_INPUTS" ]]; then
             BACKEND_CHANGED="true"
           fi
@@ -168,5 +183,6 @@ runs:
           echo "docs_only=$DOCS_ONLY"
           echo "rust_changed=$RUST_CHANGED"
           echo "backend_changed=$BACKEND_CHANGED"
+          echo "pr_workflow_only=$PR_WORKFLOW_ONLY"
           echo "sdk_smoke_required=$SDK_SMOKE_REQUIRED"
         } >> "$GITHUB_OUTPUT"

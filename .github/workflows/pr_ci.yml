@@ -39,6 +39,7 @@ jobs:
       docs_only: ${{ steps.compute.outputs.docs_only }}
       rust_changed: ${{ steps.compute.outputs.rust_changed }}
       backend_changed: ${{ steps.compute.outputs.backend_changed }}
+      pr_workflow_only: ${{ steps.compute.outputs.pr_workflow_only }}
       sdk_smoke_required: ${{ steps.compute.outputs.sdk_smoke_required }}
       ui_dist_cache_key: ${{ steps.ui_key.outputs.ui_dist_cache_key }}
     steps:
@@ -100,7 +101,6 @@ jobs:
               - 'Cargo.lock'
               - 'Justfile'
               - '.github/cache-version.txt'
-              - '.github/workflows/pr_ci.yml'
               - '.github/workflows/windows-warm-caches.yml'
             windows_gpu:
               - 'crates/skippy-ffi/**'
@@ -109,8 +109,6 @@ jobs:
               - 'third_party/llama.cpp/**'
               - 'Justfile'
               - '.github/cache-version.txt'
-              - '.github/actions/setup-windows-rocm-sdk/**'
-              - '.github/workflows/pr_ci.yml'
               - '.github/workflows/windows-warm-caches.yml'
 
             docs:
@@ -257,6 +255,7 @@ jobs:
           cache-bin: "false"
           prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ runner.os }}-${{ hashFiles('.github/cache-version.txt') }}
           shared-key: linux
+          cache-targets: ${{ github.event_name != 'pull_request' }}
           save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
 
       - name: Check release-target repo consistency
@@ -456,6 +455,7 @@ jobs:
           cache-bin: "false"
           prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ runner.os }}-${{ hashFiles('.github/cache-version.txt') }}
           shared-key: ${{ matrix.cache_key }}
+          cache-targets: ${{ github.event_name != 'pull_request' }}
           save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
       - name: Prepare UI placeholder
         if: ${{ env.RUN_LINUX_BACKEND == 'true' }}
@@ -502,7 +502,7 @@ jobs:
 
   hf_download_smoke:
     needs: changes
-    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.all_rust == 'true' || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'model-artifact')) && needs.changes.outputs.docs_only != 'true' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.all_rust == 'true' || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'model-artifact')) && needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.pr_workflow_only != 'true' }}
     name: HuggingFace download smoke
     uses: ./.github/workflows/hf-download-smoke.yml
     with:
@@ -614,7 +614,7 @@ jobs:
 
   macos_targets:
     needs: changes
-    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' || needs.changes.outputs.benchmarks == 'true' || needs.changes.outputs.backend_changed == 'true') && needs.changes.outputs.docs_only != 'true' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' || needs.changes.outputs.benchmarks == 'true' || needs.changes.outputs.backend_changed == 'true') && needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.pr_workflow_only != 'true' }}
     name: macOS ${{ matrix.name }}
     runs-on: macos-14
     strategy:
@@ -690,6 +690,7 @@ jobs:
           cache-bin: "false"
           prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ runner.os }}-${{ hashFiles('.github/cache-version.txt') }}
           shared-key: macos
+          cache-targets: ${{ github.event_name != 'pull_request' }}
           save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
       - name: Install build dependencies
         if: ${{ matrix.backend == 'cpu' && env.RUN_MACOS_CPU == 'true' }}
@@ -816,6 +817,7 @@ jobs:
           cache-bin: "false"
           prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ runner.os }}-${{ hashFiles('.github/cache-version.txt') }}
           shared-key: windows-${{ matrix.backend }}
+          cache-targets: ${{ github.event_name != 'pull_request' }}
           save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
       - name: Prepare UI placeholder
         if: ${{ env.RUN_WINDOWS_CPU_FULL == 'true' || env.RUN_WINDOWS_GPU == 'true' }}

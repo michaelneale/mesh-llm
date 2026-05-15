@@ -31,6 +31,7 @@ jobs:
       ui_changed: ${{ steps.compute.outputs.ui_changed }}
       docs_only: ${{ steps.compute.outputs.docs_only }}
       rust_changed: ${{ steps.compute.outputs.rust_changed }}
+      pr_workflow_only: ${{ steps.compute.outputs.pr_workflow_only }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -44,7 +45,7 @@ jobs:
 
   rust-fmt:
     needs: changes
-    if: needs.changes.outputs.rust_changed == 'true'
+    if: needs.changes.outputs.rust_changed == 'true' && needs.changes.outputs.pr_workflow_only != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -56,7 +57,7 @@ jobs:
 
   rust-clippy:
     needs: changes
-    if: needs.changes.outputs.rust_changed == 'true'
+    if: needs.changes.outputs.rust_changed == 'true' && needs.changes.outputs.pr_workflow_only != 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -79,6 +80,7 @@ jobs:
           cache-bin: "false"
           prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ runner.os }}-${{ hashFiles('.github/cache-version.txt') }}
           shared-key: pr-clippy
+          cache-targets: ${{ github.event_name != 'pull_request' }}
           save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
       - name: Run clippy
         env:

@@ -9,6 +9,7 @@ flowchart TD
         Affected["affected crates + reverse deps"]
         ClippyBins["clippy binpack\nplan-clippy-batches.sh"]
         Backend["backend_changed?"]
+        PRWorkflow["pr_workflow_only?"]
         SDK["sdk_smoke_required?"]
         Docs["docs_only?"]
     end
@@ -16,6 +17,7 @@ flowchart TD
     PR --> Files --> Affected
     Affected --> ClippyBins
     Files --> Backend
+    Files --> PRWorkflow
     Affected --> SDK
     Files --> Docs
 
@@ -51,6 +53,7 @@ subgraph PRCI["pr_ci.yml · PR Builds"]
     end
 
     Docs -. "true: gate heavy jobs" .-> PRCI
+    PRWorkflow -. "true: keep to routing validation" .-> PRCI
     Affected --> LinuxTargets
     Affected --> MacTargets
     Backend --> LinuxTargets
@@ -109,8 +112,11 @@ subgraph PRCI["pr_ci.yml · PR Builds"]
 ## Rust cache reuse
 
 - PR Rust builds use `Swatinem/rust-cache` alongside `sccache` so repeated runs
-  on the same pull request can restore Cargo registry/git state and reusable
-  target artifacts instead of recompiling every dependency from scratch.
+  on the same pull request can restore Cargo registry/git state while compiler
+  outputs are primarily handled by `sccache`.
+- PR `rust-cache` saves avoid workspace `target/` uploads because the post-run
+  archive cost was longer than the reuse benefit for PR Builds; main-branch
+  cache saves may still include target data.
 - Rust caches stay platform/backend scoped. Linux CPU, Linux backend rows, macOS,
   Windows backend rows, clippy, and HuggingFace download smoke each keep their
   own compatible cache namespace instead of sharing a single prebuilt dependency
@@ -118,6 +124,8 @@ subgraph PRCI["pr_ci.yml · PR Builds"]
 - PR cache writes use the standard GitHub Actions cache service under
   `refs/pull/<PR>/merge`; `pr_cleanup.yml` deletes that ref's caches when the PR
   closes so PR-lifetime Rust caches do not linger unbounded.
+- PR workflow/control-plane-only changes use `pr_workflow_only` routing so they
+  validate the CI surface without forcing every Rust crate and backend lane.
 
 ## Artifact and smoke reuse
 
