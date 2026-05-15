@@ -1267,6 +1267,28 @@ async fn relay_translated_responses_stream<R: AsyncRead + Unpin>(
                 .choices
                 .first()
                 .and_then(|choice| choice.delta.as_ref())
+                .and_then(|delta| delta.reasoning_content.as_deref())
+            {
+                let sequence_number = next_sequence_number();
+                let event = serde_json::to_string(
+                    &response_adapter::responses_stream_reasoning_delta_event_with_sequence(
+                        &item_id,
+                        delta,
+                        sequence_number,
+                    ),
+                )
+                .context("serialize response.reasoning_text.delta event")?;
+                response_adapter::write_chunked_sse_event(
+                    tcp_stream,
+                    Some("response.reasoning_text.delta"),
+                    &event,
+                )
+                .await?;
+            }
+            if let Some(delta) = chunk
+                .choices
+                .first()
+                .and_then(|choice| choice.delta.as_ref())
                 .and_then(|delta| delta.content.as_deref())
             {
                 if !output_item_emitted {

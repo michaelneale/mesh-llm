@@ -196,16 +196,37 @@ async function* runConnect(
   }
 
   let messageStarted = false
+  let reasoningOpen = false
   let firstDeltaAt: number | undefined
 
   for await (const event of parseSSEStream(response.body, abortSignal)) {
     if (abortSignal?.aborted) break
+
+    if (event.type === 'response.reasoning_text.delta') {
+      firstDeltaAt ??= nowMs()
+      if (!messageStarted) {
+        messageStarted = true
+        yield { type: EventType.TEXT_MESSAGE_START, messageId, role: 'assistant' }
+      }
+      if (!reasoningOpen) {
+        reasoningOpen = true
+        yield { type: EventType.REASONING_START, messageId }
+        yield { type: EventType.REASONING_MESSAGE_START, messageId, role: 'reasoning' }
+      }
+      yield { type: EventType.REASONING_MESSAGE_CONTENT, messageId, delta: event.delta }
+      continue
+    }
 
     if (event.type === 'response.output_text.delta') {
       firstDeltaAt ??= nowMs()
       if (!messageStarted) {
         messageStarted = true
         yield { type: EventType.TEXT_MESSAGE_START, messageId, role: 'assistant' }
+      }
+      if (reasoningOpen) {
+        reasoningOpen = false
+        yield { type: EventType.REASONING_MESSAGE_END, messageId }
+        yield { type: EventType.REASONING_END, messageId }
       }
       yield { type: EventType.TEXT_MESSAGE_CONTENT, messageId, delta: event.delta }
       continue
@@ -236,6 +257,10 @@ async function* runConnect(
   if (abortSignal?.aborted) return
 
   if (messageStarted) {
+    if (reasoningOpen) {
+      yield { type: EventType.REASONING_MESSAGE_END, messageId }
+      yield { type: EventType.REASONING_END, messageId }
+    }
     yield { type: EventType.TEXT_MESSAGE_END, messageId }
   }
 

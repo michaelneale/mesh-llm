@@ -158,6 +158,41 @@ describe('createMeshConnectionAdapter', () => {
     ])
   })
 
+  it('emits first-class reasoning deltas before visible text', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(
+          createSSEStream([
+            'data: {"type":"response.reasoning_text.delta","delta":"Checked facts."}\n',
+            'data: {"type":"response.output_text.delta","delta":" Final answer."}\n',
+            'data: [DONE]\n'
+          ]),
+          { status: 200 }
+        )
+      )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const adapter = createMeshConnectionAdapter('model-a')
+
+    const chunks: StreamChunk[] = []
+    for await (const chunk of adapter.connect(createMessages(), undefined, undefined)) {
+      chunks.push(chunk)
+    }
+
+    const reasoningDelta = chunks.find((chunk) => chunk.type === EventType.REASONING_MESSAGE_CONTENT)
+    const contentDeltas = chunks
+      .filter((chunk) => chunk.type === EventType.TEXT_MESSAGE_CONTENT)
+      .map((chunk) => (chunk.type === EventType.TEXT_MESSAGE_CONTENT ? chunk.delta : ''))
+
+    expect(chunks.map((chunk) => chunk.type)).toContain(EventType.REASONING_START)
+    expect(chunks.map((chunk) => chunk.type)).toContain(EventType.REASONING_MESSAGE_START)
+    expect(reasoningDelta).toMatchObject({ type: EventType.REASONING_MESSAGE_CONTENT, delta: 'Checked facts.' })
+    expect(chunks.map((chunk) => chunk.type)).toContain(EventType.REASONING_MESSAGE_END)
+    expect(chunks.map((chunk) => chunk.type)).toContain(EventType.REASONING_END)
+    expect(contentDeltas).toEqual([' Final answer.'])
+  })
+
   it('includes the latest system prompt in responses requests', async () => {
     let currentSystemPrompt = 'Be concise about mesh routing.'
     const fetchMock = vi.fn().mockResolvedValue(new Response(createSSEStream(['data: [DONE]\n']), { status: 200 }))

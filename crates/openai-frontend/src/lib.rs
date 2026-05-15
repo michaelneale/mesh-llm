@@ -43,10 +43,10 @@ pub use responses::{
     responses_stream_delta_event, responses_stream_delta_event_with_logprobs,
     responses_stream_delta_event_with_logprobs_and_sequence,
     responses_stream_output_item_added_event, responses_stream_output_item_done_event,
-    responses_stream_text_done_event, responses_stream_text_done_event_with_sequence,
-    stream_usage_to_responses_usage, translate_chat_completion_response_to_responses,
-    translate_chat_completion_to_responses, NormalizationOutcome, ResponseAdapterMode,
-    ResponsesRequest, StreamUsage,
+    responses_stream_reasoning_delta_event_with_sequence, responses_stream_text_done_event,
+    responses_stream_text_done_event_with_sequence, stream_usage_to_responses_usage,
+    translate_chat_completion_response_to_responses, translate_chat_completion_to_responses,
+    NormalizationOutcome, ResponseAdapterMode, ResponsesRequest, StreamUsage,
 };
 pub use router::{
     router, router_for, router_for_with_config, router_with_config, OpenAiFrontendConfig,

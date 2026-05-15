@@ -4,9 +4,9 @@ Date: Tue, 5 May 2026 06:10:28 +1000
 Subject: [PATCH 36/80] Expose tool-aware chat template ABI
 
 ---
- common/stage-chat.cpp | 222 ++++++++++++++++++++++++++++++++++++++++++
+ common/stage-chat.cpp | 228 ++++++++++++++++++++++++++++++++++++++++++
  include/skippy.h      |  29 +++++-
- 2 files changed, 250 insertions(+), 1 deletion(-)
+ 2 files changed, 256 insertions(+), 1 deletion(-)
 
 diff --git a/common/stage-chat.cpp b/common/stage-chat.cpp
 index 60d53fc4..77d8fc8e 100644
@@ -29,7 +29,7 @@ index 60d53fc4..77d8fc8e 100644
  
  static skippy_error * skippy_common_make_error(enum skippy_status status, const char * message) {
      skippy_error * error = new skippy_error{};
-@@ -45,6 +50,84 @@ static enum skippy_status skippy_common_success(skippy_error ** out_error) {
+@@ -45,6 +50,86 @@ static enum skippy_status skippy_common_success(skippy_error ** out_error) {
      return SKIPPY_STATUS_OK;
  }
  
@@ -97,9 +97,11 @@ index 60d53fc4..77d8fc8e 100644
 +
 +static json skippy_common_chat_metadata_json(
 +        const common_chat_params & params,
++        common_reasoning_format reasoning_format,
 +        bool parse_tool_calls) {
 +    return {
 +        {"chat_format", static_cast<int>(params.format)},
++        {"reasoning_format", common_reasoning_format_name(reasoning_format)},
 +        {"generation_prompt", params.generation_prompt},
 +        {"parse_tool_calls", parse_tool_calls},
 +        {"chat_parser", params.parser},
@@ -114,7 +116,7 @@ index 60d53fc4..77d8fc8e 100644
  enum skippy_status skippy_apply_chat_template(
          struct skippy_model * model,
          const struct llama_chat_message * messages,
-@@ -135,3 +218,142 @@ enum skippy_status skippy_apply_chat_template(
+@@ -135,3 +220,146 @@ enum skippy_status skippy_apply_chat_template(
      }
      return skippy_common_success(out_error);
  }
@@ -186,7 +188,7 @@ index 60d53fc4..77d8fc8e 100644
 +        prompt = params.prompt;
 +
 +        const bool parse_tool_calls = !inputs.tools.empty() && inputs.tool_choice != COMMON_CHAT_TOOL_CHOICE_NONE;
-+        metadata = skippy_common_chat_metadata_json(params, parse_tool_calls).dump();
++        metadata = skippy_common_chat_metadata_json(params, inputs.reasoning_format, parse_tool_calls).dump();
 +    } catch (const std::exception & e) {
 +        skippy_common_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, e.what());
 +        return SKIPPY_STATUS_UNSUPPORTED;
@@ -233,6 +235,10 @@ index 60d53fc4..77d8fc8e 100644
 +        json metadata = json::parse(metadata_json);
 +        common_chat_parser_params params;
 +        params.format = static_cast<common_chat_format>(metadata.value("chat_format", 0));
++        const std::string reasoning_format = metadata.value("reasoning_format", std::string());
++        if (!reasoning_format.empty()) {
++            params.reasoning_format = common_reasoning_format_from_name(reasoning_format);
++        }
 +        params.generation_prompt = metadata.value("generation_prompt", std::string());
 +        params.parse_tool_calls = metadata.value("parse_tool_calls", true);
 +        const std::string parser = metadata.value("chat_parser", std::string());
@@ -313,4 +319,3 @@ index 2b95ccc8..384c7e40 100644
          struct skippy_model_info ** out_info,
 -- 
 2.50.1 (Apple Git-155)
-

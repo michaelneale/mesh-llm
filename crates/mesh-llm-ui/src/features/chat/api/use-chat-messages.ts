@@ -11,6 +11,16 @@ function formatTimestamp(value: Date | undefined): string {
   return value && !Number.isNaN(value.getTime()) ? value.toISOString() : new Date().toISOString()
 }
 
+function messagePartsToThreadBody(parts: UIMessage['parts']): string {
+  return parts
+    .map((part) => {
+      if (part.type === 'thinking') return `<think>${part.content}</think>`
+      if (part.type === 'text') return part.content
+      return ''
+    })
+    .join('')
+}
+
 export function threadMessagesToUIMessages(messages: ThreadMessage[]): UIMessage[] {
   return messages.map((message) => ({
     id: message.id,
@@ -24,13 +34,11 @@ export function uiMessagesToThreadMessages(messages: UIMessage[]): ThreadMessage
   return messages
     .filter((m): m is UIMessage & { role: 'user' | 'assistant' } => m.role === 'user' || m.role === 'assistant')
     .map((message) => {
-      const textPart = message.parts.find((part) => part.type === 'text')
-      const body = textPart?.type === 'text' ? textPart.content : ''
       return {
         id: message.id,
         messageRole: message.role,
         timestamp: formatTimestamp(message.createdAt),
-        body
+        body: messagePartsToThreadBody(message.parts)
       }
     })
 }

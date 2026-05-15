@@ -197,6 +197,7 @@ impl ChatCompletionResponse {
                 message: AssistantMessage {
                     role: "assistant",
                     content: Some(content.into()),
+                    reasoning_content: None,
                     tool_calls: None,
                 },
                 logprobs: None,
@@ -220,6 +221,8 @@ pub struct ChatCompletionChoice {
 pub struct AssistantMessage {
     pub role: &'static str,
     pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Value>,
 }
@@ -247,6 +250,7 @@ impl ChatCompletionChunk {
                 delta: ChatCompletionDelta {
                     role: Some("assistant"),
                     content: None,
+                    reasoning_content: None,
                     tool_calls: None,
                 },
                 logprobs: None,
@@ -267,6 +271,7 @@ impl ChatCompletionChunk {
                 delta: ChatCompletionDelta {
                     role: None,
                     content: Some(content.into()),
+                    reasoning_content: None,
                     tool_calls: None,
                 },
                 logprobs: None,
@@ -291,6 +296,7 @@ impl ChatCompletionChunk {
                 delta: ChatCompletionDelta {
                     role: None,
                     content: None,
+                    reasoning_content: None,
                     tool_calls: None,
                 },
                 logprobs: None,
@@ -328,5 +334,49 @@ pub struct ChatCompletionDelta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Value>,
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn assistant_message_serializes_reasoning_content_when_present() {
+        let message = AssistantMessage {
+            role: "assistant",
+            content: Some("Final answer.".to_string()),
+            reasoning_content: Some("Checked the facts first.".to_string()),
+            tool_calls: None,
+        };
+
+        let value = serde_json::to_value(message).unwrap();
+
+        assert_eq!(
+            value,
+            json!({
+                "role": "assistant",
+                "content": "Final answer.",
+                "reasoning_content": "Checked the facts first."
+            })
+        );
+    }
+
+    #[test]
+    fn chat_delta_serializes_reasoning_content_without_text_content() {
+        let delta = ChatCompletionDelta {
+            role: None,
+            content: None,
+            reasoning_content: Some("Still thinking.".to_string()),
+            tool_calls: None,
+        };
+
+        let value = serde_json::to_value(delta).unwrap();
+
+        assert_eq!(value, json!({ "reasoning_content": "Still thinking." }));
+    }
 }

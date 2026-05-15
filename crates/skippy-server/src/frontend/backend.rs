@@ -53,10 +53,14 @@ impl OpenAiBackend for StageOpenAiBackend {
             )
             .await?;
         let response_timer = PhaseTimer::start();
-        let parsed_tool_calls =
-            self.parse_tool_call_output(&output.text, &request, chat_parse_metadata.as_deref())?;
+        let parsed_message = self.parse_chat_output(
+            &output.text,
+            &request,
+            chat_parse_metadata.as_deref(),
+            false,
+        )?;
         let response =
-            chat_response_from_generated_text(request.model.clone(), &output, parsed_tool_calls);
+            chat_response_from_generated_text(request.model.clone(), &output, parsed_message);
         let mut response_attrs = self.openai_attrs(&ids);
         response_attrs.insert(
             "llama_stage.openai_operation".to_string(),
@@ -429,12 +433,19 @@ impl StageOpenAiBackend {
         );
         self.emit_openai_phase("stage.openai_generation_admit", admit_timer, admit_attrs);
         let backend = self.clone();
-        let tool_call_stream = hook_request.as_ref().is_some_and(tool_calls_requested)
-            && prompt.chat_parse_metadata.is_some();
         let chat_parse_metadata = prompt.chat_parse_metadata.clone();
         let (tx, rx) = mpsc::channel(16);
         let hook_runtime = Some(tokio::runtime::Handle::current());
-        let stream_tool_request = hook_request.clone();
+        let mut chat_stream_parser =
+            if let (Some(request), Some(metadata)) = (hook_request.clone(), chat_parse_metadata) {
+                Some(ChatOutputStreamParser::new(
+                    backend.clone(),
+                    request,
+                    metadata,
+                ))
+            } else {
+                None
+            };
         task::spawn_blocking(move || {
             let _permit = permit;
             let result = backend.generate_text(
@@ -447,17 +458,21 @@ impl StageOpenAiBackend {
                 Some(&context.cancellation_token()),
                 ids,
                 |chunk| {
-                    if tool_call_stream {
-                        return Ok(());
-                    }
                     if context.is_cancelled() {
                         return Err(OpenAiError::backend("stream receiver cancelled"));
                     }
-                    tx.blocking_send(Ok(GenerationStreamEvent::Delta(chunk.to_string())))
-                        .map_err(|_| {
+                    let events = if let Some(parser) = chat_stream_parser.as_mut() {
+                        parser.push_delta(chunk)?
+                    } else {
+                        vec![GenerationStreamEvent::Delta(chunk.to_string())]
+                    };
+                    for event in events {
+                        tx.blocking_send(Ok(event)).map_err(|_| {
                             context.cancel();
                             OpenAiError::backend("stream receiver dropped")
-                        })
+                        })?;
+                    }
+                    Ok(())
                 },
             );
             if context.is_cancelled() {
@@ -465,58 +480,25 @@ impl StageOpenAiBackend {
             }
             match result {
                 Ok(output) => {
-                    if tool_call_stream {
-                        if let (Some(request), Some(metadata)) =
-                            (stream_tool_request.as_ref(), chat_parse_metadata.as_deref())
-                        {
-                            match backend.parse_tool_call_output(
-                                &output.text,
-                                request,
-                                Some(metadata),
-                            ) {
-                                Ok(Some(tool_output)) => {
-                                    if tx
-                                        .blocking_send(Ok(GenerationStreamEvent::ToolCalls(
-                                            tool_output.tool_calls,
-                                        )))
-                                        .is_err()
-                                    {
+                    let finish_reason = if let Some(parser) = chat_stream_parser.as_mut() {
+                        match parser.finish(&output.text) {
+                            Ok(events) => {
+                                for event in events {
+                                    if tx.blocking_send(Ok(event)).is_err() {
                                         context.cancel();
                                         return;
                                     }
-                                    if include_usage
-                                        && tx
-                                            .blocking_send(Ok(GenerationStreamEvent::Usage(
-                                                output.usage(),
-                                            )))
-                                            .is_err()
-                                    {
-                                        context.cancel();
-                                        return;
-                                    }
-                                    let _ = tx.blocking_send(Ok(GenerationStreamEvent::Done(
-                                        FinishReason::ToolCalls,
-                                    )));
-                                    return;
                                 }
-                                Ok(None) => {}
-                                Err(error) => {
-                                    let _ = tx.blocking_send(Err(error));
-                                    return;
-                                }
+                                parser.finish_reason(output.finish_reason)
+                            }
+                            Err(error) => {
+                                let _ = tx.blocking_send(Err(error));
+                                return;
                             }
                         }
-                        if !output.text.is_empty()
-                            && tx
-                                .blocking_send(Ok(GenerationStreamEvent::Delta(
-                                    output.text.clone(),
-                                )))
-                                .is_err()
-                        {
-                            context.cancel();
-                            return;
-                        }
-                    }
+                    } else {
+                        output.finish_reason
+                    };
                     if include_usage
                         && tx
                             .blocking_send(Ok(GenerationStreamEvent::Usage(output.usage())))
@@ -525,7 +507,7 @@ impl StageOpenAiBackend {
                         context.cancel();
                         return;
                     }
-                    let _ = tx.blocking_send(Ok(GenerationStreamEvent::Done(output.finish_reason)));
+                    let _ = tx.blocking_send(Ok(GenerationStreamEvent::Done(finish_reason)));
                 }
                 Err(error) => {
                     let _ = tx.blocking_send(Err(error));

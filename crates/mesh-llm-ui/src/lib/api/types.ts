@@ -248,6 +248,14 @@ export interface ChatSSEDeltaEvent {
   content_index?: number
 }
 
+export interface ChatSSEReasoningDeltaEvent {
+  type: 'response.reasoning_text.delta'
+  delta: string
+  response_id?: string
+  output_index?: number
+  content_index?: number
+}
+
 export interface ChatUsage {
   input_tokens: number
   output_tokens: number
@@ -271,7 +279,7 @@ export interface ChatSSECompletedEvent {
   }
 }
 
-export type ChatSSEEvent = ChatSSEDeltaEvent | ChatSSECompletedEvent
+export type ChatSSEEvent = ChatSSEDeltaEvent | ChatSSEReasoningDeltaEvent | ChatSSECompletedEvent
 
 // ============================================================
 // ATTACHMENT / OBJECTS API TYPES (POST /api/objects)

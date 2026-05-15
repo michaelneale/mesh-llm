@@ -59,6 +59,8 @@ pub struct ChatCompletionStreamDelta {
     #[serde(default)]
     pub content: Option<String>,
     #[serde(default)]
+    pub reasoning_content: Option<String>,
+    #[serde(default)]
     pub tool_calls: Option<Value>,
     #[serde(rename = "role", default)]
     _role: Option<String>,
@@ -757,6 +759,21 @@ pub fn responses_stream_delta_event_with_logprobs_and_sequence(
     event
 }
 
+pub fn responses_stream_reasoning_delta_event_with_sequence(
+    item_id: &str,
+    delta: &str,
+    sequence_number: i32,
+) -> Value {
+    serde_json::json!({
+        "type": "response.reasoning_text.delta",
+        "sequence_number": sequence_number,
+        "item_id": item_id,
+        "output_index": 0,
+        "content_index": 0,
+        "delta": delta,
+    })
+}
+
 pub fn responses_stream_text_done_event(item_id: &str, text: &str) -> Value {
     serde_json::json!({
         "type": "response.output_text.done",
@@ -1238,6 +1255,26 @@ mod tests {
     }
 
     #[test]
+    fn parse_chat_stream_chunk_reads_reasoning_delta() {
+        let payload = json!({
+            "model": "qwen",
+            "choices": [{
+                "delta": {"reasoning_content": "Checking facts."},
+                "finish_reason": null
+            }]
+        })
+        .to_string();
+
+        let parsed = parse_chat_stream_chunk(&payload).expect("stream chunk parse should succeed");
+        let delta = parsed
+            .choices
+            .first()
+            .and_then(|choice| choice.delta.as_ref())
+            .and_then(|delta| delta.reasoning_content.as_deref());
+        assert_eq!(delta, Some("Checking facts."));
+    }
+
+    #[test]
     fn usage_to_responses_usage_maps_cached_tokens() {
         let usage = Usage::new(128, 8).with_cached_tokens(96);
         let mapped = usage_to_responses_usage(&usage);
@@ -1287,11 +1324,17 @@ mod tests {
         assert_eq!(delta["sequence_number"], 4);
         assert_eq!(delta["delta"], "hello");
 
-        let part_done = responses_stream_content_part_done_event("msg_123", "hello", 5);
+        let reasoning_delta =
+            responses_stream_reasoning_delta_event_with_sequence("msg_123", "Checking facts.", 5);
+        assert_eq!(reasoning_delta["type"], "response.reasoning_text.delta");
+        assert_eq!(reasoning_delta["sequence_number"], 5);
+        assert_eq!(reasoning_delta["delta"], "Checking facts.");
+
+        let part_done = responses_stream_content_part_done_event("msg_123", "hello", 6);
         assert_eq!(part_done["type"], "response.content_part.done");
         assert_eq!(part_done["part"]["text"], "hello");
 
-        let item_done = responses_stream_output_item_done_event("msg_123", "hello", 6);
+        let item_done = responses_stream_output_item_done_event("msg_123", "hello", 7);
         assert_eq!(item_done["type"], "response.output_item.done");
         assert_eq!(item_done["item"]["content"][0]["text"], "hello");
     }

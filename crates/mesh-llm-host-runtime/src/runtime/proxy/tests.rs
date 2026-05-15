@@ -1232,6 +1232,80 @@ data: {"#,
 }
 
 #[tokio::test]
+async fn test_api_proxy_translates_streaming_reasoning_content_events() {
+    let chunks = vec![
+        (
+            Duration::ZERO,
+            br#"data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":123,"model":"test","choices":[{"index":0,"delta":{"reasoning_content":"thinking"},"finish_reason":null}]}
+
+"#
+            .to_vec(),
+        ),
+        (
+            Duration::from_millis(10),
+            br#"data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":123,"model":"test","choices":[{"index":0,"delta":{"content":"answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}
+
+data: [DONE]
+
+"#
+            .to_vec(),
+        ),
+    ];
+    let (upstream_port, upstream_rx, upstream_handle) =
+        spawn_streaming_upstream("text/event-stream", chunks).await;
+    let (proxy_addr, proxy_handle) =
+        spawn_api_proxy_test_harness(local_targets(&[("test", upstream_port)])).await;
+
+    let body = json!({
+        "model": "test",
+        "stream": true,
+        "input": "stream responses",
+    })
+    .to_string();
+    let request = format!(
+        "POST /v1/responses HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(),
+        body
+    );
+
+    let mut stream = TcpStream::connect(proxy_addr).await.unwrap();
+    stream.write_all(request.as_bytes()).await.unwrap();
+    stream.shutdown().await.unwrap();
+
+    let first = read_until_contains(
+        &mut stream,
+        br#"event: response.reasoning_text.delta
+data: {"#,
+        Duration::from_secs(2),
+    )
+    .await;
+    let first_text = String::from_utf8_lossy(&first);
+    assert!(first_text.contains("event: response.created"));
+    assert!(first_text.contains("event: response.reasoning_text.delta"));
+    assert!(first_text.contains(r#""delta":"thinking""#));
+    assert!(!first_text.contains("event: response.output_text.delta"));
+    assert!(!first_text.contains(r#""delta":"answer""#));
+
+    let mut rest = Vec::new();
+    stream.read_to_end(&mut rest).await.unwrap();
+    let mut full = first;
+    full.extend_from_slice(&rest);
+    let full_text = String::from_utf8(full).unwrap();
+    assert!(full_text.contains("event: response.output_text.delta"));
+    assert!(full_text.contains(r#""delta":"answer""#));
+    assert!(full_text.contains("event: response.completed"));
+    assert!(full_text.contains(r#""output_text":"answer""#));
+    assert!(full_text.contains("data: [DONE]"));
+
+    let raw = String::from_utf8(upstream_rx.await.unwrap()).unwrap();
+    assert!(raw.starts_with("POST /v1/chat/completions HTTP/1.1"));
+    assert!(raw.contains("\"stream\":true"));
+
+    proxy_handle.abort();
+    let _ = upstream_handle.await;
+}
+
+#[tokio::test]
 async fn test_api_proxy_integration_pipeline_fallback_uses_direct_proxy() {
     // Pipeline fallback test: when only one model is available, auto routes
     // to it directly without attempting a pipeline plan.

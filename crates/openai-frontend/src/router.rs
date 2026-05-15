@@ -618,6 +618,7 @@ mod tests {
                         message: AssistantMessage {
                             role: "assistant",
                             content: Some("calling lookup".to_string()),
+                            reasoning_content: None,
                             tool_calls: Some(json!([{
                                 "id": "call_123",
                                 "type": "function",
@@ -671,6 +672,7 @@ mod tests {
                             delta: crate::chat::ChatCompletionDelta {
                                 role: None,
                                 content: Some("tok".to_string()),
+                                reasoning_content: None,
                                 tool_calls: None,
                             },
                             logprobs: Some(json!({

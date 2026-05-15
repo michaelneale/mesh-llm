@@ -60,15 +60,13 @@ impl StageOpenAiBackend {
         })
     }
 
-    pub(super) fn parse_tool_call_output(
+    pub(super) fn parse_chat_output(
         &self,
         text: &str,
         request: &ChatCompletionRequest,
         metadata: Option<&str>,
-    ) -> OpenAiResult<Option<ParsedToolCalls>> {
-        if !tool_calls_requested(request) {
-            return Ok(None);
-        }
+        is_partial: bool,
+    ) -> OpenAiResult<Option<ParsedChatMessage>> {
         let Some(metadata) = metadata else {
             return Ok(None);
         };
@@ -79,10 +77,10 @@ impl StageOpenAiBackend {
                 .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
             runtime
                 .model
-                .parse_chat_response_json(text, metadata, false)
+                .parse_chat_response_json(text, metadata, is_partial)
                 .map_err(openai_backend_error)?
         };
-        Ok(parsed_tool_calls_from_message_json(&parsed_json, request))
+        Ok(parsed_chat_message_from_json(&parsed_json, request))
     }
 
     pub(super) fn tokenize(&self, prompt: &str) -> OpenAiResult<Vec<i32>> {

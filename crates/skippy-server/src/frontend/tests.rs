@@ -348,6 +348,77 @@ fn parses_llama_message_tool_calls() {
 }
 
 #[test]
+fn parses_llama_message_reasoning_content() {
+    let parsed = parsed_chat_message_from_json(
+        r#"{"role":"assistant","reasoning_content":"Checked facts first.","content":"Final answer."}"#,
+        &ChatCompletionRequest {
+            tools: None,
+            ..tool_request()
+        },
+    )
+    .expect("parsed message");
+
+    assert_eq!(parsed.content.as_deref(), Some("Final answer."));
+    assert_eq!(
+        parsed.reasoning_content.as_deref(),
+        Some("Checked facts first.")
+    );
+    assert_eq!(parsed.tool_calls, None);
+}
+
+#[test]
+fn chat_response_from_parsed_message_separates_reasoning_content() {
+    let output = GeneratedText {
+        prompt_tokens: 4,
+        completion_tokens: 7,
+        cached_prompt_tokens: 0,
+        matched_prefix_tokens: 0,
+        suffix_prefill_tokens: 0,
+        cache_hit_kind: None,
+        text: "Checked facts first.</think>Final answer.".to_string(),
+        finish_reason: FinishReason::Stop,
+        detokenize_ms: 0.0,
+        text_emit_ms: 0.0,
+        eog_check_ms: 0.0,
+    };
+    let parsed = ParsedChatMessage {
+        content: Some("Final answer.".to_string()),
+        reasoning_content: Some("Checked facts first.".to_string()),
+        tool_calls: None,
+    };
+
+    let response = chat_response_from_generated_text("qwen".to_string(), &output, Some(parsed));
+
+    let message = &response.choices[0].message;
+    assert_eq!(message.content.as_deref(), Some("Final answer."));
+    assert_eq!(
+        message.reasoning_content.as_deref(),
+        Some("Checked facts first.")
+    );
+    assert_eq!(message.tool_calls, None);
+    assert_eq!(response.choices[0].finish_reason, Some(FinishReason::Stop));
+}
+
+#[test]
+fn generation_event_to_chat_chunk_emits_reasoning_delta() {
+    let chunk = generation_event_to_chat_chunk(
+        Ok(GenerationStreamEvent::ReasoningDelta(
+            "Checking the premise.".to_string(),
+        )),
+        "qwen",
+    )
+    .unwrap();
+
+    let delta = &chunk.choices[0].delta;
+    assert_eq!(delta.content, None);
+    assert_eq!(
+        delta.reasoning_content.as_deref(),
+        Some("Checking the premise.")
+    );
+    assert_eq!(delta.tool_calls, None);
+}
+
+#[test]
 fn llama_message_tool_parser_rejects_unknown_tool() {
     let request = tool_request();
     let parsed = parsed_tool_calls_from_message_json(

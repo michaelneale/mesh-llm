@@ -1171,6 +1171,13 @@ struct ParsedToolCalls {
     tool_calls: Value,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedChatMessage {
+    content: Option<String>,
+    reasoning_content: Option<String>,
+    tool_calls: Option<Value>,
+}
+
 fn tool_calls_requested(request: &ChatCompletionRequest) -> bool {
     request.tools.as_ref().is_some_and(has_requested_tools)
         && !request
@@ -1182,9 +1189,14 @@ fn tool_calls_requested(request: &ChatCompletionRequest) -> bool {
 fn chat_response_from_generated_text(
     model: String,
     output: &GeneratedText,
-    parsed_tool_calls: Option<ParsedToolCalls>,
+    parsed_message: Option<ParsedChatMessage>,
 ) -> ChatCompletionResponse {
-    if let Some(parsed) = parsed_tool_calls {
+    if let Some(parsed) = parsed_message {
+        let finish_reason = if parsed.tool_calls.is_some() {
+            FinishReason::ToolCalls
+        } else {
+            output.finish_reason
+        };
         return ChatCompletionResponse {
             id: openai_frontend::completion_id("chatcmpl"),
             object: "chat.completion",
@@ -1195,10 +1207,11 @@ fn chat_response_from_generated_text(
                 message: openai_frontend::AssistantMessage {
                     role: "assistant",
                     content: parsed.content,
-                    tool_calls: Some(parsed.tool_calls),
+                    reasoning_content: parsed.reasoning_content,
+                    tool_calls: parsed.tool_calls,
                 },
                 logprobs: None,
-                finish_reason: Some(FinishReason::ToolCalls),
+                finish_reason: Some(finish_reason),
             }],
             usage: output.usage(),
         };
@@ -1212,11 +1225,36 @@ fn chat_response_from_generated_text(
     )
 }
 
+fn parsed_chat_message_from_json(
+    message_json: &str,
+    request: &ChatCompletionRequest,
+) -> Option<ParsedChatMessage> {
+    let value = serde_json::from_str::<Value>(message_json).ok()?;
+    let tool_calls =
+        parsed_tool_calls_from_message_value(&value, request).map(|parsed| parsed.tool_calls);
+    Some(ParsedChatMessage {
+        content: string_field(&value, "content"),
+        reasoning_content: string_field(&value, "reasoning_content"),
+        tool_calls,
+    })
+}
+
+#[cfg(test)]
 fn parsed_tool_calls_from_message_json(
     message_json: &str,
     request: &ChatCompletionRequest,
 ) -> Option<ParsedToolCalls> {
     let value = serde_json::from_str::<Value>(message_json).ok()?;
+    parsed_tool_calls_from_message_value(&value, request)
+}
+
+fn parsed_tool_calls_from_message_value(
+    value: &Value,
+    request: &ChatCompletionRequest,
+) -> Option<ParsedToolCalls> {
+    if !tool_calls_requested(request) {
+        return None;
+    }
     let allowed_names = request_allowed_tool_names(request);
     let mut tool_calls = value
         .get("tool_calls")
@@ -1232,13 +1270,17 @@ fn parsed_tool_calls_from_message_json(
         return None;
     }
     Some(ParsedToolCalls {
-        content: value
-            .get("content")
-            .and_then(Value::as_str)
-            .filter(|content| !content.is_empty())
-            .map(ToString::to_string),
+        content: string_field(value, "content"),
         tool_calls: Value::Array(tool_calls),
     })
+}
+
+fn string_field(value: &Value, field: &str) -> Option<String> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|content| !content.is_empty())
+        .map(ToString::to_string)
 }
 
 fn request_allowed_tool_names(request: &ChatCompletionRequest) -> Vec<String> {
@@ -1448,9 +1490,93 @@ type GenerationStream =
 
 enum GenerationStreamEvent {
     Delta(String),
+    ReasoningDelta(String),
     ToolCalls(Value),
     Usage(Usage),
     Done(FinishReason),
+}
+
+struct ChatOutputStreamParser {
+    backend: StageOpenAiBackend,
+    request: ChatCompletionRequest,
+    metadata: String,
+    text: String,
+    emitted_content: String,
+    emitted_reasoning_content: String,
+    emitted_tool_calls: bool,
+}
+
+impl ChatOutputStreamParser {
+    fn new(backend: StageOpenAiBackend, request: ChatCompletionRequest, metadata: String) -> Self {
+        Self {
+            backend,
+            request,
+            metadata,
+            text: String::new(),
+            emitted_content: String::new(),
+            emitted_reasoning_content: String::new(),
+            emitted_tool_calls: false,
+        }
+    }
+
+    fn push_delta(&mut self, delta: &str) -> OpenAiResult<Vec<GenerationStreamEvent>> {
+        self.text.push_str(delta);
+        self.events_for_text(true)
+    }
+
+    fn finish(&mut self, text: &str) -> OpenAiResult<Vec<GenerationStreamEvent>> {
+        if self.text != text {
+            self.text = text.to_string();
+        }
+        self.events_for_text(false)
+    }
+
+    fn events_for_text(&mut self, is_partial: bool) -> OpenAiResult<Vec<GenerationStreamEvent>> {
+        let Some(parsed) = self.backend.parse_chat_output(
+            &self.text,
+            &self.request,
+            Some(&self.metadata),
+            is_partial,
+        )?
+        else {
+            return Ok(Vec::new());
+        };
+        let mut events = Vec::new();
+        if let Some(delta) = suffix_delta(
+            parsed.reasoning_content.as_deref(),
+            &mut self.emitted_reasoning_content,
+        ) {
+            events.push(GenerationStreamEvent::ReasoningDelta(delta));
+        }
+        if let Some(delta) = suffix_delta(parsed.content.as_deref(), &mut self.emitted_content) {
+            events.push(GenerationStreamEvent::Delta(delta));
+        }
+        if !is_partial && !self.emitted_tool_calls {
+            if let Some(tool_calls) = parsed.tool_calls {
+                self.emitted_tool_calls = true;
+                events.push(GenerationStreamEvent::ToolCalls(tool_calls));
+            }
+        }
+        Ok(events)
+    }
+
+    fn finish_reason(&self, fallback: FinishReason) -> FinishReason {
+        if self.emitted_tool_calls {
+            FinishReason::ToolCalls
+        } else {
+            fallback
+        }
+    }
+}
+
+fn suffix_delta(current: Option<&str>, emitted: &mut String) -> Option<String> {
+    let current = current?;
+    let delta = current.strip_prefix(emitted.as_str())?;
+    if delta.is_empty() {
+        return None;
+    }
+    emitted.push_str(delta);
+    Some(delta.to_string())
 }
 
 fn generation_event_to_chat_chunk(
@@ -1461,6 +1587,24 @@ fn generation_event_to_chat_chunk(
         GenerationStreamEvent::Delta(delta) => {
             Ok(ChatCompletionChunk::delta(model.to_string(), delta))
         }
+        GenerationStreamEvent::ReasoningDelta(delta) => Ok(ChatCompletionChunk {
+            id: openai_frontend::completion_id("chatcmpl"),
+            object: "chat.completion.chunk",
+            created: openai_frontend::now_unix_secs(),
+            model: model.to_string(),
+            choices: vec![openai_frontend::ChatCompletionChunkChoice {
+                index: 0,
+                delta: openai_frontend::ChatCompletionDelta {
+                    role: None,
+                    content: None,
+                    reasoning_content: Some(delta),
+                    tool_calls: None,
+                },
+                logprobs: None,
+                finish_reason: None,
+            }],
+            usage: None,
+        }),
         GenerationStreamEvent::ToolCalls(tool_calls) => Ok(ChatCompletionChunk {
             id: openai_frontend::completion_id("chatcmpl"),
             object: "chat.completion.chunk",
@@ -1471,6 +1615,7 @@ fn generation_event_to_chat_chunk(
                 delta: openai_frontend::ChatCompletionDelta {
                     role: None,
                     content: None,
+                    reasoning_content: None,
                     tool_calls: Some(tool_calls_stream_delta(tool_calls)),
                 },
                 logprobs: None,
@@ -1494,6 +1639,9 @@ fn generation_event_to_completion_chunk(
 ) -> OpenAiResult<CompletionChunk> {
     match event? {
         GenerationStreamEvent::Delta(delta) => Ok(CompletionChunk::delta(model.to_string(), delta)),
+        GenerationStreamEvent::ReasoningDelta(_) => {
+            Ok(CompletionChunk::delta(model.to_string(), ""))
+        }
         GenerationStreamEvent::ToolCalls(_) => Ok(CompletionChunk::delta(model.to_string(), "")),
         GenerationStreamEvent::Usage(usage) => Ok(CompletionChunk::usage(model.to_string(), usage)),
         GenerationStreamEvent::Done(reason) => {
