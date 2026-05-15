@@ -1,7 +1,7 @@
-From f8e30b93cf5bc6c07dc5438a98f3a6d4d9e8a55c Mon Sep 17 00:00:00 2001
+From cb568bcdc02556931b53bc382fcffabcae1ba645 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 15:42:15 +1000
-Subject: [PATCH 23/80] Add stage session trim ABI
+Subject: [PATCH 23/81] Add stage session trim ABI
 
 ---
  include/skippy.h |  8 ++++++-
@@ -122,5 +122,5 @@ index b7188fb4..5f5d33b4 100644
          skippy_session * session,
          skippy_error ** out_error) {
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 

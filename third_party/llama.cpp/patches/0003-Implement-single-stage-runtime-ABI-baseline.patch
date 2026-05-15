@@ -1,7 +1,7 @@
-From 83dade6ee46aea0f0d3cf512c780e5b1274ad029 Mon Sep 17 00:00:00 2001
+From d5d0ffe6ce41b35ea3eabb48b57b9c093b220cf3 Mon Sep 17 00:00:00 2001
 From: James Dumay <jameswdumay@gmail.com>
 Date: Sat, 25 Apr 2026 11:04:49 +1000
-Subject: [PATCH 03/80] Implement single-stage runtime ABI baseline
+Subject: [PATCH 03/81] Implement single-stage runtime ABI baseline
 
 ---
  src/skippy.cpp | 323 ++++++++++++++++++++++++++++++++++++++++++++++++-
@@ -371,5 +371,5 @@ index bd94fa37..4feca3b8 100644
          const char * path,
          struct skippy_model_info ** out_info,
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 

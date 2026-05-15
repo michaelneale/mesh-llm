@@ -1,7 +1,7 @@
-From 7debbedc76a5169a2f8b86598ea62d0d2a3f2ede Mon Sep 17 00:00:00 2001
+From 52608d1e3b43294fda91eaa9d3ac9fa3180cc6e2 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 4 May 2026 11:39:01 -0400
-Subject: [PATCH 35/80] Expose stage batch and flash attention config
+Subject: [PATCH 35/81] Expose stage batch and flash attention config
 
 ---
  include/skippy.h | 5 ++++-
@@ -35,7 +35,7 @@ index 9e91519d..2b95ccc8 100644
      enum skippy_load_mode load_mode;
  
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 0d128fc8..fd2cd3d0 100644
+index 152e2ffe..eec2c8b4 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -1216,11 +1216,13 @@ static enum skippy_status skippy_finish_model_open(
@@ -54,5 +54,5 @@ index 0d128fc8..fd2cd3d0 100644
      if (llm_arch_is_recurrent(model->arch) || llm_arch_is_hybrid(model->arch)) {
          params.n_seq_max = std::max<uint32_t>(2, stage_model->lane_count * 2);
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 

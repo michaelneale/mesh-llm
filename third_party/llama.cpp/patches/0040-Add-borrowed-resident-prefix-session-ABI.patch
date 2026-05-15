@@ -1,7 +1,7 @@
-From 922aae9f49ad7c750f3910facb609b019e90c4f7 Mon Sep 17 00:00:00 2001
+From 64c92bf87a7194b899ca4cae51bb9a3e9cc95208 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Tue, 5 May 2026 19:20:00 +1000
-Subject: [PATCH 40/80] Add borrowed resident prefix session ABI
+Subject: [PATCH 40/81] Add borrowed resident prefix session ABI
 
 ---
  include/skippy.h |  10 ++++-
@@ -37,7 +37,7 @@ index b051b66c..fe166e3d 100644
          struct skippy_session * session);
  
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 56ab40d7..b979cbb2 100644
+index d3d47b9f..dccea7d4 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -45,6 +45,8 @@ struct skippy_session {
@@ -49,7 +49,7 @@ index 56ab40d7..b979cbb2 100644
      bool checkpoint_valid = false;
      int32_t checkpoint_n_past = 0;
      size_t checkpoint_token_history_size = 0;
-@@ -1625,6 +1627,8 @@ enum skippy_status skippy_session_create(
+@@ -1631,6 +1633,8 @@ enum skippy_status skippy_session_create(
      session->ctx = model->ctx;
      session->seq_id = seq_id;
      session->checkpoint_seq_id = seq_id + static_cast<int32_t>(model->lane_count);
@@ -58,7 +58,7 @@ index 56ab40d7..b979cbb2 100644
      session->n_past = 0;
      session->checkpoint_valid = false;
      session->checkpoint_n_past = 0;
-@@ -1740,15 +1744,26 @@ enum skippy_status skippy_session_reset(
+@@ -1746,15 +1750,26 @@ enum skippy_status skippy_session_reset(
          return SKIPPY_STATUS_RUNTIME_ERROR;
      }
  
@@ -89,7 +89,7 @@ index 56ab40d7..b979cbb2 100644
      session->signal_history.clear();
      skippy_clear_chat_sampling(session);
      session->ctx->synchronize();
-@@ -1762,7 +1777,7 @@ enum skippy_status skippy_session_free(
+@@ -1768,7 +1783,7 @@ enum skippy_status skippy_session_free(
          if (session->ctx != nullptr) {
              skippy_session_reset(session, nullptr);
          }
@@ -98,7 +98,7 @@ index 56ab40d7..b979cbb2 100644
              const size_t lane = static_cast<size_t>(session->seq_id);
              if (lane < session->stage_model->lane_in_use.size()) {
                  session->stage_model->lane_in_use[lane] = false;
-@@ -2712,6 +2727,16 @@ static bool skippy_is_reserved_sequence_id(
+@@ -2718,6 +2733,16 @@ static bool skippy_is_reserved_sequence_id(
      return seq_id < reserved;
  }
  
@@ -115,7 +115,7 @@ index 56ab40d7..b979cbb2 100644
  static enum skippy_status skippy_get_resident_prefix_memory(
          skippy_session * session,
          llama_memory_t * out_memory,
-@@ -2834,6 +2859,74 @@ enum skippy_status skippy_session_restore_prefix(
+@@ -2840,6 +2865,74 @@ enum skippy_status skippy_session_restore_prefix(
      return skippy_success(out_error);
  }
  
@@ -191,5 +191,5 @@ index 56ab40d7..b979cbb2 100644
          struct skippy_session * session,
          int32_t seq_id,
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 

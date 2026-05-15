@@ -1,7 +1,7 @@
-From da8c1e7d385e781c280199c07954ee06c827a706 Mon Sep 17 00:00:00 2001
+From 89ae496bf80375fa42e358753e8fd56fbfec1f75 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 13:47:51 +1000
-Subject: [PATCH 20/80] Add staged batched verification frame ABI
+Subject: [PATCH 20/81] Add staged batched verification frame ABI
 
 ---
  include/skippy.h |  18 ++++-
@@ -273,5 +273,5 @@ index 894ad093..e3c1f4a7 100644
          struct skippy_session * session,
          int32_t layer_start,
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 

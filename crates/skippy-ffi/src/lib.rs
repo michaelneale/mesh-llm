@@ -566,6 +566,21 @@ extern "C" {
         out_error: *mut *mut Error,
     ) -> Status;
 
+    pub fn skippy_session_token_signal_at(
+        session: *mut Session,
+        logits_index: i32,
+        out_signal: *mut TokenSignal,
+        out_error: *mut *mut Error,
+    ) -> Status;
+
+    pub fn skippy_session_token_logprob_at(
+        session: *mut Session,
+        logits_index: i32,
+        token_id: i32,
+        out_logprob: *mut f32,
+        out_error: *mut *mut Error,
+    ) -> Status;
+
     pub fn skippy_trim_session(
         session: *mut Session,
         token_count: u64,

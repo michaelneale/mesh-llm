@@ -1,7 +1,7 @@
-From fc718a7e3f5ece1e9c10f20162d0ac0419e32c82 Mon Sep 17 00:00:00 2001
+From c55d58075fe0d16dff63251f550384b40192af6e Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Sun, 26 Apr 2026 13:20:03 +1000
-Subject: [PATCH 12/80] Add stage session reset ABI
+Subject: [PATCH 12/81] Add stage session reset ABI
 
 ---
  include/skippy.h |  7 ++++++-
@@ -83,5 +83,5 @@ index 820f37b4..fcd8576a 100644
          struct skippy_session * session,
          struct skippy_error ** out_error) {
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 

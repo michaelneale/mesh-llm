@@ -1,7 +1,7 @@
-From aeed55734dbe4c0361ce83ff8ee00413d49ca727 Mon Sep 17 00:00:00 2001
+From cf542f0bfc75ad45a0d99392f78e73f04a007b5c Mon Sep 17 00:00:00 2001
 From: James Dumay <jameswdumay@gmail.com>
 Date: Sat, 25 Apr 2026 12:33:30 +1000
-Subject: [PATCH 06/80] Execute runtime-slice activation frames
+Subject: [PATCH 06/81] Execute runtime-slice activation frames
 
 ---
  src/llama-graph.cpp  |  52 ++++---
@@ -612,5 +612,5 @@ index 4aef362a..732a1a15 100644
  
  enum skippy_status skippy_export_state(
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 

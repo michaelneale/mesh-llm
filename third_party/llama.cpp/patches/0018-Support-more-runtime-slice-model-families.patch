@@ -1,7 +1,7 @@
-From d0eccc7068ea684a08c4a8e5200fe7e4ce160325 Mon Sep 17 00:00:00 2001
+From 1939b481ee01c5c889ba7edb5b221a05e5f83288 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 16:07:00 +1000
-Subject: [PATCH 18/80] Support more runtime-slice model families
+Subject: [PATCH 18/81] Support more runtime-slice model families
 
 ---
  include/skippy.h           |  17 +++
@@ -1245,5 +1245,5 @@ index f0b70b96..50e25c8f 100644
  
  static llama_kv_cache * skippy_get_kv_cache(
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 

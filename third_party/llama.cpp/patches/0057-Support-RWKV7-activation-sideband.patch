@@ -1,7 +1,7 @@
-From 645ed16bb29f31c753e2e327c961e7ae33276180 Mon Sep 17 00:00:00 2001
+From 984d0a43a0d6ae9ca27761ffbd5f525fedda051d Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Wed, 6 May 2026 11:23:13 +1000
-Subject: [PATCH 57/80] Support RWKV7 activation sideband
+Subject: [PATCH 57/81] Support RWKV7 activation sideband
 
 ---
  include/skippy.h      |   2 +
@@ -334,7 +334,7 @@ index b205e393..c3dc9eb0 100644
      cur = build_norm(cur, model.output_norm, model.output_norm_b, LLM_NORM, -1);
  
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 940b420a..18bbebf0 100644
+index dbbd504b..85f01123 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -631,6 +631,34 @@ struct skippy_activation_tokens_scope {
@@ -563,7 +563,7 @@ index 940b420a..18bbebf0 100644
              model->arch != LLM_ARCH_GEMMA &&
              model->arch != LLM_ARCH_GEMMA2 &&
              model->arch != LLM_ARCH_GEMMA3 &&
-@@ -2141,6 +2258,7 @@ enum skippy_status skippy_prefill_chunk_frame(
+@@ -2147,6 +2264,7 @@ enum skippy_status skippy_prefill_chunk_frame(
              output_payload_capacity,
              out_output_payload_bytes,
              output_desc,
@@ -571,7 +571,7 @@ index 940b420a..18bbebf0 100644
              out_error);
      if (status != SKIPPY_STATUS_OK) {
          return status;
-@@ -2155,7 +2273,7 @@ enum skippy_status skippy_prefill_chunk_frame(
+@@ -2161,7 +2279,7 @@ enum skippy_status skippy_prefill_chunk_frame(
          return status;
      }
  
@@ -580,7 +580,7 @@ index 940b420a..18bbebf0 100644
  }
  
  enum skippy_status skippy_decode_step_frame(
-@@ -2212,6 +2330,7 @@ enum skippy_status skippy_decode_step_frame_sampled(
+@@ -2218,6 +2336,7 @@ enum skippy_status skippy_decode_step_frame_sampled(
              output_payload_capacity,
              out_output_payload_bytes,
              output_desc,
@@ -588,7 +588,7 @@ index 940b420a..18bbebf0 100644
              out_error);
      if (status != SKIPPY_STATUS_OK) {
          return status;
-@@ -2230,7 +2349,7 @@ enum skippy_status skippy_decode_step_frame_sampled(
+@@ -2236,7 +2355,7 @@ enum skippy_status skippy_decode_step_frame_sampled(
          *out_predicted_token = session->stage_model->config.include_output ? skippy_sample_token(session, sampling) : -1;
      }
  
@@ -597,7 +597,7 @@ index 940b420a..18bbebf0 100644
  }
  
  enum skippy_status skippy_verify_tokens_frame(
-@@ -2280,6 +2399,7 @@ enum skippy_status skippy_verify_tokens_frame(
+@@ -2286,6 +2405,7 @@ enum skippy_status skippy_verify_tokens_frame(
              output_payload_capacity,
              out_output_payload_bytes,
              output_desc,
@@ -605,7 +605,7 @@ index 940b420a..18bbebf0 100644
              out_error);
      if (status != SKIPPY_STATUS_OK) {
          return status;
-@@ -2310,7 +2430,7 @@ enum skippy_status skippy_verify_tokens_frame(
+@@ -2316,7 +2436,7 @@ enum skippy_status skippy_verify_tokens_frame(
          return status;
      }
  
@@ -614,7 +614,7 @@ index 940b420a..18bbebf0 100644
      if (status != SKIPPY_STATUS_OK) {
          return status;
      }
-@@ -2344,11 +2464,12 @@ enum skippy_status skippy_session_copy_output_activation_frame(
+@@ -2350,11 +2470,12 @@ enum skippy_status skippy_session_copy_output_activation_frame(
              output_payload_capacity,
              out_output_payload_bytes,
              output_desc,
@@ -629,5 +629,5 @@ index 940b420a..18bbebf0 100644
  
  static enum skippy_status skippy_validate_state_range(
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 

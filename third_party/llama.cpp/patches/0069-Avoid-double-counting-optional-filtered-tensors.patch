@@ -1,7 +1,7 @@
-From c2ae1e4b70b60a3159d7d95a159753b9d6131f22 Mon Sep 17 00:00:00 2001
+From 3bee96de593f7683087b9fd51f010d4cb1f049f7 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Thu, 7 May 2026 17:34:50 +1000
-Subject: [PATCH 69/80] Avoid double-counting optional filtered tensors
+Subject: [PATCH 69/81] Avoid double-counting optional filtered tensors
 
 ---
  src/llama-model-loader.cpp | 30 ++++++++++++++++++++++++++----
@@ -82,5 +82,5 @@ index 54f56d98..2969e818 100644
  
      gguf_context_ptr metadata_ptr;
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 

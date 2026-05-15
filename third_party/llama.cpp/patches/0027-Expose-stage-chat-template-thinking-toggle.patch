@@ -1,7 +1,7 @@
-From c9af7c0afe61072d28d9fde987c521a532da462b Mon Sep 17 00:00:00 2001
+From a358b9bf3551512c5b7e1ef6c002d878b90752ed Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Tue, 28 Apr 2026 00:00:00 +1000
-Subject: [PATCH 27/80] Expose stage chat template thinking toggle
+Subject: [PATCH 27/81] Expose stage chat template thinking toggle
 
 ---
  common/stage-chat.cpp | 15 +++++++++++++++
@@ -64,5 +64,5 @@ index 302ad3b4..69293d6d 100644
          size_t output_text_capacity,
          size_t * out_text_bytes,
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 

@@ -1,7 +1,7 @@
-From 155057aedb2518d6229bdc23aab43752cfb720e3 Mon Sep 17 00:00:00 2001
+From 1050a9320e80c6815b475a659c787c11f846bbfb Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Sat, 2 May 2026 08:41:07 +1000
-Subject: [PATCH 30/80] Expose stage KV cache type config
+Subject: [PATCH 30/81] Expose stage KV cache type config
 
 ---
  include/skippy.h | 4 +++-
@@ -44,5 +44,5 @@ index 1139464a..5a1d7cfa 100644
      if (llm_arch_is_recurrent(model->model->arch) || llm_arch_is_hybrid(model->model->arch)) {
          params.n_seq_max = 2;
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 

@@ -2,13 +2,20 @@
 //!
 //! When a request includes `draft_response` (text) or `draft_tokens`
 //! (pre-tokenized IDs), this module verifies the draft against the
-//! target model in a single batched forward pass. Accepted prefix
-//! tokens are committed without decode; only the tail after the first
-//! divergence is decoded normally.
+//! target model. Accepted prefix tokens are committed without decode;
+//! only the tail after the first divergence is decoded normally.
 //!
-//! `draft_tokens` avoids the tokenizer round-trip problem where
-//! `tokenize(detokenize(tokens)) != tokens` for some subword
-//! sequences. When both fields are set, `draft_tokens` takes priority.
+//! ## Verification modes
+//!
+//! **Chunked** (default, `CHUNK_SIZE = 8`): verifies draft tokens in
+//! small batches that build incrementally on the KV cache. Each chunk
+//! sees only its own tokens in self-attention, making the computation
+//! numerically closer to sequential decode. This avoids the large-batch
+//! precision drift that causes spurious rejections.
+//!
+//! **Single-batch**: verifies all draft tokens in one batch. Fast but
+//! the batch self-attention produces different numerical results than
+//! sequential decode, causing rejections even for self-drafted tokens.
 
 use super::*;
 
@@ -26,19 +33,32 @@ pub(super) struct SpecPrefillResult {
     /// from the draft — it becomes `current` for the decode loop.
     /// None if the draft was fully accepted.
     pub(super) divergence_token: Option<i32>,
-    /// Whether the draft was fully accepted (no decode needed).
+    /// Whether the draft was fully accepted AND the response is
+    /// complete (last predicted token is EOG). Only then can we
+    /// skip the decode loop entirely.
     pub(super) fully_accepted: bool,
     /// Time spent tokenizing the draft (0 when `draft_tokens` used).
     pub(super) tokenize_ms: f64,
     /// Time spent in verify_tokens.
     pub(super) verify_ms: f64,
+    /// Per-position log-probability of the draft token.
+    pub(super) draft_logprobs: Vec<f32>,
 }
+
+/// Chunk size for verification. Smaller = closer to sequential decode
+/// (better acceptance) but more batches. 8 is a good balance.
+const CHUNK_SIZE: usize = 8;
+
+/// Probability threshold for acceptance. A draft token is accepted if
+/// the target assigns probability >= this threshold.
+/// exp(-0.693) ≈ 0.5.
+const PROB_THRESHOLD: f32 = 0.5;
 
 /// Verify draft token IDs (or text) against the target model.
 ///
 /// Call this after prefilling the prompt tokens but before the decode
 /// loop. The session's KV cache is warm from the prompt prefill. We
-/// extend it by verifying the draft tokens in one batched forward pass.
+/// extend it by verifying the draft tokens in small chunks.
 ///
 /// Returns `None` if the draft is empty or produces no tokens.
 pub(super) fn verify_draft(
@@ -75,26 +95,28 @@ pub(super) fn verify_draft(
         return Ok(None);
     };
 
-    // Verify: run all draft tokens through the model in one batch.
-    // The model computes logits at every position and returns its
-    // greedy prediction at each.
+    // Verify in chunks — each chunk builds on prior KV cache state,
+    // making self-attention numerically closer to sequential decode.
     let verify_timer = PhaseTimer::start();
-    let predicted = {
+    let (predicted, draft_logprobs) = {
         let mut rt = runtime
             .lock()
             .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
-        rt.verify_tokens(session_id, &draft_token_ids)
+        rt.verify_tokens_chunked(session_id, &draft_token_ids, CHUNK_SIZE)
             .map_err(openai_backend_error)?
     };
     let verify_ms = verify_timer.elapsed_ms();
 
-    // Find the first divergence: compare predicted[i] vs draft_token_ids[i+1].
-    // predicted[i] is what the target model would emit after seeing tokens 0..=i.
-    // draft_token_ids[i+1] is the next draft token.
-    let mut accepted = 0usize;
+    // Find contiguous acceptance prefix using probability threshold.
+    // Accept draft token at position i if:
+    //   1. The target's greedy prediction matches (predicted[i] == draft[i+1]), OR
+    //   2. The target assigns probability >= PROB_THRESHOLD to draft[i+1]
     let compare_len = draft_token_ids.len().saturating_sub(1);
+    let mut accepted = 0usize;
     for i in 0..compare_len {
-        if predicted[i] == draft_token_ids[i + 1] {
+        let greedy_match = predicted[i] == draft_token_ids[i + 1];
+        let prob_ok = draft_logprobs[i].exp() >= PROB_THRESHOLD;
+        if greedy_match || prob_ok {
             accepted += 1;
         } else {
             break;
@@ -113,11 +135,16 @@ pub(super) fn verify_draft(
         false
     };
 
-    let fully_accepted = accepted == compare_len && (compare_len > 0 || last_predicted_is_eog);
+    // "Fully accepted" means all draft tokens accepted AND the response
+    // is complete (last predicted token is EOG). Only then can we skip
+    // the decode loop.
+    let all_accepted = accepted == compare_len && compare_len > 0;
+    let fully_accepted = all_accepted && last_predicted_is_eog;
 
-    let divergence_token = if fully_accepted {
+    let divergence_token = if all_accepted {
         // The model agreed with all draft tokens. The predicted token
-        // after the last draft token is the natural continuation.
+        // after the last draft token is the natural continuation (may
+        // be EOG or a token to continue decoding from).
         predicted.last().copied()
     } else {
         // The model diverged at position `accepted`. Its prediction
@@ -134,5 +161,6 @@ pub(super) fn verify_draft(
         fully_accepted,
         tokenize_ms,
         verify_ms,
+        draft_logprobs,
     }))
 }

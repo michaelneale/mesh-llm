@@ -1,17 +1,17 @@
-From 20258d6ccbc38b7b610ee19e004d3671c3fc10fd Mon Sep 17 00:00:00 2001
+From f93ff88495702ad881755c9577868406740178a3 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Tue, 5 May 2026 22:34:00 +1000
-Subject: [PATCH 44/80] Allow borrowing resident prefix cache sequences
+Subject: [PATCH 44/81] Allow borrowing resident prefix cache sequences
 
 ---
  src/skippy.cpp | 40 +++++++++++++++++++++++++++++++---------
  1 file changed, 31 insertions(+), 9 deletions(-)
 
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 8b6a5503..4c65dbc4 100644
+index e0cc4a08..5a5b123c 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
-@@ -2949,9 +2949,18 @@ enum skippy_status skippy_session_create_from_resident_prefix(
+@@ -2955,9 +2955,18 @@ enum skippy_status skippy_session_create_from_resident_prefix(
          skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "cache sequence id overlaps execution lanes");
          return SKIPPY_STATUS_INVALID_ARGUMENT;
      }
@@ -33,7 +33,7 @@ index 8b6a5503..4c65dbc4 100644
      }
  
      skippy_session temp{};
-@@ -2960,6 +2969,7 @@ enum skippy_status skippy_session_create_from_resident_prefix(
+@@ -2966,6 +2975,7 @@ enum skippy_status skippy_session_create_from_resident_prefix(
      llama_memory_t memory = nullptr;
      enum skippy_status status = skippy_get_resident_prefix_memory(&temp, &memory, out_error);
      if (status != SKIPPY_STATUS_OK) {
@@ -41,7 +41,7 @@ index 8b6a5503..4c65dbc4 100644
          return status;
      }
  
-@@ -2968,22 +2978,34 @@ enum skippy_status skippy_session_create_from_resident_prefix(
+@@ -2974,22 +2984,34 @@ enum skippy_status skippy_session_create_from_resident_prefix(
          const llama_pos max_pos = llama_memory_seq_pos_max(memory, cache_seq_id);
          if (max_pos < static_cast<llama_pos>(token_count - 1)) {
              skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "resident prefix sequence is incomplete");
@@ -83,5 +83,5 @@ index 8b6a5503..4c65dbc4 100644
          session->token_history.assign(token_ids, token_ids + token_count);
      }
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 

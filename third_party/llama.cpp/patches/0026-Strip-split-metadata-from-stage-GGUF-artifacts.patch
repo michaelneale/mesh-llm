@@ -1,7 +1,7 @@
-From 9c23f62e7c0b39c818ce969f6878985a7aa112ed Mon Sep 17 00:00:00 2001
+From 0294c46389aaa9070a67e6e95ec3fdb9fc1222ae Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Tue, 28 Apr 2026 07:38:29 +1000
-Subject: [PATCH 26/80] Strip split metadata from stage GGUF artifacts
+Subject: [PATCH 26/81] Strip split metadata from stage GGUF artifacts
 
 ---
  src/skippy.cpp | 8 ++++++++
@@ -41,5 +41,5 @@ index 36e8826d..5abc8776 100644
      gguf_set_val_bool(out_ctx, "skippy.package.materialized", true);
      gguf_set_val_u32(out_ctx, "skippy.package.part_count", static_cast<uint32_t>(input_count));
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 
