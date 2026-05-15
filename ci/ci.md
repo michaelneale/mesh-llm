@@ -40,7 +40,9 @@ subgraph PRCI["pr_ci.yml · PR Builds"]
         direction TB
         subgraph Producers["top-level target matrices"]
             LinuxCrateTests["linux_crate_tests matrix\nSDK/API · Skippy · unit/protocol bins"]
-            LinuxTargets["linux_targets matrix\nCPU row: debug mesh-llm · binary smokes\nCUDA / ROCm / Vulkan rows build when backend_changed\nCPU → ci-linux-inference-binaries"]
+            LinuxTargets["linux_targets matrix\nCPU row: debug mesh-llm artifact producer\nCUDA / ROCm / Vulkan rows build when backend_changed\nCPU → ci-linux-inference-binaries"]
+            LinuxBinarySmoke["linux_binary_smoke\nCLI + client-auto from Linux artifact"]
+            SkippySmoke["skippy_smoke_tests\nSkippy integration smoke"]
             WindowsTargets["windows_targets matrix\nCPU / CUDA / ROCm / Vulkan\nCPU checks unless Windows CPU changed"]
             MacTargets["macos_targets matrix\nmacOS/UI/Swift/backend-scoped CPU build · CLI smoke\nCUDA / ROCm / Vulkan explicit skips\nCPU → ci-macos-inference-binaries"]
             SwiftXCFramework["swift_xcframework\nhost macOS XCFramework artifact"]
@@ -58,11 +60,13 @@ subgraph PRCI["pr_ci.yml · PR Builds"]
     PRWorkflow -. "true: keep to routing validation" .-> PRCI
     Affected --> LinuxCrateTests
     Affected --> LinuxTargets
+    Affected --> SkippySmoke
     Affected --> MacTargets
     Backend --> LinuxTargets
     Backend --> WindowsTargets
     Backend --> MacTargets
     LinuxTargets -- "CPU artifact: ci-linux-inference-binaries" --> Restore
+    LinuxTargets -- "CPU artifact" --> LinuxBinarySmoke
     MacTargets -- "CPU artifact: ci-macos-inference-binaries" --> Restore
     SwiftXCFramework -- "ci-swift-xcframework" --> SDKSmoke
     Restore --> Inference
@@ -107,8 +111,11 @@ subgraph PRCI["pr_ci.yml · PR Builds"]
 - `pr_ci.yml` is named **PR Builds** and owns PR target matrices plus integration
   and smoke validation. Linux crate tests run in a separate matrix so Linux CPU
   can produce the smoke artifact without serializing every Rust test on the
-  binary-build critical path. Linux, macOS, and Windows are top-level matrices;
-  Linux and macOS CPU rows upload the binaries that downstream smoke jobs consume.
+  binary-build critical path. Linux CPU uploads its artifact before CLI/client and
+  Skippy smoke validation continue in parallel jobs, allowing downstream reusable
+  smokes to start as soon as the binary exists. Linux, macOS, and Windows are
+  top-level matrices; Linux and macOS CPU rows upload the binaries that
+  downstream smoke jobs consume.
   Swift XCFramework production runs in parallel with the macOS CPU row so Swift
   SDK smoke consumes a built XCFramework artifact instead of rebuilding it after
   the macOS binary is ready.
@@ -131,10 +138,10 @@ subgraph PRCI["pr_ci.yml · PR Builds"]
   archive cost was longer than the reuse benefit for PR Builds; main-branch
   cache saves may still include target data.
 - Rust caches stay platform/backend scoped. Linux CPU, Linux backend rows, macOS,
-  Linux crate-test groups, Windows backend rows, clippy, and HuggingFace download
-  smoke each keep their own compatible cache namespace instead of sharing a
-  single prebuilt dependency artifact across incompatible runners or SDK
-  environments.
+  Linux crate-test groups, Linux/SDK smoke jobs, Windows backend rows, clippy,
+  and HuggingFace download smoke each keep their own compatible cache namespace
+  instead of sharing a single prebuilt dependency artifact across incompatible
+  runners or SDK environments.
 - PR cache writes use the standard GitHub Actions cache service under
   `refs/pull/<PR>/merge`; `pr_cleanup.yml` deletes that ref's caches when the PR
   closes so PR-lifetime Rust caches do not linger unbounded.

@@ -21,7 +21,8 @@ reason about.
   jobs that ignore `docs_only`, `rust_changed`, `backend_changed`, or
   `sdk_smoke_required`.
 - Keep Linux, macOS, and Windows as top-level target matrices in `pr_ci.yml`.
-  Linux/macOS CPU rows are the producer rows for downstream smoke artifacts.
+  Linux/macOS CPU rows produce downstream smoke artifacts before slower smoke
+  validation starts.
 - Keep macOS CUDA, ROCm, and Vulkan rows as explicit unsupported-backend skips.
 - Gate backend lanes on backend inputs, not every Rust change.
 - Benchmark crate changes should validate through Rust/quality lanes; do not use
@@ -67,8 +68,9 @@ reason about.
 - Use `smoke.yml`, `scripted-binary-smoke.yml`, `sdk-smoke.yml`, and
   `hf-download-smoke.yml` instead of copying artifact/model restore blocks into
   individual jobs.
-- Producer-local smoke steps may stay in CPU rows when they validate the binary
-  before upload.
+- Do not serialize downstream smoke jobs behind producer-local smoke steps. Upload
+  the binary first, then run CLI/client and Skippy smoke validation in parallel
+  jobs that consume the artifact or their own scoped build products.
 - Every workflow or script invocation of `mesh-llm` must include
   `--log-format json` so CI never starts the TUI by default.
 
