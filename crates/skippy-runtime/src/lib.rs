@@ -2422,6 +2422,48 @@ impl StageSession {
         Ok(window.into())
     }
 
+    /// Compute the token signal at a specific batch logits position.
+    ///
+    /// Typically called after [`verify_tokens()`] where logits are
+    /// populated at every position in the batch. `logits_index` is
+    /// 0-based within the batch.
+    pub fn token_signal_at(&mut self, logits_index: i32) -> Result<TokenSignal> {
+        let mut signal = RawTokenSignal::default();
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_session_token_signal_at(
+                self.raw,
+                logits_index,
+                &mut signal,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        Ok(signal.into())
+    }
+
+    /// Compute the log-probability of a specific token at a given
+    /// batch logits position.
+    ///
+    /// Typically called after [`verify_tokens()`] to check how likely
+    /// the target model considers a particular draft token at that
+    /// position.
+    pub fn token_logprob_at(&mut self, logits_index: i32, token_id: i32) -> Result<f32> {
+        let mut logprob: f32 = 0.0;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_session_token_logprob_at(
+                self.raw,
+                logits_index,
+                token_id,
+                &mut logprob,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        Ok(logprob)
+    }
+
     pub fn verify_tokens(&mut self, token_ids: &[i32]) -> Result<Vec<i32>> {
         if token_ids.is_empty() {
             return Ok(Vec::new());

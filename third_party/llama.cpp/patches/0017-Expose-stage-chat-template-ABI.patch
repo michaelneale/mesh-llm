@@ -1,7 +1,7 @@
-From f7f973a4ed051a4f4ddc8380b2b34d42f6026f84 Mon Sep 17 00:00:00 2001
+From bc09daedef05196d2ce56972185791790b0c5170 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 19:14:50 +1000
-Subject: [PATCH 17/80] Expose stage chat template ABI
+Subject: [PATCH 17/81] Expose stage chat template ABI
 
 ---
  common/CMakeLists.txt |   1 +
@@ -203,5 +203,5 @@ index 712aec9f..f0b70b96 100644
          const char * path,
          struct skippy_model_info ** out_info,
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 

@@ -1,7 +1,7 @@
 # Speculative Prefill Decoding for Distributed Layer Splits
 
-**Status:** Server integration tested — batch-vs-sequential precision blocker identified  
-**Date:** 2026-05-13 (PoC), 2026-05-12 (server integration)  
+**Status:** Per-position probability analysis complete — fundamental semantic divergence confirmed  
+**Date:** 2026-05-13 (PoC), 2026-05-12 (server + probability analysis)  
 **Scope:** Skippy layer-split inference across multiple nodes  
 **Related:** `docs/design/DESIGN.md`
 
@@ -340,20 +340,94 @@ for anything beyond ~15 tokens.
    batch-vs-sequential precision gap is fundamental to the compute
    architecture, not a bug to fix.
 
-3. **Possible mitigations** (not yet explored):
-   - **Probability-threshold acceptance** instead of greedy match —
-     accept draft tokens where the target assigns >50% probability,
-     even if the argmax differs slightly
-   - **Chunk-wise verification** — verify in smaller batches (e.g., 8
-     tokens at a time) to reduce precision drift accumulation
-   - **Sequential verification** — decode draft tokens one-by-one
-     (defeats the purpose for distributed inference but proves
-     correctness)
-
-4. **Standard spec decode is unaffected.** It works because the draft
+3. **Standard spec decode is unaffected.** It works because the draft
    model generates different tokens anyway — the acceptance rate
    measures model agreement, not compute precision. The
    checkpoint/restore mechanism handles mismatches gracefully.
+
+### Mitigation experiments (explored, all failed)
+
+#### Probability-threshold acceptance
+
+Added `skippy_session_token_logprob_at()` C ABI function to read the
+log-probability of a specific draft token at each batch position after
+`verify_tokens()`. Used `exp(logprob) >= 0.5` as the acceptance
+criterion instead of exact greedy match.
+
+**Result: identical acceptance rates.** The divergences are genuine
+semantic disagreements, not precision noise. At the first rejection
+point, the target assigns only 20-25% probability to the draft token:
+
+```
+code_fib:    [0-11] p>0.92, [12] p=0.203 — sharp cliff
+explain:     [0-11] p>0.81, [12] p=0.225 — same pattern
+multi_turn:  [0-7]  p>0.98, [8]  p=0.035 — model strongly disagrees
+count_10:    [0]    p=0.000               — complete disagreement
+```
+
+No threshold can rescue these — the model truly wants a different token.
+
+#### Chunk-wise verification
+
+Replaced single-batch verify with chunked verification (8 tokens per
+batch). Each chunk builds on the KV cache from prior chunks, making
+self-attention numerically closer to sequential decode.
+
+**Result: same acceptance rates, 3-5× slower.** The chunked approach
+revealed valuable data — positions AFTER the first divergence often
+show p>0.99, meaning the model agrees with the draft everywhere except
+at specific structural decision points. But the divergence points
+themselves are unchanged:
+
+```
+code_fib chunk=8: [12] p=0.195 (was p=0.203 single-batch)
+  but [13-19] all p≥0.999 — model re-converges after the fork
+```
+
+The divergences are real semantic forks — the model has a genuine
+choice between two viable continuations (e.g., "dictionary:\n\n```"
+vs "dictionary to store") and batch verify consistently picks the
+alternative path.
+
+### Root cause: batch self-attention changes model decisions
+
+Sequential decode builds KV cache entries one at a time. Each new
+token's key/value vectors are computed with attention over all prior
+KV entries. Batch verify processes multiple tokens simultaneously,
+and each token's self-attention sees all other batch tokens' keys and
+values in one pass. This isn't precision noise — it produces genuinely
+different attention patterns, particularly at positions where the model
+is choosing between two high-probability continuations (low margin).
+
+The pattern is consistent:
+- High-confidence positions (p>0.9) agree regardless of batch size
+- Low-margin decision points (where top-2 probs are close) flip
+  to the alternative, often with the draft token dropping to p~0.2
+- After the flip, the model re-converges to agree with the draft
+
+### Conclusion
+
+Speculative prefill verification as designed — verify draft tokens in
+one batch pass, accept contiguous prefix — hits a fundamental limit:
+batch verify makes different choices than sequential decode at semantic
+fork points. This cannot be fixed by:
+- Lowering acceptance thresholds (the probabilities are genuinely low)
+- Smaller batch chunks (the divergence is semantic, not numerical)
+- Probability-based acceptance (accepting low-prob tokens corrupts the continuation)
+
+**What works:** Short responses (≤15 tokens) where the model has high
+confidence throughout. Simple facts, tool confirmations, brief answers.
+These get 100% acceptance and genuine speedup.
+
+**What doesn't work:** Anything with structural choices — code formatting,
+explanation style, paragraph breaks. The model consistently takes
+alternative paths at these decision points in batch mode.
+
+**Remaining avenue:** Instead of verifying in batch, decode draft tokens
+one at a time (sequential verify). This would match sequential decode
+perfectly but defeats the purpose for distributed inference where the
+cost savings come from replacing per-token network rounds with a single
+batch prefill.
 
 
 ## What Exists in Skippy Today

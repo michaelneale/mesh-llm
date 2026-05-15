@@ -1,7 +1,7 @@
-From 80c446964d2d3773eea39f146a25a34e88a45236 Mon Sep 17 00:00:00 2001
+From 26d67d705e330d272db3736b0d321e9ce1341203 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Tue, 5 May 2026 22:20:00 +1000
-Subject: [PATCH 43/80] Default stage threads like llama-server
+Subject: [PATCH 43/81] Default stage threads like llama-server
 
 ---
  include/skippy.h |  4 +++-
@@ -31,7 +31,7 @@ index fe166e3d..deb5151e 100644
      int32_t cache_type_k;
      int32_t cache_type_v;
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 8c431715..8b6a5503 100644
+index 3fc8b928..e0cc4a08 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -20,14 +20,23 @@
@@ -106,5 +106,5 @@ index 8c431715..8b6a5503 100644
      params.kv_unified = stage_model->lane_count > 1;
      params.type_k = config != nullptr && config->cache_type_k > 0 ? static_cast<ggml_type>(config->cache_type_k) : GGML_TYPE_F16;
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 

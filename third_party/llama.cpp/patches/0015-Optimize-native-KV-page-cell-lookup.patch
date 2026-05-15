@@ -1,7 +1,7 @@
-From 0ef03b58fa8c34c73eb1de7b35db5af42a459b6d Mon Sep 17 00:00:00 2001
+From f868424cbaa3de9f3c8a357d572cd044bffba300 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 09:17:13 +1000
-Subject: [PATCH 15/80] Optimize native KV page cell lookup
+Subject: [PATCH 15/81] Optimize native KV page cell lookup
 
 ---
  src/llama-kv-cache.cpp | 29 +++++++++++++++--------------
@@ -51,5 +51,5 @@ index d03ca789..b59e7c3f 100644
      std::vector<const kv_layer *> selected;
      selected.reserve(layers.size());
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 

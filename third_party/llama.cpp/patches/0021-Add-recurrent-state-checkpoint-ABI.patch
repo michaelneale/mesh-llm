@@ -1,7 +1,7 @@
-From 6947cf7c79796fe4145e14bc2bcc063949c2168f Mon Sep 17 00:00:00 2001
+From 61073898fdaee9854de6effef0047ce1a296f9d8 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 14:07:00 +1000
-Subject: [PATCH 21/80] Add recurrent state checkpoint ABI
+Subject: [PATCH 21/81] Add recurrent state checkpoint ABI
 
 ---
  include/skippy.h |  16 +++++-
@@ -209,5 +209,5 @@ index e3c1f4a7..ce454d6c 100644
          skippy_session * session,
          skippy_error ** out_error) {
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 

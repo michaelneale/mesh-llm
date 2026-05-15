@@ -1,7 +1,7 @@
-From b794e1f84ba3d1323710f55f1250e01019ba8b80 Mon Sep 17 00:00:00 2001
+From 95dcf16feb433aeb52d6051efe44d7e440bed47b Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 13:30:00 +1000
-Subject: [PATCH 16/80] Add batched token verification ABI
+Subject: [PATCH 16/81] Add batched token verification ABI
 
 ---
  include/skippy.h | 12 +++++++-
@@ -143,5 +143,5 @@ index 16d77e25..712aec9f 100644
          struct skippy_session * session,
          const llama_token * token_ids,
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 

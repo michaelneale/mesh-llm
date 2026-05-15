@@ -1,11 +1,11 @@
-From 549da7d44d679d769df440ee982f5d77a9183ffd Mon Sep 17 00:00:00 2001
+From 9bbc276f88e42eca315759b3a9fadc9e044389ed Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Sat, 2 May 2026 14:14:40 +1000
-Subject: [PATCH 32/80] Expose selected backend device ABI
+Subject: [PATCH 32/81] Expose selected backend device ABI
 
 ---
  include/skippy.h |  5 +++++
- src/skippy.cpp   | 51 +++++++++++++++++++++++++++++++++++++++++++++++++++
+ src/skippy.cpp   | 51 ++++++++++++++++++++++++++++++++++++++++++++++++
  2 files changed, 56 insertions(+)
 
 diff --git a/include/skippy.h b/include/skippy.h
@@ -25,7 +25,7 @@ index 4f1c8805..2f8f8466 100644
  
  struct skippy_tensor_info {
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 4b4bf8eb..26209b45 100644
+index 4b4bf8eb..3c714eff 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -471,6 +471,41 @@ static bool skippy_is_full_model_config(const struct skippy_runtime_config * con
@@ -72,7 +72,7 @@ index 4b4bf8eb..26209b45 100644
          if (config != nullptr && config->filter_tensors_on_load) {
 @@ -1211,6 +1246,14 @@ enum skippy_status skippy_model_open(
      }
-
+ 
      llama_backend_init();
 +    if (!ggml_backend_reg_count()) {
 +        ggml_backend_load_all();
@@ -85,7 +85,7 @@ index 4b4bf8eb..26209b45 100644
      skippy_filter_scope filter_scope(config);
      llama_model * model = llama_model_load_from_file(path, params);
      if (model == nullptr) {
-@@ -1262,6 +1302,14 @@ enum skippy_status skippy_model_open_from_parts(
+@@ -1262,6 +1305,14 @@ enum skippy_status skippy_model_open_from_parts(
      }
  
      llama_backend_init();
@@ -101,5 +101,5 @@ index 4b4bf8eb..26209b45 100644
      llama_model * model = llama_model_load_from_parts(paths, path_count, params);
      if (model == nullptr) {
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 

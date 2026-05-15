@@ -390,7 +390,14 @@ impl StageOpenAiBackend {
                     // The +1 accounts for draft_token[0] which is always
                     // "processed" (its predicted[0] tells us what the
                     // target would emit next).
-                    if !result.fully_accepted {
+                    //
+                    // Only trim when there are actually rejected tokens.
+                    // If all draft tokens were accepted but the response
+                    // isn't done (no EOG), the KV cache is valid through
+                    // the whole draft and decode continues from there.
+                    let has_rejected =
+                        result.accepted_tokens < result.total_draft_tokens.saturating_sub(1);
+                    if has_rejected {
                         let keep = prompt_token_count + result.accepted_tokens as u64 + 1;
                         let mut rt = self
                             .runtime
@@ -438,14 +445,21 @@ impl StageOpenAiBackend {
                     );
                     self.telemetry.emit("stage.openai_spec_prefill", attrs);
 
+                    let logprob_summary: Vec<String> = result
+                        .draft_logprobs
+                        .iter()
+                        .enumerate()
+                        .take(20)
+                        .map(|(i, &lp)| format!("[{}]p={:.3}", i, lp.exp()))
+                        .collect();
                     eprintln!(
-                        "spec_prefill: {}/{} accepted ({:.1}%), verify={:.0}ms, fully_accepted={}, token_ids={}",
+                        "spec_prefill: {}/{} accepted ({:.1}%), verify={:.0}ms, fully_accepted={}, chunk=8, probs={}",
                         result.accepted_tokens,
                         compare_len,
                         acceptance_rate * 100.0,
                         result.verify_ms,
                         result.fully_accepted,
-                        draft_token_ids.is_some(),
+                        logprob_summary.join(" "),
                     );
 
                     // ── Emit accepted prefix ───────────────────────

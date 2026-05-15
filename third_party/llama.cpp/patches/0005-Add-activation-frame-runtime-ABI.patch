@@ -1,7 +1,7 @@
-From f8ee8abf2e7426b04ea487d7554fc13e258acad5 Mon Sep 17 00:00:00 2001
+From ddd01aa68efd577be0632af70595c611fef7fcae Mon Sep 17 00:00:00 2001
 From: James Dumay <jameswdumay@gmail.com>
 Date: Sat, 25 Apr 2026 12:15:31 +1000
-Subject: [PATCH 05/80] Add activation frame runtime ABI
+Subject: [PATCH 05/81] Add activation frame runtime ABI
 
 ---
  include/skippy.h |  50 +++++++++++++++++++++
@@ -228,5 +228,5 @@ index 10876ee5..4aef362a 100644
          struct skippy_session * session,
          int32_t layer_start,
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 
