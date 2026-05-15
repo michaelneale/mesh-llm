@@ -9,7 +9,9 @@ fi
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-if [[ "${MESH_SWIFT_FULL_XCFRAMEWORK_SMOKE:-0}" == "1" ]]; then
+if [[ -d "$REPO_ROOT/sdk/swift/Generated/MeshLLMFFI.xcframework" && -f "$REPO_ROOT/sdk/swift/Sources/MeshLLM/Generated/mesh_ffi.swift" && "${MESH_SWIFT_REBUILD_XCFRAMEWORK:-0}" != "1" ]]; then
+    echo "Reusing restored Swift XCFramework artifact"
+elif [[ "${MESH_SWIFT_FULL_XCFRAMEWORK_SMOKE:-0}" == "1" ]]; then
     ./sdk/swift/scripts/build-xcframework.sh
 else
     ./sdk/swift/scripts/build-host-macos-xcframework.sh

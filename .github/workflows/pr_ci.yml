@@ -660,9 +660,46 @@ jobs:
       model_cache_scope: sdk-smoke-model
       runs_on: '"ubuntu-latest"'
 
+  swift_xcframework:
+    needs: changes
+    if: ${{ needs.changes.outputs.sdk_smoke_required == 'true' && needs.changes.outputs.docs_only != 'true' }}
+    name: Swift XCFramework
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+          cache-bin: "false"
+          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ runner.os }}-${{ hashFiles('.github/cache-version.txt') }}
+          shared-key: swift-xcframework
+          cache-targets: ${{ github.event_name != 'pull_request' }}
+          save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
+
+      - name: Build host Swift XCFramework
+        run: sdk/swift/scripts/build-host-macos-xcframework.sh
+
+      - name: Pack Swift XCFramework artifact
+        run: |
+          tar -czf swift-xcframework.tar.gz \
+            sdk/swift/Generated/MeshLLMFFI.xcframework \
+            sdk/swift/Generated/FFI \
+            sdk/swift/Sources/MeshLLM/Generated/mesh_ffi.swift
+
+      - name: Upload Swift XCFramework artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ci-swift-xcframework
+          path: swift-xcframework.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
   swift_sdk_smoke:
-    needs: [changes, macos_targets]
-    if: ${{ needs.macos_targets.result == 'success' && needs.changes.outputs.sdk_smoke_required == 'true' && needs.changes.outputs.docs_only != 'true' }}
+    needs: [changes, macos_targets, swift_xcframework]
+    if: ${{ needs.macos_targets.result == 'success' && needs.swift_xcframework.result == 'success' && needs.changes.outputs.sdk_smoke_required == 'true' && needs.changes.outputs.docs_only != 'true' }}
     uses: ./.github/workflows/sdk-smoke.yml
     with:
       sdk_kind: swift
@@ -672,6 +709,7 @@ jobs:
       model_cache_scope: sdk-smoke-model
       runs_on: '"macos-14"'
       timeout_minutes: 40
+      swift_xcframework_artifact_name: ci-swift-xcframework
 
   macos_targets:
     needs: changes
@@ -788,7 +826,7 @@ jobs:
         if: ${{ matrix.backend == 'cpu' && env.RUN_MACOS_CPU == 'true' }}
         run: cargo build -p mesh-llm --bin mesh-llm
       - name: Unit tests
-        if: ${{ matrix.backend == 'cpu' && env.RUN_MACOS_CPU == 'true' && (needs.changes.outputs.all_rust == 'true' || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'model-artifact') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm-host-runtime') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm')) }}
+        if: ${{ matrix.backend == 'cpu' && env.RUN_MACOS_CPU == 'true' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.all_rust == 'true' || needs.changes.outputs.macos == 'true' || needs.changes.outputs.backend_changed == 'true') }}
         env:
           AFFECTED: ${{ needs.changes.outputs.affected_crates }}
           ALL_RUST: ${{ needs.changes.outputs.all_rust }}

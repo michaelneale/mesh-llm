@@ -41,6 +41,10 @@ on:
         required: false
         default: 30
         type: number
+      swift_xcframework_artifact_name:
+        required: false
+        default: ''
+        type: string
 
 env:
   MODEL_URL: ${{ inputs.model_url }}
@@ -83,6 +87,17 @@ jobs:
           [target.x86_64-unknown-linux-gnu]
           rustflags = ["-C", "link-arg=-fuse-ld=lld"]
           EOF
+
+      - name: Download Swift XCFramework artifact
+        if: ${{ inputs.sdk_kind == 'swift' && inputs.swift_xcframework_artifact_name != '' }}
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ inputs.swift_xcframework_artifact_name }}
+          path: ci-artifacts/swift-xcframework
+
+      - name: Restore Swift XCFramework artifact
+        if: ${{ inputs.sdk_kind == 'swift' && inputs.swift_xcframework_artifact_name != '' }}
+        run: tar -xzf ci-artifacts/swift-xcframework/swift-xcframework.tar.gz
 
       - uses: ./.github/actions/restore-smoke-inputs
         with:
