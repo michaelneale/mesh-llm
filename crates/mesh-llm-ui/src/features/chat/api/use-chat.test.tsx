@@ -23,7 +23,8 @@ function createUserMessage(content: string): UIMessage {
 }
 
 async function drainStream(adapter: ConnectConnectionAdapter, message: UIMessage) {
-  for await (const _chunk of adapter.connect([message], undefined, undefined)) {
+  for await (const chunk of adapter.connect([message], undefined, undefined)) {
+    void chunk
     // Drain the stream so the request body is built and posted.
   }
 }

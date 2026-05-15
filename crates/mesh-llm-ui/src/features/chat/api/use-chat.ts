@@ -22,20 +22,15 @@ export function useMeshChat({
   onResponseMetadata
 }: UseMeshChatOptions): UseChatReturn {
   const previousConversationIdRef = useRef(conversationId)
-  const currentModelRef = useRef(model)
-  const currentSystemPromptRef = useRef(systemPrompt)
-
-  currentModelRef.current = model
-  currentSystemPromptRef.current = systemPrompt
 
   const connection = useMemo(
     () =>
       createMeshConnectionAdapter(
-        () => currentModelRef.current,
+        () => model,
         onResponseMetadata,
-        () => currentSystemPromptRef.current
+        () => systemPrompt
       ),
-    [onResponseMetadata]
+    [model, onResponseMetadata, systemPrompt]
   )
   const hydratedMessages = useMemo(() => threadMessagesToUIMessages(initialMessages), [initialMessages])
   const chat = useChat({ id: conversationId, connection, initialMessages: hydratedMessages })
