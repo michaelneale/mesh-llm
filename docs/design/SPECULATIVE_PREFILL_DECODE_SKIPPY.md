@@ -1,7 +1,7 @@
 # Speculative Prefill Decoding for Distributed Layer Splits
 
-**Status:** Proof of concept validated  
-**Date:** 2026-05-13  
+**Status:** Server integration tested — batch-vs-sequential precision blocker identified  
+**Date:** 2026-05-13 (PoC), 2026-05-12 (server integration)  
 **Scope:** Skippy layer-split inference across multiple nodes  
 **Related:** `docs/design/DESIGN.md`
 
@@ -242,6 +242,119 @@ The binary:
    chat template and tokenizer
 3. Prefills the prompt, calls `verify_tokens()` on the draft tokens
 4. Reports per-position acceptance and summary statistics
+
+## Server Integration Experiment
+
+**Status:** Integrated and tested. Results reveal a fundamental blocker.
+
+### What was built
+
+Speculative prefill was integrated into skippy-server's local generation
+path (`crates/skippy-server/src/frontend/local_generation.rs`). New
+request fields `draft_response` (text) and `draft_tokens` (pre-tokenized
+IDs) trigger verification before the decode loop. A `return_token_ids`
+request flag makes the response include `completion_token_ids` so callers
+can pass exact token IDs to avoid tokenizer round-trip issues.
+
+The flow:
+1. Normal prompt prefill (warms KV cache)
+2. If `draft_tokens` or `draft_response` is set:
+   - Tokenize draft text (or use provided IDs directly)
+   - Call `RuntimeState::verify_tokens()` — one batched forward pass
+   - Find contiguous acceptance prefix
+   - Trim KV cache to `prompt_tokens + accepted + 1` on divergence
+   - Emit accepted prefix via `on_token()`
+   - If fully accepted → return immediately (skip decode)
+   - If diverged → set `current = divergence_token`, fall through to
+     normal decode loop
+
+### Results: batch-vs-sequential numerical divergence
+
+**Self-drafting** (same model, same tokens, temp=0):
+
+| Prompt | Accept | Rate | Output match |
+|---|---|---|---|
+| Simple fact (7 tokens) | 6/6 | **100%** | ✅ |
+| Simple math (95 tokens) | 1/94 | 1.1% | ❌ |
+| Code fibonacci (86 tokens) | 12/85 | 14.1% | ❌ |
+| Code merge sort (230 tokens) | 3/229 | 1.3% | ❌ |
+| Hash table (101 tokens) | 12/100 | 12.0% | ❌ |
+| Agentic tool (16 tokens) | 15/15 | **100%** | ✅ |
+| Multi-turn decorator (253 tokens) | 8/252 | 3.2% | ❌ |
+| Train reasoning (300 tokens) | 3/299 | 1.0% | ❌ |
+
+**Cross-model drafting** (Qwen3.5-9B → Qwen3-8B via mesh):
+
+| Prompt | Accept | Rate |
+|---|---|---|
+| Simple fact | 6/6 | **100%** |
+| Code prime | 21/101 | 20.8% |
+| Flask API | 20/127 | 15.7% |
+| Binary search | 0/232 | 0% |
+| TCP vs UDP | 0/173 | 0% |
+
+### Critical finding: tokenizer round-trip is NOT the problem
+
+Initial hypothesis: retokenizing generated text produces different token
+IDs, causing false rejections. This was disproven. Sending exact token
+IDs via `draft_tokens` produces **identical acceptance rates** as sending
+text via `draft_response`:
+
+```
+simple_fact  — text: 6/6 (100%),  token_ids: 6/6 (100%)
+simple_math  — text: 1/94 (1.1%), token_ids: 1/94 (1.1%)
+code_fib     — text: 12/85 (14%), token_ids: 12/85 (14%)
+multi_turn   — text: 8/252 (3%),  token_ids: 8/252 (3%)
+```
+
+### Root cause: batch vs sequential compute precision
+
+`verify_tokens()` processes all draft tokens as a single batch
+(`llama_batch` with all positions set). Sequential `decode()` processes
+tokens one at a time. Due to floating-point accumulation order differences
+in the attention computation:
+
+- Batch: all positions computed in parallel, different reduction order
+- Sequential: each position computed after prior KV entries are settled
+
+This produces subtly different logits at the same positions. For short
+responses (≤15 tokens), the difference is below the greedy threshold and
+predictions match. For longer responses, accumulated precision drift
+causes the greedy-sampled token to differ at some position, and all
+subsequent tokens diverge because they see different prior context.
+
+This is the same fundamental issue that affects all speculative decoding
+in llama.cpp — the verify batch doesn't perfectly reproduce sequential
+decode. Standard spec decode handles this via checkpoint/restore and
+re-drafting. But spec PREFILL specifically bets on the batch pass
+agreeing with what sequential decode would produce, and this bet fails
+for anything beyond ~15 tokens.
+
+### Implications
+
+1. **Short responses work perfectly.** Simple facts, tool confirmations,
+   and brief answers get 100% acceptance and meaningful time savings
+   (55% faster). This is viable for specific use cases.
+
+2. **Long responses are not viable with greedy batch verify.** The
+   batch-vs-sequential precision gap is fundamental to the compute
+   architecture, not a bug to fix.
+
+3. **Possible mitigations** (not yet explored):
+   - **Probability-threshold acceptance** instead of greedy match —
+     accept draft tokens where the target assigns >50% probability,
+     even if the argmax differs slightly
+   - **Chunk-wise verification** — verify in smaller batches (e.g., 8
+     tokens at a time) to reduce precision drift accumulation
+   - **Sequential verification** — decode draft tokens one-by-one
+     (defeats the purpose for distributed inference but proves
+     correctness)
+
+4. **Standard spec decode is unaffected.** It works because the draft
+   model generates different tokens anyway — the acceptance rate
+   measures model agreement, not compute precision. The
+   checkpoint/restore mechanism handles mismatches gracefully.
+
 
 ## What Exists in Skippy Today
 
