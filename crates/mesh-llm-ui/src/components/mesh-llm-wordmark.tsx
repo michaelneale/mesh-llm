@@ -6,7 +6,7 @@ type MeshLlmWordmarkProps = {
 
 export function MeshLlmWordmark({ className }: MeshLlmWordmarkProps) {
   return (
-    <span className={cn('whitespace-nowrap tracking-tight', className)}>
+    <span className={cn('whitespace-nowrap tracking-tight leading-none', className)}>
       <span className="text-primary">mesh</span>
       llm
     </span>
