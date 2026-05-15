@@ -39,9 +39,10 @@ flowchart TD
 subgraph PRCI["pr_ci.yml · PR Builds"]
         direction TB
         subgraph Producers["top-level target matrices"]
-            LinuxTargets["linux_targets matrix\nCPU row: crate tests · debug mesh-llm · CLI/client smoke\nCUDA / ROCm / Vulkan rows build when backend_changed\nCPU → ci-linux-inference-binaries"]
+            LinuxCrateTests["linux_crate_tests matrix\nSDK/API · Skippy · unit/protocol bins"]
+            LinuxTargets["linux_targets matrix\nCPU row: debug mesh-llm · binary smokes\nCUDA / ROCm / Vulkan rows build when backend_changed\nCPU → ci-linux-inference-binaries"]
             WindowsTargets["windows_targets matrix\nCPU / CUDA / ROCm / Vulkan\nCPU checks unless Windows CPU changed"]
-            MacTargets["macos_targets matrix\nCPU row: macOS Metal build · crate tests · CLI smoke\nCUDA / ROCm / Vulkan explicit skips\nCPU → ci-macos-inference-binaries"]
+            MacTargets["macos_targets matrix\nmacOS/UI/Swift/backend-scoped CPU build · CLI smoke\nCUDA / ROCm / Vulkan explicit skips\nCPU → ci-macos-inference-binaries"]
         end
 
         subgraph Smokes["artifact-consuming smokes"]
@@ -54,6 +55,7 @@ subgraph PRCI["pr_ci.yml · PR Builds"]
 
     Docs -. "true: gate heavy jobs" .-> PRCI
     PRWorkflow -. "true: keep to routing validation" .-> PRCI
+    Affected --> LinuxCrateTests
     Affected --> LinuxTargets
     Affected --> MacTargets
     Backend --> LinuxTargets
@@ -67,7 +69,7 @@ subgraph PRCI["pr_ci.yml · PR Builds"]
     SDK --> SDKSmoke
 
     subgraph PRDocker["pr_docker.yml · PR Docker Build"]
-        DockerBuild["Build Docker client image\npush: false"]
+        DockerBuild["Build Docker client image\nDocker-input scoped · push: false\nGHA layer cache"]
     end
 
     Files --> DockerBuild
@@ -101,9 +103,15 @@ subgraph PRCI["pr_ci.yml · PR Builds"]
   formatting, UI quality when relevant, and deterministic clippy bins from
   `scripts/plan-clippy-batches.sh`.
 - `pr_ci.yml` is named **PR Builds** and owns PR target matrices plus integration
-  and smoke validation. Linux, macOS, and Windows are top-level matrices; Linux
-  and macOS CPU rows upload the binaries that downstream smoke jobs consume.
-- `pr_docker.yml` validates the PR Docker client image without publishing.
+  and smoke validation. Linux crate tests run in a separate matrix so Linux CPU
+  can produce the smoke artifact without serializing every Rust test on the
+  binary-build critical path. Linux, macOS, and Windows are top-level matrices;
+  Linux and macOS CPU rows upload the binaries that downstream smoke jobs consume.
+- `pr_docker.yml` validates the PR Docker client image without publishing when
+  Docker packaging inputs change. Workflow-only edits are covered by the shared
+  YAML/consistency validation instead of self-triggering a heavyweight image
+  build. Docker builds use GitHub Actions layer cache scoped to the PR cache ref
+  so repeated Docker checks do not rebuild every layer.
 - `pr_cleanup.yml` deletes PR merge-ref caches and artifacts from positively
   matched PR workflow runs when a pull request closes.
 - Non-PR workflows (`ci.yml`, `docker.yml`, `release.yml`) own main, dispatch,
@@ -118,9 +126,10 @@ subgraph PRCI["pr_ci.yml · PR Builds"]
   archive cost was longer than the reuse benefit for PR Builds; main-branch
   cache saves may still include target data.
 - Rust caches stay platform/backend scoped. Linux CPU, Linux backend rows, macOS,
-  Windows backend rows, clippy, and HuggingFace download smoke each keep their
-  own compatible cache namespace instead of sharing a single prebuilt dependency
-  artifact across incompatible runners or SDK environments.
+  Linux crate-test groups, Windows backend rows, clippy, and HuggingFace download
+  smoke each keep their own compatible cache namespace instead of sharing a
+  single prebuilt dependency artifact across incompatible runners or SDK
+  environments.
 - PR cache writes use the standard GitHub Actions cache service under
   `refs/pull/<PR>/merge`; `pr_cleanup.yml` deletes that ref's caches when the PR
   closes so PR-lifetime Rust caches do not linger unbounded.

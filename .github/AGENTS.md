@@ -24,6 +24,15 @@ reason about.
   Linux/macOS CPU rows are the producer rows for downstream smoke artifacts.
 - Keep macOS CUDA, ROCm, and Vulkan rows as explicit unsupported-backend skips.
 - Gate backend lanes on backend inputs, not every Rust change.
+- Benchmark crate changes should validate through Rust/quality lanes; do not use
+  benchmark-only changes as a proxy for native backend rebuilds.
+- Keep crate tests out of binary producer critical paths when they can run in a
+  parallel matrix without weakening the required checks.
+- Gate macOS and Docker packaging work on platform/package inputs instead of
+  making every Rust source change rebuild every non-Linux artifact.
+- Workflow file edits are validated by local/PR YAML and consistency checks; do
+  not self-trigger heavyweight Docker or platform builds just because their
+  workflow definition changed.
 - Keep clippy sharding driven by `scripts/plan-clippy-batches.sh`; do not
   replace it with hand-maintained static batches.
 - If workflow changes affect crate/test routing, update
@@ -41,6 +50,8 @@ reason about.
 - Do not save PR Rust build outputs to cross-PR, branch, release, or external
   shared cache backends unless cleanup for that backend is added in the same
   change.
+- Docker PR layer caches must use the standard GitHub Actions cache backend so
+  `pr_cleanup.yml` removes them with the rest of `refs/pull/<PR>/merge` caches.
 - Do not reintroduce unreachable artifact consumers. If a smoke consumes an
   artifact, the producer must upload it in the same workflow graph.
 
