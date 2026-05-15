@@ -107,7 +107,7 @@ main() {
        [[ "$file" =~ ^Justfile$ ]] || \
        [[ "$file" =~ ^\.github/cache-version\.txt$ ]] || \
        [[ "$file" =~ ^\.github/workflows/ci\.yml$ ]] || \
-       [[ "$file" =~ ^\.github/workflows/pr_ci\.yml$ ]] || \
+       [[ "$file" =~ ^\.github/workflows/pr_builds\.yml$ ]] || \
        [[ "$file" =~ ^\.github/workflows/pr_quality\.yml$ ]] || \
        [[ "$file" =~ ^\.github/workflows/pr_docker\.yml$ ]] || \
        [[ "$file" =~ ^\.github/workflows/pr_cleanup\.yml$ ]] || \

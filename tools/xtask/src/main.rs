@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -21,8 +22,14 @@ fn run() -> DynResult<()> {
         [command, scope] if command == "repo-consistency" && scope == "release-targets" => {
             check_release_targets()
         }
+        [command, scope] if command == "repo-consistency" && scope == "ci-crate-lists" => {
+            let repo_root = repo_root()?;
+            check_ci_script_workspace_members(&repo_root)?;
+            println!("repo consistency checks passed: ci-crate-lists");
+            Ok(())
+        }
         _ => Err(
-            "usage:\n  cargo run -p xtask -- repo-consistency release-targets"
+            "usage:\n  cargo run -p xtask -- repo-consistency release-targets\n  cargo run -p xtask -- repo-consistency ci-crate-lists"
                 .to_string()
                 .into(),
         ),
@@ -43,6 +50,7 @@ fn check_release_targets() -> DynResult<()> {
         );
     }
     check_windows_name_invariance(&fixture_rows, &fixture_version)?;
+    check_ci_script_workspace_members(&repo_root)?;
     check_docs_and_workflow_invariants(&repo_root)?;
 
     println!("repo consistency checks passed: release-targets");
@@ -70,6 +78,18 @@ struct FixtureRow {
     support: String,
     stable_asset: Option<String>,
     versioned_asset: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CargoMetadata {
+    packages: Vec<CargoPackage>,
+    workspace_members: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CargoPackage {
+    id: String,
+    name: String,
 }
 
 fn fixture_rows(repo_root: &Path) -> DynResult<Vec<FixtureRow>> {
@@ -490,7 +510,7 @@ fn check_docs_and_workflow_invariants(repo_root: &Path) -> DynResult<()> {
     let justfile = fs::read_to_string(repo_root.join("Justfile"))?;
     let release_workflow = fs::read_to_string(repo_root.join(".github/workflows/release.yml"))?;
     let ci_workflow = fs::read_to_string(repo_root.join(".github/workflows/ci.yml"))?;
-    let pr_ci_workflow = fs::read_to_string(repo_root.join(".github/workflows/pr_ci.yml"))?;
+    let pr_builds_workflow = fs::read_to_string(repo_root.join(".github/workflows/pr_builds.yml"))?;
     let pr_quality_workflow =
         fs::read_to_string(repo_root.join(".github/workflows/pr_quality.yml"))?;
     let pr_cleanup_workflow =
@@ -572,7 +592,7 @@ fn check_docs_and_workflow_invariants(repo_root: &Path) -> DynResult<()> {
         "RELEASE Windows check-release note",
     )?;
     ensure_contains(
-        &pr_ci_workflow,
+        &pr_builds_workflow,
         "cargo run -p xtask -- repo-consistency release-targets",
         "PR Builds xtask release-target check",
     )?;
@@ -580,6 +600,11 @@ fn check_docs_and_workflow_invariants(repo_root: &Path) -> DynResult<()> {
         &pr_quality_workflow,
         "name: PR Quality Checks",
         "PR quality workflow display name",
+    )?;
+    ensure_contains(
+        &pr_quality_workflow,
+        "cargo run -p xtask -- repo-consistency ci-crate-lists",
+        "PR quality CI crate-list drift check",
     )?;
     ensure_contains(
         &pr_cleanup_workflow,
@@ -591,7 +616,7 @@ fn check_docs_and_workflow_invariants(repo_root: &Path) -> DynResult<()> {
         "push:\n    branches: [main]",
         "main CI push trigger",
     )?;
-    check_ci_crate_test_coverage(&pr_ci_workflow)?;
+    check_ci_crate_test_coverage(&pr_builds_workflow)?;
 
     Ok(())
 }
@@ -639,6 +664,94 @@ fn check_ci_crate_test_coverage(ci_workflow: &str) -> DynResult<()> {
     }
 
     Ok(())
+}
+
+fn check_ci_script_workspace_members(repo_root: &Path) -> DynResult<()> {
+    let expected = workspace_package_names(repo_root)?;
+    let scripts = [
+        "scripts/affected-crates.sh",
+        "scripts/plan-clippy-batches.sh",
+    ];
+
+    for script in scripts {
+        let actual = script_workspace_members(repo_root, script)?;
+        ensure_set_eq(&expected, &actual, &format!("{script} WORKSPACE_MEMBERS"))?;
+    }
+
+    Ok(())
+}
+
+fn workspace_package_names(repo_root: &Path) -> DynResult<BTreeSet<String>> {
+    let mut cargo = Command::new("cargo");
+    cargo
+        .current_dir(repo_root)
+        .arg("metadata")
+        .arg("--format-version=1")
+        .arg("--no-deps");
+    let output = run_command(&mut cargo)?;
+    if !output.status.success() {
+        return Err(format!(
+            "cargo metadata failed while checking CI crate lists: {}",
+            trimmed_stderr_or_stdout(&output)
+        )
+        .into());
+    }
+
+    let metadata: CargoMetadata = serde_json::from_slice(&output.stdout)?;
+    let workspace_members = metadata
+        .workspace_members
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let mut names = BTreeSet::new();
+    for package in metadata.packages {
+        if workspace_members.contains(&package.id) {
+            names.insert(package.name);
+        }
+    }
+
+    if names.is_empty() {
+        return Err("cargo metadata returned no workspace package names".into());
+    }
+
+    Ok(names)
+}
+
+fn script_workspace_members(repo_root: &Path, relative_path: &str) -> DynResult<BTreeSet<String>> {
+    let contents = fs::read_to_string(repo_root.join(relative_path))?;
+    let mut in_array = false;
+    let mut members = BTreeSet::new();
+
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if !in_array {
+            if trimmed == "WORKSPACE_MEMBERS=(" {
+                in_array = true;
+            }
+            continue;
+        }
+
+        if trimmed == ")" {
+            return Ok(members);
+        }
+
+        let Some(member) = trimmed
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+        else {
+            return Err(format!(
+                "{relative_path} WORKSPACE_MEMBERS: expected quoted crate name, got `{trimmed}`"
+            )
+            .into());
+        };
+        if !members.insert(member.to_string()) {
+            return Err(format!(
+                "{relative_path} WORKSPACE_MEMBERS: duplicate crate name `{member}`"
+            )
+            .into());
+        }
+    }
+
+    Err(format!("{relative_path}: missing WORKSPACE_MEMBERS array").into())
 }
 
 fn sourced_script_stdout(
@@ -713,6 +826,32 @@ fn ensure_eq_option(expected: Option<&str>, actual: Option<&str>, context: &str)
     } else {
         Err(format!("{context}: expected {:?}, got {:?}", expected, actual).into())
     }
+}
+
+fn ensure_set_eq(
+    expected: &BTreeSet<String>,
+    actual: &BTreeSet<String>,
+    context: &str,
+) -> DynResult<()> {
+    if expected == actual {
+        return Ok(());
+    }
+
+    let missing = expected
+        .difference(actual)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let extra = actual
+        .difference(expected)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(format!(
+        "{context}: workspace crate list drift detected; missing [{}], extra [{}]",
+        missing, extra
+    )
+    .into())
 }
 
 fn ensure_status(expected: i32, actual: Option<i32>, context: &str) -> DynResult<()> {

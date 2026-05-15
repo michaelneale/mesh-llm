@@ -35,6 +35,8 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+      - name: Check CI crate-list drift
+        run: cargo run -p xtask -- repo-consistency ci-crate-lists
       - uses: ./.github/actions/compute-changes
         id: compute
         with:
@@ -126,12 +128,13 @@ jobs:
         run: pnpm test
 
   summary:
-    needs: [rust-fmt, rust-clippy, ui-quality]
+    needs: [changes, rust-fmt, rust-clippy, ui-quality]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Check quality gate
         env:
+          CHANGES: ${{ needs.changes.result }}
           FMT: ${{ needs.rust-fmt.result }}
           CLIPPY: ${{ needs.rust-clippy.result }}
           UI: ${{ needs.ui-quality.result }}
@@ -139,13 +142,14 @@ jobs:
           echo "┌────────────────────┬──────────────────────┐"
           echo "│ Check              │ Result               │"
           echo "├────────────────────┼──────────────────────┤"
+          printf "│ %-18s │ %-20s │\n" "changes"     "$CHANGES"
           printf "│ %-18s │ %-20s │\n" "rust-fmt"    "$FMT"
           printf "│ %-18s │ %-20s │\n" "rust-clippy" "$CLIPPY"
           printf "│ %-18s │ %-20s │\n" "ui-quality"  "$UI"
           echo "└────────────────────┴──────────────────────┘"
 
           FAILED=false
-          for STATUS in "$FMT" "$CLIPPY" "$UI"; do
+          for STATUS in "$CHANGES" "$FMT" "$CLIPPY" "$UI"; do
             if [[ "$STATUS" == "failure" || "$STATUS" == "cancelled" ]]; then
               FAILED=true
             fi

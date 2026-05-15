@@ -58,7 +58,7 @@ jobs:
               - 'scripts/**'
               - 'third_party/llama.cpp/**'
               - '.github/cache-version.txt'
-              - '.github/workflows/pr_ci.yml'
+              - '.github/workflows/pr_builds.yml'
               - '.github/workflows/pr_quality.yml'
               - '.github/workflows/smoke.yml'
 
@@ -68,7 +68,7 @@ jobs:
               - 'crates/skippy-bench/**'
               - 'crates/llama-spec-bench/**'
               - 'crates/mesh-llm-gpu-bench/**'
-              - '.github/workflows/pr_ci.yml'
+              - '.github/workflows/pr_builds.yml'
             sdk:
               - 'crates/mesh-api/**'
               - 'crates/mesh-api-ffi/**'

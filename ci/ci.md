@@ -34,7 +34,7 @@ flowchart TD
     Affected --> Fmt
     Files --> UIQ
 
-subgraph PRCI["pr_ci.yml · PR Builds"]
+subgraph PRCI["pr_builds.yml · PR Builds"]
         direction TB
         subgraph Producers["top-level target matrices"]
             LinuxTargets["linux_targets matrix\nCPU row: crate tests · debug mesh-llm · CLI/client smoke\nCUDA / ROCm / Vulkan rows build when backend_changed\nCPU → ci-linux-inference-binaries"]
@@ -97,7 +97,7 @@ subgraph PRCI["pr_ci.yml · PR Builds"]
 - `pr_quality.yml` is named **PR Quality Checks** and owns the earliest feedback:
   formatting, UI quality when relevant, and deterministic clippy bins from
   `scripts/plan-clippy-batches.sh`.
-- `pr_ci.yml` is named **PR Builds** and owns PR target matrices plus integration
+- `pr_builds.yml` is named **PR Builds** and owns PR target matrices plus integration
   and smoke validation. Linux, macOS, and Windows are top-level matrices; Linux
   and macOS CPU rows upload the binaries that downstream smoke jobs consume.
 - `pr_docker.yml` validates the PR Docker client image without publishing.

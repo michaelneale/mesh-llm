@@ -9,7 +9,7 @@ reason about.
 - Keep pull request workflows in files named `pr_*.yml`.
 - Keep the early quality workflow named `PR Quality Checks` in
   `pr_quality.yml`.
-- Keep the PR build workflow named `PR Builds` in `pr_ci.yml`.
+- Keep the PR build workflow named `PR Builds` in `pr_builds.yml`.
 - Keep `ci.yml`, `docker.yml`, and `release.yml` free of pull request triggers;
   they own main, dispatch, tag, and release behavior.
 - Keep `pr_cleanup.yml` safe for `pull_request_target`: never check out or run
@@ -26,6 +26,13 @@ reason about.
 - Gate backend lanes on backend inputs, not every Rust change.
 - Keep clippy sharding driven by `scripts/plan-clippy-batches.sh`; do not
   replace it with hand-maintained static batches.
+- When adding a Rust workspace crate, make sure its package name appears in the
+  `WORKSPACE_MEMBERS` arrays in `scripts/affected-crates.sh` and
+  `scripts/plan-clippy-batches.sh`. Normal affected-crate routing discovers new
+  crates through `cargo metadata`, but the all-rust/fail-open paths and clippy
+  `--all` planning still use those arrays. `cargo run -p xtask --
+  repo-consistency ci-crate-lists` fails fast when they drift from the Cargo
+  workspace.
 - If workflow changes affect crate/test routing, update
   `tools/xtask/src/main.rs` invariants in the same change.
 
