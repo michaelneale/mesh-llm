@@ -68,6 +68,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+          cache: gradle
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -87,6 +88,19 @@ jobs:
           [target.x86_64-unknown-linux-gnu]
           rustflags = ["-C", "link-arg=-fuse-ld=lld"]
           EOF
+
+      - uses: mozilla-actions/sccache-action@v0.0.9
+        if: ${{ inputs.sdk_kind == 'native' || inputs.sdk_kind == 'kotlin' }}
+
+      - uses: Swatinem/rust-cache@v2
+        if: ${{ inputs.sdk_kind == 'native' || inputs.sdk_kind == 'kotlin' }}
+        with:
+          workspaces: . -> target
+          cache-bin: "false"
+          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ runner.os }}-${{ hashFiles('.github/cache-version.txt') }}
+          shared-key: sdk-smoke-${{ inputs.sdk_kind }}
+          cache-targets: ${{ github.event_name != 'pull_request' }}
+          save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
 
       - name: Download Swift XCFramework artifact
         if: ${{ inputs.sdk_kind == 'swift' && inputs.swift_xcframework_artifact_name != '' }}
