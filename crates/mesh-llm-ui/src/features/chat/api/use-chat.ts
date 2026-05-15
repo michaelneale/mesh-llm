@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { useChat } from '@tanstack/ai-react'
 import type { UseChatReturn } from '@tanstack/ai-react'
 import type { ThreadMessage } from '@/features/app-tabs/types'
@@ -14,6 +14,19 @@ type UseMeshChatOptions = {
   onResponseMetadata?: (metadata: ChatResponseMetadata) => void
 }
 
+function createMutableStringSource() {
+  let current = ''
+
+  return {
+    get value() {
+      return current
+    },
+    setValue(value: string) {
+      current = value
+    }
+  }
+}
+
 export function useMeshChat({
   conversationId,
   model,
@@ -22,20 +35,17 @@ export function useMeshChat({
   onResponseMetadata
 }: UseMeshChatOptions): UseChatReturn {
   const previousConversationIdRef = useRef(conversationId)
-  const currentModelRef = useRef(model)
-  const currentSystemPromptRef = useRef(systemPrompt)
+  const currentModel = useMemo(() => createMutableStringSource(), [])
+  const currentSystemPrompt = useMemo(() => createMutableStringSource(), [])
 
-  currentModelRef.current = model
-  currentSystemPromptRef.current = systemPrompt
+  useLayoutEffect(() => {
+    currentModel.setValue(model)
+    currentSystemPrompt.setValue(systemPrompt)
+  }, [currentModel, currentSystemPrompt, model, systemPrompt])
 
   const connection = useMemo(
-    () =>
-      createMeshConnectionAdapter(
-        () => currentModelRef.current,
-        onResponseMetadata,
-        () => currentSystemPromptRef.current
-      ),
-    [onResponseMetadata]
+    () => createMeshConnectionAdapter(currentModel, onResponseMetadata, currentSystemPrompt),
+    [currentModel, currentSystemPrompt, onResponseMetadata]
   )
   const hydratedMessages = useMemo(() => threadMessagesToUIMessages(initialMessages), [initialMessages])
   const chat = useChat({ id: conversationId, connection, initialMessages: hydratedMessages })

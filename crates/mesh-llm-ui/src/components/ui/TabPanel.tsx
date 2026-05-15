@@ -106,7 +106,11 @@ export function TabPanel<TValue extends string = string>({
         <Tabs.List
           aria-label={ariaLabel}
           aria-labelledby={ariaLabelledBy}
-          className={cn('flex h-[56px] items-center gap-0 overflow-x-auto overflow-y-hidden', stretchTabs && 'w-full', listClassName)}
+          className={cn(
+            'flex h-[56px] items-center gap-0 overflow-x-auto overflow-y-hidden',
+            stretchTabs && 'w-full',
+            listClassName
+          )}
         >
           {tabs.map((item) => {
             const active = currentValue === item.value

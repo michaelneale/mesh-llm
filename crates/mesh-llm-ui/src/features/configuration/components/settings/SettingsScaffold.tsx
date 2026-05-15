@@ -125,7 +125,9 @@ export function SettingsRow({ className, label, hint, children }: SettingsRowPro
       data-settings-row="true"
     >
       <div className="min-w-0">
-        <p className="text-[length:var(--density-type-control-lg)] font-medium leading-tight text-foreground">{label}</p>
+        <p className="text-[length:var(--density-type-control-lg)] font-medium leading-tight text-foreground">
+          {label}
+        </p>
         <p className="mt-1.5 text-[length:var(--density-type-caption-lg)] leading-relaxed text-fg-faint">{hint}</p>
       </div>
       <div className="min-w-0 md:justify-self-end">{children}</div>

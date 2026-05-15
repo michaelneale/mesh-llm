@@ -116,7 +116,7 @@ function ModelRow({
         <StatusBadge dot tone={status.tone}>
           {status.label}
         </StatusBadge>
-          <span className="inline-flex items-center rounded-full border border-border px-2.5 py-[3px] text-[length:var(--density-type-caption)] font-medium text-fg-faint">
+        <span className="inline-flex items-center rounded-full border border-border px-2.5 py-[3px] text-[length:var(--density-type-caption)] font-medium text-fg-faint">
           {architectureLabel}
         </span>
       </div>
@@ -276,7 +276,7 @@ export function ModelCatalog({ models, onSelect, selectedModelName }: ModelCatal
             <ModelRow key={model.name} active={model.name === selectedModelName} model={model} onSelect={onSelect} />
           ))
         ) : (
-            <div className="px-4 py-8 text-center">
+          <div className="px-4 py-8 text-center">
             <p className="text-[length:var(--density-type-control)] font-semibold text-fg">
               {activeFilterGroups > 0 ? 'No models match these filters.' : 'No models available.'}
             </p>

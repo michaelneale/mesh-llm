@@ -189,14 +189,10 @@ export function ChatLayout({
                 </h1>
               </>
             ) : (
-              <h1 className="text-[length:var(--density-type-control-lg)] font-semibold tracking-[0.01em]">
-                {title}
-              </h1>
+              <h1 className="text-[length:var(--density-type-control-lg)] font-semibold tracking-[0.01em]">{title}</h1>
             )}
           </div>
-          <div className="flex min-w-0 flex-1 flex-wrap items-center justify-start gap-2 md:justify-end">
-            {actions}
-          </div>
+          <div className="flex min-w-0 flex-1 flex-wrap items-center justify-start gap-2 md:justify-end">{actions}</div>
         </header>
         <div className="flex min-h-0 flex-1 flex-col">
           <div

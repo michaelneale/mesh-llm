@@ -11,7 +11,7 @@ test('app smoke navigation shows Network and Chat tabs', async ({ page }) => {
   ).toHaveAttribute('aria-current', 'page')
 
   await page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Chat', exact: true }).click()
-  await expect(page.getByRole('heading', { name: 'Chat' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Chat', exact: true })).toBeVisible()
   await expect(
     page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Chat', exact: true })
   ).toHaveAttribute('aria-current', 'page')

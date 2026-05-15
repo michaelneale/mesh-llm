@@ -76,9 +76,10 @@ function normalizeUiPreferences(value: unknown): UiPreferences {
       ? value.configPanelStyle
       : DEFAULT_UI_PREFERENCES.panelStyle
   const storedPanelStyleOverride = isBoolean(value.panelStyleOverride) ? value.panelStyleOverride : undefined
-  const panelStyleOverride = storedPanelStyleOverride !== undefined
-    ? storedPanelStyleOverride && isPanelStyle(value.panelStyle)
-    : hasMigratedPanelStyle && migratedPanelStyle === 'soft'
+  const panelStyleOverride =
+    storedPanelStyleOverride !== undefined
+      ? storedPanelStyleOverride && isPanelStyle(value.panelStyle)
+      : hasMigratedPanelStyle && migratedPanelStyle === 'soft'
 
   return {
     theme: isTheme(value.theme) ? value.theme : DEFAULT_UI_PREFERENCES.theme,

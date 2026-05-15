@@ -314,7 +314,8 @@ export function MessageRow({
   const canRemoveQueued = isQueued && onRemoveQueued != null
   const routeMetadata = showRouteMetadata && ((isUser && routeNode) || (isResponse && route))
   const displayModel = isQueued ? 'Queued' : model
-  const rowClassName = 'relative -mx-2 mb-5 block w-[calc(100%+16px)] select-none rounded-[var(--radius-lg)] border-0 bg-transparent px-2 py-1 text-left transition-[background,box-shadow] duration-150'
+  const rowClassName =
+    'relative -mx-2 mb-5 block w-[calc(100%+16px)] select-none rounded-[var(--radius-lg)] border-0 bg-transparent px-2 py-1 text-left transition-[background,box-shadow] duration-150'
   const rowStyle: CSSProperties = {
     ...(inspected ? { background: 'color-mix(in oklab, var(--color-accent) 4%, transparent)' } : {})
   }
@@ -483,9 +484,9 @@ export function MessageRow({
           <X className="size-4" aria-hidden={true} strokeWidth={1.8} />
         </button>
       ) : null}
-        {hasAttachmentActions ? (
-          <span className="flex shrink-0 flex-col items-end justify-center gap-1.5">
-            {attachments.map((attachment) => (
+      {hasAttachmentActions ? (
+        <span className="flex shrink-0 flex-col items-end justify-center gap-1.5">
+          {attachments.map((attachment) => (
             <button
               key={attachment.id}
               type="button"
