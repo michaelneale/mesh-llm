@@ -137,7 +137,9 @@ test.describe('mobile chat composer viewport', () => {
         const composerBox = await composer.boundingBox()
         const layoutBox = await page.getByTestId('chat-layout').boundingBox()
         const viewport = page.viewportSize()
-        const composerFontSize = await composer.evaluate((element) => Number.parseFloat(getComputedStyle(element).fontSize))
+        const composerFontSize = await composer.evaluate((element) =>
+          Number.parseFloat(getComputedStyle(element).fontSize)
+        )
 
         if (!composerBox || !layoutBox || !viewport) return false
 
