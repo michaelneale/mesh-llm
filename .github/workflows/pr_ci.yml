@@ -675,7 +675,7 @@ jobs:
 
   macos_targets:
     needs: changes
-    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' || needs.changes.outputs.macos == 'true' || needs.changes.outputs.backend_changed == 'true') && needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.pr_workflow_only != 'true' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' || needs.changes.outputs.macos == 'true' || needs.changes.outputs.backend_changed == 'true' || needs.changes.outputs.sdk_smoke_required == 'true') && needs.changes.outputs.docs_only != 'true' }}
     name: macOS ${{ matrix.name }}
     runs-on: macos-14
     strategy:
@@ -691,7 +691,7 @@ jobs:
           - name: Vulkan
             backend: vulkan
     env:
-      RUN_MACOS_CPU: ${{ matrix.backend == 'cpu' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' || needs.changes.outputs.macos == 'true' || needs.changes.outputs.backend_changed == 'true') }}
+      RUN_MACOS_CPU: ${{ matrix.backend == 'cpu' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' || needs.changes.outputs.macos == 'true' || needs.changes.outputs.backend_changed == 'true' || needs.changes.outputs.sdk_smoke_required == 'true') }}
       LLAMA_STAGE_BACKEND: metal
       LLAMA_STAGE_BUILD_DIR: .deps/llama.cpp/build-stage-abi-metal
     steps:
@@ -821,7 +821,7 @@ jobs:
 
   windows_targets:
     needs: changes
-    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.all_rust == 'true' || needs.changes.outputs.windows_cpu == 'true' || needs.changes.outputs.windows_gpu == 'true') && needs.changes.outputs.docs_only != 'true' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust_changed == 'true' || needs.changes.outputs.windows_cpu == 'true' || needs.changes.outputs.windows_gpu == 'true') && needs.changes.outputs.docs_only != 'true' }}
     name: Windows ${{ matrix.name }}
     runs-on: windows-2022
     strategy:

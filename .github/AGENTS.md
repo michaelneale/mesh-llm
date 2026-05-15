@@ -28,8 +28,9 @@ reason about.
   benchmark-only changes as a proxy for native backend rebuilds.
 - Keep crate tests out of binary producer critical paths when they can run in a
   parallel matrix without weakening the required checks.
-- Gate macOS and Docker packaging work on platform/package inputs instead of
-  making every Rust source change rebuild every non-Linux artifact.
+- Gate macOS and Docker packaging work on platform/package inputs, while still
+  running macOS CPU when Swift SDK smoke needs a macOS artifact. Do not make
+  every Rust source change rebuild every non-Linux artifact.
 - Workflow file edits are validated by local/PR YAML and consistency checks; do
   not self-trigger heavyweight Docker or platform builds just because their
   workflow definition changed.
