@@ -7,10 +7,6 @@ on:
       - '.dockerignore'
       - 'docker/**'
       - 'fly/Dockerfile'
-      - 'crates/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '.github/workflows/pr_docker.yml'
 
 concurrency:
   group: pr-docker-${{ github.event.pull_request.number || github.ref }}
@@ -52,5 +48,7 @@ jobs:
           file: docker/Dockerfile.client
           platforms: linux/amd64
           push: false
+          cache-from: type=gha,scope=pr-docker-client-${{ github.event.pull_request.number || github.ref }}
+          cache-to: type=gha,mode=max,scope=pr-docker-client-${{ github.event.pull_request.number || github.ref }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
