@@ -597,6 +597,24 @@ jobs:
           cache-targets: ${{ github.event_name != 'pull_request' }}
           save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
 
+      - name: Ensure ABI cache directory
+        run: mkdir -p .deps/llama.cpp/build-stage-abi-static
+
+      - name: Cache patched llama.cpp ABI build
+        id: skippy_llama_cache
+        uses: actions/cache@v5
+        with:
+          path: .deps/llama.cpp/build-stage-abi-static
+          key: ${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-skippy-abi-cpu-${{ hashFiles('scripts/build-llama.sh', 'third_party/llama.cpp/upstream.txt', 'third_party/llama.cpp/patches/**', 'Justfile', '.github/cache-version.txt') }}
+
+      - name: Prepare patched llama.cpp ABI checkout
+        if: ${{ steps.skippy_llama_cache.outputs.cache-hit != 'true' }}
+        run: scripts/prepare-llama.sh pinned
+
+      - name: Build patched llama.cpp ABI libraries
+        if: ${{ steps.skippy_llama_cache.outputs.cache-hit != 'true' }}
+        run: scripts/build-llama.sh
+
       - name: Skippy smoke tests
         env:
           WORK_DIR: ${{ runner.temp }}/skippy-ci-smoke
