@@ -79,7 +79,7 @@ jobs:
           cache-bin: "false"
           prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ runner.os }}-${{ hashFiles('.github/cache-version.txt') }}
           shared-key: pr-clippy
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
       - name: Run clippy
         env:
           CLIPPY_CRATES: ${{ toJson(matrix.batch.crates) }}

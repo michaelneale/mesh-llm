@@ -106,6 +106,19 @@ subgraph PRCI["pr_ci.yml · PR Builds"]
 - Non-PR workflows (`ci.yml`, `docker.yml`, `release.yml`) own main, dispatch,
   tag, and release-grade publishing behavior.
 
+## Rust cache reuse
+
+- PR Rust builds use `Swatinem/rust-cache` alongside `sccache` so repeated runs
+  on the same pull request can restore Cargo registry/git state and reusable
+  target artifacts instead of recompiling every dependency from scratch.
+- Rust caches stay platform/backend scoped. Linux CPU, Linux backend rows, macOS,
+  Windows backend rows, clippy, and HuggingFace download smoke each keep their
+  own compatible cache namespace instead of sharing a single prebuilt dependency
+  artifact across incompatible runners or SDK environments.
+- PR cache writes use the standard GitHub Actions cache service under
+  `refs/pull/<PR>/merge`; `pr_cleanup.yml` deletes that ref's caches when the PR
+  closes so PR-lifetime Rust caches do not linger unbounded.
+
 ## Artifact and smoke reuse
 
 - Smoke jobs restore binaries through `.github/actions/restore-smoke-inputs` and

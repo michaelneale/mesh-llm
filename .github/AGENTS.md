@@ -35,8 +35,12 @@ reason about.
   `retention-days: 1`.
 - PR cleanup must delete PR merge-ref caches and artifacts from positively
   matched PR workflow runs without deleting workflow runs or logs.
-- Do not save large shared Rust caches from PR merge refs; shared caches are
-  written from trusted main/release paths.
+- Rust caches may be saved from PR merge refs only when they use the standard
+  GitHub Actions cache service, are scoped by platform/backend, and are covered
+  by `pr_cleanup.yml` deleting `refs/pull/<PR>/merge` caches.
+- Do not save PR Rust build outputs to cross-PR, branch, release, or external
+  shared cache backends unless cleanup for that backend is added in the same
+  change.
 - Do not reintroduce unreachable artifact consumers. If a smoke consumes an
   artifact, the producer must upload it in the same workflow graph.
 
