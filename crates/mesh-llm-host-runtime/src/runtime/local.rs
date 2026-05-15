@@ -53,6 +53,7 @@ pub(super) struct LocalRuntimeModelHandle {
     pub(super) backend: String,
     pub(super) context_length: u32,
     pub(super) slots: usize,
+    pub(super) capabilities: models::ModelCapabilities,
     inner: LocalRuntimeBackendHandle,
 }
 
@@ -358,6 +359,49 @@ pub(super) async fn add_serving_assignment(
         node.upsert_served_model_descriptor(descriptor).await;
     }
     node.regossip().await;
+}
+
+pub(super) async fn set_runtime_verified_served_model_capabilities(
+    node: &mesh::Node,
+    primary_model_name: &str,
+    model_name: &str,
+    capabilities: models::ModelCapabilities,
+) {
+    let existing = node
+        .served_model_descriptors()
+        .await
+        .into_iter()
+        .find(|descriptor| descriptor.identity.model_name == model_name);
+    let descriptor = runtime_verified_served_model_descriptor(
+        existing,
+        primary_model_name,
+        model_name,
+        capabilities,
+    );
+    node.upsert_served_model_descriptor(descriptor).await;
+}
+
+fn runtime_verified_served_model_descriptor(
+    existing: Option<mesh::ServedModelDescriptor>,
+    primary_model_name: &str,
+    model_name: &str,
+    capabilities: models::ModelCapabilities,
+) -> mesh::ServedModelDescriptor {
+    let mut descriptor = existing.unwrap_or_else(|| mesh::ServedModelDescriptor {
+        identity: mesh::ServedModelIdentity {
+            model_name: model_name.to_string(),
+            is_primary: model_name == primary_model_name,
+            source_kind: mesh::ModelSourceKind::Unknown,
+            local_file_name: Some(format!("{model_name}.gguf")),
+            ..Default::default()
+        },
+        capabilities: models::ModelCapabilities::default(),
+        topology: None,
+    });
+    descriptor.identity.model_name = model_name.to_string();
+    descriptor.identity.is_primary = model_name == primary_model_name;
+    descriptor.capabilities = capabilities;
+    descriptor
 }
 
 pub(super) async fn remove_serving_assignment(node: &mesh::Node, model_name: &str) {
@@ -1094,6 +1138,13 @@ async fn load_split_runtime_generation_inner(
     });
     let http = handle.start_http(alloc_local_port().await?);
     let (death_tx, death_rx) = tokio::sync::oneshot::channel();
+    let capabilities = models::runtime_verified_model_capabilities(
+        spec.model_ref,
+        spec.model_path,
+        models::RuntimeMediaCapabilityEvidence {
+            vision_projector_loaded: spec.projector_path.is_some(),
+        },
+    );
 
     spec.node
         .activate_stage_topology(split_stage_topology_instance(
@@ -1113,6 +1164,7 @@ async fn load_split_runtime_generation_inner(
             backend: "skippy".into(),
             context_length: spec.ctx_size,
             slots: spec.slots,
+            capabilities,
             inner: LocalRuntimeBackendHandle::Skippy {
                 model: handle,
                 http,
@@ -2589,6 +2641,13 @@ async fn start_runtime_skippy_model(
         .map(Path::to_path_buf)
         .or_else(|| mmproj_path_for_model(&model_name))
         .filter(|path| path.exists());
+    let capabilities = models::runtime_verified_model_capabilities(
+        &model_name,
+        spec.model_path,
+        models::RuntimeMediaCapabilityEvidence {
+            vision_projector_loaded: projector_path.is_some(),
+        },
+    );
     let mut options = skippy::SkippyModelLoadOptions::for_direct_gguf(&model_name, spec.model_path)
         .with_ctx_size(context_length)
         .with_generation_concurrency(plan.slots)
@@ -2636,6 +2695,7 @@ async fn start_runtime_skippy_model(
             backend: "skippy".into(),
             context_length,
             slots: plan.slots,
+            capabilities,
             inner: LocalRuntimeBackendHandle::Skippy {
                 model: skippy_model,
                 http,
@@ -2682,6 +2742,13 @@ async fn start_runtime_layer_package_model(
             mmproj_path_for_model(&model_name).map(|path| path.to_string_lossy().to_string())
         })
         .filter(|path| Path::new(path).exists());
+    let capabilities = models::runtime_verified_model_capabilities(
+        &model_name,
+        spec.model_path,
+        models::RuntimeMediaCapabilityEvidence {
+            vision_projector_loaded: projector_path.is_some(),
+        },
+    );
     let activation_width = skippy_stage_activation_width(package.activation_width, &model_name)?;
     let run_id = format!("mesh-skippy-{}", now_unix_nanos());
     let config = StageConfig {
@@ -2756,6 +2823,7 @@ async fn start_runtime_layer_package_model(
             backend: "skippy".into(),
             context_length,
             slots: plan.slots,
+            capabilities,
             inner: LocalRuntimeBackendHandle::Skippy {
                 model: handle,
                 http,
@@ -2984,6 +3052,70 @@ mod tests {
             layer_end,
             parameter_bytes: u64::from(layer_end.saturating_sub(layer_start)) * 1_000_000,
         }
+    }
+
+    #[test]
+    fn runtime_verified_served_model_descriptor_preserves_identity_and_updates_capabilities() {
+        let existing = mesh::ServedModelDescriptor {
+            identity: mesh::ServedModelIdentity {
+                model_name: "Qwen3VL-2B-Instruct-Q4_K_M".into(),
+                is_primary: false,
+                source_kind: mesh::ModelSourceKind::HuggingFace,
+                repository: Some("Qwen/Qwen3-VL-2B-Instruct-GGUF".into()),
+                artifact: Some("Qwen3VL-2B-Instruct-Q4_K_M.gguf".into()),
+                ..Default::default()
+            },
+            capabilities: models::ModelCapabilities::default(),
+            topology: None,
+        };
+        let capabilities = models::ModelCapabilities {
+            multimodal: true,
+            vision: models::CapabilityLevel::Supported,
+            ..Default::default()
+        };
+
+        let descriptor = runtime_verified_served_model_descriptor(
+            Some(existing),
+            "Qwen3VL-2B-Instruct-Q4_K_M",
+            "Qwen3VL-2B-Instruct-Q4_K_M",
+            capabilities,
+        );
+
+        assert_eq!(
+            descriptor.identity.source_kind,
+            mesh::ModelSourceKind::HuggingFace
+        );
+        assert_eq!(
+            descriptor.identity.repository.as_deref(),
+            Some("Qwen/Qwen3-VL-2B-Instruct-GGUF")
+        );
+        assert!(descriptor.identity.is_primary);
+        assert_eq!(descriptor.capabilities, capabilities);
+    }
+
+    #[test]
+    fn runtime_verified_served_model_descriptor_builds_fallback_identity() {
+        let descriptor = runtime_verified_served_model_descriptor(
+            None,
+            "Primary",
+            "Runtime",
+            models::ModelCapabilities::default(),
+        );
+
+        assert_eq!(descriptor.identity.model_name, "Runtime");
+        assert!(!descriptor.identity.is_primary);
+        assert_eq!(
+            descriptor.identity.source_kind,
+            mesh::ModelSourceKind::Unknown
+        );
+        assert_eq!(
+            descriptor.identity.local_file_name.as_deref(),
+            Some("Runtime.gguf")
+        );
+        assert_eq!(
+            descriptor.capabilities,
+            models::ModelCapabilities::default()
+        );
     }
 
     fn test_stage_status_from_load(

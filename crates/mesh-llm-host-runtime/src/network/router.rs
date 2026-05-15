@@ -370,8 +370,8 @@ pub(crate) fn model_satisfies_media_requirements(
     caps: &crate::models::ModelCapabilities,
     media: &MediaRequirements,
 ) -> bool {
-    (!media.needs_vision || caps.vision_label().is_some())
-        && (!media.needs_audio || caps.audio_label().is_some())
+    (!media.needs_vision || caps.supports_vision_runtime())
+        && (!media.needs_audio || caps.supports_audio_runtime())
 }
 
 /// Length of last user message in characters (rough complexity proxy).
@@ -820,6 +820,16 @@ mod tests {
         assert!(model_satisfies_media_requirements(
             &vision_audio_caps,
             &image_and_audio
+        ));
+
+        let likely_vision_caps = ModelCapabilities {
+            multimodal: true,
+            vision: CapabilityLevel::Likely,
+            ..Default::default()
+        };
+        assert!(!model_satisfies_media_requirements(
+            &likely_vision_caps,
+            &image
         ));
     }
 

@@ -19,7 +19,10 @@ mod usage;
 use anyhow::{Context, Result};
 use hf_hub::{HFClient, HFClientBuilder, HFClientSync};
 
-pub use capabilities::{CapabilityLevel, ModelCapabilities};
+pub use capabilities::{
+    runtime_verified_model_capabilities, CapabilityLevel, ModelCapabilities,
+    RuntimeMediaCapabilityEvidence,
+};
 pub use inventory::{scan_local_inventory_snapshot_with_progress, LocalModelInventorySnapshot};
 pub use local::{
     find_mmproj_path, find_model_path, huggingface_hub_cache_dir, huggingface_identity_for_path,

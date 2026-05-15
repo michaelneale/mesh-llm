@@ -496,6 +496,53 @@ mod tests {
         assert_eq!(model.size_gb, 22.0);
     }
 
+    #[test]
+    fn runtime_data_model_snapshot_keeps_warm_descriptor_media_capabilities_authoritative() {
+        let collector = RuntimeDataCollector::new();
+        let model_name = "Qwen3VL-2B-Instruct-Q4_K_M".to_string();
+        let descriptor = crate::mesh::ServedModelDescriptor {
+            identity: crate::mesh::ServedModelIdentity {
+                model_name: model_name.clone(),
+                source_kind: crate::mesh::ModelSourceKind::LocalGguf,
+                local_file_name: Some(format!("{model_name}.gguf")),
+                ..Default::default()
+            },
+            capabilities: crate::models::ModelCapabilities::default(),
+            topology: None,
+        };
+
+        let snapshot = collector.build_model_view(ModelViewInput {
+            peers: vec![],
+            catalog: vec![MeshCatalogEntry {
+                model_name: model_name.clone(),
+                descriptor: Some(descriptor),
+            }],
+            served_models: vec![model_name.clone()],
+            active_demand: HashMap::new(),
+            my_serving_models: vec![model_name.clone()],
+            my_hosted_models: vec![model_name.clone()],
+            local_inventory: LocalModelInventorySnapshot {
+                model_names: HashSet::from([model_name.clone()]),
+                size_by_name: HashMap::new(),
+                metadata_by_name: HashMap::new(),
+            },
+            node_hostname: Some("node.local".into()),
+            my_vram_gb: 24.0,
+            model_name: model_name.clone(),
+            model_size_bytes: 0,
+            now_unix_secs: 1_700_000_000,
+        });
+
+        let payload = mesh_models(snapshot);
+        assert_eq!(payload.len(), 1);
+        assert_eq!(payload[0].name, model_name);
+        assert_eq!(payload[0].status, "warm");
+        assert!(!payload[0].multimodal);
+        assert_eq!(payload[0].multimodal_status, None);
+        assert!(!payload[0].vision);
+        assert_eq!(payload[0].vision_status, None);
+    }
+
     #[tokio::test]
     async fn runtime_data_inventory_single_flight_scan_coalesces() {
         let collector = RuntimeDataCollector::new();

@@ -487,6 +487,7 @@ impl RuntimeDataCollector {
                     None => (None, None),
                 };
                 let routing_metrics = routing_metrics_by_model.get(name).cloned();
+                let has_descriptor = descriptor.is_some();
                 let mut capabilities = descriptor
                     .map(|descriptor| descriptor.capabilities)
                     .unwrap_or_else(|| {
@@ -509,6 +510,7 @@ impl RuntimeDataCollector {
                         .max(crate::models::capabilities::CapabilityLevel::Likely);
                 }
                 if local_known
+                    && !has_descriptor
                     && likely_vision_model(
                         name,
                         catalog_entry
@@ -522,6 +524,7 @@ impl RuntimeDataCollector {
                     capabilities.multimodal = true;
                 }
                 if local_known
+                    && !has_descriptor
                     && likely_audio_model(
                         name,
                         catalog_entry
