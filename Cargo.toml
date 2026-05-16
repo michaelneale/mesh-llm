@@ -38,6 +38,9 @@ members = [
     "crates/mesh-mixture-of-agents",
     "tools/xtask",
 ]
+exclude = [
+    "crates/spec-prefill-poc",
+]
 default-members = [
     "crates/mesh-llm",
     "crates/mesh-llm-plugin",

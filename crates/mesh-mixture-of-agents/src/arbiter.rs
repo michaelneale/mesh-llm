@@ -28,7 +28,7 @@ fn best_tool_proposal<'a>(proposals: &[&'a WorkerOutput]) -> &'a WorkerOutput {
                 && b.tool_arguments.as_ref() != Some(&Value::Object(Default::default()));
             a_has_args
                 .cmp(&b_has_args)
-                .then(a.confidence.partial_cmp(&b.confidence).unwrap())
+                .then(a.confidence.total_cmp(&b.confidence))
         })
         .unwrap()
 }
@@ -160,7 +160,7 @@ pub fn arbitrate(outputs: &[WorkerOutput], has_tools: bool) -> Decision {
         // Pick the highest-confidence answer
         let best = answers
             .iter()
-            .max_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap())
+            .max_by(|a, b| a.confidence.total_cmp(&b.confidence))
             .unwrap();
 
         // If confidence is low and there's critique, reducer
@@ -242,7 +242,7 @@ pub fn try_early_decision(
     if answers.len() >= 2 && tool_proposals.is_empty() {
         let best = answers
             .iter()
-            .max_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap())
+            .max_by(|a, b| a.confidence.total_cmp(&b.confidence))
             .unwrap();
         if best.confidence >= 0.5 {
             tracing::info!(
