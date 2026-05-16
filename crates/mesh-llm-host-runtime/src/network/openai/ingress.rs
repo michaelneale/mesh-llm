@@ -187,17 +187,21 @@ pub(crate) async fn api_proxy(
                                         (name.as_str(), 0.0, caps)
                                     })
                                     .collect();
-                            let media_available: Vec<_> = available
-                                .iter()
-                                .filter(|(_, _, caps)| {
-                                    router::model_satisfies_media_requirements(caps, &media)
-                                })
-                                .cloned()
-                                .collect();
-                            let available = if media_available.is_empty() {
-                                available
-                            } else {
-                                media_available
+                            let Some(available) =
+                                router::filter_media_compatible_candidates(&available, &media)
+                            else {
+                                let _ = proxy::send_error(
+                                    tcp_stream,
+                                    422,
+                                    "no served model can satisfy the requested media inputs",
+                                )
+                                .await;
+                                proxy::release_request_objects(
+                                    &node,
+                                    &request.request_object_request_ids,
+                                )
+                                .await;
+                                return;
                             };
                             let picked = router::pick_model_classified(&cl, &available);
                             if let Some(name) = picked {

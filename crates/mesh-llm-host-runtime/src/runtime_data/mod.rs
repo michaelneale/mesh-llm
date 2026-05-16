@@ -497,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_data_model_snapshot_keeps_warm_descriptor_media_capabilities_authoritative() {
+    fn runtime_data_model_snapshot_keeps_known_text_only_descriptor_authoritative() {
         let collector = RuntimeDataCollector::new();
         let model_name = "Qwen3VL-2B-Instruct-Q4_K_M".to_string();
         let descriptor = crate::mesh::ServedModelDescriptor {
@@ -507,6 +507,7 @@ mod tests {
                 local_file_name: Some(format!("{model_name}.gguf")),
                 ..Default::default()
             },
+            capabilities_known: true,
             capabilities: crate::models::ModelCapabilities::default(),
             topology: None,
         };
@@ -541,6 +542,104 @@ mod tests {
         assert_eq!(payload[0].multimodal_status, None);
         assert!(!payload[0].vision);
         assert_eq!(payload[0].vision_status, None);
+    }
+
+    #[test]
+    fn runtime_data_model_snapshot_uses_static_media_for_unknown_descriptor() {
+        let collector = RuntimeDataCollector::new();
+        let model_name = "Qwen3VL-2B-Instruct-Q4_K_M".to_string();
+        let descriptor = crate::mesh::ServedModelDescriptor {
+            identity: crate::mesh::ServedModelIdentity {
+                model_name: model_name.clone(),
+                source_kind: crate::mesh::ModelSourceKind::LocalGguf,
+                local_file_name: Some(format!("{model_name}.gguf")),
+                ..Default::default()
+            },
+            capabilities_known: false,
+            capabilities: crate::models::ModelCapabilities::default(),
+            topology: None,
+        };
+
+        let snapshot = collector.build_model_view(ModelViewInput {
+            peers: vec![],
+            catalog: vec![MeshCatalogEntry {
+                model_name: model_name.clone(),
+                descriptor: Some(descriptor),
+            }],
+            served_models: vec![model_name.clone()],
+            active_demand: HashMap::new(),
+            my_serving_models: vec![model_name.clone()],
+            my_hosted_models: vec![model_name.clone()],
+            local_inventory: LocalModelInventorySnapshot {
+                model_names: HashSet::from([model_name.clone()]),
+                size_by_name: HashMap::new(),
+                metadata_by_name: HashMap::new(),
+            },
+            node_hostname: Some("node.local".into()),
+            my_vram_gb: 24.0,
+            model_name: model_name.clone(),
+            model_size_bytes: 0,
+            now_unix_secs: 1_700_000_000,
+        });
+
+        let payload = mesh_models(snapshot);
+        assert_eq!(payload.len(), 1);
+        assert_eq!(payload[0].name, model_name);
+        assert!(payload[0].multimodal);
+        assert_eq!(payload[0].multimodal_status, Some("supported"));
+        assert!(payload[0].vision);
+        assert_eq!(payload[0].vision_status, Some("supported"));
+    }
+
+    #[test]
+    fn runtime_data_model_snapshot_reports_known_verified_vision_descriptor() {
+        let collector = RuntimeDataCollector::new();
+        let model_name = "Qwen3VL-2B-Instruct-Q4_K_M".to_string();
+        let descriptor = crate::mesh::ServedModelDescriptor {
+            identity: crate::mesh::ServedModelIdentity {
+                model_name: model_name.clone(),
+                source_kind: crate::mesh::ModelSourceKind::LocalGguf,
+                local_file_name: Some(format!("{model_name}.gguf")),
+                ..Default::default()
+            },
+            capabilities_known: true,
+            capabilities: crate::models::ModelCapabilities {
+                multimodal: true,
+                vision: crate::models::CapabilityLevel::Supported,
+                ..Default::default()
+            },
+            topology: None,
+        };
+
+        let snapshot = collector.build_model_view(ModelViewInput {
+            peers: vec![],
+            catalog: vec![MeshCatalogEntry {
+                model_name: model_name.clone(),
+                descriptor: Some(descriptor),
+            }],
+            served_models: vec![model_name.clone()],
+            active_demand: HashMap::new(),
+            my_serving_models: vec![model_name.clone()],
+            my_hosted_models: vec![model_name.clone()],
+            local_inventory: LocalModelInventorySnapshot {
+                model_names: HashSet::from([model_name.clone()]),
+                size_by_name: HashMap::new(),
+                metadata_by_name: HashMap::new(),
+            },
+            node_hostname: Some("node.local".into()),
+            my_vram_gb: 24.0,
+            model_name: model_name.clone(),
+            model_size_bytes: 0,
+            now_unix_secs: 1_700_000_000,
+        });
+
+        let payload = mesh_models(snapshot);
+        assert_eq!(payload.len(), 1);
+        assert_eq!(payload[0].name, model_name);
+        assert!(payload[0].multimodal);
+        assert_eq!(payload[0].multimodal_status, Some("supported"));
+        assert!(payload[0].vision);
+        assert_eq!(payload[0].vision_status, Some("supported"));
     }
 
     #[tokio::test]

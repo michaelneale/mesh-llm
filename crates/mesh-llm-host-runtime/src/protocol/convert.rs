@@ -247,6 +247,7 @@ fn legacy_descriptor_from_identity(
 ) -> crate::mesh::ServedModelDescriptor {
     crate::mesh::ServedModelDescriptor {
         identity: proto_identity_to_local(identity),
+        capabilities_known: false,
         capabilities: crate::models::ModelCapabilities::default(),
         topology: None,
     }
@@ -454,6 +455,7 @@ pub(crate) fn local_ann_to_proto_ann(
         .iter()
         .map(|descriptor| crate::proto::node::ServedModelDescriptor {
             identity: Some(descriptor_identity_to_proto(&descriptor.identity)),
+            capabilities_known: Some(descriptor.capabilities_known),
             capabilities: Some(crate::proto::node::ModelCapabilities {
                 vision: local_capability_level_to_proto(descriptor.capabilities.vision),
                 reasoning: local_capability_level_to_proto(descriptor.capabilities.reasoning),
@@ -644,49 +646,54 @@ pub(crate) fn proto_ann_to_local(
             .map(proto_runtime_descriptor_to_local)
             .collect(),
         served_model_descriptors: if !pa.served_model_descriptors.is_empty() {
-            let descriptors: Vec<_> = pa
-                .served_model_descriptors
-                .iter()
-                .filter(|descriptor| proto_descriptor_has_valid_identity(descriptor))
-                .map(|descriptor| crate::mesh::ServedModelDescriptor {
-                    identity: descriptor
-                        .identity
-                        .as_ref()
-                        .map(proto_identity_to_local)
-                        .unwrap_or_default(),
-                    capabilities: descriptor
-                        .capabilities
-                        .as_ref()
-                        .map(|caps| crate::models::ModelCapabilities {
-                            multimodal: caps.multimodal,
-                            vision: proto_capability_level_to_local(caps.vision),
-                            audio: proto_capability_level_to_local(caps.audio),
-                            reasoning: proto_capability_level_to_local(caps.reasoning),
-                            tool_use: proto_capability_level_to_local(caps.tool_use),
-                            moe: caps.moe,
-                        })
-                        .unwrap_or_default(),
-                    topology: descriptor.topology.as_ref().map(|topology| {
-                        crate::models::ModelTopology {
-                            moe: topology
-                                .moe
+            let descriptors: Vec<_> =
+                pa.served_model_descriptors
+                    .iter()
+                    .filter(|descriptor| proto_descriptor_has_valid_identity(descriptor))
+                    .map(|descriptor| {
+                        let capabilities = descriptor
+                            .capabilities
+                            .as_ref()
+                            .map(|caps| crate::models::ModelCapabilities {
+                                multimodal: caps.multimodal,
+                                vision: proto_capability_level_to_local(caps.vision),
+                                audio: proto_capability_level_to_local(caps.audio),
+                                reasoning: proto_capability_level_to_local(caps.reasoning),
+                                tool_use: proto_capability_level_to_local(caps.tool_use),
+                                moe: caps.moe,
+                            })
+                            .unwrap_or_default();
+                        crate::mesh::ServedModelDescriptor {
+                            identity: descriptor
+                                .identity
                                 .as_ref()
-                                .map(|moe| crate::models::ModelMoeInfo {
-                                    expert_count: moe.expert_count,
-                                    used_expert_count: moe.used_expert_count,
-                                    min_experts_per_node: moe.min_experts_per_node,
-                                    source: moe.source.clone(),
-                                    ranking_source: moe.ranking_source.clone(),
-                                    ranking_origin: moe.ranking_origin.clone(),
-                                    ranking: moe.ranking.clone(),
-                                    ranking_prompt_count: moe.ranking_prompt_count,
-                                    ranking_tokens: moe.ranking_tokens,
-                                    ranking_layer_scope: moe.ranking_layer_scope.clone(),
-                                }),
+                                .map(proto_identity_to_local)
+                                .unwrap_or_default(),
+                            capabilities_known: descriptor.capabilities_known.unwrap_or(
+                                capabilities != crate::models::ModelCapabilities::default(),
+                            ),
+                            capabilities,
+                            topology: descriptor.topology.as_ref().map(|topology| {
+                                crate::models::ModelTopology {
+                                    moe: topology.moe.as_ref().map(|moe| {
+                                        crate::models::ModelMoeInfo {
+                                            expert_count: moe.expert_count,
+                                            used_expert_count: moe.used_expert_count,
+                                            min_experts_per_node: moe.min_experts_per_node,
+                                            source: moe.source.clone(),
+                                            ranking_source: moe.ranking_source.clone(),
+                                            ranking_origin: moe.ranking_origin.clone(),
+                                            ranking: moe.ranking.clone(),
+                                            ranking_prompt_count: moe.ranking_prompt_count,
+                                            ranking_tokens: moe.ranking_tokens,
+                                            ranking_layer_scope: moe.ranking_layer_scope.clone(),
+                                        }
+                                    }),
+                                }
+                            }),
                         }
-                    }),
-                })
-                .collect();
+                    })
+                    .collect();
             if descriptors.is_empty() {
                 // All descriptors were invalid — fall back to legacy identity list.
                 pa.served_model_identities

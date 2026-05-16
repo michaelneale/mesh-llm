@@ -65,15 +65,16 @@ pub fn runtime_verified_capabilities_from_static(
     mut caps: ModelCapabilities,
     evidence: RuntimeMediaCapabilityEvidence,
 ) -> ModelCapabilities {
-    caps.audio = CapabilityLevel::None;
     if evidence.vision_projector_loaded {
         caps.vision = CapabilityLevel::Supported;
         caps.multimodal = true;
     } else {
         caps.vision = CapabilityLevel::None;
-        caps.multimodal = false;
+        if caps.audio == CapabilityLevel::None {
+            caps.multimodal = false;
+        }
     }
-    caps
+    caps.normalize()
 }
 
 pub async fn infer_remote_hf_capabilities(
@@ -214,7 +215,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_media_verification_preserves_non_media_traits() {
+    fn runtime_media_verification_preserves_audio_and_non_media_traits() {
         let caps = ModelCapabilities {
             multimodal: true,
             vision: CapabilityLevel::Supported,
@@ -232,10 +233,11 @@ mod tests {
         );
 
         assert_eq!(verified.vision, CapabilityLevel::None);
-        assert_eq!(verified.audio, CapabilityLevel::None);
-        assert!(!verified.multimodal);
+        assert_eq!(verified.audio, CapabilityLevel::Supported);
+        assert!(verified.multimodal);
         assert_eq!(verified.reasoning, CapabilityLevel::Likely);
         assert_eq!(verified.tool_use, CapabilityLevel::Supported);
         assert!(verified.moe);
+        assert!(verified.supports_audio_runtime());
     }
 }

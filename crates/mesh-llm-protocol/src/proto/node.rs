@@ -199,6 +199,8 @@ pub struct ServedModelDescriptor {
     pub capabilities: ::core::option::Option<ModelCapabilities>,
     #[prost(message, optional, tag = "3")]
     pub topology: ::core::option::Option<ModelTopology>,
+    #[prost(bool, optional, tag = "4")]
+    pub capabilities_known: ::core::option::Option<bool>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ServedModelIdentity {

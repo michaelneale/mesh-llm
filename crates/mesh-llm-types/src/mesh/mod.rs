@@ -39,9 +39,15 @@ pub struct ServedModelIdentity {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct ServedModelDescriptor {
     pub identity: ServedModelIdentity,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub capabilities_known: bool,
     pub capabilities: ModelCapabilities,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub topology: Option<ModelTopology>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -105,6 +111,7 @@ pub fn infer_served_model_descriptors(
             };
             ServedModelDescriptor {
                 identity,
+                capabilities_known: false,
                 capabilities: ModelCapabilities::default(),
                 topology: None,
             }

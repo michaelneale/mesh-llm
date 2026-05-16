@@ -478,6 +478,7 @@ fn infer_remote_served_descriptors(
             };
             ServedModelDescriptor {
                 identity,
+                capabilities_known: false,
                 capabilities: crate::models::ModelCapabilities::default(),
                 topology: None,
             }
@@ -669,6 +670,7 @@ fn descriptor_from_identity(
     capabilities.moe = false;
     ServedModelDescriptor {
         identity,
+        capabilities_known: true,
         capabilities,
         topology,
     }
@@ -3020,7 +3022,14 @@ impl Node {
 
     async fn refresh_served_model_descriptors(&self) {
         let serving_models = self.serving_models.lock().await.clone();
-        let descriptors = if let Some(primary_model_name) = serving_models.first() {
+        let existing_by_name: HashMap<_, _> = self
+            .served_model_descriptors
+            .lock()
+            .await
+            .iter()
+            .map(|descriptor| (descriptor.identity.model_name.clone(), descriptor.clone()))
+            .collect();
+        let mut descriptors = if let Some(primary_model_name) = serving_models.first() {
             let model_source = self.model_source.lock().await.clone();
             let primary_model_path = crate::models::find_model_path(primary_model_name);
             infer_served_model_descriptors(
@@ -3032,6 +3041,15 @@ impl Node {
         } else {
             Vec::new()
         };
+        for descriptor in &mut descriptors {
+            if let Some(existing) = existing_by_name.get(&descriptor.identity.model_name) {
+                descriptor.capabilities = existing.capabilities;
+                descriptor.capabilities_known = existing.capabilities_known;
+                if existing.topology.is_some() {
+                    descriptor.topology = existing.topology.clone();
+                }
+            }
+        }
         self.set_served_model_descriptors(descriptors).await;
     }
 

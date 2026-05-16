@@ -395,11 +395,13 @@ fn runtime_verified_served_model_descriptor(
             local_file_name: Some(format!("{model_name}.gguf")),
             ..Default::default()
         },
+        capabilities_known: false,
         capabilities: models::ModelCapabilities::default(),
         topology: None,
     });
     descriptor.identity.model_name = model_name.to_string();
     descriptor.identity.is_primary = model_name == primary_model_name;
+    descriptor.capabilities_known = true;
     descriptor.capabilities = capabilities;
     descriptor
 }
@@ -3065,6 +3067,7 @@ mod tests {
                 artifact: Some("Qwen3VL-2B-Instruct-Q4_K_M.gguf".into()),
                 ..Default::default()
             },
+            capabilities_known: false,
             capabilities: models::ModelCapabilities::default(),
             topology: None,
         };
@@ -3090,6 +3093,7 @@ mod tests {
             Some("Qwen/Qwen3-VL-2B-Instruct-GGUF")
         );
         assert!(descriptor.identity.is_primary);
+        assert!(descriptor.capabilities_known);
         assert_eq!(descriptor.capabilities, capabilities);
     }
 
@@ -3116,6 +3120,7 @@ mod tests {
             descriptor.capabilities,
             models::ModelCapabilities::default()
         );
+        assert!(descriptor.capabilities_known);
     }
 
     fn test_stage_status_from_load(

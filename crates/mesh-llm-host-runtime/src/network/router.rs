@@ -40,6 +40,12 @@ pub struct MediaRequirements {
     pub needs_audio: bool,
 }
 
+impl MediaRequirements {
+    pub fn requires_runtime_modality(self) -> bool {
+        self.needs_vision || self.needs_audio
+    }
+}
+
 // ── Model capabilities for routing ──────────────────────────────────
 
 /// Strip split GGUF suffix like "-00001-of-00004" from a model name.
@@ -372,6 +378,24 @@ pub(crate) fn model_satisfies_media_requirements(
 ) -> bool {
     (!media.needs_vision || caps.supports_vision_runtime())
         && (!media.needs_audio || caps.supports_audio_runtime())
+}
+
+pub(crate) fn filter_media_compatible_candidates<'a>(
+    candidates: &[(&'a str, f64, crate::models::ModelCapabilities)],
+    media: &MediaRequirements,
+) -> Option<Vec<(&'a str, f64, crate::models::ModelCapabilities)>> {
+    let media_available: Vec<_> = candidates
+        .iter()
+        .filter(|(_, _, caps)| model_satisfies_media_requirements(caps, media))
+        .cloned()
+        .collect();
+    if media_available.is_empty() && media.requires_runtime_modality() {
+        None
+    } else if media_available.is_empty() {
+        Some(candidates.to_vec())
+    } else {
+        Some(media_available)
+    }
 }
 
 /// Length of last user message in characters (rough complexity proxy).
@@ -831,6 +855,36 @@ mod tests {
             &likely_vision_caps,
             &image
         ));
+    }
+
+    #[test]
+    fn test_filter_media_candidates_blocks_hard_media_miss() {
+        use crate::models::{CapabilityLevel, ModelCapabilities};
+
+        let text_caps = ModelCapabilities::default();
+        let vision_caps = ModelCapabilities {
+            vision: CapabilityLevel::Supported,
+            ..Default::default()
+        };
+        let image = MediaRequirements {
+            has_media: true,
+            needs_vision: true,
+            needs_audio: false,
+        };
+        let text_only = MediaRequirements::default();
+
+        let text_candidates = vec![("text", 0.0, text_caps)];
+        assert!(filter_media_compatible_candidates(&text_candidates, &image).is_none());
+
+        let mixed_candidates = vec![("text", 0.0, text_caps), ("vision", 0.0, vision_caps)];
+        let filtered = filter_media_compatible_candidates(&mixed_candidates, &image)
+            .expect("vision candidate should satisfy image media request");
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].0, "vision");
+
+        let unfiltered = filter_media_compatible_candidates(&text_candidates, &text_only)
+            .expect("text-only requests should keep normal router fallback behavior");
+        assert_eq!(unfiltered, text_candidates);
     }
 
     #[test]

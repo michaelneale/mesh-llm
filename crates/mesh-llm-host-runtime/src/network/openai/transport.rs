@@ -2248,6 +2248,7 @@ pub(crate) fn capabilities_for_model(
     descriptors: &[mesh::ServedModelDescriptor],
 ) -> crate::models::ModelCapabilities {
     descriptor_for_model(descriptors, model)
+        .filter(|descriptor| descriptor.capabilities_known)
         .map(|descriptor| descriptor.capabilities)
         .unwrap_or_else(|| crate::models::installed_model_capabilities(model))
 }
@@ -2369,15 +2370,17 @@ pub async fn handle_mesh_request(
                         (name.as_str(), 0.0, caps)
                     })
                     .collect();
-                let available: Vec<(&str, f64, crate::models::ModelCapabilities)> = with_caps
-                    .iter()
-                    .filter(|(_, _, caps)| router::model_satisfies_media_requirements(caps, &media))
-                    .cloned()
-                    .collect();
-                let available = if available.is_empty() {
-                    with_caps
-                } else {
-                    available
+                let Some(available) =
+                    router::filter_media_compatible_candidates(&with_caps, &media)
+                else {
+                    let _ = send_error(
+                        tcp_stream,
+                        422,
+                        "no served model can satisfy the requested media inputs",
+                    )
+                    .await;
+                    release_request_objects(&node, &request.request_object_request_ids).await;
+                    return;
                 };
                 let picked = router::pick_model_classified(&cl, &available);
                 if let Some(name) = picked {
@@ -3597,6 +3600,7 @@ mod tests {
         capabilities: crate::models::ModelCapabilities,
     ) -> mesh::ServedModelDescriptor {
         mesh::ServedModelDescriptor {
+            capabilities_known: true,
             capabilities,
             ..local_gguf_descriptor(model_name)
         }
@@ -3686,6 +3690,20 @@ mod tests {
         assert_eq!(body["data"][0]["capabilities"], serde_json::json!(["text"]));
         assert_eq!(body["data"][0]["vision_status"], "none");
         assert_eq!(body["data"][0]["multimodal_status"], "none");
+    }
+
+    #[test]
+    fn models_list_uses_static_fallback_for_unknown_descriptor_capabilities() {
+        let models = vec!["Qwen3VL-2B-Instruct-Q4_K_M".to_string()];
+        let descriptors = vec![local_gguf_descriptor(&models[0])];
+
+        let body = models_list_json(&models, &descriptors);
+        let capabilities = body["data"][0]["capabilities"].as_array().unwrap();
+
+        assert!(capabilities.iter().any(|cap| cap == "multimodal"));
+        assert!(capabilities.iter().any(|cap| cap == "vision"));
+        assert_eq!(body["data"][0]["vision_status"], "supported");
+        assert_eq!(body["data"][0]["multimodal_status"], "supported");
     }
 
     #[test]
@@ -3861,6 +3879,28 @@ mod tests {
         )];
 
         assert!(!cached_auto_model_satisfies_media_requirements(
+            model,
+            &media,
+            &descriptors
+        ));
+    }
+
+    #[test]
+    fn cached_auto_model_uses_static_fallback_for_unknown_descriptor_capabilities() {
+        let body = serde_json::json!({
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Describe this image"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}}
+                ]
+            }]
+        });
+        let media = router::media_requirements(&body);
+        let model = "Qwen3VL-2B-Instruct-Q4_K_M";
+        let descriptors = vec![local_gguf_descriptor(model)];
+
+        assert!(cached_auto_model_satisfies_media_requirements(
             model,
             &media,
             &descriptors

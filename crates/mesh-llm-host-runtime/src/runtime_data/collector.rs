@@ -487,8 +487,8 @@ impl RuntimeDataCollector {
                     None => (None, None),
                 };
                 let routing_metrics = routing_metrics_by_model.get(name).cloned();
-                let has_descriptor = descriptor.is_some();
                 let mut capabilities = descriptor
+                    .filter(|descriptor| descriptor.capabilities_known)
                     .map(|descriptor| descriptor.capabilities)
                     .unwrap_or_else(|| {
                         if local_known {
@@ -510,7 +510,9 @@ impl RuntimeDataCollector {
                         .max(crate::models::capabilities::CapabilityLevel::Likely);
                 }
                 if local_known
-                    && !has_descriptor
+                    && !descriptor
+                        .map(|descriptor| descriptor.capabilities_known)
+                        .unwrap_or(false)
                     && likely_vision_model(
                         name,
                         catalog_entry
@@ -524,7 +526,9 @@ impl RuntimeDataCollector {
                     capabilities.multimodal = true;
                 }
                 if local_known
-                    && !has_descriptor
+                    && !descriptor
+                        .map(|descriptor| descriptor.capabilities_known)
+                        .unwrap_or(false)
                     && likely_audio_model(
                         name,
                         catalog_entry

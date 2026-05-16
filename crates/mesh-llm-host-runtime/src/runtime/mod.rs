@@ -6583,6 +6583,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn register_runtime_instance_preserves_existing_known_descriptor_capabilities() {
+        let node = mesh::Node::new_for_tests(mesh::NodeRole::Worker)
+            .await
+            .expect("test node should initialize");
+        let registry = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let vision_model = "Qwen3VL-2B-Instruct-Q4_K_M";
+        let text_model = "Qwen3-8B-Q4_K_M";
+        let vision_capabilities = models::ModelCapabilities {
+            multimodal: true,
+            vision: models::CapabilityLevel::Supported,
+            ..Default::default()
+        };
+
+        register_runtime_instance(
+            &registry,
+            &node,
+            vision_model,
+            vision_model,
+            "runtime-vision",
+            Some(8192),
+            vision_capabilities,
+        )
+        .await;
+        register_runtime_instance(
+            &registry,
+            &node,
+            vision_model,
+            text_model,
+            "runtime-text",
+            Some(8192),
+            models::ModelCapabilities::default(),
+        )
+        .await;
+
+        let descriptors = node.served_model_descriptors().await;
+        let vision = descriptors
+            .iter()
+            .find(|descriptor| descriptor.identity.model_name == vision_model)
+            .expect("vision descriptor should remain registered");
+        assert!(vision.capabilities_known);
+        assert_eq!(vision.capabilities, vision_capabilities);
+
+        let text = descriptors
+            .iter()
+            .find(|descriptor| descriptor.identity.model_name == text_model)
+            .expect("text descriptor should be registered");
+        assert!(text.capabilities_known);
+        assert_eq!(text.capabilities, models::ModelCapabilities::default());
+    }
+
+    #[tokio::test]
     async fn dashboard_snapshot_provider_reuses_cached_inventory_within_ttl() {
         let node = mesh::Node::new_for_tests(mesh::NodeRole::Worker)
             .await

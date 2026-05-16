@@ -253,6 +253,62 @@ async fn make_test_node(role: super::NodeRole) -> Result<Node> {
 }
 
 #[tokio::test]
+async fn set_serving_models_preserves_existing_known_descriptor_capabilities_when_adding_model(
+) -> Result<()> {
+    let node = make_test_node(super::NodeRole::Worker).await?;
+    let vision_model = "Qwen3VL-2B-Instruct-Q4_K_M".to_string();
+    let text_model = "Qwen3-8B-Q4_K_M".to_string();
+
+    node.set_serving_models(vec![vision_model.clone()]).await;
+    node.upsert_served_model_descriptor(ServedModelDescriptor {
+        identity: ServedModelIdentity {
+            model_name: vision_model.clone(),
+            is_primary: true,
+            source_kind: ModelSourceKind::LocalGguf,
+            local_file_name: Some(format!("{vision_model}.gguf")),
+            ..Default::default()
+        },
+        capabilities_known: true,
+        capabilities: crate::models::ModelCapabilities {
+            multimodal: true,
+            vision: crate::models::CapabilityLevel::Supported,
+            ..Default::default()
+        },
+        topology: None,
+    })
+    .await;
+
+    node.set_serving_models(vec![vision_model.clone(), text_model.clone()])
+        .await;
+
+    let descriptors = node.served_model_descriptors().await;
+    let vision = descriptors
+        .iter()
+        .find(|descriptor| descriptor.identity.model_name == vision_model)
+        .expect("existing vision descriptor should remain served");
+    assert!(vision.identity.is_primary);
+    assert!(vision.capabilities_known);
+    assert_eq!(
+        vision.capabilities.vision,
+        crate::models::CapabilityLevel::Supported
+    );
+    assert!(vision.capabilities.multimodal);
+
+    let text = descriptors
+        .iter()
+        .find(|descriptor| descriptor.identity.model_name == text_model)
+        .expect("new text descriptor should be inferred");
+    assert!(!text.identity.is_primary);
+    assert!(!text.capabilities_known);
+    assert_eq!(
+        text.capabilities,
+        crate::models::ModelCapabilities::default()
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn local_request_metrics_snapshot_tracks_accepted_and_completed_requests() {
     let node = make_test_node(super::NodeRole::Worker)
         .await
@@ -2784,6 +2840,7 @@ fn gossip_frame_roundtrip_preserves_scanned_model_metadata() {
                 local_file_name: Some("Qwen3-8B-Q4_K_M.gguf".into()),
                 identity_hash: Some("identity-hash".into()),
             },
+            capabilities_known: true,
             capabilities: crate::models::ModelCapabilities::default(),
             topology: None,
         }],
@@ -2822,6 +2879,14 @@ fn gossip_frame_roundtrip_preserves_scanned_model_metadata() {
         0,
         "local_ann_to_proto_ann must strip passive available_model_sizes from gossip"
     );
+    assert_eq!(
+        proto_pa
+            .served_model_descriptors
+            .first()
+            .and_then(|descriptor| descriptor.capabilities_known),
+        Some(true),
+        "local_ann_to_proto_ann must carry descriptor capability provenance"
+    );
 
     let (_, roundtripped) =
         proto_ann_to_local(&proto_pa).expect("proto_ann_to_local must succeed on valid proto PA");
@@ -2843,6 +2908,14 @@ fn gossip_frame_roundtrip_preserves_scanned_model_metadata() {
         "proto_ann_to_local must restore experts_summary"
     );
     assert!(roundtripped.available_model_sizes.is_empty());
+    assert!(
+        roundtripped
+            .served_model_descriptors
+            .first()
+            .map(|descriptor| descriptor.capabilities_known)
+            .unwrap_or(false),
+        "proto_ann_to_local must restore descriptor capability provenance"
+    );
     assert_eq!(
         roundtripped
             .served_model_runtime
@@ -2881,6 +2954,14 @@ fn gossip_frame_roundtrip_preserves_scanned_model_metadata() {
         Some(32768),
         "build_gossip_frame must preserve served model runtime context length"
     );
+    assert_eq!(
+        wire_pa
+            .served_model_descriptors
+            .first()
+            .and_then(|descriptor| descriptor.capabilities_known),
+        Some(true),
+        "build_gossip_frame must preserve descriptor capability provenance"
+    );
     let (_, final_local) =
         proto_ann_to_local(wire_pa).expect("final proto_ann_to_local must succeed");
     assert!(final_local.available_model_metadata.is_empty());
@@ -2893,6 +2974,38 @@ fn gossip_frame_roundtrip_preserves_scanned_model_metadata() {
             .and_then(ModelRuntimeDescriptor::advertised_context_length),
         Some(32768)
     );
+    assert!(final_local
+        .served_model_descriptors
+        .first()
+        .map(|descriptor| descriptor.capabilities_known)
+        .unwrap_or(false));
+}
+
+#[test]
+fn proto_ann_to_local_treats_missing_default_capability_provenance_as_unknown() {
+    let peer_id = EndpointId::from(SecretKey::generate().public());
+    let proto_pa = PeerAnnouncement {
+        endpoint_id: peer_id.as_bytes().to_vec(),
+        role: NodeRole::Worker as i32,
+        served_model_descriptors: vec![crate::proto::node::ServedModelDescriptor {
+            identity: Some(crate::proto::node::ServedModelIdentity {
+                model_name: "Qwen3VL-2B-Instruct-Q4_K_M".to_string(),
+                source_kind: crate::proto::node::ModelSourceKind::LocalGguf as i32,
+                ..Default::default()
+            }),
+            capabilities: Some(crate::proto::node::ModelCapabilities::default()),
+            capabilities_known: None,
+            topology: None,
+        }],
+        ..Default::default()
+    };
+
+    let (_, ann) = proto_ann_to_local(&proto_pa).expect("valid proto announcement");
+    let descriptor = ann
+        .served_model_descriptors
+        .first()
+        .expect("descriptor should decode");
+    assert!(!descriptor.capabilities_known);
 }
 
 #[test]

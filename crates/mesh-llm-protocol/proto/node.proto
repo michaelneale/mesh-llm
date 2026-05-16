@@ -107,6 +107,7 @@ message ServedModelDescriptor {
   ServedModelIdentity identity = 1;
   ModelCapabilities capabilities = 2;
   optional ModelTopology topology = 3;
+  optional bool capabilities_known = 4;
 }
 
 message ServedModelIdentity {
