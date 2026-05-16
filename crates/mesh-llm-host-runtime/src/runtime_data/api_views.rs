@@ -94,7 +94,7 @@ mod tests {
         collector.replace_local_instances_snapshot(vec![LocalInstanceSnapshot {
             pid: 111,
             api_port: Some(3131),
-            version: Some("0.65.0-test".into()),
+            version: Some("0.66.0".into()),
             started_at_unix: 456,
             runtime_dir: PathBuf::from("/tmp/runtime-1"),
             is_self: true,
@@ -114,7 +114,7 @@ mod tests {
             first_joined_mesh_ts: Some(123),
         });
         let snapshot = collector.build_status_view(StatusViewInput {
-            version: "0.65.0-test".into(),
+            version: "0.66.0".into(),
             latest_version: Some("0.66.0".into()),
             node_id: "node-1".into(),
             owner: OwnershipSummary::default(),
@@ -144,7 +144,7 @@ mod tests {
 
         let payload = status_payload(snapshot);
         let expected = StatusPayload {
-            version: "0.65.0-test".into(),
+            version: "0.66.0".into(),
             latest_version: Some("0.66.0".into()),
             node_id: "node-1".into(),
             owner: build_ownership_payload(&OwnershipSummary::default()),
@@ -175,7 +175,7 @@ mod tests {
             local_instances: vec![LocalInstance {
                 pid: 111,
                 api_port: Some(3131),
-                version: Some("0.65.0-test".into()),
+                version: Some("0.66.0".into()),
                 started_at_unix: 456,
                 runtime_dir: "/tmp/runtime-1".into(),
                 is_self: true,

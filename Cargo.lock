@@ -3475,7 +3475,7 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
 name = "llama-spec-bench"
-version = "0.1.0"
+version = "0.66.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3614,7 +3614,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-api"
-version = "0.65.1"
+version = "0.66.0"
 dependencies = [
  "hex",
  "mesh-llm-client",
@@ -3624,7 +3624,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-api-ffi"
-version = "0.1.0"
+version = "0.66.0"
 dependencies = [
  "mesh-api",
  "mesh-host-core",
@@ -3635,11 +3635,11 @@ dependencies = [
 
 [[package]]
 name = "mesh-host-core"
-version = "0.1.0"
+version = "0.66.0"
 
 [[package]]
 name = "mesh-llm"
-version = "0.65.1"
+version = "0.66.0"
 dependencies = [
  "axum",
  "hex",
@@ -3654,7 +3654,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-llm-client"
-version = "0.65.1"
+version = "0.66.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3685,7 +3685,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-llm-gpu-bench"
-version = "0.1.0"
+version = "0.66.0"
 dependencies = [
  "anyhow",
  "cc",
@@ -3697,7 +3697,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-llm-host-runtime"
-version = "0.65.1"
+version = "0.66.0"
 dependencies = [
  "ansi-to-tui",
  "anyhow",
@@ -3773,7 +3773,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-llm-identity"
-version = "0.1.0"
+version = "0.66.0"
 dependencies = [
  "crypto_box",
  "ed25519-dalek",
@@ -3787,7 +3787,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-llm-plugin"
-version = "0.65.1"
+version = "0.66.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3803,7 +3803,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-llm-protocol"
-version = "0.1.0"
+version = "0.66.0"
 dependencies = [
  "anyhow",
  "hex",
@@ -3815,14 +3815,14 @@ dependencies = [
 
 [[package]]
 name = "mesh-llm-routing"
-version = "0.65.1"
+version = "0.66.0"
 dependencies = [
  "iroh",
 ]
 
 [[package]]
 name = "mesh-llm-system"
-version = "0.1.0"
+version = "0.66.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3844,7 +3844,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-llm-test-harness"
-version = "0.1.0"
+version = "0.66.0"
 dependencies = [
  "reqwest 0.12.28",
  "serde_json",
@@ -3853,7 +3853,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-llm-types"
-version = "0.1.0"
+version = "0.66.0"
 dependencies = [
  "hex",
  "serde",
@@ -3863,14 +3863,14 @@ dependencies = [
 
 [[package]]
 name = "mesh-llm-ui"
-version = "0.65.1"
+version = "0.66.0"
 dependencies = [
  "include_dir",
 ]
 
 [[package]]
 name = "metrics-server"
-version = "0.1.0"
+version = "0.66.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3931,7 +3931,7 @@ dependencies = [
 
 [[package]]
 name = "model-artifact"
-version = "0.1.0"
+version = "0.66.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3942,7 +3942,7 @@ dependencies = [
 
 [[package]]
 name = "model-hf"
-version = "0.1.0"
+version = "0.66.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3956,7 +3956,7 @@ dependencies = [
 
 [[package]]
 name = "model-package"
-version = "0.1.0"
+version = "0.66.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3975,14 +3975,14 @@ dependencies = [
 
 [[package]]
 name = "model-ref"
-version = "0.1.0"
+version = "0.66.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "model-resolver"
-version = "0.1.0"
+version = "0.66.0"
 dependencies = [
  "anyhow",
  "model-artifact",
@@ -4730,7 +4730,7 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "openai-frontend"
-version = "0.1.0"
+version = "0.66.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -6783,7 +6783,7 @@ checksum = "b2aa850e253778c88a04c3d7323b043aeda9d3e30d5971937c1855769763678e"
 
 [[package]]
 name = "skippy-bench"
-version = "0.1.0"
+version = "0.66.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -6800,7 +6800,7 @@ dependencies = [
 
 [[package]]
 name = "skippy-cache"
-version = "0.1.0"
+version = "0.66.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -6809,14 +6809,14 @@ dependencies = [
 
 [[package]]
 name = "skippy-coordinator"
-version = "0.1.0"
+version = "0.66.0"
 dependencies = [
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "skippy-correctness"
-version = "0.1.0"
+version = "0.66.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -6832,15 +6832,15 @@ dependencies = [
 
 [[package]]
 name = "skippy-ffi"
-version = "0.1.0"
+version = "0.66.0"
 
 [[package]]
 name = "skippy-metrics"
-version = "0.1.0"
+version = "0.66.0"
 
 [[package]]
 name = "skippy-model-package"
-version = "0.1.0"
+version = "0.66.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -6857,7 +6857,7 @@ dependencies = [
 
 [[package]]
 name = "skippy-prompt"
-version = "0.1.0"
+version = "0.66.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -6874,7 +6874,7 @@ dependencies = [
 
 [[package]]
 name = "skippy-protocol"
-version = "0.1.0"
+version = "0.66.0"
 dependencies = [
  "prost",
  "prost-build",
@@ -6884,7 +6884,7 @@ dependencies = [
 
 [[package]]
 name = "skippy-runtime"
-version = "0.1.0"
+version = "0.66.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -6897,7 +6897,7 @@ dependencies = [
 
 [[package]]
 name = "skippy-server"
-version = "0.1.0"
+version = "0.66.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6925,7 +6925,7 @@ dependencies = [
 
 [[package]]
 name = "skippy-topology"
-version = "0.1.0"
+version = "0.66.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -9243,7 +9243,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.66.0"
 dependencies = [
  "serde",
  "serde_json",

@@ -1,6 +1,6 @@
 [package]
 name = "mesh-llm-routing"
-version = "0.65.1"
+version = "0.66.0"
 edition = "2021"
 description = "Shared routing targets and model routing helpers for Mesh LLM"
 license = "Apache-2.0"

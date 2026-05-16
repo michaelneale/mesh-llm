@@ -28,7 +28,7 @@ Then depend on the SDK:
 
 ```kotlin
 dependencies {
-    implementation("ai.meshllm:meshllm-android:0.1.0")
+    implementation("ai.meshllm:meshllm-android:0.66.0")
 }
 ```
 

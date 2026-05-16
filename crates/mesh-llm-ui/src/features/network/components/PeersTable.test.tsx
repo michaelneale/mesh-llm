@@ -17,7 +17,7 @@ function buildPeer(index: number): Peer {
     shortId: `p${index}`,
     role: 'worker',
     nodeState: 'serving',
-    version: '0.65.0',
+    version: '0.66.0',
     vramGB: 12
   }
 }
