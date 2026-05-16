@@ -340,10 +340,6 @@ pub(crate) struct Cli {
     #[arg(long, default_value = "8", hide = true)]
     pub(crate) prefill_speculative_max: u16,
 
-    /// Disable automatic draft model detection.
-    #[arg(long, hide = true)]
-    pub(crate) no_draft: bool,
-
     /// Force tensor split even if the model fits on one node.
     #[arg(long, hide = true)]
     pub(crate) split: bool,
@@ -754,7 +750,7 @@ where
     // Recognized value-taking flags: --log-format, --max-vram, --llama-flavor, --device,
     // --tensor-split, --bind-port, --max-clients, --port, --console, --prefill-speculative-max, --ctx-size.
     // Boolean flags: --help-advanced, --auto, --client, --headless, --publish, --blackboard,
-    // --plugin, --auto-update, --no-draft, --split, --no-enumerate-host, --listen-all,
+    // --plugin, --auto-update, --split, --no-enumerate-host, --listen-all,
     // --no-console, --owner-required.
     let value_taking_flags = [
         "--log-format",
