@@ -1,4 +1,5 @@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { env } from '@/lib/env'
 
 type PlaygroundPageProps = Record<string, unknown>
 
@@ -6,7 +7,7 @@ import PlaygroundBaseUI from '@/features/app-shell/playground/components/Playgro
 import PlaygroundCards from '@/features/app-shell/playground/components/PlaygroundCards'
 
 export default function PlaygroundPage(_props: PlaygroundPageProps) {
-  if (!import.meta.env.DEV) {
+  if (!env.isDevelopment) {
     return null
   }
 

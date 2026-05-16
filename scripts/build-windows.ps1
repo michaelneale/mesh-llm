@@ -17,6 +17,13 @@ $compilerLauncherArgs = @()
 $compilerCacheBin = $null
 $buildProfile = if ($BuildProfile) { $BuildProfile.ToLowerInvariant() } elseif ($env:MESH_LLM_BUILD_PROFILE) { $env:MESH_LLM_BUILD_PROFILE.ToLowerInvariant() } else { "debug" }
 
+switch ($buildProfile) {
+    "debug" { if (-not $env:VITE_MESH_LLM_DEBUG_UI) { $env:VITE_MESH_LLM_DEBUG_UI = "true" } }
+    "dev" { if (-not $env:VITE_MESH_LLM_DEBUG_UI) { $env:VITE_MESH_LLM_DEBUG_UI = "true" } }
+    "release" { $env:VITE_MESH_LLM_DEBUG_UI = "false" }
+    default { throw "Unsupported MESH_LLM_BUILD_PROFILE/BuildProfile '$buildProfile'. Expected debug, dev, or release." }
+}
+
 function Prepare-Llama {
     $pinFile = Join-Path $repoRoot "third_party\llama.cpp\upstream.txt"
     $patchDir = Join-Path $repoRoot "third_party\llama.cpp\patches"
@@ -346,6 +353,16 @@ function Invoke-CmakeBuild {
     }
 }
 
+function Get-UiBuildEnvStampContent {
+    return @(
+        "MESH_LLM_BUILD_PROFILE=$buildProfile",
+        "VITE_MESH_LLM_DEBUG_UI=$($env:VITE_MESH_LLM_DEBUG_UI)",
+        "VITE_BASE_PATH=$($env:VITE_BASE_PATH)",
+        "VITE_ROUTER_BASE_PATH=$($env:VITE_ROUTER_BASE_PATH)",
+        "VITE_STORAGE_NAMESPACE=$($env:VITE_STORAGE_NAMESPACE)"
+    ) -join "`n"
+}
+
 function Test-UiBuildRequired {
     param(
         [Parameter(Mandatory = $true)]
@@ -359,6 +376,17 @@ function Test-UiBuildRequired {
 
     $distFiles = Get-ChildItem -Path $distDir -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $distFiles) {
+        return $true
+    }
+
+    $buildEnvStamp = Join-Path $distDir ".mesh-llm-ui-build-env"
+    if (-not (Test-Path $buildEnvStamp)) {
+        return $true
+    }
+
+    $expectedBuildEnvStamp = Get-UiBuildEnvStampContent
+    $actualBuildEnvStamp = Get-Content -Path $buildEnvStamp -Raw
+    if ($actualBuildEnvStamp.TrimEnd() -ne $expectedBuildEnvStamp.TrimEnd()) {
         return $true
     }
 
@@ -925,18 +953,19 @@ Invoke-InRepo {
         Write-Host "Skipping mesh-llm UI build because MESH_LLM_SKIP_UI=1."
     } elseif (Test-Path $meshUiDir) {
         if (Test-UiBuildRequired -UiDirectory $meshUiDir) {
-            Write-Host "Building mesh-llm UI..."
+            Write-Host "Building mesh-llm UI (profile: $buildProfile, debug UI: $($env:VITE_MESH_LLM_DEBUG_UI))..."
             Push-Location $meshUiDir
             try {
                 if (Test-PnpmInstallRequired -UiDirectory $meshUiDir) {
                     Invoke-NativeCommand "pnpm" @("install", "--frozen-lockfile")
                 }
                 Invoke-NativeCommand "pnpm" @("run", "build")
+                Set-Content -Path (Join-Path (Join-Path $meshUiDir "dist") ".mesh-llm-ui-build-env") -Value (Get-UiBuildEnvStampContent)
             } finally {
                 Pop-Location
             }
         } else {
-            Write-Host "Skipping mesh-llm UI build; dist is up to date."
+            Write-Host "Skipping mesh-llm UI build; dist is up to date (profile: $buildProfile, debug UI: $($env:VITE_MESH_LLM_DEBUG_UI))."
         }
     }
 

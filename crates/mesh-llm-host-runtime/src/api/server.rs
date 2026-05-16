@@ -161,14 +161,29 @@ fn management_url(listener: &TcpListener, port: u16) -> String {
 
 // ── Request dispatch ──
 
-pub(crate) fn is_ui_only_route(path: &str) -> bool {
+pub(crate) fn is_console_index_route(path: &str) -> bool {
     matches!(
         path,
-        "/" | "/dashboard" | "/dashboard/" | "/chat" | "/chat/"
+        "/" | "/dashboard"
+            | "/dashboard/"
+            | "/chat"
+            | "/chat/"
+            | "/configuration"
+            | "/configuration/"
+            | "/__playground"
+            | "/__meshviz-perf"
     ) || path.starts_with("/chat/")
-        || path.starts_with("/assets/")
+        || path.starts_with("/configuration/")
+}
+
+pub(crate) fn is_console_asset_route(path: &str) -> bool {
+    path.starts_with("/assets/")
         || matches!(path.rsplit('.').next(), Some("png" | "ico" | "webmanifest"))
         || (path.ends_with(".json") && !path.starts_with("/api/"))
+}
+
+pub(crate) fn is_ui_only_route(path: &str) -> bool {
+    is_console_index_route(path) || is_console_asset_route(path)
 }
 
 pub(crate) async fn handle_request(mut stream: TcpStream, state: &MeshApi) -> anyhow::Result<()> {
@@ -187,26 +202,17 @@ pub(crate) async fn handle_request(mut stream: TcpStream, state: &MeshApi) -> an
     }
 
     match (method, path_only) {
-        // ── Dashboard UI ──
-        ("GET", "/") => {
-            respond_dashboard_index(&mut stream).await?;
-        }
-
-        ("GET", "/dashboard") | ("GET", "/chat") | ("GET", "/dashboard/") | ("GET", "/chat/") => {
-            respond_dashboard_index(&mut stream).await?;
-        }
-
-        ("GET", p) if p.starts_with("/chat/") => {
-            respond_dashboard_index(&mut stream).await?;
+        ("GET", p) if is_console_index_route(p) => {
+            if !respond_console_index(&mut stream).await? {
+                respond_error(&mut stream, 500, "Dashboard bundle missing").await?;
+            }
         }
 
         // ── Frontend static assets (bundled UI dist) ──
-        ("GET", p)
-            if p.starts_with("/assets/")
-                || matches!(p.rsplit('.').next(), Some("png" | "ico" | "webmanifest"))
-                || (p.ends_with(".json") && !p.starts_with("/api/")) =>
-        {
-            respond_static_asset(&mut stream, p).await?;
+        ("GET", p) if is_console_asset_route(p) => {
+            if !respond_console_asset(&mut stream, p).await? {
+                respond_error(&mut stream, 404, "Not found").await?;
+            }
         }
 
         _ => {
@@ -242,18 +248,4 @@ async fn read_management_request(
         Ok(Err(e)) => Err(e),
         Err(_) => Ok(None), // read timeout — health check probe, just close
     }
-}
-
-async fn respond_dashboard_index(stream: &mut TcpStream) -> anyhow::Result<()> {
-    if !respond_console_index(stream).await? {
-        respond_error(stream, 500, "Dashboard bundle missing").await?;
-    }
-    Ok(())
-}
-
-async fn respond_static_asset(stream: &mut TcpStream, path: &str) -> anyhow::Result<()> {
-    if !respond_console_asset(stream, path).await? {
-        respond_error(stream, 404, "Not found").await?;
-    }
-    Ok(())
 }

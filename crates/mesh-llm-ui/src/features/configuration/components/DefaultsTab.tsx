@@ -1,19 +1,36 @@
-import { useMemo, type PointerEvent } from 'react'
+import { useEffect, useMemo, useState, type PointerEvent, type ReactNode } from 'react'
 import * as RadioGroup from '@radix-ui/react-radio-group'
 import { NativeSelect } from '@/components/ui/NativeSelect'
 import { SegmentedControl, type SegmentedControlOption } from '@/components/ui/SegmentedControl'
 import { Slider } from '@/components/ui/Slider'
-import { BrainCircuit, Cog, Cpu, MemoryStick, RotateCcw, type LucideIcon } from 'lucide-react'
+import {
+  BrainCircuit,
+  Cog,
+  Cpu,
+  Filter,
+  Image,
+  MemoryStick,
+  Network,
+  RotateCcw,
+  Server,
+  type LucideIcon
+} from 'lucide-react'
 import { configurationNavigationIconClassName } from '@/features/configuration/components/configuration-navigation-class-names'
 import {
   SettingsCategoryRail,
   SettingsPreviewRail,
   SettingsRow,
   SettingsSection,
-  SettingsSummaryBanner,
-  type SettingsCategoryItem
+  SettingsSummaryBanner
 } from '@/features/configuration/components/settings/SettingsScaffold'
+import { RestartBadge } from '@/features/configuration/components/settings/RestartBadge'
 import { useDefaultsSettingsState } from '@/features/configuration/hooks/useDefaultsSettingsState'
+import {
+  getSettingBaselineValue,
+  getSettingDependencyStatus,
+  getSettingValue,
+  isSettingDisabled
+} from '@/features/configuration/lib/settings-utils'
 import type {
   ConfigurationDefaultsCategory,
   ConfigurationDefaultsCategoryId,
@@ -23,13 +40,34 @@ import type {
   ConfigurationDefaultsValues,
   ConfigurationTomlSectionId
 } from '@/features/app-tabs/types'
+import { env } from '@/lib/env'
 import { cn } from '@/lib/cn'
 
 const categoryIcons: Record<ConfigurationDefaultsCategoryId, LucideIcon> = {
   runtime: Cpu,
   memory: MemoryStick,
   'speculative-decoding': BrainCircuit,
-  'request-defaults': Cog
+  advanced: Cog,
+  'request-defaults': Filter,
+  'skippy-transport': Network,
+  multimodal: Image,
+  'advanced-server': Server
+}
+
+const defaultsCategoryOrder: readonly ConfigurationDefaultsCategoryId[] = [
+  'runtime',
+  'memory',
+  'speculative-decoding',
+  'advanced',
+  'request-defaults',
+  'skippy-transport',
+  'multimodal',
+  'advanced-server'
+]
+
+const legacyCategoryTomlSections: Partial<Record<ConfigurationDefaultsCategoryId, string>> = {
+  advanced: 'defaults.runtime',
+  'speculative-decoding': 'defaults.speculative'
 }
 
 const slotOptions = Array.from({ length: 16 }, (_, index) => index + 1)
@@ -56,14 +94,6 @@ function LlamaFlavorOption({ option, selected }: { option: SegmentedControlOptio
   )
 }
 
-const draftModelModeSettingId = 'speculation-mode'
-const draftModelModeValue = 'draft'
-const incompatiblePairingBehaviorSettingId = 'incompatible-pairing-behavior'
-const draftModelOnlySettingIds = new Set([
-  'draft-selection-policy',
-  'draft-max-tokens',
-  incompatiblePairingBehaviorSettingId
-])
 const defaultsSectionOrder: readonly ConfigurationTomlSectionId[] = [
   'defaults.model_fit',
   'defaults.hardware',
@@ -74,6 +104,7 @@ const defaultsSectionOrder: readonly ConfigurationTomlSectionId[] = [
   'defaults.multimodal',
   'defaults.advanced.server'
 ]
+const SHOW_ADVANCED_STORAGE_KEY = `${env.storageNamespace}:configuration-defaults:show-advanced:v1`
 
 type DefaultsTabProps = {
   data: ConfigurationDefaultsHarnessData
@@ -81,10 +112,7 @@ type DefaultsTabProps = {
   onSettingValueChange: (settingId: string, value: string) => void
   onResetAll?: () => void
   configFilePath?: string
-}
-
-function getSettingValue(setting: ConfigurationDefaultsSetting, values: ConfigurationDefaultsValues) {
-  return values[setting.id] ?? setting.control.value
+  readOnlyNotice?: ReactNode
 }
 
 function tomlValue(value: string) {
@@ -160,43 +188,76 @@ function tomlPreviewValue(setting: ConfigurationDefaultsSetting, value: string) 
   return tomlValue(value)
 }
 
+function categoryOrderIndex(categoryId: ConfigurationDefaultsCategoryId) {
+  const index = defaultsCategoryOrder.indexOf(categoryId)
+  return index === -1 ? defaultsCategoryOrder.length : index
+}
+
+function defaultsTomlSectionPath(
+  setting: ConfigurationDefaultsSetting,
+  categoryById: ReadonlyMap<ConfigurationDefaultsCategoryId, ConfigurationDefaultsCategory>
+) {
+  return (
+    setting.tomlSection ??
+    categoryById.get(setting.categoryId)?.tomlSection ??
+    legacyCategoryTomlSections[setting.categoryId] ??
+    null
+  )
+}
+
 function buildDefaultsPreviewLines(
   data: ConfigurationDefaultsHarnessData,
-  values: ConfigurationDefaultsValues
+  values: ConfigurationDefaultsValues,
+  settings: readonly ConfigurationDefaultsSetting[] = data.settings
 ): DefaultsPreviewLine[] {
+  const mainLines: DefaultsPreviewLine[] = []
   const sectionGroups = new Map<string, DefaultsPreviewLine[]>()
-  const speculationModeSetting = data.settings.find((setting) => setting.id === draftModelModeSettingId)
-  const speculationMode = speculationModeSetting ? getSettingValue(speculationModeSetting, values) : null
+  const categoryById = new Map(data.categories.map((category) => [category.id, category] as const))
 
-  for (const setting of data.settings) {
-    if (draftModelOnlySettingIds.has(setting.id) && speculationMode !== draftModelModeValue) continue
+  for (const setting of settings) {
+    if (isSettingDisabled(setting, data.settings, values)) continue
 
     const value = getSettingValue(setting, values)
+    if (value === getSettingBaselineValue(setting)) continue
     if (setting.control.kind === 'text' && value.trim().length === 0) continue
 
     const line: DefaultsPreviewLine = {
       kind: 'pair',
       id: setting.id,
-      keyName: setting.tomlKey,
+      keyName: setting.tomlKey ?? (setting.control.kind === 'metric' ? setting.id : setting.control.name),
       value: tomlPreviewValue(setting, value)
     }
-    const groupLines = sectionGroups.get(setting.tomlSection) ?? [
-      { kind: 'section', id: `defaults-${setting.tomlSection}-section`, value: `[${setting.tomlSection}]` }
+    const sectionPath = defaultsTomlSectionPath(setting, categoryById)
+    if (!sectionPath) {
+      mainLines.push(line)
+      continue
+    }
+
+    const groupLines = sectionGroups.get(sectionPath) ?? [
+      {
+        kind: 'section',
+        id: `defaults-${sectionPath.replaceAll('.', '-')}-section`,
+        value: `[${sectionPath}]`
+      }
     ]
     groupLines.push(line)
-    sectionGroups.set(setting.tomlSection, groupLines)
+    sectionGroups.set(sectionPath, groupLines)
   }
 
-  let emittedSections = 0
+  const orderedSectionPaths = [
+    ...defaultsSectionOrder.filter((sectionPath) => sectionGroups.has(sectionPath)),
+    ...Array.from(sectionGroups.keys()).filter(
+      (sectionPath) => !defaultsSectionOrder.includes(sectionPath as ConfigurationTomlSectionId)
+    )
+  ]
 
-  return defaultsSectionOrder.flatMap((sectionId) => {
-    const lines = sectionGroups.get(sectionId)
-    if (!lines) return []
-    const renderedLines =
-      emittedSections === 0 ? lines : [{ kind: 'blank' as const, id: `defaults-preview-${sectionId}-spacer` }, ...lines]
-    emittedSections += 1
-    return renderedLines
+  const groupedLines = orderedSectionPaths.flatMap((sectionPath, index) => {
+    const lines = sectionGroups.get(sectionPath) ?? []
+    const spacer = { kind: 'blank' as const, id: `defaults-preview-${sectionPath.replaceAll('.', '-')}-spacer` }
+    return mainLines.length > 0 || index > 0 ? [spacer, ...lines] : lines
   })
+
+  return [...mainLines, ...groupedLines]
 }
 
 function renderDefaultsPreview(lines: readonly DefaultsPreviewLine[]) {
@@ -211,6 +272,27 @@ function renderDefaultsPreview(lines: readonly DefaultsPreviewLine[]) {
 
 function settingDescription(setting: ConfigurationDefaultsSetting) {
   return setting.description
+}
+
+function readShowAdvancedSettings() {
+  if (typeof window === 'undefined') return false
+
+  try {
+    return window.localStorage.getItem(SHOW_ADVANCED_STORAGE_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
+function writeShowAdvancedSettings(showAdvanced: boolean) {
+  if (typeof window === 'undefined') return
+
+  try {
+    if (showAdvanced) window.localStorage.setItem(SHOW_ADVANCED_STORAGE_KEY, 'true')
+    else window.localStorage.removeItem(SHOW_ADVANCED_STORAGE_KEY)
+  } catch {
+    return
+  }
 }
 
 function sectionSubtitle(category: ConfigurationDefaultsCategory) {
@@ -456,23 +538,17 @@ function SettingControl({
 function DefaultsSection({
   category,
   settings,
+  allSettings,
   values,
   onSettingValueChange
 }: {
   category: ConfigurationDefaultsCategory
   settings: readonly ConfigurationDefaultsSetting[]
+  allSettings: readonly ConfigurationDefaultsSetting[]
   values: ConfigurationDefaultsValues
   onSettingValueChange: (settingId: string, value: string) => void
 }) {
   const Icon = categoryIcons[category.id]
-  const speculationModeSetting = settings.find((setting) => setting.id === draftModelModeSettingId)
-  const speculationMode =
-    category.id === 'speculative-decoding' && speculationModeSetting
-      ? getSettingValue(speculationModeSetting, values)
-      : null
-  const draftModelControlsDisabled = speculationMode !== null && speculationMode !== draftModelModeValue
-  const isSettingDisabled = (setting: ConfigurationDefaultsSetting) =>
-    draftModelControlsDisabled && draftModelOnlySettingIds.has(setting.id)
 
   return (
     <SettingsSection
@@ -483,17 +559,20 @@ function DefaultsSection({
     >
       {settings.map((setting, settingIndex) => {
         const value = getSettingValue(setting, values)
-        const disabled = isSettingDisabled(setting)
+        const disabledInfo = getSettingDependencyStatus(setting, allSettings, values)
 
         return (
           <SettingsRow
-            className={cn(settingIndex === 0 && 'border-t-0', disabled && 'opacity-55')}
+            className={cn(settingIndex === 0 && 'border-t-0')}
+            disabled={disabledInfo.disabled}
+            disabledReason={disabledInfo.reason}
             key={setting.id}
             label={setting.label}
+            labelAccessory={setting.mutability === 'restart-required' ? <RestartBadge /> : undefined}
             hint={settingDescription(setting)}
           >
             <SettingControl
-              disabled={disabled}
+              disabled={disabledInfo.disabled}
               setting={setting}
               value={value}
               onChange={(nextValue) => onSettingValueChange(setting.id, nextValue)}
@@ -505,25 +584,70 @@ function DefaultsSection({
   )
 }
 
-export function DefaultsTab({ data, values, onSettingValueChange, onResetAll, configFilePath }: DefaultsTabProps) {
+export function DefaultsTab({
+  data,
+  values,
+  onSettingValueChange,
+  onResetAll,
+  configFilePath,
+  readOnlyNotice
+}: DefaultsTabProps) {
   const { activeCategoryId, setActiveCategoryId } = useDefaultsSettingsState(data)
+  const [showAdvancedSettings, setShowAdvancedSettings] = useState(() => readShowAdvancedSettings())
   const changedCount = data.settings.filter(
     (setting) => getSettingValue(setting, values) !== setting.control.value
   ).length
-  const previewLines = useMemo(() => buildDefaultsPreviewLines(data, values), [data, values])
-  const categories: SettingsCategoryItem[] = useMemo(
-    () =>
-      data.categories.map((category) => {
-        const Icon = categoryIcons[category.id]
+  useEffect(() => {
+    writeShowAdvancedSettings(showAdvancedSettings)
+  }, [showAdvancedSettings])
 
-        return {
-          ...category,
-          count: data.settings.filter((setting) => setting.categoryId === category.id).length,
-          icon: <Icon aria-hidden="true" className={configurationNavigationIconClassName} strokeWidth={1.7} />
-        }
-      }),
-    [data.categories, data.settings]
+  const visibleSettings = useMemo(
+    () => data.settings.filter((setting) => showAdvancedSettings || setting.visibility !== 'advanced'),
+    [data.settings, showAdvancedSettings]
   )
+  const settingsByCategory = useMemo(() => {
+    const grouped = new Map<ConfigurationDefaultsCategoryId, ConfigurationDefaultsSetting[]>()
+
+    for (const setting of visibleSettings) {
+      const group = grouped.get(setting.categoryId) ?? []
+      group.push(setting)
+      grouped.set(setting.categoryId, group)
+    }
+
+    return grouped
+  }, [visibleSettings])
+  const categories = useMemo(
+    () =>
+      data.categories
+        .map((category, originalIndex) => ({
+          ...category,
+          originalIndex,
+          count: settingsByCategory.get(category.id)?.length ?? 0
+        }))
+        .filter((category) => category.count > 0)
+        .sort(
+          (left, right) =>
+            categoryOrderIndex(left.id) - categoryOrderIndex(right.id) || left.originalIndex - right.originalIndex
+        )
+        .map((category) => {
+          const Icon = categoryIcons[category.id]
+          const { originalIndex: _originalIndex, ...resolvedCategory } = category
+
+          return {
+            ...resolvedCategory,
+            icon: <Icon aria-hidden="true" className={configurationNavigationIconClassName} strokeWidth={1.7} />
+          }
+        }),
+    [data.categories, settingsByCategory]
+  )
+  const previewLines = useMemo(() => buildDefaultsPreviewLines(data, values, data.settings), [data, values])
+
+  useEffect(() => {
+    if (categories.length === 0) return
+    if (categories.some((category) => category.id === activeCategoryId)) return
+
+    setActiveCategoryId(categories[0].id)
+  }, [activeCategoryId, categories, setActiveCategoryId])
 
   const selectCategory = (categoryId: string) => {
     setActiveCategoryId(categoryId)
@@ -539,17 +663,30 @@ export function DefaultsTab({ data, values, onSettingValueChange, onResetAll, co
     >
       <SettingsSummaryBanner
         action={
-          <button
-            className={cn(
-              'ui-control inline-flex h-[30px] items-center gap-1.5 rounded-[var(--radius)] border px-2.5 text-[length:var(--density-type-control)] font-semibold'
-            )}
-            disabled={changedCount === 0}
-            onClick={onResetAll}
-            type="button"
-          >
-            <RotateCcw aria-hidden="true" className="size-3.5" />
-            Reset all
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              aria-pressed={showAdvancedSettings}
+              className={cn(
+                'ui-control inline-flex h-[30px] items-center gap-1.5 rounded-[var(--radius)] border px-2.5 text-[length:var(--density-type-control)] font-semibold',
+                showAdvancedSettings && 'border-accent bg-accent/10 text-accent'
+              )}
+              onClick={() => setShowAdvancedSettings((current) => !current)}
+              type="button"
+            >
+              {showAdvancedSettings ? 'Hide advanced' : 'Show advanced'}
+            </button>
+            <button
+              className={cn(
+                'ui-control inline-flex h-[30px] items-center gap-1.5 rounded-[var(--radius)] border px-2.5 text-[length:var(--density-type-control)] font-semibold'
+              )}
+              disabled={changedCount === 0}
+              onClick={onResetAll}
+              type="button"
+            >
+              <RotateCcw aria-hidden="true" className="size-3.5" />
+              Reset all
+            </button>
+          </div>
         }
         description={
           <>
@@ -570,6 +707,8 @@ export function DefaultsTab({ data, values, onSettingValueChange, onResetAll, co
         title="Inherited defaults"
       />
 
+      {readOnlyNotice}
+
       <div className="grid min-w-0 gap-[14px] xl:grid-cols-[250px_minmax(0,1fr)_minmax(280px,340px)]">
         <SettingsCategoryRail
           activeId={activeCategoryId}
@@ -586,12 +725,13 @@ export function DefaultsTab({ data, values, onSettingValueChange, onResetAll, co
         />
 
         <div className="min-w-0 space-y-[14px]">
-          {data.categories.map((category) => (
+          {categories.map((category) => (
             <DefaultsSection
               category={category}
+              allSettings={data.settings}
               key={category.id}
               onSettingValueChange={onSettingValueChange}
-              settings={data.settings.filter((setting) => setting.categoryId === category.id)}
+              settings={settingsByCategory.get(category.id) ?? []}
               values={values}
             />
           ))}

@@ -3,8 +3,27 @@
 set -euo pipefail
 
 UI_DIR="${1:?usage: build-ui.sh /path/to/ui}"
+UI_DIR="$(cd "$UI_DIR" && pwd)"
 DIST_DIR="$UI_DIR/dist"
 NODE_MODULES_DIR="$UI_DIR/node_modules"
+UI_BUILD_ENV_STAMP="$DIST_DIR/.mesh-llm-ui-build-env"
+MESH_LLM_UI_BUILD_PROFILE="${MESH_LLM_BUILD_PROFILE:-debug}"
+MESH_LLM_UI_BUILD_PROFILE="${MESH_LLM_UI_BUILD_PROFILE,,}"
+
+case "$MESH_LLM_UI_BUILD_PROFILE" in
+    dev|debug)
+        : "${VITE_MESH_LLM_DEBUG_UI:=true}"
+        ;;
+    release)
+        VITE_MESH_LLM_DEBUG_UI=false
+        ;;
+    *)
+        echo "Unsupported MESH_LLM_BUILD_PROFILE '$MESH_LLM_UI_BUILD_PROFILE'. Expected debug, dev, or release." >&2
+        exit 1
+        ;;
+esac
+
+export VITE_MESH_LLM_DEBUG_UI
 
 ui_build_inputs=(
     "$UI_DIR/package.json"
@@ -23,8 +42,34 @@ dist_has_output() {
     [[ -d "$DIST_DIR" ]] && find "$DIST_DIR" -type f -print -quit | grep -q .
 }
 
+expected_build_env_stamp() {
+    cat <<EOF
+MESH_LLM_BUILD_PROFILE=$MESH_LLM_UI_BUILD_PROFILE
+VITE_MESH_LLM_DEBUG_UI=$VITE_MESH_LLM_DEBUG_UI
+VITE_BASE_PATH=${VITE_BASE_PATH:-}
+VITE_ROUTER_BASE_PATH=${VITE_ROUTER_BASE_PATH:-}
+VITE_STORAGE_NAMESPACE=${VITE_STORAGE_NAMESPACE:-}
+EOF
+}
+
+ui_build_env_is_stale() {
+    if [[ ! -f "$UI_BUILD_ENV_STAMP" ]]; then
+        return 0
+    fi
+
+    if ! diff -q <(expected_build_env_stamp) "$UI_BUILD_ENV_STAMP" >/dev/null; then
+        return 0
+    fi
+
+    return 1
+}
+
 ui_build_is_stale() {
     if ! dist_has_output; then
+        return 0
+    fi
+
+    if ui_build_env_is_stale; then
         return 0
     fi
 
@@ -55,7 +100,7 @@ pnpm_install_is_stale() {
 }
 
 if ui_build_is_stale; then
-    echo "Building mesh-llm UI..."
+    echo "Building mesh-llm UI (profile: $MESH_LLM_UI_BUILD_PROFILE, debug UI: $VITE_MESH_LLM_DEBUG_UI)..."
     cd "$UI_DIR"
 
     if pnpm_install_is_stale; then
@@ -63,6 +108,7 @@ if ui_build_is_stale; then
     fi
 
     pnpm run build
+    expected_build_env_stamp > "$UI_BUILD_ENV_STAMP"
 else
-    echo "Skipping mesh-llm UI build; dist is up to date."
+    echo "Skipping mesh-llm UI build; dist is up to date (profile: $MESH_LLM_UI_BUILD_PROFILE, debug UI: $VITE_MESH_LLM_DEBUG_UI)."
 fi

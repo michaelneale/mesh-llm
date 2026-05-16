@@ -372,7 +372,7 @@ fn owner_control_client(connection: ControlPlaneConnection) -> OwnerControlClien
 async fn control_plane_client_apply_config_get_watch_refresh_and_close() {
     let owner_keypair = test_owner_keypair(0x11, 0x12);
     let client = make_client().await;
-    let (_server, token, state, watch_closed_rx) = spawn_success_server(&owner_keypair).await;
+    let (server, token, state, watch_closed_rx) = spawn_success_server(&owner_keypair).await;
 
     let connection = client
         .connect_control_plane(ControlPlaneBootstrapOptions::new().with_control_endpoint(token))
@@ -432,20 +432,24 @@ async fn control_plane_client_apply_config_get_watch_refresh_and_close() {
         .expect("server should observe watch close")
         .expect("watch close signal should succeed");
 
-    let apply_requests = state.received_apply.lock().await;
-    assert_eq!(apply_requests.len(), 1);
-    assert_eq!(apply_requests[0].expected_revision, 3);
-    assert_eq!(
-        apply_requests[0].config.as_ref().unwrap().models[0].model,
-        "applied-model.gguf"
-    );
+    {
+        let apply_requests = state.received_apply.lock().await;
+        assert_eq!(apply_requests.len(), 1);
+        assert_eq!(apply_requests[0].expected_revision, 3);
+        assert_eq!(
+            apply_requests[0].config.as_ref().unwrap().models[0].model,
+            "applied-model.gguf"
+        );
+    }
+    control.close().await;
+    server.close().await;
 }
 
 #[tokio::test]
 async fn control_plane_client_watch_without_snapshot_returns_accepted() {
     let client = make_client().await;
     let owner_keypair = test_owner_keypair(0x11, 0x12);
-    let (_server, token, _state, watch_closed_rx) = spawn_success_server(&owner_keypair).await;
+    let (server, token, _state, watch_closed_rx) = spawn_success_server(&owner_keypair).await;
     let control = owner_control_client(
         client
             .connect_control_plane(ControlPlaneBootstrapOptions::new().with_control_endpoint(token))
@@ -468,12 +472,14 @@ async fn control_plane_client_watch_without_snapshot_returns_accepted() {
         .await
         .expect("server should observe watch close")
         .expect("watch close signal should succeed");
+    control.close().await;
+    server.close().await;
 }
 
 #[tokio::test]
 async fn control_plane_client_auth_failure_surfaces_structured_error() {
     let client = make_client().await;
-    let (_server, token) = spawn_auth_failure_server().await;
+    let (server, token) = spawn_auth_failure_server().await;
     let control = owner_control_client(
         client
             .connect_control_plane(ControlPlaneBootstrapOptions::new().with_control_endpoint(token))
@@ -492,12 +498,14 @@ async fn control_plane_client_auth_failure_surfaces_structured_error() {
         }
         other => panic!("expected structured remote auth error, got {other:?}"),
     }
+    control.close().await;
+    server.close().await;
 }
 
 #[tokio::test]
 async fn control_plane_client_rejects_alpn_mismatch() {
     let client = make_client().await;
-    let (_server, token) = spawn_control_unsupported_server().await;
+    let (server, token) = spawn_control_unsupported_server().await;
     let control = owner_control_client(
         client
             .connect_control_plane(ControlPlaneBootstrapOptions::new().with_control_endpoint(token))
@@ -515,6 +523,8 @@ async fn control_plane_client_rejects_alpn_mismatch() {
         }
         other => panic!("expected structured unsupported error, got {other:?}"),
     }
+    control.close().await;
+    server.close().await;
 }
 
 #[tokio::test]
@@ -529,7 +539,7 @@ async fn control_plane_client_unreachable_listener_returns_structured_negotiatio
         .await
         .unwrap();
     let token = control_endpoint_token(&endpoint.addr());
-    drop(endpoint);
+    endpoint.close().await;
 
     let client = make_client().await;
     let err = match client
@@ -558,7 +568,7 @@ async fn control_plane_client_unreachable_listener_returns_structured_negotiatio
 #[tokio::test]
 async fn control_plane_client_does_not_silently_fallback_when_endpoint_fails() {
     let client = make_client().await;
-    let (_server, token) = spawn_control_unsupported_server().await;
+    let (server, token) = spawn_control_unsupported_server().await;
     let control = owner_control_client(
         client
             .connect_control_plane(ControlPlaneBootstrapOptions::new().with_control_endpoint(token))
@@ -576,4 +586,6 @@ async fn control_plane_client_does_not_silently_fallback_when_endpoint_fails() {
         }
         other => panic!("expected structured unsupported error, got {other:?}"),
     }
+    control.close().await;
+    server.close().await;
 }

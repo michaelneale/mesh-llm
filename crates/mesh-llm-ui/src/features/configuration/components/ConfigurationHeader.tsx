@@ -1,4 +1,4 @@
-import { Network, RotateCcw, Save, Undo2, Redo2, UserRound } from 'lucide-react'
+import { LoaderCircle, Network, RotateCcw, Save, Undo2, Redo2, UserRound } from 'lucide-react'
 import type { ReactNode } from 'react'
 import type { ConfigNode } from '@/features/app-tabs/types'
 import { cn } from '@/lib/cn'
@@ -11,6 +11,8 @@ type ConfigurationHeaderProps = {
   canRedo: boolean
   hasUnsavedChanges: boolean
   hasInvalidNode: boolean
+  isSaving?: boolean
+  saveDisabledReason?: string
   onUndo: () => void
   onRedo: () => void
   onRevert: () => void
@@ -47,11 +49,24 @@ export function ConfigurationHistoryActions({
   canRedo,
   hasUnsavedChanges,
   hasInvalidNode,
+  isSaving = false,
+  saveDisabledReason,
   onUndo,
   onRedo,
   onRevert,
   onSave
 }: Omit<ConfigurationHeaderProps, 'title' | 'description' | 'nodes'>) {
+  const saveDisabled = isSaving || hasInvalidNode || !hasUnsavedChanges || Boolean(saveDisabledReason)
+  const saveTitle = saveDisabledReason
+    ? saveDisabledReason
+    : isSaving
+      ? 'Saving config'
+      : hasInvalidNode
+        ? 'Resolve invalid model allocations before saving'
+        : hasUnsavedChanges
+          ? 'Save config'
+          : 'No changes to save'
+
   return (
     <fieldset aria-label="Configuration history actions" className="flex items-center gap-1.5 border-0 p-0">
       <button
@@ -84,20 +99,19 @@ export function ConfigurationHistoryActions({
           'inline-flex h-[30px] items-center gap-1.5 rounded-[var(--radius)] border px-4 text-[length:var(--density-type-control)] font-semibold leading-none',
           hasInvalidNode ? 'ui-control-destructive' : 'ui-control-primary'
         )}
-        disabled={hasInvalidNode || !hasUnsavedChanges}
+        aria-busy={isSaving || undefined}
+        disabled={saveDisabled}
         onClick={onSave}
-        title={
-          hasInvalidNode
-            ? 'Resolve invalid model allocations before saving'
-            : hasUnsavedChanges
-              ? 'Save config'
-              : 'No changes to save'
-        }
+        title={saveTitle}
         type="button"
         aria-keyshortcuts="Control+S"
       >
-        <Save aria-hidden="true" className="size-3.5" />
-        Save config
+        {isSaving ? (
+          <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" />
+        ) : (
+          <Save aria-hidden="true" className="size-3.5" />
+        )}
+        {isSaving ? 'Saving config' : 'Save config'}
       </button>
     </fieldset>
   )

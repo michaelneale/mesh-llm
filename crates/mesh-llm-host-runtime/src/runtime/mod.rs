@@ -2686,7 +2686,7 @@ fn owner_runtime_config(
         },
         None if cli.owner_required => {
             anyhow::bail!(
-                "Owner identity is required but no keystore was found. Use --owner-key or run `mesh-llm auth init`."
+                "Owner identity is required but no keystore was found. To enable owner control, run `mesh-llm auth init --no-passphrase`, then restart with `mesh-llm serve --owner-required`."
             );
         }
         None => None,
@@ -2702,6 +2702,13 @@ fn owner_runtime_config(
         trust_store,
         trust_policy,
     })
+}
+
+fn emit_configuration_ui_read_only_hint() {
+    let _ = emit_event(OutputEvent::Warning {
+        message: "Configuration UI is read-only: no owner identity found. To enable saving config from the UI:\n  mesh-llm auth init --no-passphrase\n  mesh-llm serve --owner-required".to_string(),
+        context: None,
+    });
 }
 
 /// Wait for either SIGINT (ctrl-c) or SIGTERM. Without this, an unhandled
@@ -5101,6 +5108,9 @@ async fn start_run_auto_node_and_plugins(
         NodeRole::Worker
     };
     let owner_config = owner_runtime_config(cli, config)?;
+    if !cli.headless && owner_config.keypair.is_none() {
+        emit_configuration_ui_read_only_hint();
+    }
     let max_vram = if cli.client { Some(0.0) } else { cli.max_vram };
     let (node, channels) = mesh::Node::start(
         role,
@@ -6208,14 +6218,10 @@ async fn setup_run_auto_console_state(
     console_state
         .set_runtime_control(ctx.control_tx.clone())
         .await;
-    let control_endpoint = ctx.node.control_endpoint().await;
     console_state
-        .set_control_bootstrap(api::ControlBootstrapPayload {
-            enabled: control_endpoint.is_some(),
-            local_only: true,
-            requires_explicit_remote_endpoint: true,
-            endpoint: control_endpoint,
-        })
+        .set_control_bootstrap(api::ControlBootstrapPayload::from_control_endpoint(
+            ctx.node.control_endpoint().await,
+        ))
         .await;
     console_state
         .set_nostr_relays(nostr_relays(&ctx.cli.nostr_relay))
@@ -7033,14 +7039,10 @@ async fn setup_passive_console_runtime(
         runtime_data_collector,
         runtime_data_producer,
     });
-    let control_endpoint = node.control_endpoint().await;
     console_state
-        .set_control_bootstrap(api::ControlBootstrapPayload {
-            enabled: control_endpoint.is_some(),
-            local_only: true,
-            requires_explicit_remote_endpoint: true,
-            endpoint: control_endpoint,
-        })
+        .set_control_bootstrap(api::ControlBootstrapPayload::from_control_endpoint(
+            node.control_endpoint().await,
+        ))
         .await;
     console_state
         .set_nostr_relays(nostr_relays(&cli.nostr_relay))

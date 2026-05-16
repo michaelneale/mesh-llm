@@ -119,7 +119,9 @@ async fn handle_control_get_config(
     };
     match connect_owner_control_client(state, &endpoint).await {
         Ok(client) => {
-            match client.get_config().await {
+            let result = client.get_config().await;
+            client.close().await;
+            match result {
                 Ok(snapshot) => respond_json(
                     stream,
                     200,
@@ -151,7 +153,9 @@ async fn handle_control_refresh_inventory(
     };
     match connect_owner_control_client(state, &endpoint).await {
         Ok(client) => {
-            match client.refresh_inventory().await {
+            let result = client.refresh_inventory().await;
+            client.close().await;
+            match result {
                 Ok(snapshot) => respond_json(
                     stream,
                     200,
@@ -182,29 +186,32 @@ async fn handle_control_apply_config(
         Err(error) => return respond_control_error(stream, error).await,
     };
     match connect_owner_control_client(state, &endpoint).await {
-        Ok(client) => match client
-            .apply_config(
-                request.expected_revision,
-                crate::protocol::convert::mesh_config_to_proto(&request.config),
-            )
-            .await
-        {
-            Ok(response) => {
-                respond_json(
-                    stream,
-                    200,
-                    &LocalControlApplyPayload {
-                        success: response.success,
-                        current_revision: response.current_revision,
-                        config_hash: hex::encode(response.config_hash),
-                        apply_mode: control_apply_mode_label(response.apply_mode),
-                        error: response.error,
-                    },
+        Ok(client) => {
+            let result = client
+                .apply_config(
+                    request.expected_revision,
+                    crate::protocol::convert::mesh_config_to_proto(&request.config),
                 )
-                .await
+                .await;
+            client.close().await;
+            match result {
+                Ok(response) => {
+                    respond_json(
+                        stream,
+                        200,
+                        &LocalControlApplyPayload {
+                            success: response.success,
+                            current_revision: response.current_revision,
+                            config_hash: hex::encode(response.config_hash),
+                            apply_mode: control_apply_mode_label(response.apply_mode),
+                            error: response.error,
+                        },
+                    )
+                    .await
+                }
+                Err(error) => respond_control_error(stream, control_error_from_client(error)).await,
             }
-            Err(error) => respond_control_error(stream, control_error_from_client(error)).await,
-        },
+        }
         Err(error) => respond_control_error(stream, error).await,
     }
 }
@@ -243,7 +250,14 @@ fn required_control_endpoint(endpoint: Option<String>) -> Result<String, LocalCo
 }
 
 async fn ensure_loopback_control_caller(stream: &mut TcpStream) -> anyhow::Result<bool> {
-    match stream.peer_addr() {
+    ensure_loopback_control_caller_for_peer_addr(stream, stream.peer_addr()).await
+}
+
+pub(crate) async fn ensure_loopback_control_caller_for_peer_addr(
+    stream: &mut TcpStream,
+    peer_addr: std::io::Result<std::net::SocketAddr>,
+) -> anyhow::Result<bool> {
+    match peer_addr {
         Ok(addr) if addr.ip().is_loopback() => Ok(true),
         Ok(addr) => {
             tracing::warn!("runtime control: rejected non-loopback caller {addr}");

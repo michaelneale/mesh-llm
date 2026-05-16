@@ -22,7 +22,7 @@ import type { ShellHarnessData, AppTab } from '@/features/app-tabs/types'
 function pathToTab(pathname: string): AppTab | null {
   if (pathname.startsWith('/chat')) return 'chat'
   if (pathname.startsWith('/configuration')) return 'configuration'
-  if (import.meta.env.DEV && pathname.startsWith('/__playground')) return null
+  if (env.isDevelopment && pathname.startsWith('/__playground')) return null
   return 'network'
 }
 
@@ -76,7 +76,7 @@ export function RootLayout({ data = SHELL_HARNESS }: RootLayoutProps = {}) {
   const displayVersion = liveMode ? (statusQuery.data?.version ?? env.appVersion) : env.appVersion
   const apiTargetLiveness = resolveApiTargetLiveness(statusQuery, liveMode)
   const tabHrefs = useMemo(() => tabHrefsForPath(pathname), [pathname])
-  const showDevelopmentNavControls = import.meta.env.DEV
+  const showDevelopmentNavControls = env.isDevelopment
 
   const onTabChange = useCallback(
     (tab: AppTab | null) => {

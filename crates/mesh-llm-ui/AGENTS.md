@@ -72,7 +72,7 @@ Package-local scripts:
 - Use `cn(...)` for conditional Tailwind class composition.
 - Preserve dark-mode classes when changing UI.
 - Avoid introducing new global state unless the app shell truly owns it.
-- Keep dev-only features behind `import.meta.env.DEV`; do not ship playground-only code in production bundles.
+- Keep dev-only features behind `env.isDevelopment` from `@/lib/env`; this also enables embedded debug UI bundles for debug `mesh-llm` binaries while release builds force it off.
 
 ## UI conventions
 

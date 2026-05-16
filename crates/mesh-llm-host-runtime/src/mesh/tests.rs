@@ -1229,6 +1229,9 @@ async fn control_plane_endpoint_not_in_gossip_or_status() -> anyhow::Result<()> 
         local_only: true,
         requires_explicit_remote_endpoint: true,
         endpoint: Some(control_endpoint.clone()),
+        disabled_reason: None,
+        message: None,
+        suggested_commands: None,
     })
     .await;
     let status_snapshot = api.status_snapshot_string().await;
