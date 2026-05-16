@@ -1,5 +1,6 @@
 import { CFG_CATALOG } from '@/features/app-tabs/data'
 import { isUnifiedMemoryNode } from '@/features/configuration/lib/config-math'
+import { getSettingBaselineValue, getSettingValue, isSettingDisabled } from '@/features/configuration/lib/settings-utils'
 import type {
   ConfigAssign,
   ConfigModel,
@@ -13,10 +14,6 @@ type BuildTomlOptions = {
   defaults?: ConfigurationDefaultsHarnessData
   defaultsValues?: ConfigurationDefaultsValues
 }
-
-const draftModelModeSettingId = 'speculation-mode'
-const draftModelModeValue = 'draft_model'
-const incompatiblePairingBehaviorSettingId = 'incompatible-pairing-behavior'
 
 function tomlString(value: string): string {
   return JSON.stringify(value)
@@ -43,29 +40,20 @@ function defaultTomlScalar(setting: ConfigurationDefaultsSetting, value: string)
   return tomlScalar(value)
 }
 
-function defaultSectionName(setting: ConfigurationDefaultsSetting): string | null {
-  if (setting.categoryId === 'advanced') return 'runtime'
-  if (setting.categoryId === 'speculative-decoding') return 'speculative_decoding'
-  return null
+const legacySectionPaths: Partial<Record<ConfigurationDefaultsSetting['categoryId'], string>> = {
+  advanced: 'defaults.runtime',
+  'speculative-decoding': 'defaults.speculative'
+}
+
+function defaultSectionPath(
+  setting: ConfigurationDefaultsSetting,
+  categoryById: ReadonlyMap<string, ConfigurationDefaultsHarnessData['categories'][number]>
+) {
+  return setting.tomlSection ?? categoryById.get(setting.categoryId)?.tomlSection ?? legacySectionPaths[setting.categoryId] ?? null
 }
 
 function tomlKey(value: string): string {
   return value.replaceAll('-', '_')
-}
-
-function defaultValue(setting: ConfigurationDefaultsSetting, values: ConfigurationDefaultsValues | undefined): string {
-  return values?.[setting.id] ?? setting.control.value
-}
-
-function shouldEmitDefaultSetting(
-  setting: ConfigurationDefaultsSetting,
-  settings: readonly ConfigurationDefaultsSetting[],
-  values: ConfigurationDefaultsValues | undefined
-): boolean {
-  if (setting.id !== incompatiblePairingBehaviorSettingId) return true
-
-  const speculationModeSetting = settings.find((item) => item.id === draftModelModeSettingId)
-  return speculationModeSetting ? defaultValue(speculationModeSetting, values) === draftModelModeValue : false
 }
 
 export function buildTOML(
@@ -84,28 +72,33 @@ export function buildTOML(
   if (options.defaults) {
     lines.push('[defaults]')
     const sectionSettings = new Map<string, ConfigurationDefaultsSetting[]>()
+    const defaultsValues = options.defaultsValues ?? {}
+    const categoryById = new Map(options.defaults.categories.map((category) => [category.id, category] as const))
 
     for (const setting of options.defaults.settings) {
-      if (!shouldEmitDefaultSetting(setting, options.defaults.settings, options.defaultsValues)) continue
+      if (isSettingDisabled(setting, options.defaults.settings, defaultsValues)) continue
 
-      const sectionName = defaultSectionName(setting)
-      if (sectionName) {
-        sectionSettings.set(sectionName, [...(sectionSettings.get(sectionName) ?? []), setting])
+      const value = getSettingValue(setting, defaultsValues)
+      if (value === getSettingBaselineValue(setting)) continue
+      if (setting.control.kind === 'text' && value.trim().length === 0) continue
+
+      const sectionPath = defaultSectionPath(setting, categoryById)
+      if (sectionPath) {
+        sectionSettings.set(sectionPath, [...(sectionSettings.get(sectionPath) ?? []), setting])
         continue
       }
 
-      const value = defaultValue(setting, options.defaultsValues)
-      if (setting.control.kind === 'text' && value.trim().length === 0) continue
       const key = setting.control.kind === 'metric' ? setting.id : setting.control.name
       lines.push(`${tomlKey(key)} = ${defaultTomlScalar(setting, value)}`)
     }
 
-    for (const [sectionName, settings] of sectionSettings) {
-      lines.push('', `[defaults.${sectionName}]`)
+    for (const [sectionPath, settings] of sectionSettings) {
+      lines.push('', `[${sectionPath}]`)
       for (const setting of settings) {
-        if (!shouldEmitDefaultSetting(setting, options.defaults.settings, options.defaultsValues)) continue
+        if (isSettingDisabled(setting, options.defaults.settings, defaultsValues)) continue
 
-        const value = defaultValue(setting, options.defaultsValues)
+        const value = getSettingValue(setting, defaultsValues)
+        if (value === getSettingBaselineValue(setting)) continue
         const key = setting.control.kind === 'metric' ? setting.id : setting.control.name
         lines.push(`${tomlKey(key)} = ${defaultTomlScalar(setting, value)}`)
       }

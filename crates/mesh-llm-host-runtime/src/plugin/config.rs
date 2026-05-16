@@ -27,6 +27,8 @@ pub struct MeshConfig {
     pub models: Vec<ModelConfigEntry>,
     #[serde(rename = "plugin", default)]
     pub plugins: Vec<PluginConfigEntry>,
+    #[serde(flatten, default)]
+    pub extra: BTreeMap<String, toml::Value>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]

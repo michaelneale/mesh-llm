@@ -263,6 +263,7 @@ message NodeConfigSnapshot {
   NodeGpuConfig gpu = 2;
   repeated NodeModelEntry models = 3;
   repeated NodePluginEntry plugins = 4;
+  string raw_toml = 5;                    // lossless config payload for additive sections
 }
 
 enum GpuAssignment {

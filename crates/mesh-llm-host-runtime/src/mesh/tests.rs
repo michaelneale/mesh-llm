@@ -1228,6 +1228,9 @@ async fn control_plane_endpoint_not_in_gossip_or_status() -> anyhow::Result<()> 
         local_only: true,
         requires_explicit_remote_endpoint: true,
         endpoint: Some(control_endpoint.clone()),
+        disabled_reason: None,
+        message: None,
+        suggested_commands: None,
     })
     .await;
     let status_snapshot = api.status_snapshot_string().await;
@@ -1362,6 +1365,7 @@ async fn control_plane_get_watch_apply_config() -> Result<()> {
             mmproj_ref: None,
         }],
         plugins: vec![],
+        raw_toml: String::new(),
     };
     write_len_prefixed(
         &mut apply_send,
@@ -1517,6 +1521,7 @@ async fn control_plane_watch_observes_apply_revision() -> Result<()> {
                         }),
                         models: vec![],
                         plugins: vec![],
+                        raw_toml: String::new(),
                     }),
                 }),
                 refresh_inventory: None,
@@ -1681,6 +1686,7 @@ async fn control_plane_watch_without_snapshot_observes_apply_revision() -> Resul
                         }),
                         models: vec![],
                         plugins: vec![],
+                        raw_toml: String::new(),
                     }),
                 }),
                 refresh_inventory: None,
@@ -1762,6 +1768,7 @@ async fn control_plane_apply_rejects_stale_revision() -> Result<()> {
                         mmproj_ref: None,
                     }],
                     plugins: vec![],
+                    raw_toml: String::new(),
                 }),
             }),
             refresh_inventory: None,

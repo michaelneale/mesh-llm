@@ -256,15 +256,14 @@ impl OwnerControlClient {
         {
             Ok(Ok(connection)) => connection,
             Ok(Err(error)) => {
-                return Err(configured_endpoint_connect_error(
-                    &endpoint,
-                    control_addr,
-                    options,
-                    error,
-                )
-                .await)
+                let error =
+                    configured_endpoint_connect_error(&endpoint, control_addr, options, error)
+                        .await;
+                endpoint.close().await;
+                return Err(error);
             }
             Err(_) => {
+                endpoint.close().await;
                 return Err(ControlPlaneClientError::Negotiation(options.configured_endpoint_failure(
                     OwnerControlErrorCode::ControlUnavailable,
                     format!(
@@ -292,6 +291,12 @@ impl OwnerControlClient {
 
     pub fn target_node_id(&self) -> [u8; 32] {
         *self.connection.remote_id().as_bytes()
+    }
+
+    pub async fn close(&self) {
+        self.connection
+            .close(0u32.into(), b"owner-control-client-close");
+        self.endpoint.close().await;
     }
 
     pub async fn get_config(&self) -> Result<OwnerControlConfigSnapshot, ControlPlaneClientError> {
@@ -591,18 +596,20 @@ async fn legacy_mesh_probe(_endpoint: &Endpoint, control_addr: EndpointAddr) -> 
         let _ =
             tokio::time::timeout(std::time::Duration::from_secs(3), probe_endpoint.online()).await;
     }
-    match tokio::time::timeout(
+    let reachable = match tokio::time::timeout(
         std::time::Duration::from_secs(3),
         probe_endpoint.connect(control_addr, ALPN_V1),
     )
     .await
     {
         Ok(Ok(connection)) => {
-            drop(connection);
+            connection.close(0u32.into(), b"owner-control-legacy-probe-complete");
             true
         }
         _ => false,
-    }
+    };
+    probe_endpoint.close().await;
+    reachable
 }
 
 fn relay_mode_from_endpoint_addr(addr: &EndpointAddr) -> iroh::endpoint::RelayMode {

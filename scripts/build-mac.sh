@@ -86,7 +86,7 @@ LLAMA_WORKDIR="$LLAMA_DIR" \
 
 if [[ -d "$MESH_DIR" ]]; then
     if [[ -d "$UI_DIR" ]]; then
-        "$SCRIPT_DIR/build-ui.sh" "$UI_DIR"
+        MESH_LLM_BUILD_PROFILE="$build_profile" "$SCRIPT_DIR/build-ui.sh" "$UI_DIR"
     fi
 
     configure_rust_cache

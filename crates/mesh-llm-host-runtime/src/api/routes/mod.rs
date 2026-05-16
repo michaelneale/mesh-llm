@@ -5,7 +5,7 @@ mod model_interests;
 mod model_targets;
 mod objects;
 mod plugins;
-mod runtime;
+pub(crate) mod runtime;
 mod search;
 
 use super::MeshApi;

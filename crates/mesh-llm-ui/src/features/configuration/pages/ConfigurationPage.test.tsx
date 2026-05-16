@@ -3,6 +3,7 @@ import { act, fireEvent, render as rtlRender, screen, waitFor, within } from '@t
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppProviders } from '@/app/providers/AppProviders'
+import * as configQueryModule from '@/features/configuration/api/use-config-query'
 
 const blockedBlocker = vi.hoisted(() => ({ status: 'blocked', proceed: vi.fn(), reset: vi.fn() }))
 const idleBlocker = vi.hoisted(() => ({ status: 'idle', proceed: vi.fn(), reset: vi.fn() }))
@@ -35,17 +36,20 @@ vi.mock('@/lib/feature-flags', async (importOriginal) => {
 
 import { ConfigurationPage } from '@/features/configuration/pages/ConfigurationPage'
 import { CONFIGURATION_HARNESS } from '@/features/app-tabs/data'
+import type { DataMode } from '@/lib/data-mode/data-mode-context'
 
-function TestProviders({ children }: { children: ReactNode }) {
+function TestProviders({ children, dataMode = 'harness' }: { children: ReactNode; dataMode?: DataMode }) {
   return (
-    <AppProviders initialDataMode="harness" persistDataMode={false}>
+    <AppProviders initialDataMode={dataMode} persistDataMode={false}>
       {children}
     </AppProviders>
   )
 }
 
-function render(ui: ReactElement) {
-  return rtlRender(ui, { wrapper: TestProviders })
+function render(ui: ReactElement, options?: { dataMode?: DataMode }) {
+  return rtlRender(ui, {
+    wrapper: ({ children }) => <TestProviders dataMode={options?.dataMode}>{children}</TestProviders>
+  })
 }
 
 function getCarrackSection() {
@@ -80,9 +84,25 @@ async function dispatchShortcut(key: string, init: KeyboardEventInit = {}) {
   return event
 }
 
+function liveControlConfigData() {
+  return {
+    bootstrap: {
+      enabled: true,
+      local_only: true,
+      requires_explicit_remote_endpoint: true,
+      endpoint: 'control://owner'
+    },
+    snapshot: {
+      revision: 7,
+      config: {}
+    }
+  }
+}
+
 describe('ConfigurationPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.useRealTimers()
     featureFlagMocks.integrationsEnabled = false
     featureFlagMocks.signingAttestationEnabled = false
     mockUseBlocker.mockImplementation(
@@ -222,6 +242,378 @@ describe('ConfigurationPage', () => {
     expect(getTomlSource().value).toContain('tuning_profile = "throughput"')
   })
 
+  it('saves live defaults through useConfigQuery.applyDefaults only when Save config is clicked', async () => {
+    const applyDefaults = vi.fn().mockResolvedValue({
+      success: true,
+      current_revision: 8,
+      config_hash: 'abc123',
+      apply_mode: 'live'
+    })
+    const useConfigQuerySpy = vi.spyOn(configQueryModule, 'useConfigQuery').mockReturnValue({
+      data: CONFIGURATION_HARNESS,
+      isError: false,
+      isFetching: false,
+      isPending: false,
+      statusQuery: { refetch: vi.fn() } as never,
+      modelsQuery: { refetch: vi.fn() } as never,
+      controlConfigQuery: {
+        data: liveControlConfigData(),
+        isError: false,
+        isFetching: false,
+        isPending: false
+      } as never,
+      applyDefaults
+    })
+
+    render(<ConfigurationPage enableNavigationBlocker={false} />, { dataMode: 'live' })
+
+    const tuningProfileControl = within(screen.getByRole('radiogroup', { name: 'Default tuning profile' }))
+    const saveButton = screen.getByRole('button', { name: /save config/i })
+
+    fireEvent.click(tuningProfileControl.getByRole('radio', { name: 'throughput' }))
+    expect(applyDefaults).not.toHaveBeenCalled()
+
+    fireEvent.click(tuningProfileControl.getByRole('radio', { name: 'saver' }))
+    expect(applyDefaults).not.toHaveBeenCalled()
+
+    fireEvent.click(saveButton)
+
+    await waitFor(() => expect(applyDefaults).toHaveBeenCalledTimes(1))
+    expect(applyDefaults).toHaveBeenCalledWith(
+      expect.objectContaining({
+        'tuning-profile': 'saver'
+      })
+    )
+
+    useConfigQuerySpy.mockRestore()
+  })
+
+  it('shows owner-control remediation and keeps dirty state when live saving is disabled', async () => {
+    const applyDefaults = vi.fn()
+    const useConfigQuerySpy = vi.spyOn(configQueryModule, 'useConfigQuery').mockReturnValue({
+      data: CONFIGURATION_HARNESS,
+      isError: false,
+      isFetching: false,
+      isPending: false,
+      statusQuery: { refetch: vi.fn() } as never,
+      modelsQuery: { refetch: vi.fn() } as never,
+      controlConfigQuery: {
+        data: {
+          bootstrap: {
+            enabled: false,
+            local_only: true,
+            requires_explicit_remote_endpoint: true,
+            disabled_reason: 'missing_owner_identity',
+            message: 'Configuration saving requires a local owner identity.',
+            suggested_commands: [
+              'mesh-llm auth status',
+              'mesh-llm auth init --no-passphrase',
+              'mesh-llm serve --owner-required'
+            ]
+          }
+        },
+        isError: false,
+        isFetching: false,
+        isPending: false
+      } as never,
+      applyDefaults
+    })
+
+    render(<ConfigurationPage enableNavigationBlocker={false} />, { dataMode: 'live' })
+
+    const readOnlyHeading = screen.getByRole('heading', { name: 'Configuration UI is read-only' })
+    const inheritedDefaultsHeading = screen.getByRole('heading', { name: /inherited defaults/i })
+    const defaultsTab = screen.getByRole('tab', { name: 'Defaults' })
+    expect(readOnlyHeading).toBeInTheDocument()
+    expect(defaultsTab.compareDocumentPosition(readOnlyHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(
+      inheritedDefaultsHeading.compareDocumentPosition(readOnlyHeading) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
+    expect(
+      screen.getByText('No owner-control identity on this node, run both commands to unlock saving.')
+    ).toBeInTheDocument()
+    expect(screen.getByText('missing owner identity')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /docs/i })).toHaveAttribute('href', 'https://docs.meshllm.cloud/')
+    expect(screen.queryByRole('button', { name: /copy both/i })).not.toBeInTheDocument()
+    expect(screen.getAllByText('mesh-llm')).toHaveLength(2)
+    expect(screen.getByText('auth')).toBeInTheDocument()
+    expect(screen.getByText('init')).toBeInTheDocument()
+    expect(screen.getByText('serve')).toBeInTheDocument()
+    expect(screen.getByText('--no-passphrase')).toBeInTheDocument()
+    expect(screen.getByText('--owner-required')).toBeInTheDocument()
+    expect(screen.getByText('Initialize owner identity (creates a local keypair)')).toBeInTheDocument()
+    expect(screen.getByText('Restart the daemon so the new identity takes effect')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Copy mesh-llm auth init --no-passphrase' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Copy mesh-llm serve --owner-required' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('radio', { name: 'throughput' }))
+    const saveButton = screen.getByRole('button', { name: /save config/i })
+    expect(saveButton).toBeDisabled()
+    expect(saveButton).toHaveAttribute('title', 'Runtime control is disabled: missing owner identity')
+    expect(defaultsTab).toHaveAttribute('data-tab-dirty', 'true')
+
+    await dispatchShortcut('s', { ctrlKey: true })
+
+    expect(applyDefaults).not.toHaveBeenCalled()
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Config was not saved. Runtime control is disabled: missing owner identity.'
+    )
+    expect(defaultsTab).toHaveAttribute('data-tab-dirty', 'true')
+
+    useConfigQuerySpy.mockRestore()
+  })
+
+  it('shows runtime-control apply errors without rewriting them as missing owner identity', async () => {
+    const applyDefaults = vi.fn().mockResolvedValue({
+      success: false,
+      current_revision: 7,
+      config_hash: 'abc123',
+      apply_mode: 'unspecified',
+      error: 'revision conflict: current revision is 9'
+    })
+    const useConfigQuerySpy = vi.spyOn(configQueryModule, 'useConfigQuery').mockReturnValue({
+      data: CONFIGURATION_HARNESS,
+      isError: false,
+      isFetching: false,
+      isPending: false,
+      statusQuery: { refetch: vi.fn() } as never,
+      modelsQuery: { refetch: vi.fn() } as never,
+      controlConfigQuery: {
+        data: liveControlConfigData(),
+        isError: false,
+        isFetching: false,
+        isPending: false
+      } as never,
+      applyDefaults
+    })
+
+    render(<ConfigurationPage enableNavigationBlocker={false} />, { dataMode: 'live' })
+
+    fireEvent.click(screen.getByRole('radio', { name: 'throughput' }))
+    fireEvent.click(screen.getByRole('button', { name: /save config/i }))
+
+    await waitFor(() => expect(applyDefaults).toHaveBeenCalledTimes(1))
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Config was not saved. Runtime control rejected the update: revision conflict: current revision is 9'
+    )
+    expect(screen.getByRole('alert')).not.toHaveTextContent('missing owner identity')
+    expect(screen.getByRole('tab', { name: 'Defaults' })).toHaveAttribute('data-tab-dirty', 'true')
+
+    useConfigQuerySpy.mockRestore()
+  })
+
+  it('shows a busy Save config button while live defaults are being written', async () => {
+    let resolveApply: (value: {
+      success: boolean
+      current_revision: number
+      config_hash: string
+      apply_mode: string
+    }) => void = () => undefined
+    const applyDefaults = vi.fn(
+      () =>
+        new Promise<{
+          success: boolean
+          current_revision: number
+          config_hash: string
+          apply_mode: string
+        }>((resolve) => {
+          resolveApply = resolve
+        })
+    )
+    const useConfigQuerySpy = vi.spyOn(configQueryModule, 'useConfigQuery').mockReturnValue({
+      data: CONFIGURATION_HARNESS,
+      isError: false,
+      isFetching: false,
+      isPending: false,
+      statusQuery: { refetch: vi.fn() } as never,
+      modelsQuery: { refetch: vi.fn() } as never,
+      controlConfigQuery: {
+        data: liveControlConfigData(),
+        isError: false,
+        isFetching: false,
+        isPending: false
+      } as never,
+      applyDefaults
+    })
+
+    render(<ConfigurationPage enableNavigationBlocker={false} />, { dataMode: 'live' })
+
+    fireEvent.click(screen.getByRole('radio', { name: 'throughput' }))
+    fireEvent.click(screen.getByRole('button', { name: /save config/i }))
+
+    const savingButton = screen.getByRole('button', { name: /saving config/i })
+    expect(savingButton).toBeDisabled()
+    expect(savingButton).toHaveAttribute('aria-busy', 'true')
+
+    await act(async () => {
+      resolveApply({ success: true, current_revision: 8, config_hash: 'abc123', apply_mode: 'live' })
+    })
+
+    expect(screen.getByRole('button', { name: /save config/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /save config/i })).not.toHaveAttribute('aria-busy', 'true')
+
+    useConfigQuerySpy.mockRestore()
+  })
+
+  it('does not re-apply saved live defaults when the hook callback identity changes', async () => {
+    const firstApplyDefaults = vi.fn().mockResolvedValue({
+      success: true,
+      current_revision: 8,
+      config_hash: 'abc123',
+      apply_mode: 'live'
+    })
+    const secondApplyDefaults = vi.fn().mockResolvedValue({
+      success: true,
+      current_revision: 9,
+      config_hash: 'def456',
+      apply_mode: 'live'
+    })
+    let currentApplyDefaults = firstApplyDefaults
+
+    const useConfigQuerySpy = vi.spyOn(configQueryModule, 'useConfigQuery').mockImplementation(() => ({
+      data: CONFIGURATION_HARNESS,
+      isError: false,
+      isFetching: false,
+      isPending: false,
+      statusQuery: { refetch: vi.fn() } as never,
+      modelsQuery: { refetch: vi.fn() } as never,
+      controlConfigQuery: {
+        data: liveControlConfigData(),
+        isError: false,
+        isFetching: false,
+        isPending: false
+      } as never,
+      applyDefaults: currentApplyDefaults
+    }))
+
+    const { rerender } = render(<ConfigurationPage enableNavigationBlocker={false} />, { dataMode: 'live' })
+
+    fireEvent.click(screen.getByRole('radio', { name: 'throughput' }))
+    fireEvent.click(screen.getByRole('button', { name: /save config/i }))
+
+    await waitFor(() => expect(firstApplyDefaults).toHaveBeenCalledTimes(1))
+
+    currentApplyDefaults = secondApplyDefaults
+    rerender(<ConfigurationPage enableNavigationBlocker={false} />)
+
+    expect(firstApplyDefaults).toHaveBeenCalledTimes(1)
+    expect(secondApplyDefaults).not.toHaveBeenCalled()
+
+    useConfigQuerySpy.mockRestore()
+  })
+
+  it('shows hydrated live non-default defaults while omitting unchanged metadata sections', async () => {
+    const user = userEvent.setup()
+    const liveDefaults = {
+      ...CONFIGURATION_HARNESS.defaults,
+      settings: CONFIGURATION_HARNESS.defaults.settings.map((setting) =>
+        setting.id === 'temperature'
+          ? {
+              ...setting,
+              control: {
+                ...setting.control,
+                value: '0.8'
+              }
+            }
+          : setting.id === 'server-alias'
+            ? {
+                ...setting,
+                control: {
+                  ...setting.control,
+                  value: 'carrack-mesh'
+                }
+              }
+            : setting.id === 'activation-wire-dtype'
+              ? {
+                  ...setting,
+                  control: {
+                    ...setting.control,
+                    value: 'q8'
+                  }
+                }
+              : setting.id === 'image-min-tokens'
+                ? {
+                    ...setting,
+                    control: {
+                      ...setting.control,
+                      value: '64'
+                    }
+                  }
+                : setting
+      )
+    }
+    const useConfigQuerySpy = vi.spyOn(configQueryModule, 'useConfigQuery').mockReturnValue({
+      data: { ...CONFIGURATION_HARNESS, defaults: liveDefaults },
+      isError: false,
+      isFetching: false,
+      isPending: false,
+      statusQuery: { refetch: vi.fn() } as never,
+      modelsQuery: { refetch: vi.fn() } as never,
+      controlConfigQuery: {
+        data: null,
+        isError: false,
+        isFetching: false,
+        isPending: false
+      } as never,
+      applyDefaults: vi.fn()
+    })
+
+    render(<ConfigurationPage enableNavigationBlocker={false} />, { dataMode: 'live' })
+
+    const initialTomlSource = await openTomlOutput(user)
+    expect(initialTomlSource.value).toContain('[defaults.request_defaults]')
+    expect(initialTomlSource.value).toContain('temperature = 0.8')
+    expect(initialTomlSource.value).toContain('[defaults.skippy]')
+    expect(initialTomlSource.value).toContain('activation_wire_dtype = "q8"')
+    expect(initialTomlSource.value).toContain('[defaults.multimodal]')
+    expect(initialTomlSource.value).toContain('image_min_tokens = 64')
+    expect(initialTomlSource.value).toContain('[defaults.advanced.server]')
+    expect(initialTomlSource.value).toContain('alias = "carrack-mesh"')
+
+    await user.click(screen.getByRole('tab', { name: 'Defaults' }))
+    await user.click(screen.getByRole('button', { name: /request defaults/i }))
+    expect(screen.getByRole('slider', { name: 'Temperature' })).toHaveValue('0.8')
+    const skippyTransport = within(screen.getByRole('radiogroup', { name: 'Binary stage transport' }))
+    const multimodalOffload = within(screen.getByRole('radiogroup', { name: 'MMProj offload' }))
+    await user.click(skippyTransport.getByRole('radio', { name: 'on' }))
+    await user.click(multimodalOffload.getByRole('radio', { name: 'on' }))
+    const updatedTomlSource = await openTomlOutput(user)
+    expect(updatedTomlSource.value).toContain('[defaults.skippy]')
+    expect(updatedTomlSource.value).toContain('[defaults.multimodal]')
+
+    useConfigQuerySpy.mockRestore()
+  })
+
+  it('does not call applyDefaults for defaults edits outside live mode', async () => {
+    const user = userEvent.setup()
+    const applyDefaults = vi.fn()
+    const useConfigQuerySpy = vi.spyOn(configQueryModule, 'useConfigQuery').mockReturnValue({
+      data: CONFIGURATION_HARNESS,
+      isError: false,
+      isFetching: false,
+      isPending: false,
+      statusQuery: { refetch: vi.fn() } as never,
+      modelsQuery: { refetch: vi.fn() } as never,
+      controlConfigQuery: {
+        data: null,
+        isError: false,
+        isFetching: false,
+        isPending: false
+      } as never,
+      applyDefaults
+    })
+
+    render(<ConfigurationPage enableNavigationBlocker={false} />, { dataMode: 'harness' })
+
+    await user.click(screen.getByRole('radio', { name: 'throughput' }))
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /save config/i })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: /save config/i }))
+    expect(applyDefaults).not.toHaveBeenCalled()
+
+    useConfigQuerySpy.mockRestore()
+  })
+
   it('uses an interactive slot meter instead of a Defaults slot slider', async () => {
     const user = userEvent.setup()
 
@@ -308,7 +700,7 @@ describe('ConfigurationPage', () => {
     const defaultsPreview = screen.getByRole('complementary', { name: /\[defaults\]/i })
     expect(modeControl.getByRole('radio', { name: 'draft model' })).toBeChecked()
     expect(modeControl.getByRole('radio', { name: 'off' })).toBeInTheDocument()
-    expect(defaultsPreview).toHaveTextContent('pairing_fault = "warn_disable"')
+    expect(defaultsPreview).not.toHaveTextContent('pairing_fault = "warn_disable"')
 
     await user.click(pairingBehaviorControl.getByRole('radio', { name: 'Fail Launch' }))
     expect(pairingBehaviorControl.getByRole('radio', { name: 'Fail Launch' })).toBeChecked()
@@ -318,15 +710,15 @@ describe('ConfigurationPage', () => {
     fireEvent.change(screen.getByRole('slider', { name: 'Default draft max tokens' }), { target: { value: '32' } })
 
     await user.click(screen.getByRole('tab', { name: 'TOML Output' }))
-    expect(getTomlSource().value).toContain('[defaults.speculative_decoding]')
+    expect(getTomlSource().value).toContain('[defaults.speculative]')
     expect(getTomlSource().value).not.toContain('enabled =')
     expect(getTomlSource().value).toContain('mode = "ngram"')
-    expect(getTomlSource().value).toContain('draft_selection_policy = "auto"')
-    expect(getTomlSource().value).toContain('draft_max_tokens = 32')
+    expect(getTomlSource().value).not.toContain('draft_selection_policy')
+    expect(getTomlSource().value).not.toContain('draft_max_tokens')
     expect(getTomlSource().value).not.toContain('pairing_fault')
     expect(getTomlSource().value).not.toMatch(/^pairing_behavior =/m)
     expect(getTomlSource().value).not.toContain('incompatible_pairing_behavior')
-    expect(getTomlSource().value).toContain('model_runtime = "cuda"')
+    expect(getTomlSource().value).not.toContain('model_runtime = "cuda"')
     expect(getTomlSource().value).not.toContain('llama_flavor')
     expect(getTomlSource().value).not.toContain('allow_cpu_speculation')
     expect(getTomlSource().value).not.toContain('diagnostics =')
@@ -360,8 +752,11 @@ describe('ConfigurationPage', () => {
     expect(pairingBehaviorControl.getByRole('radio', { name: 'Fail Launch' })).toBeDisabled()
     expect(screen.getByRole('slider', { name: 'Default draft max tokens' })).toBeDisabled()
     expect(screen.getByRole('slider', { name: 'Default draft minimum tokens' })).toBeDisabled()
-    expect(screen.getByRole('slider', { name: 'Default draft acceptance threshold' })).toBeDisabled()
+    expect(screen.queryByRole('slider', { name: 'Default draft acceptance threshold' })).not.toBeInTheDocument()
     expect(screen.queryByRole('radiogroup', { name: 'Allow CPU speculation' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: /show advanced/i }))
+    expect(screen.getByRole('slider', { name: 'Default draft acceptance threshold' })).toBeDisabled()
 
     await user.click(modeControl.getByRole('radio', { name: 'n-gram' }))
     expect(draftPolicyControl.getByRole('radio', { name: 'auto' })).toBeDisabled()

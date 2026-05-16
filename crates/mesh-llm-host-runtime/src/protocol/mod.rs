@@ -736,6 +736,7 @@ mod tests {
                 command: Some("mesh-llm".to_string()),
                 args: vec!["--plugin".to_string(), "blackboard".to_string()],
             }],
+            raw_toml: String::new(),
         }
     }
 
@@ -1555,6 +1556,7 @@ mod tests {
                 }),
             }],
             plugins: vec![],
+            raw_toml: String::new(),
         };
 
         let restored = proto_config_to_mesh(&snapshot);
@@ -1590,6 +1592,7 @@ mod tests {
                 }),
             }],
             plugins: vec![],
+            raw_toml: String::new(),
         };
 
         let restored = proto_config_to_mesh(&snapshot);
@@ -1659,6 +1662,7 @@ mod tests {
                 args: vec!["--plugin".to_string()],
                 url: None,
             }],
+            extra: Default::default(),
         };
         let snapshot = mesh_config_to_proto(&config);
         let restored = proto_config_to_mesh(&snapshot);
@@ -1688,6 +1692,50 @@ mod tests {
     }
 
     #[test]
+    fn config_sync_raw_toml_roundtrips_additive_defaults_sections() {
+        let mut config = crate::plugin::MeshConfig {
+            version: Some(1),
+            ..Default::default()
+        };
+        config.extra = toml::from_str(
+            r#"[defaults.model_fit]
+parallel = 6
+flash_attention = "off"
+
+[defaults.request_defaults]
+reasoning_format = "qwen"
+"#,
+        )
+        .expect("parse additive defaults table");
+
+        let snapshot = mesh_config_to_proto(&config);
+        assert!(
+            snapshot.raw_toml.contains("[defaults.model_fit]"),
+            "raw TOML should carry additive defaults sections"
+        );
+
+        let restored = proto_config_to_mesh(&snapshot);
+        assert_eq!(
+            restored
+                .extra
+                .get("defaults")
+                .and_then(|defaults| defaults.get("model_fit"))
+                .and_then(|model_fit| model_fit.get("parallel"))
+                .and_then(toml::Value::as_integer),
+            Some(6)
+        );
+        assert_eq!(
+            restored
+                .extra
+                .get("defaults")
+                .and_then(|defaults| defaults.get("request_defaults"))
+                .and_then(|request_defaults| request_defaults.get("reasoning_format"))
+                .and_then(toml::Value::as_str),
+            Some("qwen")
+        );
+    }
+
+    #[test]
     fn config_sync_config_hash_determinism() {
         use crate::plugin::{GpuAssignment, GpuConfig, ModelConfigEntry};
         let config = crate::plugin::MeshConfig {
@@ -1711,6 +1759,7 @@ mod tests {
                 flash_attention: None,
             }],
             plugins: vec![],
+            extra: Default::default(),
         };
         let snap1 = mesh_config_to_proto(&config);
         let snap2 = mesh_config_to_proto(&config);
@@ -1739,6 +1788,7 @@ mod tests {
                 flash_attention: None,
             }],
             plugins: vec![],
+            extra: Default::default(),
         };
         let snap3 = mesh_config_to_proto(&config2);
         let h3 = canonical_config_hash(&snap3);
@@ -1770,6 +1820,7 @@ mod tests {
                 flash_attention: None,
             }],
             plugins: vec![],
+            extra: Default::default(),
         };
 
         let snapshot = mesh_config_to_proto(&config);
@@ -1839,6 +1890,7 @@ mod tests {
                 mmproj_ref: None,
             }],
             plugins: vec![],
+            raw_toml: String::new(),
         };
 
         let encoded = snapshot.encode_to_vec();

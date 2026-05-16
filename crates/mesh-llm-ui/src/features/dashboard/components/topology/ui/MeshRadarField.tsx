@@ -10,6 +10,7 @@ import {
 import { Clock3, Cpu, MemoryStick, Minus, Plus, RotateCcw, Sparkles, Wifi } from 'lucide-react'
 
 import { formatShortDuration } from '@/lib/format-duration'
+import { env } from '@/lib/env'
 import { useResolvedTheme } from '@/lib/resolved-theme'
 import { cn } from '@/lib/utils'
 import { formatLiveNodeState, modelRefLabel } from '@/features/app-shell/lib/status-helpers'
@@ -410,7 +411,7 @@ export function MeshRadarField({
     top: `${selfScreenY}px`,
     transform: `translate(-50%, -50%) scale(${selfAccentScale})`
   }
-  const showDebugControls = import.meta.env.DEV
+  const showDebugControls = env.isDevelopment
   const hoveredNodeSecondaryLabel = hoveredNode && hoveredNode.label !== hoveredNode.id ? hoveredNode.id : null
   const hoveredNodeShowsModel =
     hoveredNode != null && !(hoveredNode.role === 'Client' && hoveredNode.modelLabel === 'API-only')

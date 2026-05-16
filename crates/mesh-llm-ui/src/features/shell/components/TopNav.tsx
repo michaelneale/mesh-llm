@@ -21,6 +21,7 @@ import { CopyInstructionRow } from '@/components/ui/CopyInstructionRow'
 import type { LinkItem, TopNavJoinCommand, Theme, AppTab } from '@/features/app-tabs/types'
 import { cn } from '@/lib/cn'
 import { useDataMode, type DataMode } from '@/lib/data-mode'
+import { env } from '@/lib/env'
 import { useI18n } from '@/lib/i18n'
 
 type TopNavProps = {
@@ -259,7 +260,7 @@ const DEFAULT_API_ACCESS_LINKS: LinkItem[] = [
 function ApiAccessContent({ apiUrl, dataMode, links }: { apiUrl: string; dataMode: DataMode; links?: LinkItem[] }) {
   const listModelsCommand = `curl ${apiUrl}/models`
   const harnessMode = dataMode === 'harness'
-  const showDevelopmentNavControls = import.meta.env.DEV
+  const showDevelopmentNavControls = env.isDevelopment
 
   return (
     <>
@@ -496,7 +497,7 @@ function CompactActionsMenu({
 >) {
   const { mode } = useDataMode()
   const [activePanel, setActivePanel] = useState<CompactActionPanel>(null)
-  const showDevelopmentNavControls = import.meta.env.DEV
+  const showDevelopmentNavControls = env.isDevelopment
   const actionRow =
     'ui-row-action flex w-full items-center justify-between gap-3 rounded-[var(--radius)] border border-border-soft px-3 py-2 text-left text-[length:var(--density-type-caption-lg)] font-medium text-foreground'
 
@@ -631,7 +632,7 @@ function UtilityActions({
   | 'joinLinks'
 >) {
   const { mode } = useDataMode()
-  const showDevelopmentNavControls = import.meta.env.DEV
+  const showDevelopmentNavControls = env.isDevelopment
   const iconBtn =
     'ui-control inline-flex size-[var(--nav-action-size)] items-center justify-center rounded-[var(--radius)] border'
   const utilityBtn =

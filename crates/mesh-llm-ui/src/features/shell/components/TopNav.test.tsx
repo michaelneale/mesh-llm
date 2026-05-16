@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TopNav } from '@/features/shell/components/TopNav'
 import { DataModeProvider } from '@/lib/data-mode'
+import { env } from '@/lib/env'
 import type { DataMode } from '@/lib/data-mode'
 
 function installClipboard(writeText: (text: string) => Promise<void>) {
@@ -65,6 +66,7 @@ async function waitForHoverDelay() {
 
 describe('TopNav', () => {
   beforeEach(() => {
+    env.isDevelopment = true
     installPointerCaptureShim()
   })
 
@@ -300,7 +302,7 @@ describe('TopNav', () => {
   })
 
   it('hides development-only navigation controls outside dev mode', async () => {
-    vi.stubEnv('DEV', false)
+    env.isDevelopment = false
     const user = userEvent.setup()
 
     renderTopNav({ onOpenDeveloperPlayground: vi.fn(), showDeveloperPlayground: true })

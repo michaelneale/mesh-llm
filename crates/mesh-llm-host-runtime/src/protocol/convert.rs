@@ -786,12 +786,19 @@ pub(crate) fn mesh_config_to_proto(
         gpu: Some(crate::proto::node::NodeGpuConfig { assignment }),
         models,
         plugins,
+        raw_toml: toml::to_string(config).unwrap_or_default(),
     }
 }
 
 pub(crate) fn proto_config_to_mesh(
     snapshot: &crate::proto::node::NodeConfigSnapshot,
 ) -> crate::plugin::MeshConfig {
+    if !snapshot.raw_toml.trim().is_empty() {
+        if let Ok(config) = toml::from_str(&snapshot.raw_toml) {
+            return config;
+        }
+    }
+
     use crate::plugin::{
         GpuAssignment, GpuConfig, MeshConfig, ModelConfigEntry, PluginConfigEntry,
     };
@@ -849,6 +856,7 @@ pub(crate) fn proto_config_to_mesh(
         telemetry: Default::default(),
         models,
         plugins,
+        extra: Default::default(),
     }
 }
 

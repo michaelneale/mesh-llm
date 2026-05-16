@@ -31,7 +31,8 @@ export const env = {
   managementApiUrl: import.meta.env.VITE_MANAGEMENT_API_URL ?? '',
   routerBasePath: normalizeRouterBasePath(import.meta.env.VITE_ROUTER_BASE_PATH ?? import.meta.env.BASE_URL),
   storageNamespace: import.meta.env.VITE_STORAGE_NAMESPACE ?? 'mesh-llm-ui-preview',
-  isDevelopment: import.meta.env.DEV
+  // True for Vite's dev server and for embedded UI bundles built into debug mesh-llm binaries.
+  isDevelopment: import.meta.env.DEV || import.meta.env.VITE_MESH_LLM_DEBUG_UI === 'true'
 }
 
 export function isDevelopmentMode() {

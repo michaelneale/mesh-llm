@@ -420,6 +420,9 @@ pub struct NodeConfigSnapshot {
     pub models: ::prost::alloc::vec::Vec<NodeModelEntry>,
     #[prost(message, repeated, tag = "4")]
     pub plugins: ::prost::alloc::vec::Vec<NodePluginEntry>,
+    /// lossless config payload for additive sections
+    #[prost(string, tag = "5")]
+    pub raw_toml: ::prost::alloc::string::String,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct NodeGpuConfig {

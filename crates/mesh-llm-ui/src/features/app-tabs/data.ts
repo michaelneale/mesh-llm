@@ -533,13 +533,47 @@ export const INITIAL_ASSIGNS: ConfigAssign[] = [
   { id: 'a5', modelId: 'qwenud', nodeId: 'node-b', containerIdx: 0, ctx: 262144 }
 ]
 
+const DRAFT_MODEL_SPECULATION_DEPENDENCY = {
+  settingId: 'speculation-mode',
+  condition: (value: string) => value === 'draft_model'
+}
+
+const THROUGHPUT_TOML_SECTION = 'defaults.throughput'
+
+const HARDWARE_TOML_SECTION = 'defaults.hardware'
+
+const MODEL_FIT_TOML_SECTION = 'defaults.model_fit'
+
+const SKIPPY_TRANSPORT_TOML_SECTION = 'defaults.skippy'
+
+const REQUEST_DEFAULTS_TOML_SECTION = 'defaults.request_defaults'
+
+const MULTIMODAL_TOML_SECTION = 'defaults.multimodal'
+
+const ADVANCED_SERVER_TOML_SECTION = 'defaults.advanced.server'
+
+const MIROSTAT_MODE_DEPENDENCY = {
+  settingId: 'mirostat-mode',
+  condition: (value: string) => value !== 'disabled'
+}
+
+const PREFILL_CHUNKING_FIXED_DEPENDENCY = {
+  settingId: 'prefill-chunking',
+  condition: (value: string) => value === 'fixed'
+}
+
+const PREFILL_CHUNKING_SCHEDULE_DEPENDENCY = {
+  settingId: 'prefill-chunking',
+  condition: (value: string) => value === 'schedule'
+}
+
 export const CONFIGURATION_DEFAULTS = {
   categories: [
     {
       id: 'runtime',
       label: 'Runtime',
-      summary: 'Request shape, kernels, and runtime policy.',
-      help: 'Default request shape and concurrency'
+      summary: 'Throughput, scheduling, and hardware defaults.',
+      help: 'Default throughput and hardware policy'
     },
     {
       id: 'memory',
@@ -551,16 +585,325 @@ export const CONFIGURATION_DEFAULTS = {
       id: 'speculative-decoding',
       label: 'Speculative Decoding',
       summary: 'Draft acceleration defaults.',
-      help: 'Speculative draft model and acceptance defaults'
+      help: 'Speculative draft model and acceptance defaults',
+      tomlSection: 'defaults.speculative'
     },
     {
       id: 'advanced',
       label: 'Reasoning',
       summary: 'Reasoning and repetition controls.',
       help: 'Reasoning and sampling defaults'
+    },
+    {
+      id: 'request-defaults',
+      label: 'Request Defaults',
+      summary: 'Sampling and response defaults.',
+      help: 'Sampling, stopping, and repeat-penalty defaults'
+    },
+    {
+      id: 'skippy-transport',
+      label: 'Skippy Transport',
+      summary: 'Activation wire dtype, prefill chunking, and lifecycle timing.',
+      help: 'Stage transport, chunking, and lifecycle defaults',
+      tomlSection: SKIPPY_TRANSPORT_TOML_SECTION
+    },
+    {
+      id: 'multimodal',
+      label: 'Multimodal',
+      summary: 'Projector and image token defaults.',
+      help: 'Vision projector and image token defaults',
+      tomlSection: MULTIMODAL_TOML_SECTION
+    },
+    {
+      id: 'advanced-server',
+      label: 'Advanced Server',
+      summary: 'Server identity and operator overrides.',
+      help: 'Advanced server defaults and identity overrides',
+      tomlSection: ADVANCED_SERVER_TOML_SECTION
     }
   ],
   settings: [
+    {
+      id: 'threads',
+      categoryId: 'runtime',
+      icon: 'cpu',
+      label: 'CPU threads',
+      description: 'Sets the default CPU thread count. Use 0 for auto; 256 is a safe UI ceiling for general-purpose systems.',
+      inheritedLabel: 'Inherited by placements without a thread override',
+      tomlSection: THROUGHPUT_TOML_SECTION,
+      mutability: 'restart-required',
+      control: { kind: 'range', name: 'threads', value: '0', min: 0, max: 256, step: 1, unit: 'threads' }
+    },
+    {
+      id: 'threads-batch',
+      categoryId: 'runtime',
+      icon: 'cpu',
+      label: 'Batch threads',
+      description: 'Sets the thread count used for batching. Use 0 for auto; 256 is a safe UI ceiling for general-purpose systems.',
+      inheritedLabel: 'Inherited by placements without a batch-thread override',
+      tomlSection: THROUGHPUT_TOML_SECTION,
+      mutability: 'restart-required',
+      control: { kind: 'range', name: 'threads_batch', value: '0', min: 0, max: 256, step: 1, unit: 'threads' }
+    },
+    {
+      id: 'continuous-batching',
+      categoryId: 'runtime',
+      icon: 'layers',
+      label: 'Continuous batching',
+      description: 'Choose whether the runtime should keep batching continuously when supported.',
+      inheritedLabel: 'Inherited by placements without a batching override',
+      tomlSection: THROUGHPUT_TOML_SECTION,
+      mutability: 'restart-required',
+      control: {
+        kind: 'choice',
+        name: 'continuous_batching',
+        value: 'auto',
+        presentation: 'segmented',
+        options: [
+          { value: 'auto', label: 'auto' },
+          { value: 'on', label: 'on' },
+          { value: 'off', label: 'off' }
+        ]
+      }
+    },
+    {
+      id: 'numa',
+      categoryId: 'runtime',
+      icon: 'cpu',
+      label: 'NUMA policy',
+      description: 'Choose the NUMA policy used when launching the runtime.',
+      inheritedLabel: 'Inherited by placements without a NUMA override',
+      visibility: 'advanced',
+      tomlSection: THROUGHPUT_TOML_SECTION,
+      mutability: 'restart-required',
+      control: {
+        kind: 'choice',
+        name: 'numa',
+        value: 'auto',
+        presentation: 'select',
+        options: [
+          { value: 'auto', label: 'auto' },
+          { value: 'disabled', label: 'disabled' },
+          { value: 'distribute', label: 'distribute' },
+          { value: 'isolate', label: 'isolate' },
+          { value: 'numactl', label: 'numactl' }
+        ]
+      }
+    },
+    {
+      id: 'cpu-affinity',
+      categoryId: 'runtime',
+      icon: 'cpu',
+      label: 'CPU affinity',
+      description: 'Pin runtime threads to a specific CPU mask such as 0-3,8-11.',
+      inheritedLabel: 'Inherited by placements without an affinity override',
+      visibility: 'advanced',
+      tomlSection: THROUGHPUT_TOML_SECTION,
+      mutability: 'restart-required',
+      control: { kind: 'text', name: 'cpu_affinity', value: '', placeholder: 'e.g. 0-3,8-11' }
+    },
+    {
+      id: 'priority',
+      categoryId: 'runtime',
+      icon: 'gauge',
+      label: 'Process priority',
+      description: 'Set the scheduler priority or nice value for the runtime process.',
+      inheritedLabel: 'Inherited by placements without a priority override',
+      visibility: 'advanced',
+      tomlSection: THROUGHPUT_TOML_SECTION,
+      mutability: 'restart-required',
+      control: { kind: 'text', name: 'priority', value: '', placeholder: 'e.g. 0 or normal' }
+    },
+    {
+      id: 'poll',
+      categoryId: 'runtime',
+      icon: 'zap',
+      label: 'Poll mode',
+      description: 'Choose how the runtime polls for work when busy-waiting is available.',
+      inheritedLabel: 'Inherited by placements without a poll override',
+      visibility: 'advanced',
+      tomlSection: THROUGHPUT_TOML_SECTION,
+      mutability: 'restart-required',
+      control: {
+        kind: 'choice',
+        name: 'poll',
+        value: 'auto',
+        presentation: 'segmented',
+        options: [
+          { value: 'auto', label: 'auto' },
+          { value: 'busy', label: 'busy' },
+          { value: 'sleep', label: 'sleep' }
+        ]
+      }
+    },
+    {
+      id: 'slot-prompt-similarity',
+      categoryId: 'runtime',
+      icon: 'gauge',
+      label: 'Slot prompt similarity',
+      description: 'Tune the similarity threshold used when comparing slot prompts before reuse.',
+      inheritedLabel: 'Inherited by placements without a slot similarity override',
+      visibility: 'advanced',
+      tomlSection: THROUGHPUT_TOML_SECTION,
+      mutability: 'restart-required',
+      control: {
+        kind: 'range',
+        name: 'slot_prompt_similarity',
+        value: '0.50',
+        min: 0,
+        max: 1,
+        step: 0.01
+      }
+    },
+    {
+      id: 'gpu-layers',
+      categoryId: 'runtime',
+      icon: 'layers',
+      label: 'GPU layers',
+      description: 'Set the GPU layer count, or use auto. The backend also accepts -1 to mean all layers.',
+      inheritedLabel: 'Inherited by placements without a GPU layer override',
+      tomlSection: HARDWARE_TOML_SECTION,
+      mutability: 'restart-required',
+      control: {
+        kind: 'text',
+        name: 'gpu_layers',
+        value: 'auto',
+        placeholder: 'auto or integer layer count'
+      }
+    },
+    {
+      id: 'mmap',
+      categoryId: 'runtime',
+      icon: 'memory',
+      label: 'Memory map',
+      description: 'Choose whether model files are memory-mapped when loaded.',
+      inheritedLabel: 'Inherited by placements without a memory-map override',
+      visibility: 'advanced',
+      tomlSection: HARDWARE_TOML_SECTION,
+      mutability: 'restart-required',
+      control: {
+        kind: 'choice',
+        name: 'mmap',
+        value: 'auto',
+        presentation: 'segmented',
+        options: [
+          { value: 'auto', label: 'auto' },
+          { value: 'on', label: 'on' },
+          { value: 'off', label: 'off' }
+        ]
+      }
+    },
+    {
+      id: 'mlock',
+      categoryId: 'runtime',
+      icon: 'shield',
+      label: 'Memory lock',
+      description: 'Choose whether loaded model pages should be locked into RAM.',
+      inheritedLabel: 'Inherited by placements without a memory-lock override',
+      visibility: 'advanced',
+      tomlSection: HARDWARE_TOML_SECTION,
+      mutability: 'restart-required',
+      control: {
+        kind: 'choice',
+        name: 'mlock',
+        value: 'off',
+        presentation: 'toggle',
+        options: [
+          { value: 'on', label: 'on' },
+          { value: 'off', label: 'off' }
+        ]
+      }
+    },
+    {
+      id: 'warmup',
+      categoryId: 'runtime',
+      icon: 'zap',
+      label: 'Warmup',
+      description: 'Choose whether the runtime should perform a warmup pass after load.',
+      inheritedLabel: 'Inherited by placements without a warmup override',
+      visibility: 'advanced',
+      tomlSection: HARDWARE_TOML_SECTION,
+      mutability: 'restart-required',
+      control: {
+        kind: 'choice',
+        name: 'warmup',
+        value: 'auto',
+        presentation: 'segmented',
+        options: [
+          { value: 'auto', label: 'auto' },
+          { value: 'on', label: 'on' },
+          { value: 'off', label: 'off' }
+        ]
+      }
+    },
+    {
+      id: 'direct-io',
+      categoryId: 'runtime',
+      icon: 'folder',
+      label: 'Direct I/O',
+      description: 'Choose whether model files are opened with direct I/O when supported.',
+      inheritedLabel: 'Inherited by placements without a direct I/O override',
+      visibility: 'advanced',
+      tomlSection: HARDWARE_TOML_SECTION,
+      mutability: 'restart-required',
+      control: {
+        kind: 'choice',
+        name: 'direct_io',
+        value: 'off',
+        presentation: 'toggle',
+        options: [
+          { value: 'on', label: 'on' },
+          { value: 'off', label: 'off' }
+        ]
+      }
+    },
+    {
+      id: 'split-mode',
+      categoryId: 'runtime',
+      icon: 'layers',
+      label: 'Split mode',
+      description: 'Choose how layers are split across devices when model sharding is enabled.',
+      inheritedLabel: 'Inherited by placements without a split-mode override',
+      visibility: 'advanced',
+      tomlSection: HARDWARE_TOML_SECTION,
+      mutability: 'restart-required',
+      control: {
+        kind: 'choice',
+        name: 'split_mode',
+        value: 'auto',
+        presentation: 'select',
+        options: [
+          { value: 'auto', label: 'auto' },
+          { value: 'none', label: 'none' },
+          { value: 'layer', label: 'layer' },
+          { value: 'row', label: 'row' }
+        ]
+      }
+    },
+    {
+      id: 'main-gpu',
+      categoryId: 'runtime',
+      icon: 'server',
+      label: 'Main GPU',
+      description: 'Select the primary GPU index used for loading and dispatch.',
+      inheritedLabel: 'Inherited by placements without a main-GPU override',
+      visibility: 'advanced',
+      tomlSection: HARDWARE_TOML_SECTION,
+      mutability: 'restart-required',
+      control: { kind: 'range', name: 'main_gpu', value: '0', min: 0, max: 7, step: 1, unit: 'GPU index' }
+    },
+    {
+      id: 'tensor-split',
+      categoryId: 'runtime',
+      icon: 'layers',
+      label: 'Tensor split',
+      description: 'Set the tensor split ratios for multi-GPU placement, for example 0.5,0.5.',
+      inheritedLabel: 'Inherited by placements without a tensor-split override',
+      visibility: 'advanced',
+      tomlSection: HARDWARE_TOML_SECTION,
+      mutability: 'restart-required',
+      control: { kind: 'text', name: 'tensor_split', value: '', placeholder: 'e.g. 0.5,0.5' }
+    },
     {
       id: 'parallel-slots',
       categoryId: 'runtime',
@@ -656,6 +999,194 @@ export const CONFIGURATION_DEFAULTS = {
       control: { kind: 'range', name: 'safety_margin_gb', value: '2', min: 0, max: 8, step: 0.5, unit: 'GB' }
     },
     {
+      id: 'ctx-size',
+      categoryId: 'memory',
+      icon: 'gauge',
+      label: 'Context window size',
+      description: 'Set the default context window size in tokens.',
+      inheritedLabel: 'Applied when a placement does not override context size',
+      tomlSection: MODEL_FIT_TOML_SECTION,
+      mutability: 'restart-required',
+      control: { kind: 'range', name: 'ctx_size', value: '512', min: 512, max: 131072, step: 512, unit: 'tokens' }
+    },
+    {
+      id: 'batch',
+      categoryId: 'memory',
+      icon: 'layers',
+      label: 'Batch size',
+      description: 'Set the default prefill batch size.',
+      inheritedLabel: 'Applied when a placement does not override batch size',
+      tomlSection: MODEL_FIT_TOML_SECTION,
+      mutability: 'restart-required',
+      control: { kind: 'range', name: 'batch', value: '512', min: 32, max: 4096, step: 32, unit: 'tokens' }
+    },
+    {
+      id: 'ubatch',
+      categoryId: 'memory',
+      icon: 'layers',
+      label: 'Micro-batch size',
+      description: 'Set the default decode micro-batch size.',
+      inheritedLabel: 'Applied when a placement does not override micro-batch size',
+      visibility: 'advanced',
+      tomlSection: MODEL_FIT_TOML_SECTION,
+      mutability: 'restart-required',
+      control: { kind: 'range', name: 'ubatch', value: '512', min: 32, max: 4096, step: 32, unit: 'tokens' }
+    },
+    {
+      id: 'cache-type-k',
+      categoryId: 'memory',
+      icon: 'filter',
+      label: 'KV cache type (K)',
+      description: 'Choose the KV cache dtype used for keys.',
+      inheritedLabel: 'Applied when a placement does not override key cache dtype',
+      tomlSection: MODEL_FIT_TOML_SECTION,
+      mutability: 'restart-required',
+      control: {
+        kind: 'choice',
+        name: 'cache_type_k',
+        value: 'f16',
+        presentation: 'segmented',
+        options: [
+          { value: 'f16', label: 'f16' },
+          { value: 'q8_0', label: 'q8_0' },
+          { value: 'q4_0', label: 'q4_0' }
+        ]
+      }
+    },
+    {
+      id: 'cache-type-v',
+      categoryId: 'memory',
+      icon: 'filter',
+      label: 'KV cache type (V)',
+      description: 'Choose the KV cache dtype used for values.',
+      inheritedLabel: 'Applied when a placement does not override value cache dtype',
+      tomlSection: MODEL_FIT_TOML_SECTION,
+      mutability: 'restart-required',
+      control: {
+        kind: 'choice',
+        name: 'cache_type_v',
+        value: 'f16',
+        presentation: 'segmented',
+        options: [
+          { value: 'f16', label: 'f16' },
+          { value: 'q8_0', label: 'q8_0' },
+          { value: 'q4_0', label: 'q4_0' }
+        ]
+      }
+    },
+    {
+      id: 'kv-offload',
+      categoryId: 'memory',
+      icon: 'server',
+      label: 'KV offload',
+      description: 'Choose whether KV cache offloading stays enabled.',
+      inheritedLabel: 'Applied when a placement does not override KV offload',
+      visibility: 'advanced',
+      tomlSection: MODEL_FIT_TOML_SECTION,
+      mutability: 'restart-required',
+      control: {
+        kind: 'choice',
+        name: 'kv_offload',
+        value: 'auto',
+        presentation: 'segmented',
+        options: [
+          { value: 'auto', label: 'auto' },
+          { value: 'on', label: 'on' },
+          { value: 'off', label: 'off' }
+        ]
+      }
+    },
+    {
+      id: 'kv-unified',
+      categoryId: 'memory',
+      icon: 'memory',
+      label: 'Unified KV',
+      description: 'Choose whether sequences share one unified KV buffer.',
+      inheritedLabel: 'Applied when a placement does not override unified KV',
+      visibility: 'advanced',
+      tomlSection: MODEL_FIT_TOML_SECTION,
+      mutability: 'restart-required',
+      control: {
+        kind: 'choice',
+        name: 'kv_unified',
+        value: 'auto',
+        presentation: 'segmented',
+        options: [
+          { value: 'auto', label: 'auto' },
+          { value: 'on', label: 'on' },
+          { value: 'off', label: 'off' }
+        ]
+      }
+    },
+    {
+      id: 'cache-ram-mib',
+      categoryId: 'memory',
+      icon: 'memory',
+      label: 'Prompt cache RAM',
+      description: 'Set the maximum prompt cache size in MiB. Use 0 to disable the cache.',
+      inheritedLabel: 'Applied when a placement does not override prompt cache RAM',
+      visibility: 'advanced',
+      tomlSection: MODEL_FIT_TOML_SECTION,
+      mutability: 'restart-required',
+      control: { kind: 'range', name: 'cache_ram_mib', value: '8192', min: 0, max: 65536, step: 256, unit: 'MiB' }
+    },
+    {
+      id: 'cache-idle-slots',
+      categoryId: 'memory',
+      icon: 'layers',
+      label: 'Idle slot caching',
+      description: 'Save and clear idle slots when a new task starts; requires unified KV and cache RAM.',
+      inheritedLabel: 'Applied when a placement does not override idle slot caching',
+      visibility: 'advanced',
+      tomlSection: MODEL_FIT_TOML_SECTION,
+      mutability: 'restart-required',
+      control: { kind: 'range', name: 'cache_idle_slots', value: '4', min: 0, max: 64, step: 1, unit: 'slots' }
+    },
+    {
+      id: 'prompt-cache',
+      categoryId: 'memory',
+      icon: 'filter',
+      label: 'Prompt cache',
+      description: 'Choose whether prompt caching stays auto-managed or explicitly on or off.',
+      inheritedLabel: 'Applied when a placement does not override prompt caching',
+      visibility: 'advanced',
+      tomlSection: MODEL_FIT_TOML_SECTION,
+      mutability: 'restart-required',
+      control: {
+        kind: 'choice',
+        name: 'prompt_cache',
+        value: 'auto',
+        presentation: 'segmented',
+        options: [
+          { value: 'auto', label: 'auto' },
+          { value: 'on', label: 'on' },
+          { value: 'off', label: 'off' }
+        ]
+      }
+    },
+    {
+      id: 'context-shift',
+      categoryId: 'memory',
+      icon: 'layers',
+      label: 'Context shift',
+      description: 'Allow context shifting for long-running generations when supported, or leave it on auto.',
+      inheritedLabel: 'Applied when a placement does not override context shift',
+      visibility: 'advanced',
+      tomlSection: MODEL_FIT_TOML_SECTION,
+      mutability: 'restart-required',
+      control: {
+        kind: 'choice',
+        name: 'context_shift',
+        value: 'auto',
+        presentation: 'segmented',
+        options: [
+          { value: 'auto', label: 'auto' },
+          { value: 'on', label: 'on' },
+          { value: 'off', label: 'off' }
+        ]
+      }
+    },
+    {
       id: 'speculation-mode',
       categoryId: 'speculative-decoding',
       icon: 'brain',
@@ -682,6 +1213,7 @@ export const CONFIGURATION_DEFAULTS = {
       label: 'Default draft selection policy',
       description: 'Choose how draft models are selected when draft-model speculation is active.',
       inheritedLabel: 'Controls whether Mesh chooses a draft from catalog metadata',
+      dependsOn: DRAFT_MODEL_SPECULATION_DEPENDENCY,
       control: {
         kind: 'choice',
         name: 'draft_selection_policy',
@@ -701,6 +1233,7 @@ export const CONFIGURATION_DEFAULTS = {
       label: 'Incompatible pairing behavior',
       description: 'Choose what happens when the draft and target models cannot pair.',
       inheritedLabel: 'Determines launch behavior when draft and target models cannot pair',
+      dependsOn: DRAFT_MODEL_SPECULATION_DEPENDENCY,
       control: {
         kind: 'choice',
         name: 'pairing_fault',
@@ -719,6 +1252,7 @@ export const CONFIGURATION_DEFAULTS = {
       label: 'Default draft max tokens',
       description: 'Limit how many draft tokens can be proposed before verification.',
       inheritedLabel: 'Higher values can improve throughput when acceptance stays high',
+      dependsOn: DRAFT_MODEL_SPECULATION_DEPENDENCY,
       control: { kind: 'range', name: 'draft_max_tokens', value: '16', min: 1, max: 64, step: 1, unit: 'tokens' }
     },
     {
@@ -728,7 +1262,9 @@ export const CONFIGURATION_DEFAULTS = {
       label: 'Default draft minimum tokens',
       description: 'Set the smallest draft batch attempted before verification.',
       inheritedLabel: '0 lets the runtime verify as soon as the draft becomes uncertain',
-      control: { kind: 'range', name: 'draft_min_tokens', value: '0', min: 0, max: 16, step: 1, unit: 'tokens' }
+      mutability: 'restart-required',
+      dependsOn: DRAFT_MODEL_SPECULATION_DEPENDENCY,
+      control: { kind: 'range', name: 'draft_min_tokens', value: '0', min: 0, max: 32, step: 1, unit: 'tokens' }
     },
     {
       id: 'draft-acceptance-threshold',
@@ -737,6 +1273,9 @@ export const CONFIGURATION_DEFAULTS = {
       label: 'Default draft acceptance threshold',
       description: 'Set the confidence needed before draft tokens are accepted.',
       inheritedLabel: 'Lower values speculate more aggressively; higher values reject earlier',
+      visibility: 'advanced',
+      mutability: 'restart-required',
+      dependsOn: DRAFT_MODEL_SPECULATION_DEPENDENCY,
       control: { kind: 'range', name: 'draft_acceptance_threshold', value: '0.70', min: 0, max: 1, step: 0.05 }
     },
     {
@@ -783,12 +1322,487 @@ export const CONFIGURATION_DEFAULTS = {
       description: 'Set how much recent token history the repeat penalty checks.',
       inheritedLabel: 'Inherited by placements with default sampling',
       control: { kind: 'range', name: 'repeat_last_n', value: '256', min: 0, max: 1024, step: 32, unit: 'tok' }
-    }
+    },
+    {
+      id: 'temperature',
+      categoryId: 'request-defaults',
+      icon: 'gauge',
+      label: 'Temperature',
+      description: 'Adjust the default sampling temperature for requests.',
+      inheritedLabel: 'Applied when a request does not override temperature',
+      tomlSection: REQUEST_DEFAULTS_TOML_SECTION,
+      mutability: 'runtime',
+      control: { kind: 'range', name: 'temperature', value: '1.0', min: 0, max: 2, step: 0.05 }
+    },
+    {
+      id: 'top-p',
+      categoryId: 'request-defaults',
+      icon: 'filter',
+      label: 'Top-p',
+      description: 'Limit sampling to the nucleus probability mass.',
+      inheritedLabel: 'Applied when a request does not override top-p',
+      tomlSection: REQUEST_DEFAULTS_TOML_SECTION,
+      mutability: 'runtime',
+      control: { kind: 'range', name: 'top_p', value: '1.0', min: 0, max: 1, step: 0.05 }
+    },
+    {
+      id: 'top-k',
+      categoryId: 'request-defaults',
+      icon: 'filter',
+      label: 'Top-k',
+      description: 'Limit sampling to the top-k tokens.',
+      inheritedLabel: 'Applied when a request does not override top-k',
+      tomlSection: REQUEST_DEFAULTS_TOML_SECTION,
+      mutability: 'runtime',
+      control: { kind: 'range', name: 'top_k', value: '40', min: 0, max: 100, step: 1 }
+    },
+    {
+      id: 'min-p',
+      categoryId: 'request-defaults',
+      icon: 'filter',
+      label: 'Min-p',
+      description: 'Filter tokens below a dynamic probability floor.',
+      inheritedLabel: 'Applied when a request does not override min-p',
+      tomlSection: REQUEST_DEFAULTS_TOML_SECTION,
+      mutability: 'runtime',
+      control: { kind: 'range', name: 'min_p', value: '0.05', min: 0, max: 1, step: 0.05 }
+    },
+    {
+      id: 'presence-penalty',
+      categoryId: 'request-defaults',
+      icon: 'filter',
+      label: 'Presence penalty',
+      description: 'Increase or reduce the penalty for introducing new tokens.',
+      inheritedLabel: 'Applied when a request does not override presence penalty',
+      tomlSection: REQUEST_DEFAULTS_TOML_SECTION,
+      mutability: 'runtime',
+      control: { kind: 'range', name: 'presence_penalty', value: '0', min: 0, max: 2, step: 0.1 }
+    },
+    {
+      id: 'frequency-penalty',
+      categoryId: 'request-defaults',
+      icon: 'filter',
+      label: 'Frequency penalty',
+      description: 'Increase or reduce the penalty for repeated tokens.',
+      inheritedLabel: 'Applied when a request does not override frequency penalty',
+      tomlSection: REQUEST_DEFAULTS_TOML_SECTION,
+      mutability: 'runtime',
+      control: { kind: 'range', name: 'frequency_penalty', value: '0', min: 0, max: 2, step: 0.1 }
+    },
+    {
+      id: 'max-tokens',
+      categoryId: 'request-defaults',
+      icon: 'gauge',
+      label: 'Max tokens',
+      description: 'Cap the number of generated tokens for a request.',
+      inheritedLabel: 'Applied when a request does not override the token cap',
+      tomlSection: REQUEST_DEFAULTS_TOML_SECTION,
+      mutability: 'runtime',
+      control: { kind: 'range', name: 'max_tokens', value: '0', min: 0, max: 32768, step: 256, unit: 'tokens' }
+    },
+    {
+      id: 'seed',
+      categoryId: 'request-defaults',
+      icon: 'cog',
+      label: 'Seed',
+      description: 'Set the RNG seed for deterministic sampling when needed.',
+      inheritedLabel: 'Applied when a request does not override the seed',
+      visibility: 'advanced',
+      tomlSection: REQUEST_DEFAULTS_TOML_SECTION,
+      mutability: 'runtime',
+      control: { kind: 'text', name: 'seed', value: '-1', placeholder: '-1 (random)' }
+    },
+    {
+      id: 'ignore-eos',
+      categoryId: 'request-defaults',
+      icon: 'filter',
+      label: 'Ignore EOS',
+      description: 'Choose whether the model should ignore end-of-sequence tokens.',
+      inheritedLabel: 'Applied when a request does not override EOS handling',
+      visibility: 'advanced',
+      tomlSection: REQUEST_DEFAULTS_TOML_SECTION,
+      mutability: 'runtime',
+      control: {
+        kind: 'choice',
+        name: 'ignore_eos',
+        value: 'off',
+        presentation: 'toggle',
+        options: [
+          { value: 'on', label: 'on' },
+          { value: 'off', label: 'off' }
+        ]
+      }
+    },
+    {
+      id: 'mirostat-mode',
+      categoryId: 'request-defaults',
+      icon: 'brain',
+      label: 'Mirostat mode',
+      description: 'Choose the Mirostat sampling mode, or disable it.',
+      inheritedLabel: 'Applied when a request does not override Mirostat mode',
+      visibility: 'advanced',
+      tomlSection: REQUEST_DEFAULTS_TOML_SECTION,
+      mutability: 'runtime',
+      control: {
+        kind: 'choice',
+        name: 'mirostat_mode',
+        value: 'disabled',
+        presentation: 'segmented',
+        options: [
+          { value: 'disabled', label: 'disabled' },
+          { value: '1', label: '1' },
+          { value: '2', label: '2' }
+        ]
+      }
+    },
+    {
+      id: 'mirostat-entropy',
+      categoryId: 'request-defaults',
+      icon: 'gauge',
+      label: 'Mirostat entropy',
+      description: 'Set the Mirostat target entropy.',
+      inheritedLabel: 'Applied when Mirostat mode is enabled',
+      visibility: 'advanced',
+      tomlSection: REQUEST_DEFAULTS_TOML_SECTION,
+      mutability: 'runtime',
+      dependsOn: MIROSTAT_MODE_DEPENDENCY,
+      control: { kind: 'range', name: 'mirostat_entropy', value: '5', min: 0.1, max: 10, step: 0.1 }
+    },
+    {
+      id: 'mirostat-learning-rate',
+      categoryId: 'request-defaults',
+      icon: 'gauge',
+      label: 'Mirostat learning rate',
+      description: 'Set the Mirostat learning rate.',
+      inheritedLabel: 'Applied when Mirostat mode is enabled',
+      visibility: 'advanced',
+      tomlSection: REQUEST_DEFAULTS_TOML_SECTION,
+      mutability: 'runtime',
+      dependsOn: MIROSTAT_MODE_DEPENDENCY,
+      control: { kind: 'range', name: 'mirostat_learning_rate', value: '0.1', min: 0.01, max: 1, step: 0.01 }
+    },
+    {
+      id: 'samplers',
+      categoryId: 'request-defaults',
+      icon: 'filter',
+      label: 'Samplers',
+      description: 'Set the comma-separated sampler list.',
+      inheritedLabel: 'Applied when a request does not override the sampler list',
+      visibility: 'advanced',
+      tomlSection: REQUEST_DEFAULTS_TOML_SECTION,
+      mutability: 'runtime',
+      control: {
+        kind: 'text',
+        name: 'samplers',
+        value: '',
+        placeholder: 'top_k,tfs_z,typical_p,top_p,min_p,temperature'
+      }
+    },
+    {
+      id: 'sampler-sequence',
+      categoryId: 'request-defaults',
+      icon: 'layers',
+      label: 'Sampler sequence',
+      description: 'Set the sampler execution order.',
+      inheritedLabel: 'Applied when a request does not override sampler ordering',
+      visibility: 'advanced',
+      tomlSection: REQUEST_DEFAULTS_TOML_SECTION,
+      mutability: 'runtime',
+      control: {
+        kind: 'text',
+        name: 'sampler_sequence',
+        value: '',
+        placeholder: 'e.g. top_k;top_p;temperature'
+      }
+    },
+    {
+      id: 'stop',
+      categoryId: 'request-defaults',
+      icon: 'shield',
+      label: 'Stop sequences',
+      description: 'Set comma-separated stop sequences for a request.',
+      inheritedLabel: 'Applied when a request does not override stop sequences',
+      visibility: 'advanced',
+      tomlSection: REQUEST_DEFAULTS_TOML_SECTION,
+      mutability: 'runtime',
+      control: {
+        kind: 'text',
+        name: 'stop',
+        value: '',
+        placeholder: 'comma-separated stop sequences'
+      }
+    },
+    {
+      id: 'activation-wire-dtype',
+      categoryId: 'skippy-transport',
+      icon: 'zap',
+      label: 'Activation wire dtype',
+      description: 'Choose the dtype used when activation frames travel between skippy stages.',
+      inheritedLabel: 'Inherited by stage chains without a wire-dtype override',
+      tomlSection: SKIPPY_TRANSPORT_TOML_SECTION,
+      mutability: 'restart-required',
+      control: {
+        kind: 'choice',
+        name: 'activation_wire_dtype',
+        value: 'auto',
+        presentation: 'segmented',
+        options: [
+          { value: 'auto', label: 'auto' },
+          { value: 'f16', label: 'f16' },
+          { value: 'f32', label: 'f32' },
+          { value: 'q8', label: 'q8' }
+        ]
+      }
+    },
+    {
+      id: 'stage-model-path',
+      categoryId: 'skippy-transport',
+      icon: 'folder',
+      label: 'Stage model path',
+      description: 'Set the model or package path used for this skippy stage.',
+      inheritedLabel: 'Inherited by stage chains without an explicit model path',
+      tomlSection: SKIPPY_TRANSPORT_TOML_SECTION,
+      visibility: 'advanced',
+      mutability: 'restart-required',
+      control: {
+        kind: 'text',
+        name: 'stage_model_path',
+        value: '',
+        placeholder: 'e.g. hf://meshllm/... or /path/to/stage.gguf'
+      }
+    },
+    {
+      id: 'stage-role',
+      categoryId: 'skippy-transport',
+      icon: 'server',
+      label: 'Stage role',
+      description: 'Choose the stage-chain role when topology is not inferred automatically.',
+      inheritedLabel: 'Inherited by stage chains without an explicit role override',
+      tomlSection: SKIPPY_TRANSPORT_TOML_SECTION,
+      visibility: 'advanced',
+      mutability: 'restart-required',
+      control: {
+        kind: 'choice',
+        name: 'stage_role',
+        value: 'auto',
+        presentation: 'select',
+        options: [
+          { value: 'auto', label: 'auto' },
+          { value: 'prompt', label: 'prompt' },
+          { value: 'stage', label: 'stage' }
+        ]
+      }
+    },
+    {
+      id: 'stage-topology',
+      categoryId: 'skippy-transport',
+      icon: 'layers',
+      label: 'Stage topology',
+      description: 'Describe the stage chain topology when it is supplied as a text override.',
+      inheritedLabel: 'Inherited by stage chains without a topology override',
+      tomlSection: SKIPPY_TRANSPORT_TOML_SECTION,
+      visibility: 'advanced',
+      mutability: 'restart-required',
+      control: {
+        kind: 'text',
+        name: 'stage_topology',
+        value: '',
+        placeholder: 'topology name or path'
+      }
+    },
+    {
+      id: 'prefill-chunking',
+      categoryId: 'skippy-transport',
+      icon: 'layers',
+      label: 'Prefill chunking',
+      description: 'Choose how prefill chunks are scheduled across a skippy stage chain.',
+      inheritedLabel: 'Inherited by stage chains without a chunking override',
+      tomlSection: SKIPPY_TRANSPORT_TOML_SECTION,
+      mutability: 'restart-required',
+      control: {
+        kind: 'choice',
+        name: 'prefill_chunking',
+        value: 'auto',
+        presentation: 'select',
+        options: [
+          { value: 'auto', label: 'auto' },
+          { value: 'fixed', label: 'fixed' },
+          { value: 'schedule', label: 'schedule' },
+          { value: 'adaptive-ramp', label: 'adaptive-ramp' }
+        ]
+      }
+    },
+    {
+      id: 'prefill-chunk-size',
+      categoryId: 'skippy-transport',
+      icon: 'gauge',
+      label: 'Prefill chunk size',
+      description: 'Set the fixed prefill chunk size. Use 0 to keep the backend auto sentinel.',
+      inheritedLabel: 'Inherited by fixed chunking when a stage does not override the size',
+      tomlSection: SKIPPY_TRANSPORT_TOML_SECTION,
+      mutability: 'restart-required',
+      dependsOn: PREFILL_CHUNKING_FIXED_DEPENDENCY,
+      control: { kind: 'range', name: 'prefill_chunk_size', value: '0', min: 0, max: 8192, step: 64, unit: 'tokens' }
+    },
+    {
+      id: 'prefill-chunk-schedule',
+      categoryId: 'skippy-transport',
+      icon: 'layers',
+      label: 'Prefill chunk schedule',
+      description: 'Provide a comma-separated schedule for scheduled prefill chunking.',
+      inheritedLabel: 'Inherited by scheduled chunking when a stage does not override the schedule',
+      tomlSection: SKIPPY_TRANSPORT_TOML_SECTION,
+      visibility: 'advanced',
+      mutability: 'restart-required',
+      dependsOn: PREFILL_CHUNKING_SCHEDULE_DEPENDENCY,
+      control: {
+        kind: 'text',
+        name: 'prefill_chunk_schedule',
+        value: '',
+        placeholder: 'e.g. 512,1024,2048'
+      }
+    },
+    {
+      id: 'binary-stage-transport',
+      categoryId: 'skippy-transport',
+      icon: 'binary',
+      label: 'Binary stage transport',
+      description: 'Choose whether the binary stage transport is enabled or left to auto selection.',
+      inheritedLabel: 'Inherited by stage chains without a transport override',
+      tomlSection: SKIPPY_TRANSPORT_TOML_SECTION,
+      mutability: 'restart-required',
+      control: {
+        kind: 'choice',
+        name: 'binary_stage_transport',
+        value: 'auto',
+        presentation: 'segmented',
+        options: [
+          { value: 'auto', label: 'auto' },
+          { value: 'on', label: 'on' },
+          { value: 'off', label: 'off' }
+        ]
+      }
+    },
+    {
+      id: 'lifecycle-startup-timeout-ms',
+      categoryId: 'skippy-transport',
+      icon: 'gauge',
+      label: 'Lifecycle startup timeout',
+      description: 'Set how long the orchestrator waits for a stage to become ready during startup.',
+      inheritedLabel: 'Inherited by stage chains without a startup timeout override',
+      tomlSection: SKIPPY_TRANSPORT_TOML_SECTION,
+      visibility: 'advanced',
+      mutability: 'restart-required',
+      control: { kind: 'range', name: 'lifecycle_startup_timeout_ms', value: '30000', min: 1, max: 600000, step: 1000, unit: 'ms' }
+    },
+    {
+      id: 'lifecycle-readiness-interval-ms',
+      categoryId: 'skippy-transport',
+      icon: 'gauge',
+      label: 'Lifecycle readiness interval',
+      description: 'Set how often readiness is re-checked while startup is in flight.',
+      inheritedLabel: 'Inherited by stage chains without a readiness polling override',
+      tomlSection: SKIPPY_TRANSPORT_TOML_SECTION,
+      visibility: 'advanced',
+      mutability: 'restart-required',
+      control: { kind: 'range', name: 'lifecycle_readiness_interval_ms', value: '1000', min: 100, max: 60000, step: 100, unit: 'ms' }
+    },
+    {
+      id: 'lifecycle-health-interval-ms',
+      categoryId: 'skippy-transport',
+      icon: 'shield',
+      label: 'Lifecycle health interval',
+      description: 'Set how often background health checks run after a stage is up.',
+      inheritedLabel: 'Inherited by stage chains without a health polling override',
+      tomlSection: SKIPPY_TRANSPORT_TOML_SECTION,
+      visibility: 'advanced',
+      mutability: 'restart-required',
+      control: { kind: 'range', name: 'lifecycle_health_interval_ms', value: '15000', min: 100, max: 60000, step: 100, unit: 'ms' }
+    },
+    {
+      id: 'mmproj-offload',
+      categoryId: 'multimodal',
+      icon: 'image',
+      label: 'MMProj offload',
+      description: 'Choose whether the multimodal projector stays auto-managed or explicitly on or off.',
+      inheritedLabel: 'Inherited by placements without a projector-offload override',
+      tomlSection: MULTIMODAL_TOML_SECTION,
+      mutability: 'restart-required',
+      control: {
+        kind: 'choice',
+        name: 'mmproj_offload',
+        value: 'auto',
+        presentation: 'segmented',
+        options: [
+          { value: 'auto', label: 'auto' },
+          { value: 'on', label: 'on' },
+          { value: 'off', label: 'off' }
+        ]
+      }
+    },
+    {
+      id: 'image-min-tokens',
+      categoryId: 'multimodal',
+      icon: 'image',
+      label: 'Image minimum tokens',
+      description: 'Set the minimum token budget reserved for each image input.',
+      inheritedLabel: 'Inherited by placements without an image minimum override',
+      tomlSection: MULTIMODAL_TOML_SECTION,
+      mutability: 'restart-required',
+      control: { kind: 'range', name: 'image_min_tokens', value: '0', min: 0, max: 2048, step: 32, unit: 'tokens' }
+    },
+    {
+      id: 'image-max-tokens',
+      categoryId: 'multimodal',
+      icon: 'image',
+      label: 'Image maximum tokens',
+      description: 'Set the maximum token budget allowed for each image input.',
+      inheritedLabel: 'Inherited by placements without an image maximum override',
+      tomlSection: MULTIMODAL_TOML_SECTION,
+      mutability: 'restart-required',
+      control: { kind: 'range', name: 'image_max_tokens', value: '2048', min: 0, max: 4096, step: 32, unit: 'tokens' }
+    },
+    {
+      id: 'mmproj',
+      categoryId: 'multimodal',
+      icon: 'image',
+      label: 'MMProj path',
+      description: 'Set an explicit local path to the multimodal projector file.',
+      inheritedLabel: 'Inherited by placements without an explicit projector path',
+      visibility: 'advanced',
+      tomlSection: MULTIMODAL_TOML_SECTION,
+      mutability: 'restart-required',
+      control: { kind: 'text', name: 'mmproj', value: '', placeholder: 'e.g. /path/to/mmproj.gguf' }
+    },
+    {
+      id: 'mmproj-url',
+      categoryId: 'multimodal',
+      icon: 'image',
+      label: 'MMProj URL',
+      description: 'Set a URL used to download or reference the multimodal projector file.',
+      inheritedLabel: 'Inherited by placements without a projector URL override',
+      visibility: 'advanced',
+      tomlSection: MULTIMODAL_TOML_SECTION,
+      mutability: 'restart-required',
+      control: { kind: 'text', name: 'mmproj_url', value: '', placeholder: 'e.g. https://example.com/mmproj.gguf' }
+    },
+    {
+      id: 'server-alias',
+      categoryId: 'advanced-server',
+      icon: 'server',
+      label: 'Server alias',
+      description: 'Set a human-friendly alias for the server in advanced deployments.',
+      inheritedLabel: 'Inherited by deployments without an explicit server alias',
+      visibility: 'advanced',
+      tomlSection: ADVANCED_SERVER_TOML_SECTION,
+      mutability: 'restart-required',
+      control: { kind: 'text', name: 'alias', value: '', placeholder: 'model alias' }
+    },
   ],
   preview: [
     { label: 'Scope', value: 'carrack only', meta: 'remote nodes are read-only context' },
     { label: 'Config path', value: '~/.mesh-llm/config.toml' },
-    { label: 'Generated defaults', value: '16 settings', meta: 'deployment overrides win' },
+    { label: 'Generated defaults', value: '73 settings', meta: 'deployment overrides win' },
     { label: 'Signing', value: 'Unsigned', meta: 'attestation pending' }
   ]
 } as const

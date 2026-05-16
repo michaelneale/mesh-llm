@@ -1,5 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Binary, Blocks, Brackets, Computer, LockKeyhole, ShieldCheck } from 'lucide-react'
+import {
+  AlertTriangle,
+  Binary,
+  Blocks,
+  BookOpen,
+  Brackets,
+  Computer,
+  Copy,
+  LockKeyhole,
+  ShieldCheck
+} from 'lucide-react'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { LiveDataUnavailableOverlay } from '@/components/ui/LiveDataUnavailableOverlay'
 import { CatalogPopover } from '@/features/configuration/components/CatalogPopover'
 import { ConfigurationHeader } from '@/features/configuration/components/ConfigurationHeader'
@@ -38,8 +49,14 @@ import { useConfigurationPageKeyboardShortcuts } from '@/features/configuration/
 import { CONFIGURATION_HARNESS } from '@/features/app-tabs/data'
 import type { ConfigurationHarnessData, Placement } from '@/features/app-tabs/types'
 import { useConfigQuery } from '@/features/configuration/api/use-config-query'
+import {
+  runtimeControlApplyErrorMessage,
+  type RuntimeControlBootstrapPayload
+} from '@/features/configuration/api/config-adapter'
 import { useDataMode } from '@/lib/data-mode'
 import { useBooleanFeatureFlag } from '@/lib/feature-flags'
+import { copyStateLabel } from '@/lib/copyStateLabel'
+import { useClipboardCopy } from '@/lib/useClipboardCopy'
 
 type ConfigurationPageProps = {
   activeTab?: ConfigurationTabId
@@ -47,6 +64,145 @@ type ConfigurationPageProps = {
   enableNavigationBlocker?: boolean
   initialTab?: ConfigurationTabId
   onTabChange?: (tab: ConfigurationTabId) => void
+}
+
+const OWNER_CONTROL_READ_ONLY_MESSAGE = 'No owner-control identity on this node, run both commands to unlock saving.'
+const OWNER_CONTROL_SAVE_ERROR = 'Config was not saved. Runtime control is disabled: missing owner identity.'
+const RUNTIME_CONTROL_SAVE_UNAVAILABLE_ERROR = 'Config was not saved. Runtime control config is unavailable.'
+const OWNER_CONTROL_DOCS_URL = 'https://docs.meshllm.cloud/'
+
+function formatRuntimeControlDisabledReason(bootstrap: RuntimeControlBootstrapPayload | undefined) {
+  if (bootstrap?.disabled_reason === 'missing_owner_identity') return 'missing owner identity'
+  return bootstrap?.disabled_reason?.replace(/_/g, ' ') ?? 'unavailable'
+}
+
+function formatRuntimeControlDisabledMessage(bootstrap: RuntimeControlBootstrapPayload) {
+  if (bootstrap.disabled_reason === 'missing_owner_identity') return OWNER_CONTROL_READ_ONLY_MESSAGE
+  return (
+    bootstrap.message ??
+    `Configuration saving is unavailable because runtime control is disabled: ${formatRuntimeControlDisabledReason(bootstrap)}.`
+  )
+}
+
+function formatRuntimeControlDisabledSaveError(bootstrap: RuntimeControlBootstrapPayload | undefined) {
+  if (bootstrap?.disabled_reason === 'missing_owner_identity') return OWNER_CONTROL_SAVE_ERROR
+  return `Config was not saved. Runtime control is disabled: ${formatRuntimeControlDisabledReason(bootstrap)}.`
+}
+
+function formatRuntimeControlFailure(error: unknown) {
+  if (error instanceof Error && error.message.trim())
+    return `Config was not saved. Runtime control failed: ${error.message}`
+  return 'Config was not saved. Runtime control failed.'
+}
+
+function RuntimeCommandRow({ command, hint, index }: { command: string; hint: string; index: number }) {
+  const { copyState, copyText } = useClipboardCopy()
+  const [binary, action, ...args] = command.split(' ')
+
+  return (
+    <div className="grid grid-cols-[1.5rem_minmax(0,1fr)_4.5rem] items-start gap-2 px-5 py-2.5 sm:grid-cols-[1.75rem_minmax(0,1fr)_4.5rem]">
+      <div className="pt-1.5 text-right font-mono text-[length:var(--density-type-annotation)] font-medium leading-none text-fg-faint">
+        {index}
+      </div>
+      <div className="min-w-0">
+        <div className="flex min-w-0 items-center gap-1.5 overflow-x-auto whitespace-nowrap font-mono text-[length:var(--density-type-caption-lg)] font-semibold leading-6">
+          <span className="text-accent">$</span>
+          <span className="text-accent">{binary}</span>
+          <span className="text-warn">{action}</span>
+          {args.map((arg) => (
+            <span key={arg} className="text-accent-contrast">
+              {arg}
+            </span>
+          ))}
+        </div>
+        <div className="mt-1 flex items-center gap-2 text-[length:var(--density-type-caption)] leading-5 text-fg-faint">
+          <span aria-hidden="true" className="font-mono text-warn">
+            →
+          </span>
+          <span>{hint}</span>
+        </div>
+      </div>
+      <button
+        aria-label={`Copy ${command}`}
+        className="ui-control inline-flex h-[30px] items-center justify-center gap-1.5 rounded-[var(--radius)] border px-2.5 text-[length:var(--density-type-control)] font-medium leading-none"
+        onClick={() => void copyText(command)}
+        type="button"
+      >
+        <Copy aria-hidden="true" className="size-3.5 shrink-0" />
+        {copyStateLabel(copyState)}
+      </button>
+    </div>
+  )
+}
+
+function ConfigurationRuntimeControlBanner({ bootstrap }: { bootstrap: RuntimeControlBootstrapPayload }) {
+  const suggestedCommands = bootstrap.suggested_commands?.length
+    ? bootstrap.suggested_commands
+    : ['mesh-llm auth init --no-passphrase', 'mesh-llm serve --owner-required']
+  const authInitCommand = suggestedCommands.includes('mesh-llm auth init --no-passphrase')
+    ? 'mesh-llm auth init --no-passphrase'
+    : suggestedCommands[0]
+  const restartCommand = suggestedCommands.includes('mesh-llm serve --owner-required')
+    ? 'mesh-llm serve --owner-required'
+    : (suggestedCommands[1] ?? 'mesh-llm serve --owner-required')
+  const commandPairs = [
+    {
+      command: authInitCommand,
+      hint: 'Initialize owner identity (creates a local keypair)'
+    },
+    {
+      command: restartCommand,
+      hint: 'Restart the daemon so the new identity takes effect'
+    }
+  ]
+
+  return (
+    <section
+      aria-labelledby="configuration-runtime-control-read-only"
+      className="panel-shell overflow-hidden rounded-[var(--radius-lg)] border border-border bg-panel text-foreground"
+    >
+      <div className="panel-divider flex flex-col gap-3 border-b border-border-soft px-[14px] py-[10px] sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex min-w-0 items-start gap-3">
+          <div className="flex size-8 shrink-0 items-center justify-center rounded-[var(--radius)] border border-[color:color-mix(in_oklab,var(--color-warn)_42%,var(--color-border))] bg-[color:color-mix(in_oklab,var(--color-warn)_10%,var(--color-panel))] text-warn shadow-surface-inset">
+            <LockKeyhole aria-hidden="true" className="size-4" strokeWidth={1.8} />
+          </div>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2
+                id="configuration-runtime-control-read-only"
+                className="text-[length:var(--density-type-control-lg)] font-semibold leading-tight text-foreground"
+              >
+                Configuration UI is read-only
+              </h2>
+              <span className="inline-flex items-center gap-1.5 rounded-[var(--radius)] border border-[color:color-mix(in_oklab,var(--color-warn)_48%,var(--color-border))] bg-[color:color-mix(in_oklab,var(--color-warn)_8%,var(--color-panel))] px-2 py-0.5 font-mono text-[length:var(--density-type-annotation)] font-semibold uppercase leading-none tracking-[0.14em] text-warn">
+                <AlertTriangle aria-hidden="true" className="size-3" strokeWidth={1.9} />
+                {formatRuntimeControlDisabledReason(bootstrap)}
+              </span>
+            </div>
+            <p className="mt-1 max-w-[72ch] text-[length:var(--density-type-caption)] leading-snug text-fg-faint">
+              {formatRuntimeControlDisabledMessage(bootstrap)}
+            </p>
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-2 sm:self-start">
+          <a
+            className="ui-control inline-flex h-[30px] items-center justify-center gap-1.5 rounded-[var(--radius)] border px-3 text-[length:var(--density-type-control)] font-medium leading-none"
+            href={OWNER_CONTROL_DOCS_URL}
+            rel="noreferrer"
+            target="_blank"
+          >
+            <BookOpen aria-hidden="true" className="size-3.5" strokeWidth={1.8} />
+            Docs
+          </a>
+        </div>
+      </div>
+      <div className="bg-background py-3">
+        {commandPairs.map((commandPair, index) => (
+          <RuntimeCommandRow key={commandPair.command} index={index + 1} {...commandPair} />
+        ))}
+      </div>
+    </section>
+  )
 }
 
 function ReadOnlyNodesDivider() {
@@ -73,7 +229,27 @@ export function ConfigurationPageContent({
   const liveMode = mode === 'live'
   const signingAttestationEnabled = useBooleanFeatureFlag('configuration/signingAttestation')
   const integrationsEnabled = useBooleanFeatureFlag('configuration/integrations')
-  const { data: liveData, isFetching, isError, modelsQuery, statusQuery } = useConfigQuery({ enabled: liveMode })
+  const {
+    data: liveData,
+    isFetching,
+    isError,
+    modelsQuery,
+    statusQuery,
+    controlConfigQuery,
+    applyDefaults
+  } = useConfigQuery({
+    enabled: liveMode
+  })
+  const runtimeControlBootstrap = controlConfigQuery.data?.bootstrap
+  const runtimeControlDisabled = liveMode && Boolean(runtimeControlBootstrap && !runtimeControlBootstrap.enabled)
+  const runtimeControlDisabledReason = runtimeControlDisabled
+    ? `Runtime control is disabled: ${formatRuntimeControlDisabledReason(runtimeControlBootstrap)}`
+    : undefined
+  const runtimeControlConfigUnavailableReason =
+    liveMode && !runtimeControlDisabled && !controlConfigQuery.isFetching && !controlConfigQuery.data?.snapshot
+      ? 'Runtime control config is unavailable'
+      : undefined
+  const runtimeControlSaveDisabledReason = runtimeControlDisabledReason ?? runtimeControlConfigUnavailableReason
   const resolvedData = liveMode ? liveData : data
   const displayData = resolvedData ?? data
   const showLiveError = liveMode && !liveData && !isFetching && isError
@@ -133,6 +309,8 @@ export function ConfigurationPageContent({
   const [savedConfiguration, setSavedConfiguration] = useState<ConfigurationState>(() =>
     cloneConfigurationState(initialConfiguration)
   )
+  const [isSavingConfiguration, setIsSavingConfiguration] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
   const appliedConfigurationSourceKeyRef = useRef(configurationSourceKey)
   useEffect(() => {
     if (appliedConfigurationSourceKeyRef.current === configurationSourceKey) return
@@ -140,6 +318,7 @@ export function ConfigurationPageContent({
     const nextConfiguration = latestInitialConfigurationRef.current
     resetConfiguration(nextConfiguration)
     setSavedConfiguration(cloneConfigurationState(nextConfiguration))
+    setSaveError(null)
     appliedConfigurationSourceKeyRef.current = configurationSourceKey
   }, [configurationSourceKey, resetConfiguration])
   const {
@@ -224,6 +403,9 @@ export function ConfigurationPageContent({
     [savedConfiguration]
   )
   const hasUnsavedChanges = currentSnapshot !== savedSnapshot
+  useEffect(() => {
+    if (!runtimeControlSaveDisabledReason || !hasUnsavedChanges) setSaveError(null)
+  }, [hasUnsavedChanges, runtimeControlSaveDisabledReason])
   const defaultsDirty = useMemo(
     () => JSON.stringify(defaultsValues) !== JSON.stringify(savedConfiguration.defaultsValues),
     [defaultsValues, savedConfiguration.defaultsValues]
@@ -276,9 +458,53 @@ export function ConfigurationPageContent({
   }, [displayData.preferredAssignId, resetConfiguration, restorePreferredSelection, savedConfiguration])
 
   const saveConfiguration = useCallback(() => {
-    if (hasInvalidNode || !hasUnsavedChanges) return
+    if (isSavingConfiguration || hasInvalidNode || !hasUnsavedChanges) return
+
+    setSaveError(null)
+
+    if (runtimeControlDisabled) {
+      setSaveError(formatRuntimeControlDisabledSaveError(runtimeControlBootstrap))
+      return
+    }
+
+    if (runtimeControlConfigUnavailableReason) {
+      setSaveError(RUNTIME_CONTROL_SAVE_UNAVAILABLE_ERROR)
+      return
+    }
+
+    if (liveMode && defaultsDirty) {
+      setIsSavingConfiguration(true)
+      void applyDefaults(configuration.defaultsValues)
+        .then((response) => {
+          if (!response?.success) {
+            const message = runtimeControlApplyErrorMessage(response)
+            setSaveError(
+              message
+                ? `Config was not saved. Runtime control rejected the update: ${message}`
+                : RUNTIME_CONTROL_SAVE_UNAVAILABLE_ERROR
+            )
+            return
+          }
+          setSavedConfiguration(cloneConfigurationState(configuration))
+        })
+        .catch((error: unknown) => setSaveError(formatRuntimeControlFailure(error)))
+        .finally(() => setIsSavingConfiguration(false))
+      return
+    }
+
     setSavedConfiguration(cloneConfigurationState(configuration))
-  }, [configuration, hasInvalidNode, hasUnsavedChanges])
+  }, [
+    applyDefaults,
+    configuration,
+    defaultsDirty,
+    hasInvalidNode,
+    hasUnsavedChanges,
+    isSavingConfiguration,
+    liveMode,
+    runtimeControlBootstrap,
+    runtimeControlConfigUnavailableReason,
+    runtimeControlDisabled
+  ])
   const retryLiveData = useCallback(() => {
     void Promise.all([statusQuery.refetch(), modelsQuery.refetch()])
   }, [modelsQuery, statusQuery])
@@ -412,6 +638,11 @@ export function ConfigurationPageContent({
           onResetAll={resetDefaultSettings}
           onSettingValueChange={updateDefaultSetting}
           configFilePath={displayData.configFilePath}
+          readOnlyNotice={
+            runtimeControlDisabled && runtimeControlBootstrap ? (
+              <ConfigurationRuntimeControlBanner bootstrap={runtimeControlBootstrap} />
+            ) : undefined
+          }
         />
       )
     },
@@ -513,6 +744,8 @@ export function ConfigurationPageContent({
             canRedo={canRedo}
             hasUnsavedChanges={hasUnsavedChanges}
             hasInvalidNode={hasInvalidNode}
+            isSaving={isSavingConfiguration}
+            saveDisabledReason={runtimeControlSaveDisabledReason}
             onUndo={undoConfigurationChange}
             onRedo={redoConfigurationChange}
             onRevert={revertConfiguration}
@@ -520,6 +753,14 @@ export function ConfigurationPageContent({
           />
         }
       >
+        {saveError ? (
+          <div className="px-5 pb-3">
+            <Alert variant="destructive">
+              <AlertTriangle aria-hidden="true" className="size-4" />
+              <AlertDescription>{saveError}</AlertDescription>
+            </Alert>
+          </div>
+        ) : null}
         <ConfigurationTabs value={renderedActiveTab} onValueChange={setActiveTab} tabs={tabs} />
       </ConfigurationLayout>
       {enableNavigationBlocker ? <UnsavedConfigurationNavigationBlocker hasUnsavedChanges={hasUnsavedChanges} /> : null}
