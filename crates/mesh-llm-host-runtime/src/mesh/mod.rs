@@ -2317,6 +2317,7 @@ impl Node {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn start(
         role: NodeRole,
         relay_urls: &[String],
