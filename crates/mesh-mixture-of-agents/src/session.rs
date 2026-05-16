@@ -442,6 +442,37 @@ mod tests {
     }
 
     #[test]
+    fn tool_result_context_includes_content() {
+        // Regression: a fresh session receiving a tool-result turn must
+        // still surface the tool output in packed context, even though
+        // pending_tools is empty (session is stateless per request).
+        use crate::context;
+        let mut s = Session::new();
+        s.ingest(
+            &[
+                json!({"role": "user", "content": "read the file"}),
+                json!({"role": "assistant", "content": null, "tool_calls": [{"id": "call_abc", "type": "function", "function": {"name": "read_file", "arguments": "{\"path\":\"README.md\"}"}}]}),
+                json!({"role": "tool", "tool_call_id": "call_abc", "content": "# Hello World"}),
+            ],
+            &Some(json!([{"type": "function", "function": {"name": "read_file", "description": "Read a file", "parameters": {}}}])),
+        );
+        assert_eq!(s.classify_turn(), TurnType::ToolResult);
+
+        let (messages, _tools) = context::pack_for_tool_result_turn(&s, true);
+        // The packed messages must contain the actual tool output content
+        let serialized = serde_json::to_string(&messages).unwrap();
+        assert!(
+            serialized.contains("# Hello World"),
+            "tool result content must be in packed context, got: {serialized}"
+        );
+        // Must also contain the tool_call for context
+        assert!(
+            serialized.contains("read_file"),
+            "tool call function name must be in packed context, got: {serialized}"
+        );
+    }
+
+    #[test]
     fn tool_names_extraction() {
         let mut s = Session::new();
         s.ingest(

@@ -61,6 +61,11 @@ pub fn normalize_worker_output(
     // lines from truncated model output).
     output.payload = strip_kv_envelope(&output.payload);
 
+    // Sanitize confidence: clamp NaN/Inf to 0.5 so comparisons never panic.
+    if !output.confidence.is_finite() {
+        output.confidence = 0.5;
+    }
+
     output
 }
 
@@ -632,5 +637,14 @@ mod tests {
         let out = normalize_worker_output(raw, "test-model", WorkerRole::Fast, 100);
         assert_eq!(out.kind, OutputKind::Answer);
         assert!((out.confidence - 0.9).abs() < 0.01);
+    }
+
+    #[test]
+    fn nan_confidence_clamped() {
+        // A model that outputs NaN confidence should not cause panics
+        // in arbiter comparisons. The sanitizer clamps to 0.5.
+        let raw = r#"{"kind": "answer", "confidence": "NaN", "payload": "hello"}"#;
+        let out = normalize_worker_output(raw, "test-model", WorkerRole::Fast, 100);
+        assert!(out.confidence.is_finite());
     }
 }

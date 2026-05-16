@@ -234,43 +234,46 @@ pub fn pack_for_reducer(
 
 /// Build context for a tool-result turn (reducer only, not full fan-out).
 ///
-/// The reducer gets: agent's system prompt + tool result + enough context
-/// to produce a final answer or propose the next tool call.
+/// The reducer gets: agent's system prompt + the original conversation
+/// including assistant tool_call messages and the corresponding tool result
+/// messages, plus full tool schemas so it can propose the next call.
+///
+/// We forward the raw message sequence rather than summarizing, because
+/// the reducer model needs to see the tool_call → tool result pairs in
+/// their native OpenAI format to reason about what happened and decide
+/// what to do next.
 pub fn pack_for_tool_result_turn(
     session: &Session,
     _has_tools: bool,
 ) -> (Vec<Value>, Option<Value>) {
-    let mut system_parts = vec![augmented_system_prompt(session)];
+    let system = augmented_system_prompt(session);
 
-    // Include recent tool results
-    let tool_results = session.recent_tool_results();
-    if !tool_results.is_empty() {
-        system_parts.push(String::new());
-        system_parts.push("Tool results:".to_string());
-        for (name, result) in &tool_results {
-            let short = if result.len() > 1000 {
-                format!("{}...", &result[..997])
-            } else {
-                result.clone()
-            };
-            system_parts.push(format!("{name}() → {short}"));
+    let mut messages = vec![json!({"role": "system", "content": system})];
+
+    // Forward the tail of the conversation that includes tool_call + tool
+    // result messages. Walk backwards to find the assistant message that
+    // proposed the tool call(s), then include everything from there forward.
+    let all = session.all_messages();
+    let mut start_idx = all.len().saturating_sub(10); // default: last 10
+
+    // Try to find the assistant tool_call message that triggered these results
+    for (i, msg) in all.iter().enumerate().rev() {
+        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+        if role == "assistant" && msg.get("tool_calls").is_some() {
+            // Include one user message before the tool_call for context
+            start_idx = i.saturating_sub(1);
+            break;
         }
-        system_parts.push(String::new());
-        system_parts.push(
-            "Use the tool results above to answer the user's question, or call another tool \
-             if more work is needed."
-                .to_string(),
-        );
     }
 
-    let user_text = session.last_user_text();
+    for msg in &all[start_idx..] {
+        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+        if role != "system" && !role.is_empty() {
+            messages.push(msg.clone());
+        }
+    }
+
     let tools = session.tools().cloned();
 
-    (
-        vec![
-            json!({"role": "system", "content": system_parts.join("\n")}),
-            json!({"role": "user", "content": user_text}),
-        ],
-        tools,
-    )
+    (messages, tools)
 }
