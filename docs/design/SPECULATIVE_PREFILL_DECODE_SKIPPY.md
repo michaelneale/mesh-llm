@@ -1022,8 +1022,11 @@ an available draft model.
 ```
 --prefill-speculative <path>       Local GGUF for in-process speculative prefill
 --prefill-speculative-max <n>      Max draft tokens (default: 8)
---no-draft                         Disable automatic draft detection
 ```
+
+**Opt-in only.** Speculative prefill is only active when
+`--prefill-speculative` is explicitly set. There is no automatic
+detection — the user must provide a path to a local GGUF.
 
 `--prefill-speculative` loads a small model in-process via
 `DraftRunner` — it shares the main model's GPU and runs
@@ -1036,8 +1039,7 @@ Proxy-level speculative prefill (see "Automation strategy" below)
 operates at the **proxy layer**, not inside skippy-server's decode
 loop. The proxy selects a draft model from the mesh, gets a
 complete text response, and injects it via `draft_response` into
-the target's request for one-pass verification. No CLI flag needed
-— the proxy engages it automatically when conditions are met.
+the target's request for one-pass verification.
 
 Both paths converge in `spec_prefill::verify_draft()`, which
 accepts either `draft_tokens` (token IDs from DraftRunner) or
