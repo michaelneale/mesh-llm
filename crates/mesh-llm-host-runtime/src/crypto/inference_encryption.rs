@@ -250,7 +250,9 @@ pub async fn write_encrypted_chunk<W: tokio::io::AsyncWriteExt + Unpin>(
     let ciphertext = salsa_box
         .encrypt(&nonce, plaintext)
         .map_err(|_| CryptoError::EncryptionFailed)?;
-    let payload_len = (24 + ciphertext.len()) as u32;
+    let payload_len: u32 = (24 + ciphertext.len())
+        .try_into()
+        .map_err(|_| CryptoError::EncryptionFailed)?;
     writer
         .write_all(&payload_len.to_le_bytes())
         .await

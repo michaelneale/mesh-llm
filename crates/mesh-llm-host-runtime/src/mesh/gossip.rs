@@ -112,12 +112,10 @@ pub(super) fn apply_transitive_ann(
     existing.served_model_runtime = ann.served_model_runtime.clone();
     existing.artifact_transfer_supported = ann.artifact_transfer_supported;
     existing.stage_status_list_supported = ann.stage_status_list_supported;
-    if ann.inference_public_key.is_some() {
-        existing.inference_public_key = ann.inference_public_key.clone();
-    }
-    if ann.security_posture.is_some() {
-        existing.security_posture = ann.security_posture.clone();
-    }
+    // NOTE: inference_public_key and security_posture are intentionally NOT
+    // merged from transitive announcements. A malicious bridge node could
+    // forge another peer's key or posture. These fields are only trusted
+    // from direct gossip (the peer's own announcement stream).
     if ann.experts_summary.is_some() {
         existing.experts_summary = ann.experts_summary.clone();
     }
@@ -735,8 +733,11 @@ impl Node {
                         }),
                         latency_age_ms: Some(latency.age_ms),
                         latency_observer_id: latency.observer_id,
-                        inference_public_key: p.inference_public_key.clone(),
-                        security_posture: p.security_posture.clone(),
+                        // Omit inference_public_key and security_posture from
+                        // transitive announcements — these are only trusted
+                        // when received directly from the peer.
+                        inference_public_key: None,
+                        security_posture: None,
                     }
                 })
                 .collect()

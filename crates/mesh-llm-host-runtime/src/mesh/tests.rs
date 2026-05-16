@@ -5825,6 +5825,8 @@ async fn soft_preference_puts_hardened_first() {
         2,
         "both hosts returned without require_hardened"
     );
-    assert!(hosts.contains(&hardened_id));
-    assert!(hosts.contains(&unhardened_id));
+    // Hardened host must always come before unhardened, regardless of
+    // hash rotation (rotation is applied within each partition).
+    assert_eq!(hosts[0], hardened_id, "hardened host must be first");
+    assert_eq!(hosts[1], unhardened_id, "unhardened host must be second");
 }

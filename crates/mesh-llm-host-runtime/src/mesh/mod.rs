@@ -3917,22 +3917,36 @@ impl Node {
             }
         }
 
-        // Sort: hardened hosts first, then by ID for determinism.
-        hosts.sort_by(|(id_a, h_a), (id_b, h_b)| h_b.cmp(h_a).then(id_a.cmp(id_b)));
+        // Partition into hardened and unhardened, preserving deterministic
+        // ID order within each group.
+        let (mut hardened, mut unhardened): (Vec<_>, Vec<_>) =
+            hosts.into_iter().partition(|(_, h)| *h);
+        hardened.sort_by_key(|(id, _)| *id);
+        unhardened.sort_by_key(|(id, _)| *id);
 
-        let mut result: Vec<EndpointId> = hosts.into_iter().map(|(id, _)| id).collect();
-
-        // Put the hash-preferred host first so normal path tries it first
-        if !result.is_empty() {
-            let my_id = self.endpoint.id();
-            let id_bytes = my_id.as_bytes();
-            let hash = id_bytes
-                .iter()
-                .fold(0u64, |acc, &b| acc.wrapping_mul(31).wrapping_add(b as u64));
-            let idx = (hash as usize) % result.len();
-            result.rotate_left(idx);
+        // Apply hash-based rotation within each partition so we spread
+        // load across hardened hosts without ever promoting an unhardened
+        // host ahead of a hardened one.
+        let my_id = self.endpoint.id();
+        let id_bytes = my_id.as_bytes();
+        let hash = id_bytes
+            .iter()
+            .fold(0u64, |acc, &b| acc.wrapping_mul(31).wrapping_add(b as u64));
+        if !hardened.is_empty() {
+            let idx = (hash as usize) % hardened.len();
+            hardened.rotate_left(idx);
         }
-        result
+        if !unhardened.is_empty() {
+            let idx = (hash as usize) % unhardened.len();
+            unhardened.rotate_left(idx);
+        }
+
+        // Hardened first, then unhardened as fallback.
+        hardened
+            .into_iter()
+            .chain(unhardened)
+            .map(|(id, _)| id)
+            .collect()
     }
 
     /// Find ANY host in the mesh (fallback when no model match).

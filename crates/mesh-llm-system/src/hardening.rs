@@ -151,7 +151,9 @@ pub fn check_rdma_disabled() -> bool {
 
     #[cfg(not(target_os = "macos"))]
     {
-        true
+        // Conservative: we cannot verify RDMA state on this platform,
+        // so report it as not confirmed disabled.
+        false
     }
 }
 
