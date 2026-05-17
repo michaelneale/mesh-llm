@@ -1515,8 +1515,8 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                 let event = match event {
                     SplitCoordinatorEvent::Replace(event) => *event,
                     SplitCoordinatorEvent::LocalFallback(event) => {
-                        let missing_stage_nodes = event
-                            .missing_stage_nodes
+                        let unavailable_stage_nodes = event
+                            .unavailable_stage_nodes
                             .iter()
                             .map(|node| node.fmt_short().to_string())
                             .collect::<Vec<_>>()
@@ -1573,8 +1573,8 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                                         event.topology_id, old_loaded_name
                                     ),
                                     context: Some(format!(
-                                        "reason={} generation={} missing_stage_nodes=[{}] error={err:#}",
-                                        event.reason, event.generation, missing_stage_nodes
+                                        "reason={} generation={} unavailable_stage_nodes=[{}] error={err:#}",
+                                        event.reason, event.generation, unavailable_stage_nodes
                                     )),
                                 });
                                 let _ = event.ack.send(SplitCoordinatorAck::Accepted);
@@ -1683,10 +1683,10 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                                         event.topology_id, loaded_name
                                     ),
                                     context: Some(format!(
-                                        "reason={} generation={} missing_stage_nodes=[{}] previous_port={} new_port={} new_ctx={}",
+                                        "reason={} generation={} unavailable_stage_nodes=[{}] previous_port={} new_port={} new_ctx={}",
                                         event.reason,
                                         event.generation,
-                                        missing_stage_nodes,
+                                        unavailable_stage_nodes,
                                         old_port,
                                         new_port,
                                         new_context_length
@@ -1714,8 +1714,8 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                                         event.topology_id, old_loaded_name
                                     ),
                                     context: Some(format!(
-                                        "reason={} generation={} missing_stage_nodes=[{}] error={err:#}",
-                                        event.reason, event.generation, missing_stage_nodes
+                                        "reason={} generation={} unavailable_stage_nodes=[{}] error={err:#}",
+                                        event.reason, event.generation, unavailable_stage_nodes
                                     )),
                                 });
                                 let _ = event.ack.send(SplitCoordinatorAck::Accepted);
@@ -1743,8 +1743,8 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                         }
                     }
                     SplitCoordinatorEvent::Withdraw(event) => {
-                        let missing_stage_nodes = event
-                            .missing_stage_nodes
+                        let unavailable_stage_nodes = event
+                            .unavailable_stage_nodes
                             .iter()
                             .map(|node| node.fmt_short().to_string())
                             .collect::<Vec<_>>()
@@ -1755,8 +1755,8 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                                 event.topology_id, loaded_name
                             ),
                             context: Some(format!(
-                                "reason={} generation={} missing_stage_nodes=[{}]",
-                                event.reason, event.generation, missing_stage_nodes
+                                "reason={} generation={} unavailable_stage_nodes=[{}]",
+                                event.reason, event.generation, unavailable_stage_nodes
                             )),
                         });
                         let _ = event.ack.send(SplitCoordinatorAck::Accepted);
