@@ -237,14 +237,53 @@ pub async fn handle_turn(config: &GatewayConfig, body: &Value) -> TurnResult {
         has_tools,
     );
 
+    let allowed_tools = session.tool_names();
+
     match turn_type {
         session::TurnType::ToolResult => {
-            handle_tool_result(config, &session, has_tools, start).await
+            handle_tool_result(config, &session, has_tools, &allowed_tools, start).await
         }
         session::TurnType::Fresh | session::TurnType::Continuation => {
-            handle_query(config, &session, has_tools, start).await
+            handle_query(config, &session, has_tools, &allowed_tools, start).await
         }
     }
+}
+
+/// Demote a `ToolProposal` whose `tool_name` is not in `allowed_tools`
+/// to `Uncertainty`. This guards downstream arbitration from worker
+/// hallucinations like proposing `execute_typescript` when only `shell`
+/// is declared.
+///
+/// If `allowed_tools` is empty (no tools were declared on the request
+/// body) we leave the proposal as-is — the arbiter will route to the
+/// reducer which has the same call site policy.
+fn enforce_allowed_tools(
+    output: &mut normalize::WorkerOutput,
+    allowed_tools: &[String],
+    model: &str,
+) {
+    if allowed_tools.is_empty() {
+        return;
+    }
+    if output.kind != normalize::OutputKind::ToolProposal {
+        return;
+    }
+    let Some(ref name) = output.tool_name else {
+        return;
+    };
+    if allowed_tools.iter().any(|t| t == name) {
+        return;
+    }
+    tracing::warn!(
+        "moa: worker {model} proposed unknown tool {name:?}, demoting to uncertainty \
+         (allowed: {allowed_tools:?})"
+    );
+    output.kind = normalize::OutputKind::Uncertainty;
+    output.tool_name = None;
+    output.tool_arguments = None;
+    // Drop confidence so this proposal doesn't outrank real ones in any
+    // tie-breaking path that still inspects it.
+    output.confidence = 0.0;
 }
 
 // ─── Query handling ──────────────────────────────────────────────────
@@ -253,6 +292,7 @@ async fn handle_query(
     config: &GatewayConfig,
     session: &Session,
     has_tools: bool,
+    allowed_tools: &[String],
     start: Instant,
 ) -> TurnResult {
     let assignments = worker::assign_roles(&config.models);
@@ -295,7 +335,7 @@ async fn handle_query(
 
     let total_workers = join_set.len();
     let (outputs, summaries, early_decision) =
-        gather_workers_incremental(&mut join_set, total_workers, has_tools).await;
+        gather_workers_incremental(&mut join_set, total_workers, has_tools, allowed_tools).await;
 
     if outputs.is_empty() {
         return TurnResult {
@@ -307,8 +347,15 @@ async fn handle_query(
     }
 
     let decision = early_decision.unwrap_or_else(|| arbiter::arbitrate(&outputs, has_tools));
-    let (response_body, reducer_used) =
-        resolve_decision(config, session, decision, &outputs, has_tools).await;
+    let (response_body, reducer_used) = resolve_decision(
+        config,
+        session,
+        decision,
+        &outputs,
+        has_tools,
+        allowed_tools,
+    )
+    .await;
 
     TurnResult {
         response_body,
@@ -324,6 +371,7 @@ async fn handle_tool_result(
     config: &GatewayConfig,
     session: &Session,
     has_tools: bool,
+    allowed_tools: &[String],
     start: Instant,
 ) -> TurnResult {
     let (reducer_name, reducer_backend_idx) = pick_reducer(config);
@@ -346,8 +394,9 @@ async fn handle_tool_result(
     let succeeded = result.is_ok();
     let response_body = match result {
         Ok(text) => {
-            let reduced =
+            let mut reduced =
                 normalize::normalize_worker_output(&text, &reducer_name, WorkerRole::Reducer, 0);
+            enforce_allowed_tools(&mut reduced, allowed_tools, &reducer_name);
             match reduced.kind {
                 normalize::OutputKind::ToolProposal => {
                     if let (Some(name), Some(args)) =
@@ -390,6 +439,7 @@ async fn resolve_decision(
     decision: arbiter::Decision,
     outputs: &[WorkerOutput],
     has_tools: bool,
+    allowed_tools: &[String],
 ) -> (Value, bool) {
     match decision {
         arbiter::Decision::Answer(text) => (chat_response(&text), false),
@@ -414,12 +464,13 @@ async fn resolve_decision(
             .await
             {
                 Ok(text) => {
-                    let reduced = normalize::normalize_worker_output(
+                    let mut reduced = normalize::normalize_worker_output(
                         &text,
                         &reducer_name,
                         WorkerRole::Reducer,
                         0,
                     );
+                    enforce_allowed_tools(&mut reduced, allowed_tools, &reducer_name);
                     match reduced.kind {
                         normalize::OutputKind::ToolProposal => {
                             if let (Some(name), Some(args)) =
@@ -548,6 +599,7 @@ async fn gather_workers_incremental(
     join_set: &mut tokio::task::JoinSet<(String, WorkerRole, Result<String, String>, u64)>,
     total_workers: usize,
     has_tools: bool,
+    allowed_tools: &[String],
 ) -> (
     Vec<WorkerOutput>,
     Vec<WorkerSummary>,
@@ -561,7 +613,9 @@ async fn gather_workers_incremental(
         match join_result {
             Ok((model, role, Ok(text), elapsed)) => {
                 total_finished += 1;
-                let normalized = normalize::normalize_worker_output(&text, &model, role, elapsed);
+                let mut normalized =
+                    normalize::normalize_worker_output(&text, &model, role, elapsed);
+                enforce_allowed_tools(&mut normalized, allowed_tools, &model);
                 tracing::info!(
                     "moa: worker {} ({}) → {:?} conf={:.2} ({}ms, {} chars)",
                     model,
