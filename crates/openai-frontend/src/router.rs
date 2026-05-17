@@ -637,6 +637,7 @@ mod tests {
                         finish_reason: Some(FinishReason::ToolCalls),
                     }],
                     usage: Usage::new(3, 2),
+                    completion_token_ids: None,
                 });
             }
             Ok(ChatCompletionResponse::new(
