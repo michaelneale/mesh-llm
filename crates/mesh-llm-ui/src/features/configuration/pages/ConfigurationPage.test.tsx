@@ -394,10 +394,11 @@ describe('ConfigurationPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /save config/i }))
 
     await waitFor(() => expect(applyDefaults).toHaveBeenCalledTimes(1))
-    expect(screen.getByRole('alert')).toHaveTextContent(
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(
       'Config was not saved. Runtime control rejected the update: revision conflict: current revision is 9'
     )
-    expect(screen.getByRole('alert')).not.toHaveTextContent('missing owner identity')
+    expect(alert).not.toHaveTextContent('missing owner identity')
     expect(screen.getByRole('tab', { name: 'Defaults' })).toHaveAttribute('data-tab-dirty', 'true')
 
     useConfigQuerySpy.mockRestore()
