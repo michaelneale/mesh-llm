@@ -1,0 +1,22 @@
+version = 1
+
+[gpu]
+assignment = "pinned"
+
+[defaults.hardware]
+device = "CUDA0"
+
+[defaults.skippy]
+prefill_chunk_size = 128
+
+[defaults.request_defaults]
+chat_template = "unsafe-template"
+
+[[models]]
+model = "Qwen/Qwen3-0.6B:Q4_K_M"
+
+[models.model_fit]
+batch = 0
+
+[models.hardware]
+model_path = "/models/qwen.gguf"

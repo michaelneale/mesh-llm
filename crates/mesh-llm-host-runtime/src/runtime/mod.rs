@@ -8479,6 +8479,7 @@ mod tests {
                 batch: None,
                 ubatch: None,
                 flash_attention: None,
+                ..Default::default()
             }],
             ..plugin::MeshConfig::default()
         };
@@ -8508,6 +8509,7 @@ mod tests {
                     batch: None,
                     ubatch: None,
                     flash_attention: None,
+                    ..Default::default()
                 },
                 plugin::ModelConfigEntry {
                     model: "bartowski/Qwen2.5-VL/model.gguf".into(),
@@ -8520,6 +8522,7 @@ mod tests {
                     batch: None,
                     ubatch: None,
                     flash_attention: None,
+                    ..Default::default()
                 },
             ],
             ..plugin::MeshConfig::default()
@@ -8555,6 +8558,7 @@ mod tests {
                 batch: None,
                 ubatch: None,
                 flash_attention: None,
+                ..Default::default()
             }],
             ..plugin::MeshConfig::default()
         };
@@ -8602,6 +8606,7 @@ mod tests {
                 batch: None,
                 ubatch: None,
                 flash_attention: None,
+                ..Default::default()
             }],
             ..plugin::MeshConfig::default()
         };
@@ -8805,6 +8810,7 @@ mod tests {
                 batch: None,
                 ubatch: None,
                 flash_attention: None,
+                ..Default::default()
             }],
             ..plugin::MeshConfig::default()
         };
@@ -9368,6 +9374,7 @@ mod tests {
             batch: None,
             ubatch: None,
             flash_attention: None,
+            ..Default::default()
         }];
         let gpu_config = GpuConfig::default(); // no parallel set
 
@@ -9395,24 +9402,26 @@ mod tests {
                 mmproj: None,
                 ctx_size: None,
                 gpu_id: None,
-                parallel: None, // no override
+                parallel: None,
                 cache_type_k: None,
                 cache_type_v: None,
                 batch: None,
                 ubatch: None,
                 flash_attention: None,
+                ..Default::default()
             },
             ModelConfigEntry {
                 model: "model-b".to_string(),
                 mmproj: None,
                 ctx_size: None,
                 gpu_id: None,
-                parallel: Some(3), // only this one has an override
+                parallel: Some(3),
                 cache_type_k: None,
                 cache_type_v: None,
                 batch: None,
                 ubatch: None,
                 flash_attention: None,
+                ..Default::default()
             },
         ];
         let gpu_config = GpuConfig::default();
@@ -9450,24 +9459,26 @@ mod tests {
                 mmproj: None,
                 ctx_size: None,
                 gpu_id: None,
-                parallel: None, // missing — should use global fallback
+                parallel: None,
                 cache_type_k: None,
                 cache_type_v: None,
                 batch: None,
                 ubatch: None,
                 flash_attention: None,
+                ..Default::default()
             },
             ModelConfigEntry {
                 model: "second".to_string(),
                 mmproj: None,
                 ctx_size: None,
                 gpu_id: None,
-                parallel: Some(2), // explicit override
+                parallel: Some(2),
                 cache_type_k: None,
                 cache_type_v: None,
                 batch: None,
                 ubatch: None,
                 flash_attention: None,
+                ..Default::default()
             },
         ];
         let gpu_config = GpuConfig {

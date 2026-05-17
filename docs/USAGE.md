@@ -161,23 +161,452 @@ mesh-llm serve --gguf ~/my-models/qwen3.5-4b.gguf --mmproj ~/my-models/mmproj-BF
 
 `mesh-llm serve` also loads startup models from `~/.mesh-llm/config.toml` by default.
 
+Use the persisted TOML for future starts or reloads. It does not rewrite active
+sessions in place, and request payload values still win over any request
+defaults from the file.
+
+The example below shows every configuration section with annotations. All
+sections and fields are optional unless noted.
+
 ```toml
+# ~/.mesh-llm/config.toml
+#
+# Comprehensive configuration reference.
+#
+# Precedence (highest → lowest):
+#   explicit request field value
+#   → per-model config ([[models]] entry)
+#   → [defaults.*] global config
+#   → family / topology policy
+#   → built-in runtime defaults
+#
+# Request defaults are merged ONLY at the OpenAI frontend boundary when the
+# incoming request field is absent or null. They never enter StageConfig,
+# protobuf, or any lower runtime layer.
+
 version = 1
 
+# ---------------------------------------------------------------------------
+# GPU assignment policy
+# ---------------------------------------------------------------------------
+
 [gpu]
+# "auto"   — let the planner pick the best visible device (default)
+# "pinned" — require an explicit device= in every model or in [defaults.hardware]
 assignment = "auto"
+parallel   = 2        # total parallel inference slots across all models
+
+# ---------------------------------------------------------------------------
+# Node identity and network
+# ---------------------------------------------------------------------------
+
+[owner_control]
+bind           = "0.0.0.0:7447"          # QUIC listen address
+advertise_addr = "203.0.113.10:18443"    # address announced to peers
+
+# ---------------------------------------------------------------------------
+# Telemetry
+# ---------------------------------------------------------------------------
+
+[telemetry]
+enabled  = true
+endpoint = "http://localhost:4317"       # OTLP collector
+
+# ---------------------------------------------------------------------------
+# Global defaults — applied to every model that does not override the field
+# ---------------------------------------------------------------------------
+
+# --- Context, batching, and KV cache -------------------------------------
+[defaults.model_fit]
+ctx_size         = 8192          # context window size (tokens)
+batch            = 512           # n_batch — prompt-processing chunk
+ubatch           = 128           # n_ubatch — micro-batch within a batch
+cache_type_k     = "auto"        # KV key dtype: auto f16 f32 bf16 q8_0 q4_0 …
+cache_type_v     = "auto"        # KV value dtype (same enum)
+flash_attention  = "auto"        # auto on off
+kv_cache_policy  = "balanced"    # macro preset: auto quality balanced saver
+                                 #   quality  → f16/f16, no forced RAM cap
+                                 #   balanced → preserve runtime defaults
+                                 #   saver    → low-memory dtypes + offload
+                                 # explicit cache_type_k/v always wins over preset
+kv_offload       = "auto"        # bool or "auto" — KV residency / offload policy
+kv_unified       = "auto"        # bool or "auto" — unified KV layout (schema-reserved)
+cache_ram_mib    = 0             # byte cap for KV cache in MiB; 0 = no cap (schema-reserved)
+cache_idle_slots = 0             # idle slot retention count (schema-reserved)
+prompt_cache     = "auto"        # bool or "auto" — reuse previous prompt KV
+swa_full         = false         # sliding-window attention (model-family specific)
+
+# exact-prefix cache sub-section
+[defaults.model_fit.prefix_cache]
+enabled              = true
+max_entries          = 64
+max_bytes            = 0         # 0 = no explicit byte cap
+min_tokens           = 64
+shared_stride_tokens = 32        # stride for shared-prefix record matching
+shared_record_limit  = 4         # max retained shared-prefix records
+payload_mode         = "auto"    # resident-kv kv-recurrent full-state auto
+
+# Schema-reserved fields (accepted but not yet wired to runtime):
+# keep_tokens          = 256     # session prompt retention
+# context_shift        = "auto"  # long-context shift
+# checkpoint_interval  = 100     # KV checkpoint cadence
+# checkpoint_count     = 5       # KV checkpoint retention
+# lookup_cache_static  = "/path/to/static.cache"
+# lookup_cache_dynamic = "/path/to/dynamic.cache"
+
+# --- Hardware and model loading ------------------------------------------
+[defaults.hardware]
+model_runtime    = "auto"        # backend: auto cpu cuda rocm metal vulkan
+device           = "auto"        # device id/index, e.g. "cuda:0" or "0"
+gpu_layers       = "auto"        # integer >= -1, or "auto" (all layers)
+placement        = "auto"        # planner placement strategy enum
+split_mode       = "auto"        # multi-GPU split: auto none layer row
+main_gpu         = 0             # primary device index for split_mode tuning
+safety_margin_gb = 2.0           # reserved headroom; maps to fit_target_mib
+fit_target_mib   = 0             # explicit allocatable-memory target (MiB)
+                                 # do NOT write derived values back into TOML
+fit_context      = "auto"        # bool or "auto" — estimator context-fit mode
+mmap             = "auto"        # bool or "auto" — memory-mapped model load
+mlock            = false         # pin model pages in RAM
+direct_io        = false         # bypass page cache for model reads
+repack           = false         # backend-specific repack flag
+op_offload       = false         # backend-specific op-offload flag
+no_host_buffer   = false         # backend-specific host-buffer flag
+warmup           = "auto"        # bool or "auto" — post-load warmup pass
+check_tensors    = false         # tensor-validation at load time (debug)
+
+# multi-GPU tensor split (per-GPU ratio list or backend-native string)
+# tensor_split = [0.6, 0.4]
+
+# staged (skippy) layer ownership — set by planner; override only when manual
+# stage_layer_start = 0
+# stage_layer_end   = 15
+
+# model artifact — typically set per-model; unusual in [defaults]
+# model_path  = "/models/default.gguf"
+# hf_repo     = "org/model-GGUF"
+# hf_file     = "model-q4_k_m.gguf"
+# mmproj      = "mmproj-f16.gguf"
+
+# LoRA adapters and control vectors
+# lora_adapters   = ["/adapters/adapter-1.gguf"]
+# control_vectors = ["/vectors/cv-1.gguf"]
+
+# MoE (Mixture-of-Experts) routing
+# cpu_moe   = "auto"   # bool or "auto"
+# n_cpu_moe = 0        # number of experts to route to CPU
+
+# --- Throughput, scheduling, and CPU -------------------------------------
+[defaults.throughput]
+parallel             = 1           # concurrent request slots
+continuous_batching  = "auto"      # bool or "auto"
+threads              = 8           # CPU inference thread count
+threads_batch        = 4           # CPU batch-processing thread count
+tuning_profile       = "balanced"  # macro preset: throughput balanced saver
+                                   #   throughput → larger batch/ubatch, more parallel
+                                   #   balanced   → preserve runtime defaults
+                                   #   saver      → smaller batch/ubatch, lower parallel
+                                   # explicit low-level fields always win over preset
+slot_prompt_similarity = 0.5       # slot-reuse heuristic threshold
+priority               = "normal"  # scheduler priority hint (integer or string)
+
+# CPU affinity and NUMA (advanced — usually leave unset)
+# cpu_affinity = "0-7"
+# numa         = "distribute"
+# poll         = "auto"   # bool or "auto" — polling strategy
+
+# Rejected in model config — stays operational/host-level:
+# threads_http       — HTTP worker pool
+# sleep_idle_seconds — power-management idle
+
+# --- Skippy staged serving -----------------------------------------------
+[defaults.skippy]
+activation_wire_dtype           = "auto"    # auto f16 f32 bf16 q8 q4 q2
+binary_stage_transport          = "auto"    # auto on off
+prefill_chunking                = "fixed"   # fixed schedule none
+prefill_chunk_size              = 512       # tokens per prefill chunk
+lifecycle_startup_timeout_ms    = 30000     # stage startup grace period (ms)
+lifecycle_readiness_interval_ms = 250       # readiness poll interval (ms)
+lifecycle_health_interval_ms    = 5000      # health-check interval (ms)
+
+# Staged-only / manual topology (set by planner; override carefully)
+# stage_model_path       = "/packages/stage-0.pkg"
+# stage_role             = "prefill"
+# stage_topology         = "2-stage-split"
+# prefill_chunk_schedule = "128,256,512"   # custom progressive schedule
+
+# --- Speculative decoding ------------------------------------------------
+[defaults.speculative]
+mode                       = "auto"          # auto off draft ngram lookahead
+draft_selection_policy     = "auto"          # auto manual heuristic
+pairing_fault              = "warn_disable"  # warn_disable fail_open fail_closed
+draft_max_tokens           = 16
+draft_min_tokens           = 1
+draft_acceptance_threshold = 0.0             # 0.0 = use runtime default
+spec_default               = "auto"          # bool or "auto"
+
+# Draft model source (per-model is more typical; these are global fallbacks)
+# draft_model_path = "/models/draft.gguf"
+# draft_hf_repo    = "org/draft-GGUF"
+# draft_hf_file    = "draft-q4_k_m.gguf"
+
+# Draft hardware (leave unset to share host model's device)
+# draft_gpu_layers   = -1
+# draft_device       = "cuda:1"
+# draft_threads      = 4
+# draft_cache_type_k = "q8_0"
+# draft_cache_type_v = "q8_0"
+
+# N-gram speculative (when mode = "ngram")
+# ngram_min = 1
+# ngram_max = 5
+
+# --- Request defaults (merged at OpenAI frontend only) -------------------
+[defaults.request_defaults]
+# Sampling — explicit request values always win
+temperature       = 0.8
+top_p             = 0.95
+top_k             = -1           # -1 = disabled
+min_p             = 0.05
+typical_p         = 1.0
+top_nsigma        = 0.0
+dynatemp_range    = 0.0
+dynatemp_exponent = 1.0
+repeat_penalty    = 1.1
+repeat_last_n     = 64
+presence_penalty  = 0.0
+frequency_penalty = 0.0
+seed              = -1           # -1 = random
+
+# Mirostat sampling (alternative to top_p/top_k)
+mirostat_mode          = 0       # 0 off, 1 v1, 2 v2
+mirostat_entropy       = 5.0
+mirostat_learning_rate = 0.1
+
+# Stop sequences (string or list of strings)
+stop = ["<|im_end|>", "</s>"]
+
+# Token budget
+max_tokens = 2048
+ignore_eos = false
+
+# Sampler ordering (leave unset to use runtime default)
+# samplers         = ["top_k", "top_p", "temperature"]
+# sampler_sequence = "kpt"
+
+# Logit bias: token_id → bias delta (TOML inline table)
+# logit_bias = { "12345" = -2.0, "67890" = 1.5 }
+
+# Reasoning (for thinking models)
+reasoning_format  = "auto"   # auto none deepseek deepseek-legacy hidden
+reasoning_enabled = "auto"   # bool or "auto" / "on" / "off"
+reasoning_budget  = "auto"   # integer token budget, or "auto"
+
+# Chat template (leave unset to use model's embedded template)
+# chat_template      = "chatml"
+# chat_template_file = "/path/to.jinja"
+# jinja              = false
+# skip_chat_parsing  = false
+
+# System prompt injected at the start of every conversation
+# system_prompt = "You are a helpful assistant."
+
+# Schema-reserved (accepted, not yet wired):
+#   dry, xtc, adaptive  — advanced sampler bags
+#   backend_sampling    — raw backend sampling passthrough
+#   grammar, json_schema, logprobs
+#   prefill_assistant, chat_template_kwargs
+
+# --- Multimodal ----------------------------------------------------------
+[defaults.multimodal]
+mmproj           = "default-mmproj-f16.gguf"  # vision projector path or HF ref
+mmproj_offload   = "auto"                     # bool or "auto"
+image_min_tokens = 0
+image_max_tokens = 4096
+
+# Schema-reserved (accepted, not yet wired):
+#   mmproj_url  — projector URL source
+#   embeddings, reranking, pooling, vocoder
+
+# --- Advanced server (operational — reject most in model config) ---------
+[defaults.advanced.server]
+alias = "my-cluster"   # friendly name shown in /api/status
+# host, port, reuse_port, timeout, metrics, slots, props, and api_prefix are
+# operational or rejected here, not model-settings controls.
+
+# ===========================================================================
+# Per-model entries — each [[models]] block overrides specific defaults
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Example 1: GPU-heavy model with staged serving and speculative decoding
+# ---------------------------------------------------------------------------
 
 [[models]]
-model = "Qwen3-8B-Q4_K_M"
+model = "Qwen/Qwen3-8B:Q4_K_M"
+
+[models.model_fit]
+ctx_size        = 16384
+batch           = 1024
+ubatch           = 256
+cache_type_k    = "f16"
+cache_type_v    = "f16"
+kv_cache_policy = "quality"    # overrides global "balanced"
+flash_attention  = "on"
+prompt_cache     = true
+
+[models.model_fit.prefix_cache]
+enabled     = true
+max_entries = 128
+min_tokens  = 128
+
+[models.hardware]
+device            = "cuda:0"
+gpu_layers        = 99          # all layers on GPU
+fit_target_mib    = 22528       # 22 GiB target
+stage_layer_start = 0           # staged split: this node owns layers 0–15
+stage_layer_end   = 15
+split_mode        = "layer"
+tensor_split      = [0.6, 0.4]  # two-GPU split ratios
+main_gpu          = 0
+mmap              = true
+warmup            = true
+lora_adapters     = ["/adapters/qwen-chat-v2.gguf"]
+
+[models.throughput]
+parallel            = 4
+continuous_batching = true
+tuning_profile      = "throughput"
+threads             = 16
+threads_batch       = 8
+
+[models.skippy]
+activation_wire_dtype  = "f16"
+prefill_chunking       = "schedule"
+prefill_chunk_size     = 256
+prefill_chunk_schedule = "128,256,512,1024"
+
+[models.speculative]
+mode                   = "draft"
+draft_model_path       = "/models/qwen3-0.6b-q8.gguf"
+draft_selection_policy = "manual"
+pairing_fault          = "warn_disable"
+draft_max_tokens       = 8
+draft_gpu_layers       = 28
+draft_device           = "cuda:1"
+draft_cache_type_k     = "q8_0"
+draft_cache_type_v     = "q8_0"
+
+[models.request_defaults]
+temperature      = 0.7
+top_p            = 0.9
+repeat_penalty   = 1.05
+max_tokens       = 4096
+reasoning_format = "hidden"
+reasoning_budget = 512
+system_prompt    = "You are a helpful coding assistant."
+stop             = ["<|im_end|>"]
+
+[models.multimodal]
+mmproj           = "Qwen/Qwen2.5-VL-7B-Instruct-GGUF/mmproj-f16.gguf"
+mmproj_offload   = true
+image_max_tokens = 8192
+
+[models.advanced.server]
+alias = "qwen3-8b"
+
+# ---------------------------------------------------------------------------
+# Example 2: CPU-only small model, minimal config
+# ---------------------------------------------------------------------------
 
 [[models]]
-model = "bartowski/Qwen2.5-VL-7B-Instruct-GGUF/qwen2.5-vl-7b-instruct-q4_k_m.gguf"
-mmproj = "bartowski/Qwen2.5-VL-7B-Instruct-GGUF/mmproj-f16.gguf"
+model = "bartowski/gemma-3-1b-it-GGUF/gemma-3-1b-it-Q4_K_M.gguf"
+
+[models.hardware]
+model_runtime = "cpu"
+gpu_layers    = 0
+mmap          = true
+
+[models.model_fit]
+ctx_size = 4096
+batch    = 128
+ubatch   = 64
+
+[models.throughput]
+threads        = 4
+threads_batch  = 4
+tuning_profile = "saver"
+
+[models.request_defaults]
+temperature = 0.9
+max_tokens  = 512
+
+[models.advanced.server]
+alias = "gemma-tiny"
+
+# ---------------------------------------------------------------------------
+# Example 3: MoE model with CPU expert offload
+# ---------------------------------------------------------------------------
+
+[[models]]
+model = "bartowski/Mixtral-8x7B-Instruct-v0.1-GGUF/Mixtral-8x7B-Instruct-v0.1-Q4_K_M.gguf"
+
+[models.hardware]
+device         = "cuda:0"
+gpu_layers     = 32
+cpu_moe        = true
+n_cpu_moe      = 4             # route 4 experts to CPU
+split_mode     = "row"
+placement      = "auto"
+fit_target_mib = 20480
+
+[models.model_fit]
+ctx_size        = 8192
+kv_cache_policy = "saver"
+
+[models.throughput]
+parallel = 2
+threads  = 8
+
+[models.advanced.server]
+alias = "mixtral-8x7b"
+
+# ---------------------------------------------------------------------------
+# Example 4: Vision model from Hugging Face
+# ---------------------------------------------------------------------------
+
+[[models]]
+model = "Qwen/Qwen2.5-VL-7B-Instruct-GGUF/qwen2.5-vl-7b-instruct-q4_k_m.gguf"
+
+[models.hardware]
+hf_repo    = "Qwen/Qwen2.5-VL-7B-Instruct-GGUF"
+hf_file    = "qwen2.5-vl-7b-instruct-q4_k_m.gguf"
+device     = "cuda:0"
+gpu_layers = 99
+
+[models.multimodal]
+mmproj           = "bartowski/Qwen2.5-VL-7B-Instruct-GGUF/mmproj-f16.gguf"
+mmproj_offload   = true
+image_min_tokens = 16
+image_max_tokens = 16384
+
+[models.model_fit]
 ctx_size = 8192
 
+[models.advanced.server]
+alias = "qwen-vl"
+
+# ---------------------------------------------------------------------------
+# Plugin declarations
+# ---------------------------------------------------------------------------
+
 [[plugin]]
-name = "blackboard"
+name    = "blackboard"
 enabled = true
+
+# [[plugin]]
+# name    = "openai-endpoint"
+# url     = "http://localhost:8000/api/v1"
 ```
 
 Use the default config:
@@ -196,9 +625,25 @@ mesh-llm serve --config /path/to/config.toml
 
 Config precedence:
 
+- Request values override per-model config, which override `[defaults.*]`, which
+  override family or topology policy, which finally override built-in runtime
+  defaults.
+- Request defaults only fill missing or null request fields at the OpenAI
+  frontend boundary. Explicit request values win, and those defaults never
+  become `StageConfig`, runtime load structs, protobuf payloads, or lower-layer
+  runtime settings.
 - Explicit `--model` or `--gguf` ignores configured `[[models]]`.
-- Explicit `--ctx-size` overrides configured `ctx_size` for the selected startup models.
-- `mmproj` is optional and only used when that startup model needs a projector sidecar.
+- Explicit `--ctx-size` overrides configured `ctx_size` for the selected startup
+  models.
+- `mmproj` is optional and only used when that startup model needs a projector
+  sidecar.
+- `skippy.*` staged-serving controls stay staged-only. `activation_wire_dtype`,
+  prefill controls, speculative draft controls, and manual stage layer ranges
+  apply only when the model is started in staged mode.
+- `safety_margin_gb` resolves to `hardware.fit_target_mib` by subtracting the
+  reserved MiB from detected allocatable memory, and the derived target is not
+  written back into TOML.
+- Changing this file affects future starts or reloads, not active sessions.
 - Plugin entries stay in the same file.
 
 ## Lemonade integration

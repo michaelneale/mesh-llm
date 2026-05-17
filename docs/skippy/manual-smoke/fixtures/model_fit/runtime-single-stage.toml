@@ -1,0 +1,27 @@
+version = 1
+
+[defaults.model_fit]
+ctx_size = 256
+batch = 64
+ubatch = 16
+cache_type_k = "f16"
+cache_type_v = "f16"
+kv_cache_policy = "balanced"
+kv_offload = "auto"
+prompt_cache = true
+swa_full = false
+
+[defaults.model_fit.prefix_cache]
+enabled = true
+max_entries = 8
+max_bytes = 0
+min_tokens = 16
+shared_stride_tokens = 8
+shared_record_limit = 4
+payload_mode = "resident-kv"
+
+[[models]]
+model = "unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL"
+
+[models.hardware]
+model_path = "__LOCAL_MODEL_PATH__"

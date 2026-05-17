@@ -692,6 +692,7 @@ mod tests {
                 mmproj_ref: None,
             }],
             plugins: vec![],
+            config_toml: None,
         }
     }
 

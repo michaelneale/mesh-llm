@@ -37,6 +37,12 @@ pub use self::config::{
     TelemetryMetricsConfig,
 };
 pub(crate) use self::config::{telemetry_plugin_enabled, validate_config};
+#[allow(unused_imports)]
+pub(crate) use self::config::{
+    BoolOrAuto, HardwareConfig, IntegerOrString, ModelConfigDefaults, ModelFitConfig,
+    MultimodalConfig, ReasoningBudget, ReasoningEnabled, RequestDefaultsConfig, SkippyConfig,
+    SpeculativeConfig, StringOrStringList, ThroughputConfig,
+};
 use self::runtime::ExternalPlugin;
 pub(crate) use self::support::parse_optional_json;
 use self::support::{format_args_for_log, format_slice_for_log, format_tool_names_for_log};
@@ -1838,6 +1844,7 @@ mod tests {
                 args: Vec::new(),
                 url: None,
             }],
+            defaults: None,
             ..MeshConfig::default()
         };
         let resolved = resolve_plugins(&config, private_host_mode()).unwrap();
@@ -1857,6 +1864,7 @@ mod tests {
                 args: Vec::new(),
                 url: None,
             }],
+            defaults: None,
             ..MeshConfig::default()
         };
         let resolved = resolve_plugins(&config, private_host_mode()).unwrap();
@@ -1886,6 +1894,7 @@ mod tests {
                 args: Vec::new(),
                 url: None,
             }],
+            defaults: None,
             ..MeshConfig::default()
         };
 
@@ -1905,6 +1914,7 @@ mod tests {
                 args: Vec::new(),
                 url: None,
             }],
+            defaults: None,
             ..MeshConfig::default()
         };
 
@@ -1922,6 +1932,7 @@ mod tests {
                 args: Vec::new(),
                 url: Some("http://gpu-box:8000/v1".into()),
             }],
+            defaults: None,
             ..MeshConfig::default()
         };
         let resolved = resolve_plugins(&config, private_host_mode()).unwrap();
@@ -1945,6 +1956,7 @@ mod tests {
                 args: Vec::new(),
                 url: None,
             }],
+            defaults: None,
             ..MeshConfig::default()
         };
         let resolved = resolve_plugins(&config, private_host_mode()).unwrap();
@@ -1969,6 +1981,7 @@ mod tests {
                 args: Vec::new(),
                 url: None,
             }],
+            defaults: None,
             ..MeshConfig::default()
         };
         let result = resolve_plugins(&config, private_host_mode());
@@ -2107,6 +2120,7 @@ mod tests {
                 args: vec!["--flag".into()],
                 url: None,
             }],
+            defaults: None,
             ..MeshConfig::default()
         };
         let resolved = resolve_plugins(&config, private_host_mode()).unwrap();

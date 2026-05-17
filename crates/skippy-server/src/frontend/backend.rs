@@ -14,6 +14,7 @@ impl OpenAiBackend for StageOpenAiBackend {
         let request_timer = PhaseTimer::start();
         self.apply_before_chat_hooks(&mut request).await?;
         self.ensure_model(&request.model)?;
+        apply_chat_request_defaults(&mut request, &self.request_defaults);
         ensure_chat_runtime_features_supported(&request)?;
         let sampling = chat_sampling_config(&request)?;
         let template_options = chat_template_options(&request)?;
@@ -105,6 +106,7 @@ impl OpenAiBackend for StageOpenAiBackend {
         let ids = OpenAiGenerationIds::new(OpenAiCacheHints::from_chat_request(&request));
         self.apply_before_chat_hooks(&mut request).await?;
         self.ensure_model(&request.model)?;
+        apply_chat_request_defaults(&mut request, &self.request_defaults);
         ensure_chat_runtime_features_supported(&request)?;
         let sampling = chat_sampling_config(&request)?;
         let include_usage = request.include_usage();
@@ -151,10 +153,11 @@ impl OpenAiBackend for StageOpenAiBackend {
         })))
     }
 
-    async fn completion(&self, request: CompletionRequest) -> OpenAiResult<CompletionResponse> {
+    async fn completion(&self, mut request: CompletionRequest) -> OpenAiResult<CompletionResponse> {
         let ids = OpenAiGenerationIds::new(OpenAiCacheHints::from_completion_request(&request));
         let request_timer = PhaseTimer::start();
         self.ensure_model(&request.model)?;
+        apply_completion_request_defaults(&mut request, &self.request_defaults);
         ensure_completion_runtime_features_supported(&request)?;
         let sampling = completion_sampling_config(&request)?;
         let max_tokens =
@@ -226,11 +229,12 @@ impl OpenAiBackend for StageOpenAiBackend {
 
     async fn completion_stream(
         &self,
-        request: CompletionRequest,
+        mut request: CompletionRequest,
         context: OpenAiRequestContext,
     ) -> OpenAiResult<CompletionStream> {
         let ids = OpenAiGenerationIds::new(OpenAiCacheHints::from_completion_request(&request));
         self.ensure_model(&request.model)?;
+        apply_completion_request_defaults(&mut request, &self.request_defaults);
         ensure_completion_runtime_features_supported(&request)?;
         let sampling = completion_sampling_config(&request)?;
         let include_usage = request.include_usage();

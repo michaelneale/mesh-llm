@@ -1,0 +1,32 @@
+version = 1
+
+[defaults.request_defaults]
+typical_p = 0.9
+top_nsigma = 1.0
+dynatemp_range = 0.5
+dynatemp_exponent = 1.2
+mirostat_mode = 2
+mirostat_entropy = 5.0
+mirostat_learning_rate = 0.1
+samplers = ["temperature", "top_p"]
+sampler_sequence = "temperature,top_p"
+ignore_eos = true
+backend_sampling = true
+chat_template = "unsafe-template"
+chat_template_file = "unsafe-template.jinja"
+jinja = true
+skip_chat_parsing = true
+prefill_assistant = "Hello"
+system_prompt = "System"
+grammar = "root ::= 'x'"
+json_schema = { type = "object" }
+logprobs = true
+
+[defaults.request_defaults.dry]
+
+[defaults.request_defaults.xtc]
+
+[defaults.request_defaults.adaptive]
+
+[[models]]
+model = "unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL"

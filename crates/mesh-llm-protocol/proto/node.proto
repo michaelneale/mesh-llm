@@ -263,6 +263,7 @@ message NodeConfigSnapshot {
   NodeGpuConfig gpu = 2;
   repeated NodeModelEntry models = 3;
   repeated NodePluginEntry plugins = 4;
+  optional string config_toml = 5;        // canonical persisted config payload for additive owner-control roundtrip
 }
 
 enum GpuAssignment {

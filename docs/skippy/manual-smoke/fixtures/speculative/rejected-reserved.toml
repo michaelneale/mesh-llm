@@ -1,0 +1,20 @@
+version = 1
+
+[defaults.speculative]
+mode = "ngram"
+draft_hf_repo = "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
+draft_hf_file = "qwen2.5-0.5b-instruct-q4_k_m.gguf"
+draft_selection_policy = "auto"
+draft_min_tokens = 4
+draft_acceptance_threshold = 0.5
+draft_split_probability = 0.5
+draft_device = "CPU"
+draft_threads = 2
+draft_cache_type_k = "f16"
+draft_cache_type_v = "f16"
+ngram_min = 2
+ngram_max = 4
+spec_default = true
+
+[[models]]
+model = "unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL"

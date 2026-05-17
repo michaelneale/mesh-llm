@@ -1,0 +1,19 @@
+version = 1
+
+[defaults.throughput]
+parallel = 1
+continuous_batching = true
+threads = 4
+threads_batch = 2
+priority = 0
+poll = false
+cpu_affinity = "auto"
+numa = "disabled"
+slot_prompt_similarity = 0.0
+tuning_profile = "balanced"
+
+[[models]]
+model = "unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL"
+
+[models.hardware]
+model_path = "__LOCAL_MODEL_PATH__"

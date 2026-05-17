@@ -385,6 +385,10 @@ test-all:
     echo "=== 3/7 Rust tests ==="
     echo "--- mesh-llm ---"
     just with-lld cargo test -p mesh-llm
+    echo "--- mesh-llm-protocol ---"
+    just with-lld cargo test -p mesh-llm-protocol
+    echo "--- mesh-llm-client ---"
+    just with-lld cargo test -p mesh-llm-client
     echo "--- skippy-runtime lib ---"
     just with-lld cargo test -p skippy-runtime --lib
     echo ""

@@ -1363,6 +1363,7 @@ async fn control_plane_get_watch_apply_config() -> Result<()> {
             mmproj_ref: None,
         }],
         plugins: vec![],
+        config_toml: None,
     };
     write_len_prefixed(
         &mut apply_send,
@@ -1518,6 +1519,7 @@ async fn control_plane_watch_observes_apply_revision() -> Result<()> {
                         }),
                         models: vec![],
                         plugins: vec![],
+                        config_toml: None,
                     }),
                 }),
                 refresh_inventory: None,
@@ -1682,6 +1684,7 @@ async fn control_plane_watch_without_snapshot_observes_apply_revision() -> Resul
                         }),
                         models: vec![],
                         plugins: vec![],
+                        config_toml: None,
                     }),
                 }),
                 refresh_inventory: None,
@@ -1763,6 +1766,7 @@ async fn control_plane_apply_rejects_stale_revision() -> Result<()> {
                         mmproj_ref: None,
                     }],
                     plugins: vec![],
+                    config_toml: None,
                 }),
             }),
             refresh_inventory: None,
@@ -5161,6 +5165,7 @@ fn pinned_gpu_runtime_push_rejects_invalid_pushed_pinned_config_before_apply() {
             batch: None,
             ubatch: None,
             flash_attention: None,
+            ..Default::default()
         }],
         ..crate::plugin::MeshConfig::default()
     };
@@ -5207,6 +5212,7 @@ fn pinned_gpu_runtime_push_accepts_valid_pushed_pinned_config() {
             batch: None,
             ubatch: None,
             flash_attention: None,
+            ..Default::default()
         }],
         ..crate::plugin::MeshConfig::default()
     };
@@ -5249,6 +5255,7 @@ fn pinned_gpu_runtime_push_rejects_resolved_gpu_without_backend_device() {
             batch: None,
             ubatch: None,
             flash_attention: None,
+            ..Default::default()
         }],
         ..crate::plugin::MeshConfig::default()
     };

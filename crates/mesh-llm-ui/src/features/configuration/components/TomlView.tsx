@@ -142,13 +142,13 @@ function WarningItem({ kind, text }: TomlValidationWarning) {
 }
 
 const DEFAULT_VALIDATION_WARNINGS: TomlValidationWarning[] = [
-  { kind: 'ok', text: 'All pinned models have valid gpu_id targets.' },
+  { kind: 'ok', text: 'All local model entries use canonical nested model_fit and hardware sections.' },
   {
     kind: 'warn',
     text: 'carrack · GPU 0 · GLM-4.7-Flash will exceed 80% VRAM at 16K context. Consider 8K or moving to GPU 1.'
   },
-  { kind: 'ok', text: 'Plugin endpoint http://localhost:8000/v1 is reachable.' },
-  { kind: 'info', text: 'Flash attention is on by default, no per-model override emitted.' }
+  { kind: 'ok', text: 'Remote nodes remain read-only context and are excluded from the saved TOML preview.' },
+  { kind: 'info', text: 'Request defaults merge at request time, explicit request payload fields still win.' }
 ]
 
 function ValidationPanel({ warnings, className }: { warnings?: TomlValidationWarning[]; className?: string }) {

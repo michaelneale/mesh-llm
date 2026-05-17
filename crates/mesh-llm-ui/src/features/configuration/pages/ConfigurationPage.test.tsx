@@ -174,11 +174,12 @@ describe('ConfigurationPage', () => {
     expect(screen.queryByRole('heading', { name: 'Backend' })).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Memory' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Speculative Decoding' })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Reasoning' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Request Defaults' })).toBeInTheDocument()
     expect(screen.getByText('Model Runtime')).toBeInTheDocument()
     expect(screen.getByText('KV cache policy')).toBeInTheDocument()
     expect(screen.getByText('Memory / safety margin')).toBeInTheDocument()
     expect(screen.getByText('Reasoning format')).toBeInTheDocument()
+    expect(screen.getByText('Temperature')).toBeInTheDocument()
   })
 
   it('includes Defaults edits in dirty state, save, revert, and TOML review', async () => {
@@ -237,6 +238,7 @@ describe('ConfigurationPage', () => {
     expect(screen.getByRole('button', { name: /save config/i })).toBeEnabled()
 
     await user.click(screen.getByRole('tab', { name: 'TOML Output' }))
+    expect(getTomlSource().value).toContain('[defaults.throughput]')
     expect(getTomlSource().value).toContain('parallel = 12')
   })
 
@@ -304,35 +306,40 @@ describe('ConfigurationPage', () => {
     expect(screen.getByText('Incompatible pairing behavior')).toBeInTheDocument()
 
     const modeControl = within(screen.getByRole('radiogroup', { name: 'Default speculation mode' }))
+    const draftPolicyControl = within(screen.getByRole('radiogroup', { name: 'Default draft selection policy' }))
     const pairingBehaviorControl = within(screen.getByRole('radiogroup', { name: 'Incompatible pairing behavior' }))
     const defaultsPreview = screen.getByRole('complementary', { name: /\[defaults\]/i })
-    expect(modeControl.getByRole('radio', { name: 'draft model' })).toBeChecked()
-    expect(modeControl.getByRole('radio', { name: 'off' })).toBeInTheDocument()
-    expect(defaultsPreview).toHaveTextContent('pairing_fault = "warn_disable"')
-
-    await user.click(pairingBehaviorControl.getByRole('radio', { name: 'Fail Launch' }))
-    expect(pairingBehaviorControl.getByRole('radio', { name: 'Fail Launch' })).toBeChecked()
-    expect(defaultsPreview).toHaveTextContent('pairing_fault = "fail_launch"')
-    await user.click(modeControl.getByRole('radio', { name: 'n-gram' }))
+    expect(modeControl.getByRole('radio', { name: 'auto' })).toBeChecked()
+    expect(modeControl.getByRole('radio', { name: 'disabled' })).toBeInTheDocument()
     expect(defaultsPreview).not.toHaveTextContent('pairing_fault')
+    expect(defaultsPreview).not.toHaveTextContent('draft_selection_policy')
+
+    await user.click(modeControl.getByRole('radio', { name: 'draft' }))
+    expect(draftPolicyControl.getByRole('radio', { name: 'auto' })).not.toBeDisabled()
+    await user.click(pairingBehaviorControl.getByRole('radio', { name: 'Fail launch' }))
+    expect(pairingBehaviorControl.getByRole('radio', { name: 'Fail launch' })).toBeChecked()
+    expect(defaultsPreview).toHaveTextContent('pairing_fault = "fail_closed"')
     fireEvent.change(screen.getByRole('slider', { name: 'Default draft max tokens' }), { target: { value: '32' } })
 
     await user.click(screen.getByRole('tab', { name: 'TOML Output' }))
-    expect(getTomlSource().value).toContain('[defaults.speculative_decoding]')
+    expect(getTomlSource().value).toContain('[defaults.speculative]')
     expect(getTomlSource().value).not.toContain('enabled =')
-    expect(getTomlSource().value).toContain('mode = "ngram"')
+    expect(getTomlSource().value).toContain('mode = "draft"')
     expect(getTomlSource().value).toContain('draft_selection_policy = "auto"')
     expect(getTomlSource().value).toContain('draft_max_tokens = 32')
-    expect(getTomlSource().value).not.toContain('pairing_fault')
+    expect(getTomlSource().value).toContain('pairing_fault = "fail_closed"')
     expect(getTomlSource().value).not.toMatch(/^pairing_behavior =/m)
     expect(getTomlSource().value).not.toContain('incompatible_pairing_behavior')
     expect(getTomlSource().value).toContain('model_runtime = "cuda"')
+    expect(getTomlSource().value).toContain('[defaults.request_defaults]')
+    expect(getTomlSource().value).toContain('temperature = 0.70')
+    expect(getTomlSource().value).toContain('reasoning_format = "auto"')
     expect(getTomlSource().value).not.toContain('llama_flavor')
     expect(getTomlSource().value).not.toContain('allow_cpu_speculation')
     expect(getTomlSource().value).not.toContain('diagnostics =')
   })
 
-  it('disables draft speculative decoding controls unless mode is draft model', async () => {
+  it('disables draft speculative decoding controls unless mode is draft', async () => {
     const user = userEvent.setup()
 
     render(<ConfigurationPage enableNavigationBlocker={false} />)
@@ -349,18 +356,16 @@ describe('ConfigurationPage', () => {
     expect(draftPolicyControl.queryByRole('radio', { name: 'Auto-detect' })).not.toBeInTheDocument()
     expect(draftPolicyControl.getByRole('radio', { name: 'auto' })).toBeChecked()
     expect(pairingBehaviorControl.getByRole('radio', { name: 'Warn & Disable' })).toBeChecked()
-    expect(pairingBehaviorControl.getByRole('radio', { name: 'Fail Launch' })).toBeInTheDocument()
+    expect(pairingBehaviorControl.getByRole('radio', { name: 'Fail launch' })).toBeInTheDocument()
 
-    await user.click(modeControl.getByRole('radio', { name: 'off' }))
+    await user.click(modeControl.getByRole('radio', { name: 'disabled' }))
 
-    expect(modeControl.getByRole('radio', { name: 'off' })).toBeChecked()
-    expect(modeControl.getByRole('radio', { name: 'draft model' })).not.toBeDisabled()
+    expect(modeControl.getByRole('radio', { name: 'disabled' })).toBeChecked()
+    expect(modeControl.getByRole('radio', { name: 'draft' })).not.toBeDisabled()
     expect(draftPolicyControl.getByRole('radio', { name: 'auto' })).toBeDisabled()
     expect(pairingBehaviorControl.getByRole('radio', { name: 'Warn & Disable' })).toBeDisabled()
-    expect(pairingBehaviorControl.getByRole('radio', { name: 'Fail Launch' })).toBeDisabled()
+    expect(pairingBehaviorControl.getByRole('radio', { name: 'Fail launch' })).toBeDisabled()
     expect(screen.getByRole('slider', { name: 'Default draft max tokens' })).toBeDisabled()
-    expect(screen.getByRole('slider', { name: 'Default draft minimum tokens' })).toBeDisabled()
-    expect(screen.getByRole('slider', { name: 'Default draft acceptance threshold' })).toBeDisabled()
     expect(screen.queryByRole('radiogroup', { name: 'Allow CPU speculation' })).not.toBeInTheDocument()
 
     await user.click(modeControl.getByRole('radio', { name: 'n-gram' }))
@@ -368,7 +373,7 @@ describe('ConfigurationPage', () => {
     expect(pairingBehaviorControl.getByRole('radio', { name: 'Warn & Disable' })).toBeDisabled()
     expect(screen.getByRole('slider', { name: 'Default draft max tokens' })).toBeDisabled()
 
-    await user.click(modeControl.getByRole('radio', { name: 'draft model' }))
+    await user.click(modeControl.getByRole('radio', { name: 'draft' }))
     expect(draftPolicyControl.getByRole('radio', { name: 'auto' })).not.toBeDisabled()
     expect(pairingBehaviorControl.getByRole('radio', { name: 'Warn & Disable' })).not.toBeDisabled()
     expect(screen.getByRole('slider', { name: 'Default draft max tokens' })).not.toBeDisabled()
@@ -388,7 +393,8 @@ describe('ConfigurationPage', () => {
     expect(screen.queryByRole('textbox', { name: /configuration toml source/i })).not.toBeInTheDocument()
 
     const tomlSource = await openTomlOutput(user)
-    expect(tomlSource.value).toContain('hostname = "carrack"')
+    expect(tomlSource.value).toContain('version = 1')
+    expect(tomlSource.value).toContain('model = "GLM-4.7-Flash-Q4_K_M"')
     expect(tomlSource.value).not.toContain('perseus.local')
     expect(tomlSource.value).not.toContain('triton.lab')
   })
@@ -642,12 +648,12 @@ describe('ConfigurationPage', () => {
     expect(screen.getByRole('button', { name: /phi-4-mini, .* weights/i })).toBeInTheDocument()
     expect(saveButton).toBeEnabled()
     await openTomlOutput(user)
-    expect(countTomlOccurrences('placement = "pooled"')).toBe(1)
+    expect(countTomlOccurrences('[models.hardware]')).toBe(0)
 
     const revertEvent = await dispatchShortcut('x', { ctrlKey: true })
     expect(revertEvent.defaultPrevented).toBe(true)
     expect(saveButton).toBeDisabled()
-    expect(countTomlOccurrences('placement = "pooled"')).toBe(1)
+    expect(countTomlOccurrences('[models.hardware]')).toBe(0)
     expect(screen.queryByRole('button', { name: /phi-4-mini, .* weights/i })).not.toBeInTheDocument()
   })
 
@@ -685,13 +691,13 @@ describe('ConfigurationPage', () => {
 
     await user.click(within(getCarrackSection()).getByRole('radio', { name: 'pooled' }))
     await openTomlOutput(user)
-    expect(countTomlOccurrences('placement = "pooled"')).toBe(1)
+    expect(countTomlOccurrences('[models.hardware]')).toBe(0)
 
     await dispatchShortcut('z', { ctrlKey: true })
-    expect(countTomlOccurrences('placement = "pooled"')).toBe(0)
+    expect(countTomlOccurrences('[models.hardware]')).toBe(4)
 
     await dispatchShortcut('r', { ctrlKey: true })
-    expect(countTomlOccurrences('placement = "pooled"')).toBe(1)
+    expect(countTomlOccurrences('[models.hardware]')).toBe(0)
   })
 
   it('does not consume plain s when the selected node is already separate', async () => {
@@ -703,8 +709,7 @@ describe('ConfigurationPage', () => {
 
     expect(shortcutEvent.defaultPrevented).toBe(false)
     await openTomlOutput(user)
-    expect(countTomlOccurrences('placement = "separate"')).toBe(1)
-    expect(countTomlOccurrences('placement = "pooled"')).toBe(0)
+    expect(countTomlOccurrences('[models.hardware]')).toBe(4)
   })
 
   it('shows the navigation blocker only when enabled and there are unsaved changes', async () => {
