@@ -1896,9 +1896,11 @@ alias = "model-alias"
             ..Default::default()
         };
         config.extra = toml::from_str(
-            r#"[defaults.model_fit]
+            r#"[defaults.throughput]
 parallel = 6
-flash_attention = "off"
+
+[defaults.model_fit]
+flash_attention = "disabled"
 
 [defaults.request_defaults]
 reasoning_format = "qwen"
@@ -1920,9 +1922,17 @@ reasoning_format = "qwen"
             restored
                 .extra
                 .get("defaults")
-                .and_then(|defaults| defaults.get("model_fit"))
-                .and_then(|model_fit| model_fit.get("parallel"))
-                .and_then(toml::Value::as_integer),
+                .and_then(|defaults| defaults.get("throughput"))
+                .and_then(|throughput| throughput.get("parallel"))
+                .and_then(toml::Value::as_integer)
+                .or_else(|| {
+                    restored
+                        .defaults
+                        .as_ref()
+                        .and_then(|defaults| defaults.throughput.as_ref())
+                        .and_then(|throughput| throughput.parallel)
+                        .map(|parallel| parallel as i64)
+                }),
             Some(6)
         );
         assert_eq!(
@@ -1931,7 +1941,14 @@ reasoning_format = "qwen"
                 .get("defaults")
                 .and_then(|defaults| defaults.get("request_defaults"))
                 .and_then(|request_defaults| request_defaults.get("reasoning_format"))
-                .and_then(toml::Value::as_str),
+                .and_then(toml::Value::as_str)
+                .or_else(|| {
+                    restored
+                        .defaults
+                        .as_ref()
+                        .and_then(|defaults| defaults.request_defaults.as_ref())
+                        .and_then(|request_defaults| request_defaults.reasoning_format.as_deref())
+                }),
             Some("qwen")
         );
     }

@@ -428,8 +428,10 @@ alias = "model-alias"
             &config_path,
             r#"version = 1
 
-[defaults.model_fit]
+[defaults.throughput]
 parallel = 2
+
+[defaults.model_fit]
 flash_attention = "auto"
 
 [defaults.request_defaults]
@@ -441,9 +443,11 @@ reasoning_format = "deepseek"
         let mut state = ConfigState::load(&config_path).expect("load baseline config");
         let mut config = minimal_valid_config();
         config.extra = toml::from_str(
-            r#"[defaults.model_fit]
+            r#"[defaults.throughput]
 parallel = 6
-flash_attention = "off"
+
+[defaults.model_fit]
+flash_attention = "disabled"
 
 [defaults.request_defaults]
 reasoning_format = "qwen"
@@ -469,8 +473,8 @@ reasoning_format = "qwen"
         assert_eq!(
             written
                 .get("defaults")
-                .and_then(|defaults| defaults.get("model_fit"))
-                .and_then(|model_fit| model_fit.get("parallel"))
+                .and_then(|defaults| defaults.get("throughput"))
+                .and_then(|throughput| throughput.get("parallel"))
                 .and_then(toml::Value::as_integer),
             Some(6)
         );
@@ -480,7 +484,7 @@ reasoning_format = "qwen"
                 .and_then(|defaults| defaults.get("model_fit"))
                 .and_then(|model_fit| model_fit.get("flash_attention"))
                 .and_then(toml::Value::as_str),
-            Some("off")
+            Some("disabled")
         );
         assert_eq!(
             written
