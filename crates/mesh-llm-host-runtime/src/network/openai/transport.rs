@@ -12,6 +12,7 @@ use crate::network::openai::response_adapter;
 use crate::network::router;
 use crate::plugin;
 use anyhow::{anyhow, bail, Context, Result};
+use mesh_mixture_of_agents as moa;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use std::collections::HashMap;
@@ -2456,13 +2457,25 @@ pub async fn handle_mesh_request(
         }
     }
 
+    // MoA routing directive: `model: "mesh"` is not a real model — it's a
+    // request for mixture-of-agents fan-out.  MoA orchestration runs on
+    // serving hosts (their api_proxy has the MoA intercept).  Client and
+    // standby nodes that arrive here just forward the request verbatim to any
+    // serving host and let that host fan out.  Skip the per-model host lookup
+    // (no host advertises "mesh") and let the body rewrite earlier skip too
+    // (effective_model == request.model_name == "mesh", so it's already a
+    // no-op).  The host's api_proxy sees the literal "mesh" model name.
+    let is_moa_request = effective_model.as_deref() == Some(moa::VIRTUAL_MODEL_NAME);
+
     // Resolve target hosts by model name
-    let target_hosts = if let Some(ref name) = effective_model {
+    let target_hosts = if is_moa_request {
+        vec![]
+    } else if let Some(ref name) = effective_model {
         node.hosts_for_model(name).await
     } else {
         vec![]
     };
-    let target_hosts = if target_hosts.is_empty() && effective_model.is_some() {
+    let target_hosts = if target_hosts.is_empty() && effective_model.is_some() && !is_moa_request {
         // Named model requested but no host serves it — tell the agent to retry.
         let model = effective_model.as_deref().unwrap();
         node.record_routed_request(
