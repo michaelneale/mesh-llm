@@ -374,45 +374,71 @@ async fn handle_tool_result(
     allowed_tools: &[String],
     start: Instant,
 ) -> TurnResult {
-    let (reducer_name, reducer_backend_idx) = pick_reducer(config);
-    tracing::info!("moa: tool result → reducer only ({reducer_name})");
-
+    let candidates = reducer_candidates(config);
     let (messages, tools) = context::pack_for_tool_result_turn(session, has_tools);
-    let backend = &*config.backends[reducer_backend_idx];
 
-    let result = call_backend(
-        backend,
-        &reducer_name,
-        &messages,
-        tools.as_ref(),
-        2048,
-        config.reducer_timeout,
-        SamplingParams::reducer(),
-    )
-    .await;
+    // Try each big-tier reducer in order; on 5xx / timeout, fall through to
+    // the next candidate. This rescues the tool-result turn when the first
+    // strong peer is broken (e.g. stale binary that 502s on tool grammars).
+    let mut last_err: Option<String> = None;
+    let mut chosen: Option<(String, normalize::WorkerOutput)> = None;
+    let mut attempts = 0usize;
+    for (reducer_name, reducer_backend_idx) in &candidates {
+        attempts += 1;
+        tracing::info!(
+            "moa: tool result → reducer {reducer_name} (attempt {attempts}/{})",
+            candidates.len()
+        );
+        let backend = &*config.backends[*reducer_backend_idx];
+        match call_backend(
+            backend,
+            reducer_name,
+            &messages,
+            tools.as_ref(),
+            2048,
+            config.reducer_timeout,
+            SamplingParams::reducer(),
+        )
+        .await
+        {
+            Ok(text) => {
+                let mut reduced =
+                    normalize::normalize_worker_output(&text, reducer_name, WorkerRole::Reducer, 0);
+                enforce_allowed_tools(&mut reduced, allowed_tools, reducer_name);
+                chosen = Some((reducer_name.clone(), reduced));
+                break;
+            }
+            Err(e) => {
+                tracing::warn!("moa: reducer {reducer_name} failed: {e}, trying next");
+                last_err = Some(e);
+            }
+        }
+    }
 
-    let succeeded = result.is_ok();
-    let response_body = match result {
-        Ok(text) => {
-            let mut reduced =
-                normalize::normalize_worker_output(&text, &reducer_name, WorkerRole::Reducer, 0);
-            enforce_allowed_tools(&mut reduced, allowed_tools, &reducer_name);
-            match reduced.kind {
+    let (reducer_name, succeeded, response_body) = match chosen {
+        Some((name, reduced)) => {
+            let body = match reduced.kind {
                 normalize::OutputKind::ToolProposal => {
-                    if let (Some(name), Some(args)) =
+                    if let (Some(tname), Some(args)) =
                         (reduced.tool_name.as_ref(), reduced.tool_arguments.as_ref())
                     {
-                        tool_call_response(name, args)
+                        tool_call_response(tname, args)
                     } else {
                         chat_response(&reduced.payload)
                     }
                 }
                 _ => chat_response(&reduced.payload),
-            }
+            };
+            (name, true, body)
         }
-        Err(e) => {
-            tracing::warn!("moa: reducer failed: {e}");
-            error_response(&format!("Reducer failed: {e}"))
+        None => {
+            let err = last_err.unwrap_or_else(|| "no reducer candidates".into());
+            tracing::warn!("moa: all {attempts} reducer candidates failed");
+            (
+                candidates.first().map(|c| c.0.clone()).unwrap_or_default(),
+                false,
+                error_response(&format!("Reducer failed (tried {attempts}): {err}")),
+            )
         }
     };
 
@@ -448,44 +474,61 @@ async fn resolve_decision(
         }
         arbiter::Decision::NeedsReducer { reason } => {
             tracing::info!("moa: reducer — {reason}");
-            let (reducer_name, reducer_backend_idx) = pick_reducer(config);
+            let candidates = reducer_candidates(config);
             let (messages, tools) = context::pack_for_reducer(session, outputs, &reason, has_tools);
-            let backend = &*config.backends[reducer_backend_idx];
 
-            match call_backend(
-                backend,
-                &reducer_name,
-                &messages,
-                tools.as_ref(),
-                2048,
-                config.reducer_timeout,
-                SamplingParams::reducer(),
-            )
-            .await
-            {
-                Ok(text) => {
-                    let mut reduced = normalize::normalize_worker_output(
-                        &text,
-                        &reducer_name,
-                        WorkerRole::Reducer,
-                        0,
-                    );
-                    enforce_allowed_tools(&mut reduced, allowed_tools, &reducer_name);
-                    match reduced.kind {
-                        normalize::OutputKind::ToolProposal => {
-                            if let (Some(name), Some(args)) =
-                                (reduced.tool_name.as_ref(), reduced.tool_arguments.as_ref())
-                            {
-                                (tool_call_response(name, args), true)
-                            } else {
-                                (chat_response(&reduced.payload), true)
-                            }
-                        }
-                        _ => (chat_response(&reduced.payload), true),
+            // Try each big-tier reducer in order; on 5xx / timeout fall
+            // through to the next. If all candidates fail we fall back to
+            // the best worker output we already have.
+            let mut chosen: Option<normalize::WorkerOutput> = None;
+            for (reducer_name, reducer_backend_idx) in &candidates {
+                tracing::info!("moa: reducer attempt → {reducer_name}");
+                let backend = &*config.backends[*reducer_backend_idx];
+                match call_backend(
+                    backend,
+                    reducer_name,
+                    &messages,
+                    tools.as_ref(),
+                    2048,
+                    config.reducer_timeout,
+                    SamplingParams::reducer(),
+                )
+                .await
+                {
+                    Ok(text) => {
+                        let mut reduced = normalize::normalize_worker_output(
+                            &text,
+                            reducer_name,
+                            WorkerRole::Reducer,
+                            0,
+                        );
+                        enforce_allowed_tools(&mut reduced, allowed_tools, reducer_name);
+                        chosen = Some(reduced);
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "moa: reducer {reducer_name} failed: {e}, trying next candidate"
+                        );
                     }
                 }
-                Err(e) => {
-                    tracing::warn!("moa: reducer failed: {e}, using best worker");
+            }
+
+            match chosen {
+                Some(reduced) => match reduced.kind {
+                    normalize::OutputKind::ToolProposal => {
+                        if let (Some(name), Some(args)) =
+                            (reduced.tool_name.as_ref(), reduced.tool_arguments.as_ref())
+                        {
+                            (tool_call_response(&name, args), true)
+                        } else {
+                            (chat_response(&reduced.payload), true)
+                        }
+                    }
+                    _ => (chat_response(&reduced.payload), true),
+                },
+                None => {
+                    tracing::warn!("moa: all reducer candidates failed, using best worker");
                     (chat_response(&best_answer(outputs)), false)
                 }
             }
@@ -494,12 +537,28 @@ async fn resolve_decision(
 }
 
 /// Pick the reducer — prefers first model (typically local, zero RTT).
-fn pick_reducer(config: &GatewayConfig) -> (String, usize) {
-    config
-        .models
-        .first()
-        .map(|m| (m.name.clone(), m.backend_index))
-        .unwrap_or_else(|| ("unknown".into(), 0))
+/// Reducer candidates in priority order: big-tier models first (multi-
+/// digit B, or names with no size like MiniMax), then small-tier models
+/// as last-resort fallback. Callers should try each in order and stop
+/// on the first that succeeds, so a broken big-tier peer (e.g. a peer
+/// running a stale binary that 502s on tool calls) doesn't take down
+/// the whole reducer step.
+fn reducer_candidates(config: &GatewayConfig) -> Vec<(String, usize)> {
+    let mut big = Vec::new();
+    let mut small = Vec::new();
+    for m in &config.models {
+        let entry = (m.name.clone(), m.backend_index);
+        if worker::is_single_digit_b_name(&m.name) {
+            small.push(entry);
+        } else {
+            big.push(entry);
+        }
+    }
+    big.extend(small);
+    if big.is_empty() {
+        big.push(("unknown".into(), 0));
+    }
+    big
 }
 
 // ─── Backend call + text extraction ──────────────────────────────────
