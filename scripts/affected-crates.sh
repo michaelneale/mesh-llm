@@ -18,7 +18,7 @@ WORKSPACE_MEMBERS=(
   "mesh-llm-types"
   "mesh-llm-ui"
   "mesh-llm-plugin"
-  "mesh-client"
+  "mesh-llm-client"
   "spec-prefill-poc"
   "mesh-api"
   "mesh-host-core"
