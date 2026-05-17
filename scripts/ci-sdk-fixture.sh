@@ -44,7 +44,6 @@ fi
     --log-format json \
     serve \
     --model "$MODEL" \
-    --no-draft \
     --device CPU \
     --ctx-size "${MESH_SDK_CTX_SIZE:-256}" \
     --port "$API_PORT" \

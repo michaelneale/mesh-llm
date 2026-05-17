@@ -922,7 +922,7 @@ run_local_direction() {
 
     local server_args=(--headless --port "$server_api" --console "$server_console" --bind-port "$server_bind")
     if [[ -n "$model" ]]; then
-        server_args+=(--model "$model" --no-draft --device CPU --ctx-size "$CTX_SIZE")
+        server_args+=(--model "$model" --device CPU --ctx-size "$CTX_SIZE")
     fi
 
     local server_pid

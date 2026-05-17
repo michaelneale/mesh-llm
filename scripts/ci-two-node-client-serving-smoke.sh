@@ -87,7 +87,6 @@ trap cleanup EXIT
     --log-format json \
     serve \
     --model "$MODEL" \
-    --no-draft \
     --device CPU \
     --ctx-size "${MESH_TWO_NODE_CTX_SIZE:-1024}" \
     --port "$HOST_API_PORT" \
