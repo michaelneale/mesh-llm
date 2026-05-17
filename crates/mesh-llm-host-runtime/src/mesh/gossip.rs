@@ -36,6 +36,7 @@ pub(super) fn peer_meaningfully_changed(old: &PeerInfo, new: &PeerInfo) -> bool 
         || old.served_model_descriptors != new.served_model_descriptors
         || old.served_model_runtime != new.served_model_runtime
         || old.artifact_transfer_supported != new.artifact_transfer_supported
+        || old.stage_protocol_generation_supported != new.stage_protocol_generation_supported
         || old.stage_status_list_supported != new.stage_status_list_supported
         || old.version != new.version
         || old.owner_summary != new.owner_summary
@@ -111,6 +112,7 @@ pub(super) fn apply_transitive_ann(
     existing.served_model_descriptors = ann.served_model_descriptors.clone();
     existing.served_model_runtime = ann.served_model_runtime.clone();
     existing.artifact_transfer_supported = ann.artifact_transfer_supported;
+    existing.stage_protocol_generation_supported = ann.stage_protocol_generation_supported;
     existing.stage_status_list_supported = ann.stage_status_list_supported;
     if ann.experts_summary.is_some() {
         existing.experts_summary = ann.experts_summary.clone();
@@ -486,6 +488,8 @@ impl Node {
             existing.owner_summary = owner_summary.clone();
             existing.served_model_descriptors = ann.served_model_descriptors.clone();
             existing.served_model_runtime = ann.served_model_runtime.clone();
+            existing.artifact_transfer_supported = ann.artifact_transfer_supported;
+            existing.stage_protocol_generation_supported = ann.stage_protocol_generation_supported;
             existing.stage_status_list_supported = ann.stage_status_list_supported;
             if ann.version.is_some() {
                 existing.version = ann.version.clone();
@@ -713,6 +717,7 @@ impl Node {
                         served_model_runtime: p.served_model_runtime.clone(),
                         owner_attestation: p.owner_attestation.clone(),
                         artifact_transfer_supported: p.artifact_transfer_supported,
+                        stage_protocol_generation_supported: p.stage_protocol_generation_supported,
                         stage_status_list_supported: p.stage_status_list_supported,
                         latency_ms: latency.latency_ms,
                         latency_source: Some(match latency.source {
@@ -795,6 +800,7 @@ impl Node {
             owner_attestation: my_owner_attestation,
             artifact_transfer_supported:
                 crate::models::artifact_transfer::artifact_transfer_advertised(&my_owner_summary),
+            stage_protocol_generation_supported: true,
             stage_status_list_supported: true,
             latency_ms: None,
             latency_source: None,
@@ -854,6 +860,7 @@ mod tests {
             served_model_runtime: vec![],
             owner_attestation: None,
             artifact_transfer_supported: true,
+            stage_protocol_generation_supported: true,
             stage_status_list_supported: true,
             latency_ms: None,
             latency_source: None,
@@ -973,6 +980,16 @@ mod tests {
     }
 
     #[test]
+    fn test_meaningfully_changed_stage_protocol_generation_support() {
+        let old_peer = test_peer(Some(100));
+        let mut new_peer = test_peer(Some(100));
+        new_peer.stage_protocol_generation_supported =
+            !old_peer.stage_protocol_generation_supported;
+
+        assert!(peer_meaningfully_changed(&old_peer, &new_peer));
+    }
+
+    #[test]
     fn test_apply_transitive_ann_refreshes_explicit_model_interests() {
         let mut existing = test_peer(Some(100));
         let mut ann = test_announcement(Some(100));
@@ -1008,6 +1025,23 @@ mod tests {
         assert!(existing.stage_status_list_supported);
     }
 
+    #[test]
+    fn test_apply_transitive_ann_refreshes_stage_protocol_generation_support() {
+        let mut existing = test_peer(Some(100));
+        existing.stage_protocol_generation_supported = false;
+        let mut ann = test_announcement(Some(100));
+        ann.stage_protocol_generation_supported = true;
+
+        apply_transitive_ann(
+            &mut existing,
+            &test_addr(0x33),
+            &ann,
+            test_endpoint_id(0xee),
+        );
+
+        assert!(existing.stage_protocol_generation_supported);
+    }
+
     #[tokio::test]
     async fn test_add_peer_refreshes_stage_status_list_support() {
         let node = Node::new_for_tests(NodeRole::Worker).await.unwrap();
@@ -1023,6 +1057,23 @@ mod tests {
         let state = node.state.lock().await;
         let peer = state.peers.get(&peer_id).expect("peer should be tracked");
         assert!(peer.stage_status_list_supported);
+    }
+
+    #[tokio::test]
+    async fn test_add_peer_refreshes_stage_protocol_generation_support() {
+        let node = Node::new_for_tests(NodeRole::Worker).await.unwrap();
+        let peer_id = test_endpoint_id(0x45);
+        let addr = test_addr(0x45);
+        let mut ann = test_announcement(Some(100));
+        ann.stage_protocol_generation_supported = false;
+
+        node.add_peer(peer_id, addr.clone(), &ann).await;
+        ann.stage_protocol_generation_supported = true;
+        node.add_peer(peer_id, addr, &ann).await;
+
+        let state = node.state.lock().await;
+        let peer = state.peers.get(&peer_id).expect("peer should be tracked");
+        assert!(peer.stage_protocol_generation_supported);
     }
 
     #[tokio::test]

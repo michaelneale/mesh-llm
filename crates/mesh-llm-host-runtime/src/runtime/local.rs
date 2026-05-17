@@ -875,6 +875,7 @@ pub(super) enum SplitParticipantExclusionReason {
     Client,
     MissingVram,
     MissingModelInterest,
+    StageProtocolGeneration,
     MissingModelSource,
 }
 
@@ -884,6 +885,7 @@ impl SplitParticipantExclusionReason {
             Self::Client => "client",
             Self::MissingVram => "missing_vram",
             Self::MissingModelInterest => "missing_model_interest",
+            Self::StageProtocolGeneration => "stage_protocol_generation",
             Self::MissingModelSource => "missing_model_source",
         }
     }
@@ -2133,38 +2135,10 @@ async fn collect_split_participants(
     )];
     let mut excluded = Vec::new();
     for peer in node.peers().await {
-        if matches!(peer.role, NodeRole::Client) {
+        if let Some(reason) = split_peer_preflight_exclusion_reason(&peer, model_name, model_ref) {
             excluded.push(SplitParticipantExclusion {
                 node_id: peer.id,
-                reason: SplitParticipantExclusionReason::Client,
-            });
-            continue;
-        }
-        if peer.vram_bytes == 0 {
-            excluded.push(SplitParticipantExclusion {
-                node_id: peer.id,
-                reason: SplitParticipantExclusionReason::MissingVram,
-            });
-            continue;
-        }
-        let wants_model = peer
-            .requested_models
-            .iter()
-            .any(|model| model == model_name)
-            || peer.routes_model(model_ref)
-            || peer.serving_models.iter().any(|model| model == model_name)
-            || peer
-                .available_models
-                .iter()
-                .any(|model| model == model_name)
-            || peer
-                .explicit_model_interests
-                .iter()
-                .any(|model| model == model_ref);
-        if !wants_model {
-            excluded.push(SplitParticipantExclusion {
-                node_id: peer.id,
-                reason: SplitParticipantExclusionReason::MissingModelInterest,
+                reason,
             });
             continue;
         }
@@ -2203,6 +2177,55 @@ async fn collect_split_participants(
         participants,
         excluded,
     }
+}
+
+fn split_peer_preflight_exclusion_reason(
+    peer: &mesh::PeerInfo,
+    model_name: &str,
+    model_ref: &str,
+) -> Option<SplitParticipantExclusionReason> {
+    if let Some(reason) = split_peer_stage_host_exclusion_reason(peer) {
+        return Some(reason);
+    }
+    if !split_peer_wants_model(peer, model_name, model_ref) {
+        return Some(SplitParticipantExclusionReason::MissingModelInterest);
+    }
+    if !peer.stage_protocol_generation_supported {
+        return Some(SplitParticipantExclusionReason::StageProtocolGeneration);
+    }
+    None
+}
+
+fn split_peer_stage_host_exclusion_reason(
+    peer: &mesh::PeerInfo,
+) -> Option<SplitParticipantExclusionReason> {
+    if !split_peer_can_run_stage_runtime(peer) {
+        return Some(SplitParticipantExclusionReason::Client);
+    }
+    if peer.vram_bytes == 0 {
+        return Some(SplitParticipantExclusionReason::MissingVram);
+    }
+    None
+}
+
+fn split_peer_can_run_stage_runtime(peer: &mesh::PeerInfo) -> bool {
+    matches!(peer.role, NodeRole::Worker | NodeRole::Host { .. })
+}
+
+fn split_peer_wants_model(peer: &mesh::PeerInfo, model_name: &str, model_ref: &str) -> bool {
+    peer.requested_models
+        .iter()
+        .any(|model| model == model_name)
+        || peer.routes_model(model_ref)
+        || peer.serving_models.iter().any(|model| model == model_name)
+        || peer
+            .available_models
+            .iter()
+            .any(|model| model == model_name)
+        || peer
+            .explicit_model_interests
+            .iter()
+            .any(|model| model == model_ref)
 }
 
 async fn split_peer_package_signal(
@@ -2955,6 +2978,56 @@ mod tests {
         }
     }
 
+    fn split_test_peer(
+        seed: u8,
+        model_name: &str,
+        stage_protocol_generation_supported: bool,
+    ) -> mesh::PeerInfo {
+        let id = make_id(seed);
+        mesh::PeerInfo {
+            id,
+            addr: iroh::EndpointAddr {
+                id,
+                addrs: Default::default(),
+            },
+            role: NodeRole::Worker,
+            first_joined_mesh_ts: None,
+            models: Vec::new(),
+            vram_bytes: 24_000_000_000,
+            rtt_ms: None,
+            model_source: None,
+            serving_models: Vec::new(),
+            hosted_models: Vec::new(),
+            hosted_models_known: false,
+            available_models: Vec::new(),
+            requested_models: vec![model_name.to_string()],
+            explicit_model_interests: Vec::new(),
+            last_seen: std::time::Instant::now(),
+            last_mentioned: std::time::Instant::now(),
+            version: None,
+            gpu_name: None,
+            hostname: None,
+            is_soc: None,
+            gpu_vram: None,
+            gpu_reserved_bytes: None,
+            gpu_mem_bandwidth_gbps: None,
+            gpu_compute_tflops_fp32: None,
+            gpu_compute_tflops_fp16: None,
+            available_model_metadata: Vec::new(),
+            experts_summary: None,
+            available_model_sizes: std::collections::HashMap::new(),
+            served_model_descriptors: Vec::new(),
+            served_model_runtime: Vec::new(),
+            owner_attestation: None,
+            artifact_transfer_supported: false,
+            stage_protocol_generation_supported,
+            stage_status_list_supported: false,
+            display_rtt: None,
+            propagated_latency: None,
+            owner_summary: crate::crypto::OwnershipSummary::default(),
+        }
+    }
+
     fn sha256_hex(bytes: &[u8]) -> String {
         format!("{:x}", Sha256::digest(bytes))
     }
@@ -3427,6 +3500,54 @@ mod tests {
         };
 
         assert!(signal.can_stage_with(&package, false));
+    }
+
+    #[test]
+    fn split_peer_preflight_requires_current_stage_protocol_generation() {
+        let mut peer = split_test_peer(0x61, "Qwen3-Coder", false);
+
+        assert_eq!(
+            split_peer_preflight_exclusion_reason(
+                &peer,
+                "Qwen3-Coder",
+                "meshllm/Qwen3-Coder-layers"
+            ),
+            Some(SplitParticipantExclusionReason::StageProtocolGeneration)
+        );
+
+        peer.stage_protocol_generation_supported = true;
+        assert_eq!(
+            split_peer_preflight_exclusion_reason(
+                &peer,
+                "Qwen3-Coder",
+                "meshllm/Qwen3-Coder-layers"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn split_peer_host_eligibility_classifies_client_by_role_before_capacity() {
+        let mut peer = split_test_peer(0x62, "Qwen3-Coder", true);
+        peer.role = NodeRole::Client;
+        peer.vram_bytes = 24_000_000_000;
+
+        assert_eq!(
+            split_peer_stage_host_exclusion_reason(&peer),
+            Some(SplitParticipantExclusionReason::Client)
+        );
+    }
+
+    #[test]
+    fn split_peer_host_eligibility_classifies_non_client_zero_vram_as_capacity() {
+        let mut peer = split_test_peer(0x63, "Qwen3-Coder", true);
+        peer.role = NodeRole::Worker;
+        peer.vram_bytes = 0;
+
+        assert_eq!(
+            split_peer_stage_host_exclusion_reason(&peer),
+            Some(SplitParticipantExclusionReason::MissingVram)
+        );
     }
 
     #[test]

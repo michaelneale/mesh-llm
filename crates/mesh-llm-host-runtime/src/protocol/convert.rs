@@ -7,9 +7,15 @@ use std::collections::HashMap;
 
 fn skippy_stage_subprotocols(
     artifact_transfer_supported: bool,
+    stage_protocol_generation_supported: bool,
     status_list_supported: bool,
 ) -> Vec<crate::proto::node::MeshSubprotocol> {
     let mut features = vec![skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STAGE_CONTROL.to_string()];
+    if stage_protocol_generation_supported {
+        features.push(
+            skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STAGE_PROTOCOL_GENERATION_V2.to_string(),
+        );
+    }
     if artifact_transfer_supported {
         features.push(skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_ARTIFACT_TRANSFER.to_string());
     }
@@ -34,6 +40,16 @@ fn supports_skippy_status_list(subprotocols: &[crate::proto::node::MeshSubprotoc
     supports_skippy_stage_feature(
         subprotocols,
         skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STATUS_LIST,
+    )
+}
+
+fn supports_skippy_stage_generation(subprotocols: &[crate::proto::node::MeshSubprotocol]) -> bool {
+    supports_skippy_stage_feature(
+        subprotocols,
+        skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STAGE_PROTOCOL_GENERATION_V2,
+    ) && supports_skippy_stage_feature(
+        subprotocols,
+        skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STAGE_CONTROL,
     )
 }
 
@@ -545,6 +561,7 @@ pub(crate) fn local_ann_to_proto_ann(
             .map(|id| id.as_bytes().to_vec()),
         subprotocols: skippy_stage_subprotocols(
             ann.artifact_transfer_supported,
+            ann.stage_protocol_generation_supported,
             ann.stage_status_list_supported,
         ),
     }
@@ -714,6 +731,7 @@ pub(crate) fn proto_ann_to_local(
             .as_ref()
             .map(proto_owner_attestation_to_local),
         artifact_transfer_supported: supports_skippy_artifact_transfer(&pa.subprotocols),
+        stage_protocol_generation_supported: supports_skippy_stage_generation(&pa.subprotocols),
         stage_status_list_supported: supports_skippy_status_list(&pa.subprotocols),
         latency_ms: pa.latency_ms,
         latency_source: crate::proto::node::LatencySource::try_from(pa.latency_source).ok(),

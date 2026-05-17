@@ -869,6 +869,7 @@ pub(crate) struct PeerAnnouncement {
     pub(crate) served_model_runtime: Vec<ModelRuntimeDescriptor>,
     pub(crate) owner_attestation: Option<SignedNodeOwnership>,
     pub(crate) artifact_transfer_supported: bool,
+    pub(crate) stage_protocol_generation_supported: bool,
     pub(crate) stage_status_list_supported: bool,
     pub(crate) latency_ms: Option<u32>,
     pub(crate) latency_source: Option<crate::proto::node::LatencySource>,
@@ -960,6 +961,7 @@ pub struct PeerInfo {
     pub served_model_runtime: Vec<ModelRuntimeDescriptor>,
     pub owner_attestation: Option<SignedNodeOwnership>,
     pub artifact_transfer_supported: bool,
+    pub stage_protocol_generation_supported: bool,
     pub stage_status_list_supported: bool,
     /// Most recent direct RTT sample for display purposes (refreshed periodically).
     pub display_rtt: Option<DirectLatencyObservation>,
@@ -1031,6 +1033,7 @@ impl PeerInfo {
             served_model_runtime: ann.served_model_runtime.clone(),
             owner_attestation: ann.owner_attestation.clone(),
             artifact_transfer_supported: ann.artifact_transfer_supported,
+            stage_protocol_generation_supported: ann.stage_protocol_generation_supported,
             stage_status_list_supported: ann.stage_status_list_supported,
             display_rtt: None,
             propagated_latency: None,
@@ -5137,11 +5140,8 @@ impl Node {
             return false;
         };
         match feature {
-            // Current PR peers advertise `stage-control` together with the
-            // artifact-transfer feature. Older peers fall back to the legacy
-            // skippy-stage ALPN control path.
             skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STAGE_CONTROL => {
-                peer.artifact_transfer_supported
+                peer.stage_protocol_generation_supported
             }
             skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_ARTIFACT_TRANSFER => {
                 self.artifact_transfer_allowed_for_peer(&peer).await
