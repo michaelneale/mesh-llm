@@ -520,7 +520,7 @@ async fn resolve_decision(
                         if let (Some(name), Some(args)) =
                             (reduced.tool_name.as_ref(), reduced.tool_arguments.as_ref())
                         {
-                            (tool_call_response(&name, args), true)
+                            (tool_call_response(name, args), true)
                         } else {
                             (chat_response(&reduced.payload), true)
                         }

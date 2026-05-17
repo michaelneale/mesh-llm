@@ -64,7 +64,7 @@ pub fn assign_roles(models: &[ModelEntry]) -> Vec<Assignment> {
     // main router so MoA's reducer/strong worker matches what `auto` would
     // pick.
     let mut sorted: Vec<ModelEntry> = models.to_vec();
-    sorted.sort_by_key(|m| is_single_digit_b_name(&m.name) == false);
+    sorted.sort_by_key(|m| !is_single_digit_b_name(&m.name));
     // After sort: small-tier first, big-tier last. That way:
     //   first  = fast       (smallest model)
     //   middle = specialist
