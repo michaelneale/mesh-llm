@@ -798,6 +798,7 @@ pub(crate) fn mesh_config_to_proto(
         gpu: Some(crate::proto::node::NodeGpuConfig { assignment }),
         models,
         plugins,
+        config_toml: toml::to_string(config).ok(),
     }
 }
 
@@ -807,6 +808,15 @@ pub(crate) fn proto_config_to_mesh(
     use crate::plugin::{
         GpuAssignment, GpuConfig, MeshConfig, ModelConfigEntry, PluginConfigEntry,
     };
+    if let Some(config_toml) = snapshot.config_toml.as_deref() {
+        if let Ok(mut parsed) = toml::from_str::<MeshConfig>(config_toml) {
+            if parsed.version.is_none() {
+                parsed.version = Some(snapshot.version);
+            }
+            return parsed;
+        }
+    }
+
     fn declared_ref_or_none(
         configured: Option<&crate::proto::node::ConfiguredModelRef>,
     ) -> Option<String> {
@@ -838,6 +848,7 @@ pub(crate) fn proto_config_to_mesh(
             batch: None,
             ubatch: None,
             flash_attention: None,
+            ..Default::default()
         })
         .collect();
     let plugins = snapshot
@@ -859,6 +870,7 @@ pub(crate) fn proto_config_to_mesh(
         },
         owner_control: Default::default(),
         telemetry: Default::default(),
+        defaults: None,
         models,
         plugins,
     }

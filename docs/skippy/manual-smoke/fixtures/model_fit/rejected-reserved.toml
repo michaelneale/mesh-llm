@@ -1,0 +1,15 @@
+version = 1
+
+[defaults.model_fit]
+kv_unified = true
+cache_ram_mib = 256
+cache_idle_slots = 4
+keep_tokens = 32
+context_shift = true
+checkpoint_interval = 4
+checkpoint_count = 2
+lookup_cache_static = "static.lookup.gguf"
+lookup_cache_dynamic = "dynamic.lookup.gguf"
+
+[[models]]
+model = "unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL"

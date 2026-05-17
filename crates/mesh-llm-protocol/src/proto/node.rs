@@ -420,6 +420,9 @@ pub struct NodeConfigSnapshot {
     pub models: ::prost::alloc::vec::Vec<NodeModelEntry>,
     #[prost(message, repeated, tag = "4")]
     pub plugins: ::prost::alloc::vec::Vec<NodePluginEntry>,
+    /// canonical persisted config payload for additive owner-control roundtrip
+    #[prost(string, optional, tag = "5")]
+    pub config_toml: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct NodeGpuConfig {

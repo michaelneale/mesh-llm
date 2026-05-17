@@ -3493,7 +3493,7 @@ mod tests {
         set_filtered_native_logs_enabled, unregister_filtered_native_logs, write_native_log,
         ChatTemplateMessage, FlashAttentionType, ModelInfo, NativeLogAggregator, NativeLogEvent,
         RuntimeConfig, RuntimeLoadMode, StageModel, TensorRole, GGML_TYPE_F16, GGML_TYPE_Q4_0,
-        GGML_TYPE_Q8_0,
+        GGML_TYPE_Q8_0, LLAMA_SERVER_DEFAULT_N_BATCH, LLAMA_SERVER_DEFAULT_N_UBATCH,
     };
 
     static NATIVE_LOG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -3531,6 +3531,27 @@ mod tests {
         assert_eq!(
             config.validate(),
             Err("selected_backend_device must not be empty")
+        );
+    }
+
+    #[test]
+    fn runtime_config_rejects_zero_thread_counts() {
+        let thread_config = RuntimeConfig {
+            n_threads: Some(0),
+            ..RuntimeConfig::default()
+        };
+        let batch_thread_config = RuntimeConfig {
+            n_threads_batch: Some(0),
+            ..RuntimeConfig::default()
+        };
+
+        assert_eq!(
+            thread_config.validate(),
+            Err("n_threads must be greater than zero when provided")
+        );
+        assert_eq!(
+            batch_thread_config.validate(),
+            Err("n_threads_batch must be greater than zero when provided")
         );
     }
 
@@ -3638,6 +3659,25 @@ mod tests {
             unsafe { std::ffi::CStr::from_ptr(raw.raw.selected_backend_device).to_string_lossy() };
 
         assert_eq!(device, "MTL0");
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_config_raw_preserves_thread_counts_and_batch_defaults() -> anyhow::Result<()> {
+        let config = RuntimeConfig {
+            n_batch: None,
+            n_ubatch: None,
+            n_threads: Some(12),
+            n_threads_batch: Some(6),
+            ..RuntimeConfig::default()
+        };
+
+        let raw = config.as_raw()?;
+
+        assert_eq!(raw.raw.n_batch, LLAMA_SERVER_DEFAULT_N_BATCH as i32);
+        assert_eq!(raw.raw.n_ubatch, LLAMA_SERVER_DEFAULT_N_UBATCH as i32);
+        assert_eq!(raw.raw.n_threads, 12);
+        assert_eq!(raw.raw.n_threads_batch, 6);
         Ok(())
     }
 

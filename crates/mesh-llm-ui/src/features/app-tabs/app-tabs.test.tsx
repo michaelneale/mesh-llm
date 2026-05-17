@@ -1728,7 +1728,7 @@ describe('app surfaces', () => {
     expect(screen.getByRole('button', { name: /revert/i })).toHaveAttribute('aria-keyshortcuts', 'Control+X')
     expect(screen.getByRole('button', { name: /save config/i })).toHaveAttribute('aria-keyshortcuts', 'Control+S')
     expect(screen.getByRole('button', { name: /save config/i })).toBeDisabled()
-    expect(buildTOML(CFG_NODES, INITIAL_ASSIGNS)).not.toContain('placement = "pooled"')
+    expect(buildTOML(CFG_NODES, INITIAL_ASSIGNS)).toContain('[models.hardware]')
     expect(screen.getByRole('button', { name: /remove llama-3\.3-70b-q4_k_m/i })).toBeInTheDocument()
 
     await user.click(configurationHeading)
@@ -1853,11 +1853,13 @@ describe('app surfaces', () => {
     expect(within(carrackSection).getByRole('radio', { name: 'pooled' })).toBeChecked()
 
     const initialToml = buildTOML(CFG_NODES, INITIAL_ASSIGNS)
-    expect(initialToml).toContain('hostname = "carrack"')
+    expect(initialToml).toContain('version = 1')
+    expect(initialToml).toContain('model = "GLM-4.7-Flash-Q4_K_M"')
     expect(initialToml).not.toContain('perseus.local')
     expect(initialToml).not.toContain('triton.lab')
-    expect(initialToml).toContain('gpu_index = 0')
-    expect(initialToml).not.toContain('gpu = ')
+    expect(initialToml).toContain('device = "cuda:0"')
+    expect(initialToml).not.toContain('gpu_index =')
+    expect(initialToml).not.toContain('[node]')
 
     carrackKeyboardTarget.focus()
     await user.keyboard('a')
@@ -2069,10 +2071,10 @@ describe('app surfaces', () => {
     })
     expect(revertEvent.defaultPrevented).toBe(true)
     expect(saveButton).toBeDisabled()
-    await expectTomlOccurrences(user, 'placement = "pooled"', 0)
+    await expectTomlOccurrences(user, '[models.hardware]', 4)
 
     await user.click(within(getCarrackSection()).getByRole('radio', { name: 'pooled' }))
-    await expectTomlOccurrences(user, 'placement = "pooled"', 1)
+    await expectTomlOccurrences(user, '[models.hardware]', 0)
     const saveEvent = new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true, cancelable: true })
     await act(async () => {
       window.dispatchEvent(saveEvent)
@@ -2087,7 +2089,7 @@ describe('app surfaces', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Model catalog' })).not.toBeInTheDocument())
     expect(screen.getByRole('button', { name: /phi-4-mini, .* weights/i })).toBeInTheDocument()
     expect(saveButton).toBeEnabled()
-    await expectTomlOccurrences(user, 'placement = "pooled"', 1)
+    await expectTomlOccurrences(user, '[models.hardware]', 0)
     const revertToSavedEvent = new KeyboardEvent('keydown', {
       key: 'x',
       ctrlKey: true,
@@ -2099,7 +2101,7 @@ describe('app surfaces', () => {
     })
     expect(revertToSavedEvent.defaultPrevented).toBe(true)
     expect(saveButton).toBeDisabled()
-    await expectTomlOccurrences(user, 'placement = "pooled"', 1)
+    await expectTomlOccurrences(user, '[models.hardware]', 0)
     expect(screen.queryByRole('button', { name: /phi-4-mini, .* weights/i })).not.toBeInTheDocument()
   })
 
@@ -2152,12 +2154,12 @@ describe('app surfaces', () => {
     }
 
     await user.click(within(getCarrackSection()).getByRole('radio', { name: 'pooled' }))
-    await expectTomlOccurrences(user, 'placement = "pooled"', 1)
+    await expectTomlOccurrences(user, '[models.hardware]', 0)
     await dispatchShortcut('z')
-    await expectTomlOccurrences(user, 'placement = "pooled"', 0)
+    await expectTomlOccurrences(user, '[models.hardware]', 4)
     expect(screen.getByRole('button', { name: /qwen3\.5-27b-q4_k_m, 17\.4 gb weights/i })).toBeInTheDocument()
     await dispatchShortcut('r')
-    await expectTomlOccurrences(user, 'placement = "pooled"', 1)
+    await expectTomlOccurrences(user, '[models.hardware]', 0)
 
     await user.click(within(getCarrackSection()).getByRole('button', { name: 'Add model to carrack' }))
     await user.type(screen.getByRole('textbox', { name: 'Command bar search' }), 'phi')

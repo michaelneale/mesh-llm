@@ -6,7 +6,8 @@ import type {
   ConfigNode,
   ConfigurationDefaultsHarnessData,
   ConfigurationDefaultsSetting,
-  ConfigurationDefaultsValues
+  ConfigurationDefaultsValues,
+  ConfigurationTomlSectionId
 } from '@/features/app-tabs/types'
 
 type BuildTomlOptions = {
@@ -15,8 +16,22 @@ type BuildTomlOptions = {
 }
 
 const draftModelModeSettingId = 'speculation-mode'
-const draftModelModeValue = 'draft_model'
-const incompatiblePairingBehaviorSettingId = 'incompatible-pairing-behavior'
+const draftModelModeValue = 'draft'
+const draftModelOnlySettingIds = new Set([
+  'draft-selection-policy',
+  'draft-max-tokens',
+  'incompatible-pairing-behavior'
+])
+const defaultSectionOrder: readonly ConfigurationTomlSectionId[] = [
+  'defaults.model_fit',
+  'defaults.hardware',
+  'defaults.throughput',
+  'defaults.skippy',
+  'defaults.speculative',
+  'defaults.request_defaults',
+  'defaults.multimodal',
+  'defaults.advanced.server'
+]
 
 function tomlString(value: string): string {
   return JSON.stringify(value)
@@ -38,15 +53,9 @@ function isBooleanToggleChoice(setting: ConfigurationDefaultsSetting): boolean {
 function defaultTomlScalar(setting: ConfigurationDefaultsSetting, value: string): string {
   if (isBooleanToggleChoice(setting)) return value === 'on' ? 'true' : 'false'
   if (setting.id === 'memory-margin') return Number(value).toFixed(1)
-  if (setting.id === 'draft-acceptance-threshold') return Number(value).toFixed(2)
-  if (setting.id === 'repeat-penalty') return Number(value).toFixed(2)
+  if (setting.id === 'temperature' || setting.id === 'top-p' || setting.id === 'repeat-penalty')
+    return Number(value).toFixed(2)
   return tomlScalar(value)
-}
-
-function defaultSectionName(setting: ConfigurationDefaultsSetting): string | null {
-  if (setting.categoryId === 'advanced') return 'runtime'
-  if (setting.categoryId === 'speculative-decoding') return 'speculative_decoding'
-  return null
 }
 
 function tomlKey(value: string): string {
@@ -62,9 +71,8 @@ function shouldEmitDefaultSetting(
   settings: readonly ConfigurationDefaultsSetting[],
   values: ConfigurationDefaultsValues | undefined
 ): boolean {
-  if (setting.id !== incompatiblePairingBehaviorSettingId) return true
-
   const speculationModeSetting = settings.find((item) => item.id === draftModelModeSettingId)
+  if (!draftModelOnlySettingIds.has(setting.id)) return true
   return speculationModeSetting ? defaultValue(speculationModeSetting, values) === draftModelModeValue : false
 }
 
@@ -76,63 +84,61 @@ export function buildTOML(
 ): string {
   const localNode = nodes[0]
   const lines: string[] = [
-    '# MeshLLM generated local node config',
-    '# Remote nodes are read-only context and are not written from this page.',
+    '# Mesh LLM generated config preview',
+    '# Remote nodes are read-only context and are not serialized from this page.',
+    'version = 1',
     ''
   ]
 
   if (options.defaults) {
-    lines.push('[defaults]')
-    const sectionSettings = new Map<string, ConfigurationDefaultsSetting[]>()
+    const sectionSettings = new Map<ConfigurationTomlSectionId, ConfigurationDefaultsSetting[]>()
 
     for (const setting of options.defaults.settings) {
       if (!shouldEmitDefaultSetting(setting, options.defaults.settings, options.defaultsValues)) continue
-
-      const sectionName = defaultSectionName(setting)
-      if (sectionName) {
-        sectionSettings.set(sectionName, [...(sectionSettings.get(sectionName) ?? []), setting])
-        continue
-      }
-
-      const value = defaultValue(setting, options.defaultsValues)
-      if (setting.control.kind === 'text' && value.trim().length === 0) continue
-      const key = setting.control.kind === 'metric' ? setting.id : setting.control.name
-      lines.push(`${tomlKey(key)} = ${defaultTomlScalar(setting, value)}`)
+      sectionSettings.set(setting.tomlSection, [...(sectionSettings.get(setting.tomlSection) ?? []), setting])
     }
 
-    for (const [sectionName, settings] of sectionSettings) {
-      lines.push('', `[defaults.${sectionName}]`)
+    let emittedDefaultsSectionCount = 0
+    for (const sectionName of defaultSectionOrder) {
+      const settings = sectionSettings.get(sectionName)
+      if (!settings) continue
+
+      if (emittedDefaultsSectionCount > 0) lines.push('')
+      lines.push(`[${sectionName}]`)
       for (const setting of settings) {
         if (!shouldEmitDefaultSetting(setting, options.defaults.settings, options.defaultsValues)) continue
 
         const value = defaultValue(setting, options.defaultsValues)
-        const key = setting.control.kind === 'metric' ? setting.id : setting.control.name
+        if (setting.control.kind === 'text' && value.trim().length === 0) continue
+
+        const key = setting.tomlKey
         lines.push(`${tomlKey(key)} = ${defaultTomlScalar(setting, value)}`)
       }
+      emittedDefaultsSectionCount += 1
     }
     lines.push('')
   }
 
   if (!localNode) return lines.join('\n').trimEnd()
 
-  lines.push(
-    '[node]',
-    `id = ${tomlString(localNode.id)}`,
-    `hostname = ${tomlString(localNode.hostname)}`,
-    `region = ${tomlString(localNode.region)}`,
-    `placement = ${tomlString(localNode.placement)}`
-  )
-  const emitsGpuIndex = localNode.placement === 'separate' && !isUnifiedMemoryNode(localNode)
+  const emitsPerGpuDevice = localNode.placement === 'separate' && !isUnifiedMemoryNode(localNode)
   for (const assign of assigns.filter((item) => item.nodeId === localNode.id)) {
     const model = models.find((catalogModel) => catalogModel.id === assign.modelId)
-    lines.push(
-      '',
-      '[[models]]',
-      `  id = ${tomlString(assign.id)}`,
-      `  model = ${tomlString(model?.name ?? assign.modelId)}`
-    )
-    if (emitsGpuIndex) lines.push(`  gpu_index = ${assign.containerIdx}`)
-    lines.push(`  ctx = ${assign.ctx}`)
+    const sectionLines = new Map<string, string[]>()
+
+    sectionLines.set('models.model_fit', [`ctx_size = ${assign.ctx}`])
+    if (emitsPerGpuDevice) {
+      sectionLines.set('models.hardware', [`device = ${tomlString(`cuda:${assign.containerIdx}`)}`, 'gpu_layers = -1'])
+    }
+
+    if (lines[lines.length - 1] !== '') lines.push('')
+    lines.push('[[models]]', `model = ${tomlString(model?.name ?? assign.modelId)}`)
+
+    for (const sectionName of ['models.model_fit', 'models.hardware']) {
+      const values = sectionLines.get(sectionName)
+      if (!values?.length) continue
+      lines.push('', `[${sectionName}]`, ...values)
+    }
   }
 
   return lines.join('\n').trimEnd()

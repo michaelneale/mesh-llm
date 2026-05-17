@@ -1,0 +1,7 @@
+version = 1
+
+[defaults.skippy]
+openai_frontend_mode = "compat"
+
+[[models]]
+model = "unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL"

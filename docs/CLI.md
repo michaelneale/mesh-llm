@@ -86,12 +86,26 @@ Runtime switches:
 - `--name <NAME>`: your blackboard display name.
 - `--max-vram <MAX_VRAM>`: cap VRAM used for planning and fit decisions.
 - `--llama-flavor <LLAMA_FLAVOR>`: force backend binary flavor (`cpu|cuda|rocm|vulkan|metal`).
-- `--config <CONFIG>`: explicit config file path.
+- `--config <CONFIG>`: explicit config file path. The file applies on future
+  starts or owner-control reloads, not to already running sessions.
 - `--owner-key <OWNER_KEY>`: keystore used to attest this runtime node.
 - `--owner-required`: fail startup if owner attestation cannot be loaded.
 - `--node-label <NODE_LABEL>`: attach a human label to this runtime node certificate.
 - `--trust-policy <TRUST_POLICY>`: override peer ownership trust policy.
 - `--trust-owner <TRUST_OWNER>`: add trusted owner IDs on top of the local trust store.
+
+Config file semantics:
+
+- `mesh-llm serve` reads `~/.mesh-llm/config.toml` by default.
+- Precedence is request values, then per-model config, then `[defaults.*]`, then
+  family or topology policy, then built-in runtime defaults.
+- Request defaults only fill absent or null request fields at the OpenAI
+  frontend boundary. Explicit request values win, and the defaults never flow
+  into `StageConfig`, runtime load structs, protobuf, or lower runtime.
+- Staged-only controls stay staged-only. Activation wire dtype, prefill
+  controls, speculative draft controls, and manual stage layer ranges only
+  execute in staged mode.
+- Unsupported or deferred rows are documented as rejected, not silent no-ops.
 
 ## Commands
 

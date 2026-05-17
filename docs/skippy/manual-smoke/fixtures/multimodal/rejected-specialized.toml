@@ -1,0 +1,10 @@
+version = 1
+
+[defaults.multimodal]
+embeddings = true
+reranking = true
+pooling = "mean"
+vocoder = "speaker-a"
+
+[[models]]
+model = "unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL"

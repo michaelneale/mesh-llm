@@ -1,0 +1,8 @@
+version = 1
+
+[defaults.throughput]
+threads_http = 2
+sleep_idle_seconds = 5
+
+[[models]]
+model = "unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL"

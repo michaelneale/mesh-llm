@@ -26,7 +26,6 @@ async function uploadRequestObject(params: {
 }
 
 export function attachmentForMessage(attachment: ChatAttachment): Omit<ChatAttachment, 'status' | 'error'> {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- Extract & discard runtime-only fields so the return type is Omit<ChatAttachment, "status" | "error">.
   const { status: _s, error: _e, ...persistedAttachment } = attachment
   if (persistedAttachment.extractedText) {
     persistedAttachment.renderedPageImages = undefined

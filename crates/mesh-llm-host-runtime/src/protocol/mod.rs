@@ -696,6 +696,9 @@ mod tests {
     use iroh::{EndpointAddr, EndpointId, SecretKey};
     use std::collections::{HashMap, HashSet};
 
+    const FULL_SURFACE_VALID_FIXTURE: &str =
+        include_str!("../../tests/fixtures/skippy_full_surface_valid.toml");
+
     fn make_valid_gossip_frame() -> GossipFrame {
         GossipFrame {
             gen: NODE_PROTOCOL_GENERATION,
@@ -736,7 +739,72 @@ mod tests {
                 command: Some("mesh-llm".to_string()),
                 args: vec!["--plugin".to_string(), "blackboard".to_string()],
             }],
+            config_toml: None,
         }
+    }
+
+    fn make_nested_mesh_config() -> crate::plugin::MeshConfig {
+        toml::from_str(
+            r#"version = 1
+
+[gpu]
+assignment = "auto"
+parallel = 2
+
+[defaults.model_fit]
+kv_unified = "auto"
+
+[defaults.hardware]
+gpu_layers = "auto"
+tensor_split = []
+
+[defaults.throughput]
+parallel = 3
+
+[defaults.skippy]
+activation_wire_dtype = "auto"
+
+[defaults.speculative]
+mode = "auto"
+
+[defaults.request_defaults]
+reasoning_budget = "auto"
+
+[defaults.multimodal]
+mmproj = "defaults-projector.gguf"
+
+[defaults.advanced.server]
+alias = "defaults-alias"
+
+[[models]]
+model = "Qwen3-8B.gguf"
+
+[models.model_fit]
+ctx_size = 16384
+
+[models.hardware]
+gpu_layers = 99
+
+[models.throughput]
+parallel = 4
+
+[models.skippy]
+binary_stage_transport = "auto"
+
+[models.speculative]
+draft_selection_policy = "auto"
+
+[models.request_defaults]
+top_p = 0.95
+
+[models.multimodal]
+mmproj = "model-projector.gguf"
+
+[models.advanced.server]
+alias = "model-alias"
+"#,
+        )
+        .expect("nested mesh config should parse")
     }
 
     fn make_valid_owner_control_handshake() -> OwnerControlHandshake {
@@ -1591,6 +1659,73 @@ mod tests {
         );
         assert_eq!(roundtripped.plugins.len(), snapshot.plugins.len());
         assert_eq!(roundtripped.plugins[0].name, snapshot.plugins[0].name);
+        assert!(
+            roundtripped
+                .config_toml
+                .as_deref()
+                .is_some_and(|toml| toml.contains("model = \"Qwen3-8B\"")),
+            "re-encoded snapshots should include canonical config_toml payload"
+        );
+    }
+
+    #[test]
+    fn mesh_config_proto_roundtrip_preserves_nested_sections() {
+        let config = make_nested_mesh_config();
+
+        let snapshot = mesh_config_to_proto(&config);
+        let restored = proto_config_to_mesh(&snapshot);
+
+        let json = serde_json::to_value(&restored).expect("restored config should serialize");
+        assert_eq!(json["defaults"]["model_fit"]["kv_unified"], "auto");
+        assert_eq!(json["defaults"]["hardware"]["gpu_layers"], "auto");
+        assert_eq!(json["defaults"]["throughput"]["parallel"], 3);
+        assert_eq!(json["defaults"]["skippy"]["activation_wire_dtype"], "auto");
+        assert_eq!(json["defaults"]["speculative"]["mode"], "auto");
+        assert_eq!(
+            json["defaults"]["request_defaults"]["reasoning_budget"],
+            "auto"
+        );
+        assert_eq!(
+            json["defaults"]["multimodal"]["mmproj"],
+            "defaults-projector.gguf"
+        );
+        assert_eq!(
+            json["defaults"]["advanced"]["server"]["alias"],
+            "defaults-alias"
+        );
+
+        assert_eq!(json["models"][0]["model_fit"]["ctx_size"], 16384);
+        assert_eq!(json["models"][0]["hardware"]["gpu_layers"], 99);
+        assert_eq!(json["models"][0]["throughput"]["parallel"], 4);
+        assert_eq!(
+            json["models"][0]["skippy"]["binary_stage_transport"],
+            "auto"
+        );
+        assert_eq!(
+            json["models"][0]["speculative"]["draft_selection_policy"],
+            "auto"
+        );
+        assert_eq!(json["models"][0]["request_defaults"]["top_p"], 0.95);
+        assert_eq!(
+            json["models"][0]["multimodal"]["mmproj"],
+            "model-projector.gguf"
+        );
+        assert_eq!(
+            json["models"][0]["advanced"]["server"]["alias"],
+            "model-alias"
+        );
+    }
+
+    #[test]
+    fn mesh_config_proto_invalid_full_payload_falls_back_to_legacy_fields() {
+        let mut snapshot = make_config_snapshot();
+        snapshot.config_toml = Some("not valid toml = [".to_string());
+
+        let restored = proto_config_to_mesh(&snapshot);
+
+        assert_eq!(restored.models[0].model, "Qwen3-8B");
+        assert_eq!(restored.models[0].ctx_size, Some(8192));
+        assert!(restored.defaults.is_none());
     }
 
     #[test]
@@ -1617,6 +1752,7 @@ mod tests {
                 }),
             }],
             plugins: vec![],
+            config_toml: None,
         };
 
         let restored = proto_config_to_mesh(&snapshot);
@@ -1652,6 +1788,7 @@ mod tests {
                 }),
             }],
             plugins: vec![],
+            config_toml: None,
         };
 
         let restored = proto_config_to_mesh(&snapshot);
@@ -1702,6 +1839,7 @@ mod tests {
             },
             owner_control: Default::default(),
             telemetry: Default::default(),
+            defaults: None,
             models: vec![ModelConfigEntry {
                 model: "Qwen3-8B.gguf".to_string(),
                 mmproj: Some("mm.gguf".to_string()),
@@ -1713,6 +1851,7 @@ mod tests {
                 batch: None,
                 ubatch: None,
                 flash_attention: None,
+                ..Default::default()
             }],
             plugins: vec![PluginConfigEntry {
                 name: "blackboard".to_string(),
@@ -1760,6 +1899,7 @@ mod tests {
             },
             owner_control: Default::default(),
             telemetry: Default::default(),
+            defaults: None,
             models: vec![ModelConfigEntry {
                 model: "test.gguf".to_string(),
                 mmproj: None,
@@ -1771,6 +1911,7 @@ mod tests {
                 batch: None,
                 ubatch: None,
                 flash_attention: None,
+                ..Default::default()
             }],
             plugins: vec![],
         };
@@ -1788,6 +1929,7 @@ mod tests {
             },
             owner_control: Default::default(),
             telemetry: Default::default(),
+            defaults: None,
             models: vec![ModelConfigEntry {
                 model: "other.gguf".to_string(),
                 mmproj: None,
@@ -1799,12 +1941,42 @@ mod tests {
                 batch: None,
                 ubatch: None,
                 flash_attention: None,
+                ..Default::default()
             }],
             plugins: vec![],
         };
         let snap3 = mesh_config_to_proto(&config2);
         let h3 = canonical_config_hash(&snap3);
         assert_ne!(h1, h3, "different config must produce different hash");
+    }
+
+    #[test]
+    fn mesh_config_proto_roundtrip_preserves_integrated_fixture_and_owner_control_toml() {
+        let config: crate::plugin::MeshConfig = toml::from_str(FULL_SURFACE_VALID_FIXTURE).unwrap();
+        let snapshot = mesh_config_to_proto(&config);
+
+        assert!(snapshot
+            .config_toml
+            .as_deref()
+            .is_some_and(|toml| toml.contains("prefill_chunk_schedule = \"128,256,384\"")));
+
+        let restored = proto_config_to_mesh(&snapshot);
+        let json = serde_json::to_value(&restored).expect("restored config serializes");
+        assert_eq!(json["owner_control"]["bind"], "127.0.0.1:7447");
+        assert_eq!(
+            json["defaults"]["request_defaults"]["reasoning_budget"],
+            256
+        );
+        assert_eq!(json["models"][0]["hardware"]["stage_layer_start"], 12);
+        assert_eq!(
+            json["models"][0]["skippy"]["prefill_chunk_schedule"],
+            "128,256,384"
+        );
+        assert_eq!(json["models"][0]["speculative"]["draft_gpu_layers"], 12);
+        assert_eq!(
+            json["models"][1]["hardware"]["model_path"],
+            "/models/gemma.gguf"
+        );
     }
 
     #[test]
@@ -1819,6 +1991,7 @@ mod tests {
             },
             owner_control: Default::default(),
             telemetry: Default::default(),
+            defaults: None,
             models: vec![ModelConfigEntry {
                 model: "Qwen3-8B-Q4_K_M".to_string(),
                 mmproj: Some("mmproj-f16.gguf".to_string()),
@@ -1830,6 +2003,7 @@ mod tests {
                 batch: None,
                 ubatch: None,
                 flash_attention: None,
+                ..Default::default()
             }],
             plugins: vec![],
         };
@@ -1901,6 +2075,7 @@ mod tests {
                 mmproj_ref: None,
             }],
             plugins: vec![],
+            config_toml: None,
         };
 
         let encoded = snapshot.encode_to_vec();

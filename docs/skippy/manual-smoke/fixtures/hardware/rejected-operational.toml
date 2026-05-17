@@ -1,0 +1,11 @@
+version = 1
+
+[defaults.hardware]
+rpc_backend = "rpc"
+hf_repo = "Qwen/Qwen3.5-4B-GGUF"
+hf_file = "Qwen3.5-4B-UD-Q4_K_XL.gguf"
+lora_adapters = ["adapter-a.gguf"]
+control_vectors = ["steering-a.gguf"]
+
+[[models]]
+model = "hardware-rejected"

@@ -13,7 +13,9 @@ use crate::{
     config::validate_config,
     frontend::{serve_embedded_openai_with_shutdown, EmbeddedOpenAiArgs},
     http::{serve_stage_http_with_shutdown, StageHttpOptions},
-    runtime_state::{load_runtime, RuntimeSessionStats, RuntimeState},
+    runtime_state::{
+        load_runtime_with_overrides, RuntimeLaunchOverrides, RuntimeSessionStats, RuntimeState,
+    },
     telemetry::{lifecycle_attrs, now_unix_nanos, Telemetry, TelemetryLevel, TelemetryStats},
 };
 
@@ -58,6 +60,8 @@ pub struct EmbeddedServerStatus {
 pub struct EmbeddedRuntimeOptions {
     pub config: StageConfig,
     pub topology: Option<StageTopology>,
+    pub n_threads: Option<usize>,
+    pub n_threads_batch: Option<usize>,
     pub metrics_otlp_grpc: Option<String>,
     pub telemetry_queue_capacity: usize,
     pub telemetry_level: TelemetryLevel,
@@ -92,8 +96,14 @@ impl SkippyRuntimeHandle {
             "stage.embedded_runtime_load_start",
             lifecycle_attrs(&options.config),
         );
-        let runtime = load_runtime(&options.config)?
-            .with_context(|| format!("stage {} requires model_path", options.config.stage_id))?;
+        let runtime = load_runtime_with_overrides(
+            &options.config,
+            &RuntimeLaunchOverrides {
+                n_threads: options.n_threads,
+                n_threads_batch: options.n_threads_batch,
+            },
+        )?
+        .with_context(|| format!("stage {} requires model_path", options.config.stage_id))?;
         telemetry.emit(
             "stage.embedded_runtime_ready",
             lifecycle_attrs(&options.config),

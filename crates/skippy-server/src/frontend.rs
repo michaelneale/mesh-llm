@@ -29,7 +29,7 @@ use openai_frontend::{
     ChatHookAction, ChatHookOutcome, CompletionChunk, CompletionRequest, CompletionResponse,
     CompletionStream, FinishReason, GenerationHookSignals, MessageContent, MessageContentPart,
     ModelId, ModelObject, OpenAiBackend, OpenAiError, OpenAiErrorKind, OpenAiHookPolicy,
-    OpenAiRequestContext, OpenAiResult, PrefillHookSignals, Usage,
+    OpenAiRequestContext, OpenAiResult, PrefillHookSignals, ReasoningEffort, Usage,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -181,6 +181,7 @@ pub async fn serve_openai(args: ServeOpenAiArgs) -> Result<()> {
         telemetry: telemetry.clone(),
         model_id: model_id.clone(),
         default_max_tokens: args.default_max_tokens,
+        request_defaults: EmbeddedOpenAiRequestDefaults::default(),
         ctx_size,
         mode,
         draft: None,
@@ -211,6 +212,7 @@ pub struct EmbeddedOpenAiArgs {
     pub runtime: Arc<Mutex<RuntimeState>>,
     pub model_id: Option<String>,
     pub default_max_tokens: u32,
+    pub request_defaults: EmbeddedOpenAiRequestDefaults,
     pub generation_concurrency: usize,
     pub prefill_chunk_size: usize,
     pub prefill_chunk_policy: String,
@@ -229,6 +231,47 @@ pub struct EmbeddedOpenAiArgs {
     pub downstream_wire_condition: WireCondition,
     pub telemetry: Telemetry,
     pub hook_policy: Option<Arc<dyn OpenAiHookPolicy>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EmbeddedOpenAiRequestDefaults {
+    pub stop: Option<Vec<String>>,
+    pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
+    pub presence_penalty: Option<f32>,
+    pub frequency_penalty: Option<f32>,
+    pub seed: Option<u64>,
+    pub logit_bias: Option<BTreeMap<String, Value>>,
+    pub top_k: Option<i32>,
+    pub min_p: Option<f32>,
+    pub repeat_penalty: Option<f32>,
+    pub repeat_last_n: Option<i32>,
+    pub reasoning_format: Option<EmbeddedReasoningFormat>,
+    pub reasoning_enabled: Option<EmbeddedReasoningEnabled>,
+    pub reasoning_budget: Option<EmbeddedReasoningBudget>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EmbeddedReasoningFormat {
+    Auto,
+    None,
+    Deepseek,
+    DeepseekLegacy,
+    Hidden,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EmbeddedReasoningEnabled {
+    Auto,
+    Disabled,
+    Enabled,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EmbeddedReasoningBudget {
+    Auto,
+    Tokens(u32),
+    Effort(ReasoningEffort),
 }
 
 pub async fn serve_embedded_openai(args: EmbeddedOpenAiArgs) -> Result<()> {
@@ -353,6 +396,7 @@ pub fn embedded_openai_backend(args: EmbeddedOpenAiArgs) -> Result<EmbeddedOpenA
         telemetry: args.telemetry.clone(),
         model_id: model_id.clone(),
         default_max_tokens: args.default_max_tokens,
+        request_defaults: args.request_defaults,
         ctx_size,
         mode,
         draft,
@@ -379,6 +423,7 @@ struct StageOpenAiBackend {
     telemetry: Telemetry,
     model_id: String,
     default_max_tokens: u32,
+    request_defaults: EmbeddedOpenAiRequestDefaults,
     ctx_size: usize,
     mode: OpenAiBackendMode,
     draft: Option<Arc<Mutex<DraftRunner>>>,

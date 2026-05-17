@@ -58,6 +58,7 @@ fn test_snapshot(
                 mmproj_ref: None,
             }],
             plugins: vec![],
+            config_toml: None,
         }),
         hostname: Some("control.test".to_string()),
     }
@@ -403,6 +404,7 @@ async fn control_plane_client_apply_config_get_watch_refresh_and_close() {
                     mmproj_ref: None,
                 }],
                 plugins: vec![],
+                config_toml: None,
             },
         )
         .await
