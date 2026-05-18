@@ -1128,7 +1128,7 @@ async fn load_split_runtime_generation_inner(
             config,
             activation_width,
             slots,
-            skippy_server::CONTEXT_BUDGET_MAX_TOKENS,
+            skippy_server::DEFAULT_EMBEDDED_MAX_TOKENS,
             Some(skippy::MeshAutoHookPolicy::new(node_for_hook)),
             skippy_telemetry,
         )
@@ -2842,7 +2842,7 @@ async fn start_runtime_layer_package_model(
             config,
             activation_width,
             slots,
-            skippy_server::CONTEXT_BUDGET_MAX_TOKENS,
+            skippy_server::DEFAULT_EMBEDDED_MAX_TOKENS,
             Some(skippy::MeshAutoHookPolicy::new(node_for_hook)),
             skippy_telemetry,
         )

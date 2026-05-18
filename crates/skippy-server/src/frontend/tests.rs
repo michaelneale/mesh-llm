@@ -1423,6 +1423,19 @@ fn omitted_max_tokens_can_use_remaining_context_budget() {
 }
 
 #[test]
+fn omitted_max_tokens_with_embedded_default_is_bounded() {
+    // The embedded mesh-llm wiring uses DEFAULT_EMBEDDED_MAX_TOKENS as a
+    // bounded fallback when the client omits max_tokens. Omitting
+    // max_tokens must produce an Explicit cap rather than consume the
+    // entire remaining context window.
+    let limit = GenerationTokenLimit::from_request(None, DEFAULT_EMBEDDED_MAX_TOKENS);
+    let ctx_size = 32_000;
+    let resolved = limit.resolve(128, ctx_size).unwrap();
+    assert_eq!(resolved, DEFAULT_EMBEDDED_MAX_TOKENS);
+    assert!((resolved as usize) < ctx_size);
+}
+
+#[test]
 fn configured_default_max_tokens_remains_explicit() {
     let limit = GenerationTokenLimit::from_request(None, 4);
     assert_eq!(limit.resolve(4, 8).unwrap(), 4);
