@@ -186,8 +186,9 @@ with explanation if fewer.
 | Pipeline (`pipeline.rs`) | 2-model plan→execute for code tasks | Complementary, used at ingress line 279 |
 
 Hooks and MoA are independent. Hooks fire reactively during inference.
-MoA fires proactively before inference. They could integrate later (hook
-signals as quality metadata for arbiter weighting).
+MoA fires proactively before inference. The two are intentionally kept
+separate — worker requests set `mesh_hooks: false` so the hook pipeline
+never re-enters a worker call.
 
 ---
 
