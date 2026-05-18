@@ -104,6 +104,12 @@ struct AcceptedMeshStream {
     stream_type: u8,
 }
 
+enum ClosedConnectionRecovery {
+    Reconnect(EndpointAddr),
+    RemovePeer,
+    AlreadyReplaced,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct QuicBindSelection {
     pub ip: Option<IpAddr>,
@@ -4703,15 +4709,20 @@ impl Node {
         }
     }
 
-    async fn recover_closed_connection(&self, remote: EndpointId) {
-        let addr = self.remove_closed_connection(remote).await;
-        let Some(addr) = addr else {
-            self.remove_peer(remote).await;
-            return;
-        };
-
-        self.reconnect_closed_connection_or_remove(remote, addr)
-            .await;
+    async fn recover_closed_connection(&self, remote: EndpointId, closing_stable_id: usize) {
+        match self
+            .remove_closed_connection(remote, closing_stable_id)
+            .await
+        {
+            ClosedConnectionRecovery::Reconnect(addr) => {
+                self.reconnect_closed_connection_or_remove(remote, addr)
+                    .await;
+            }
+            ClosedConnectionRecovery::RemovePeer => {
+                self.remove_peer(remote).await;
+            }
+            ClosedConnectionRecovery::AlreadyReplaced => {}
+        }
     }
 
     async fn reconnect_closed_connection_or_remove(&self, remote: EndpointId, addr: EndpointAddr) {
@@ -4724,10 +4735,27 @@ impl Node {
         }
     }
 
-    async fn remove_closed_connection(&self, remote: EndpointId) -> Option<EndpointAddr> {
+    async fn remove_closed_connection(
+        &self,
+        remote: EndpointId,
+        closing_stable_id: usize,
+    ) -> ClosedConnectionRecovery {
         let mut state = self.state.lock().await;
+        if !heartbeat::should_remove_connection(
+            state.connections.get(&remote).map(|conn| conn.stable_id()),
+            closing_stable_id,
+        ) {
+            tracing::debug!(
+                "Connection dispatcher for {} closed after the tracked connection was replaced",
+                remote.fmt_short()
+            );
+            return ClosedConnectionRecovery::AlreadyReplaced;
+        }
         state.connections.remove(&remote);
-        state.peers.get(&remote).map(|peer| peer.addr.clone())
+        match state.peers.get(&remote).map(|peer| peer.addr.clone()) {
+            Some(addr) => ClosedConnectionRecovery::Reconnect(addr),
+            None => ClosedConnectionRecovery::RemovePeer,
+        }
     }
 
     async fn reconnect_closed_peer(
@@ -5268,11 +5296,13 @@ impl Node {
 
     async fn _dispatch_streams(&self, conn: Connection, remote: EndpointId) {
         let protocol = connection_protocol(&conn);
+        let dispatcher_stable_id = conn.stable_id();
         loop {
             let accepted = match self.accept_mesh_stream(&conn, remote).await {
                 Ok(accepted) => accepted,
                 Err(()) => {
-                    self.recover_closed_connection(remote).await;
+                    self.recover_closed_connection(remote, dispatcher_stable_id)
+                        .await;
                     break;
                 }
             };

@@ -1,7 +1,8 @@
 use super::heartbeat::{
-    relay_reconnect_reason, should_remove_connection, HeartbeatFailurePolicy, RelayPathSnapshot,
-    RelayPeerHealth, RelayReconnectReason, SelectedPathKind, RELAY_DEGRADED_RTT_MS,
-    RELAY_ONLY_RECONNECT_SECS, RELAY_RECONNECT_COOLDOWN_SECS,
+    relay_reconnect_reason, should_remove_connection, HeartbeatFailurePolicy,
+    HomeRelayStatusTransition, RelayPathSnapshot, RelayPeerHealth, RelayPeerObservation,
+    RelayReconnectController, RelayReconnectReason, SelectedPathKind, RELAY_DEGRADED_RTT_MS,
+    RELAY_MISSING_GRACE_SECS, RELAY_ONLY_RECONNECT_SECS, RELAY_RECONNECT_COOLDOWN_SECS,
 };
 use super::*;
 use crate::api;
@@ -2480,6 +2481,167 @@ fn relay_health_respects_cooldown_and_inflight_requests() {
         ),
         None,
         "missing home relay should suppress churn"
+    );
+}
+
+#[test]
+fn relay_reconnect_controller_prioritizes_degraded_rtt_over_aged_relay() {
+    let now = std::time::Instant::now();
+    let degraded_peer = make_test_endpoint_id(21);
+    let aged_peer = make_test_endpoint_id(22);
+    let mut controller = RelayReconnectController::default();
+
+    let initial = now - std::time::Duration::from_secs(RELAY_ONLY_RECONNECT_SECS + 5);
+    assert_eq!(
+        controller.plan_reconnect(
+            vec![
+                RelayPeerObservation {
+                    peer_id: aged_peer,
+                    snapshot: RelayPathSnapshot {
+                        kind: SelectedPathKind::Relay,
+                        rtt_ms: Some(250),
+                    },
+                },
+                RelayPeerObservation {
+                    peer_id: degraded_peer,
+                    snapshot: RelayPathSnapshot {
+                        kind: SelectedPathKind::Relay,
+                        rtt_ms: Some(250),
+                    },
+                },
+            ],
+            initial,
+            0,
+            true,
+        ),
+        None
+    );
+
+    assert_eq!(
+        controller.plan_reconnect(
+            vec![
+                RelayPeerObservation {
+                    peer_id: aged_peer,
+                    snapshot: RelayPathSnapshot {
+                        kind: SelectedPathKind::Relay,
+                        rtt_ms: Some(250),
+                    },
+                },
+                RelayPeerObservation {
+                    peer_id: degraded_peer,
+                    snapshot: RelayPathSnapshot {
+                        kind: SelectedPathKind::Relay,
+                        rtt_ms: Some(RELAY_DEGRADED_RTT_MS + 25),
+                    },
+                },
+            ],
+            now,
+            0,
+            true,
+        ),
+        Some((degraded_peer, RelayReconnectReason::RelayRttDegraded)),
+        "high relay RTT should refresh before merely aged relay paths"
+    );
+}
+
+#[test]
+fn relay_reconnect_controller_tracks_home_relay_missing_and_restored_once() {
+    let now = std::time::Instant::now();
+    let mut controller = RelayReconnectController::default();
+
+    assert_eq!(controller.observe_home_relay(true, now), None);
+    assert_eq!(controller.observe_home_relay(false, now), None);
+    assert_eq!(
+        controller.observe_home_relay(
+            false,
+            now + std::time::Duration::from_secs(RELAY_MISSING_GRACE_SECS - 1),
+        ),
+        None,
+        "home relay warning should wait for the grace period"
+    );
+    assert_eq!(
+        controller.observe_home_relay(
+            false,
+            now + std::time::Duration::from_secs(RELAY_MISSING_GRACE_SECS + 2),
+        ),
+        Some(HomeRelayStatusTransition::Missing {
+            missing_secs: RELAY_MISSING_GRACE_SECS + 2
+        })
+    );
+    assert_eq!(
+        controller.observe_home_relay(
+            false,
+            now + std::time::Duration::from_secs(RELAY_MISSING_GRACE_SECS + 10),
+        ),
+        None,
+        "missing relay should not log on every monitor tick"
+    );
+    assert_eq!(
+        controller.observe_home_relay(
+            true,
+            now + std::time::Duration::from_secs(RELAY_MISSING_GRACE_SECS + 20),
+        ),
+        Some(HomeRelayStatusTransition::Restored)
+    );
+}
+
+#[test]
+fn relay_reconnect_controller_applies_cooldown_after_attempt_and_prunes_gone_peers() {
+    let now = std::time::Instant::now();
+    let peer = make_test_endpoint_id(23);
+    let other_peer = make_test_endpoint_id(24);
+    let mut controller = RelayReconnectController::default();
+
+    assert_eq!(
+        controller.plan_reconnect(
+            vec![RelayPeerObservation {
+                peer_id: peer,
+                snapshot: RelayPathSnapshot {
+                    kind: SelectedPathKind::Relay,
+                    rtt_ms: Some(RELAY_DEGRADED_RTT_MS + 10),
+                },
+            }],
+            now,
+            0,
+            true,
+        ),
+        Some((peer, RelayReconnectReason::RelayRttDegraded))
+    );
+
+    controller.record_reconnect_attempt(peer, RelayReconnectReason::RelayRttDegraded, now);
+    assert_eq!(
+        controller.plan_reconnect(
+            vec![RelayPeerObservation {
+                peer_id: peer,
+                snapshot: RelayPathSnapshot {
+                    kind: SelectedPathKind::Relay,
+                    rtt_ms: Some(RELAY_DEGRADED_RTT_MS + 10),
+                },
+            }],
+            now + std::time::Duration::from_secs(RELAY_RECONNECT_COOLDOWN_SECS - 1),
+            0,
+            true,
+        ),
+        None,
+        "attempted reconnects should suppress immediate retry even before the next tick"
+    );
+
+    controller.plan_reconnect(
+        vec![RelayPeerObservation {
+            peer_id: other_peer,
+            snapshot: RelayPathSnapshot {
+                kind: SelectedPathKind::Direct,
+                rtt_ms: Some(15),
+            },
+        }],
+        now + std::time::Duration::from_secs(RELAY_RECONNECT_COOLDOWN_SECS + 1),
+        0,
+        true,
+    );
+
+    assert!(
+        controller.peer_health(peer).is_none(),
+        "controller should prune peers that are no longer active"
     );
 }
 
