@@ -1,6 +1,6 @@
 pub const ABI_VERSION_MAJOR: u32 = 0;
 pub const ABI_VERSION_MINOR: u32 = 1;
-pub const ABI_VERSION_PATCH: u32 = 23;
+pub const ABI_VERSION_PATCH: u32 = 24;
 
 use std::ffi::{c_char, c_int, c_void};
 
