@@ -396,9 +396,15 @@ impl RuntimeState {
 
         // Always clear per-session bookkeeping. The previous version
         // skipped these when reset returned Err, which leaked entries.
+        //
+        // session_resident_prefixes is also cleared here defensively:
+        // it's already removed above on the active-session path, but
+        // calling drop_session_timed for an id that's no longer in
+        // `sessions` (idempotent cleanup, stale callers) must still
+        // clear any stray resident-prefix entry under that id.
         self.session_token_counts.remove(session_id);
         self.session_checkpoints.remove(session_id);
-        // session_resident_prefixes was already removed above (or absent).
+        self.session_resident_prefixes.remove(session_id);
 
         Ok(RuntimeSessionDropStats {
             reset_session,
