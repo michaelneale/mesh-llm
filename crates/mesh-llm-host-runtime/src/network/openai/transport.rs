@@ -2386,11 +2386,21 @@ pub async fn handle_mesh_request(
                 Some(name)
             } else {
                 let cl = router::classify(body_json);
-                let with_caps: Vec<(&str, f64, crate::models::ModelCapabilities)> = served
+                let routing_metrics = node.routing_metrics();
+                let with_caps: Vec<router::RoutingCandidate<'_>> = served
                     .iter()
                     .map(|name| {
                         let caps = capabilities_for_model(name, &descriptors);
-                        (name.as_str(), 0.0, caps)
+                        let (tps_hint, throughput_samples) = routing_metrics
+                            .tps_for_model(name)
+                            .map(|(tps, samples)| (Some(tps), samples))
+                            .unwrap_or((None, 0));
+                        router::RoutingCandidate {
+                            name: name.as_str(),
+                            caps,
+                            tps_hint,
+                            throughput_samples,
+                        }
                     })
                     .collect();
                 let Some(available) =

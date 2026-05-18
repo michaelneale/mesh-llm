@@ -183,15 +183,23 @@ pub(crate) async fn api_proxy(
                                     }
                                 }
                             }
-                            let available: Vec<(&str, f64, crate::models::ModelCapabilities)> =
-                                available_models
-                                    .iter()
-                                    .map(|name| {
-                                        let caps =
-                                            proxy::capabilities_for_model(name, &descriptors);
-                                        (name.as_str(), 0.0, caps)
-                                    })
-                                    .collect();
+                            let routing_metrics = node.routing_metrics();
+                            let available: Vec<router::RoutingCandidate<'_>> = available_models
+                                .iter()
+                                .map(|name| {
+                                    let caps = proxy::capabilities_for_model(name, &descriptors);
+                                    let (tps_hint, throughput_samples) = routing_metrics
+                                        .tps_for_model(name)
+                                        .map(|(tps, samples)| (Some(tps), samples))
+                                        .unwrap_or((None, 0));
+                                    router::RoutingCandidate {
+                                        name: name.as_str(),
+                                        caps,
+                                        tps_hint,
+                                        throughput_samples,
+                                    }
+                                })
+                                .collect();
                             let Some(available) =
                                 router::filter_media_compatible_candidates(&available, &media)
                             else {

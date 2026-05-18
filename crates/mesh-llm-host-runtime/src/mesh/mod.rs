@@ -1851,6 +1851,12 @@ impl Node {
             .load(std::sync::atomic::Ordering::Relaxed) as u64
     }
 
+    /// Locally observed routing metrics, used by the auto-router to score
+    /// models by their measured throughput from this node's perspective.
+    pub fn routing_metrics(&self) -> &crate::network::metrics::RoutingMetrics {
+        &self.routing_metrics
+    }
+
     pub fn inflight_change_rx(&self) -> watch::Receiver<u64> {
         self.inflight_change_tx.subscribe()
     }
