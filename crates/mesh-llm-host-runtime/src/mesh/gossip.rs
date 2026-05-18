@@ -3,6 +3,111 @@
 
 use super::*;
 
+/// Minimum peer version we accept into the local mesh table and re-broadcast.
+///
+/// Peers below this floor are rejected at ingest in both `add_peer`
+/// (direct gossip exchange) and `update_transitive_peer` (gossip relayed
+/// by a bridge peer). They do not appear in `/api/status`, do not appear
+/// in the UI, and are not included in outbound gossip. A peer that updates
+/// and re-announces with a version at or above the floor is accepted on
+/// the next exchange.
+///
+/// v0.60.0 is the cut where the on-wire `hardware` block landed; peers
+/// older than that predate several gossip fields the current mesh relies
+/// on. Peers that don't advertise a version at all (some legacy nodes
+/// leave the field unset) are conservatively accepted, on the theory that
+/// a missing version is more likely to be a legitimate old node than a
+/// targeted bypass.
+const MIN_REBROADCAST_VERSION_MAJOR: u64 = 0;
+const MIN_REBROADCAST_VERSION_MINOR: u64 = 60;
+
+/// Returns `true` if `version` is recent enough to include in outbound
+/// gossip. `None` (no advertised version) returns `true` for back-compat.
+/// Build metadata after `+` is stripped before parsing.
+pub(super) fn version_allowed_for_rebroadcast(version: Option<&str>) -> bool {
+    let Some(raw) = version else {
+        return true;
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    // Strip build metadata ("0.65.1+skippy.20260504.kv.2" → "0.65.1") and
+    // pre-release tag ("0.63.0-rc5" → "0.63.0") so the comparison is
+    // purely on the major.minor numeric pair.
+    let core = trimmed
+        .split('+')
+        .next()
+        .unwrap_or(trimmed)
+        .split('-')
+        .next()
+        .unwrap_or(trimmed);
+    let mut parts = core.split('.');
+    let Some(major) = parts.next().and_then(|s| s.parse::<u64>().ok()) else {
+        return true; // Unparseable — don't penalise; conservative default.
+    };
+    let Some(minor) = parts.next().and_then(|s| s.parse::<u64>().ok()) else {
+        return true;
+    };
+    if major != MIN_REBROADCAST_VERSION_MAJOR {
+        // Any major > floor (e.g. v1.x.y) is allowed; any major < floor is
+        // refused. With MIN_REBROADCAST_VERSION_MAJOR == 0, the "less than"
+        // case cannot occur, but we keep the comparison structure for the
+        // day the floor bumps to a non-zero major.
+        return major > MIN_REBROADCAST_VERSION_MAJOR;
+    }
+    minor >= MIN_REBROADCAST_VERSION_MINOR
+}
+
+/// Returns `true` if the announcement describes a peer the mesh has no
+/// observable use for via transitive gossip: a `Client`-role peer that
+/// advertises **no identity** (no hostname), has **never been directly
+/// measured** by any peer in the mesh, and has **no model interests**
+/// (no requested/serving/hosted models).
+///
+/// Three independent signals must all be absent before we treat a peer
+/// as a gossip-only ghost:
+///
+/// 1. `hostname` — populated synchronously by `system::hardware::survey()`
+///    at node construction. Every real client on every supported platform
+///    has one from its first gossip frame.
+///
+/// 2. `latency_source == Direct` — set when *any* peer in the mesh has
+///    measured this peer's RTT via direct contact, then propagated
+///    through gossip. A peer with a direct measurement is real — someone
+///    reached it on the network. The v0.57 swarm uniformly has
+///    `latency_source = Unknown`; no peer has ever directly contacted
+///    one.
+///
+/// 3. model interests (`requested`/`serving`/`hosted`) — any of these
+///    being populated makes the peer useful to the mesh (demand signal
+///    or routable capacity).
+///
+/// A peer that fails all three is invisible to routing, untraceable on
+/// the network, and contributes no demand signal. Real idle clients
+/// survive: they have a hostname. Real reachable clients survive: they
+/// have a direct measurement. Real demand-signaling clients survive:
+/// they have a requested model.
+///
+/// Direct ingest in `add_peer` ignores this check — a client we actually
+/// connect to is admitted regardless of what they advertise.
+pub(super) fn peer_is_idle_transitive_client(ann: &PeerAnnouncement) -> bool {
+    let directly_measured = matches!(
+        ann.latency_source,
+        Some(crate::proto::node::LatencySource::Direct)
+    );
+    matches!(ann.role, NodeRole::Client)
+        && ann.hostname.is_none()
+        && !directly_measured
+        && ann.requested_models.is_empty()
+        && ann.serving_models.is_empty()
+        && ann
+            .hosted_models
+            .as_ref()
+            .map(|h| h.is_empty())
+            .unwrap_or(true)
+}
+
 pub fn backfill_legacy_descriptors(ann: &mut PeerAnnouncement) {
     if ann.served_model_descriptors.is_empty() {
         let primary_model_name = ann
@@ -404,6 +509,22 @@ impl Node {
         addr: EndpointAddr,
         ann: &PeerAnnouncement,
     ) {
+        // Reject ingest from peers below the supported version floor. They
+        // are not added to local state, do not appear in /api/status, and
+        // are not re-broadcast. A peer that updates and re-announces will
+        // be accepted on the next exchange.
+        if !version_allowed_for_rebroadcast(ann.version.as_deref()) {
+            tracing::debug!(
+                "Refusing direct peer {} below version floor (advertised {:?})",
+                id.fmt_short(),
+                ann.version
+            );
+            let mut state = self.state.lock().await;
+            if state.peers.remove(&id).is_some() {
+                let _ = self.peer_change_tx.send(state.peers.len());
+            }
+            return;
+        }
         let trust_store = self.trust_store.lock().await.clone();
         let owner_summary = verify_node_ownership(
             ann.owner_attestation.as_ref(),
@@ -572,6 +693,34 @@ impl Node {
         ann: &PeerAnnouncement,
         bridge_id: EndpointId,
     ) {
+        // Refuse transitive ingest from peers below the supported version
+        // floor. Keeps the local table free of pre-floor gossip filler;
+        // /api/status, the UI, and routing all stop seeing them.
+        if !version_allowed_for_rebroadcast(ann.version.as_deref()) {
+            let mut state = self.state.lock().await;
+            if state.peers.remove(&id).is_some() {
+                let _ = self.peer_change_tx.send(state.peers.len());
+            }
+            return;
+        }
+        // Refuse transitive ingest of idle clients — clients that aren't
+        // asking for any model, aren't serving anything, and aren't hosting
+        // anything. They contribute nothing the mesh can use:
+        //   - not routable to (no model to serve)
+        //   - not findable (clients-don't-dial-clients by design)
+        //   - no demand signal (empty requested_models)
+        //   - not relaying for us (no connection — purely transitive)
+        // The moment any of those become non-empty, this filter stops firing
+        // and the peer is admitted normally. Direct connections (`add_peer`)
+        // are never affected — a client that actually contacts us still
+        // gets in.
+        if peer_is_idle_transitive_client(ann) {
+            let mut state = self.state.lock().await;
+            if state.peers.remove(&id).is_some() {
+                let _ = self.peer_change_tx.send(state.peers.len());
+            }
+            return;
+        }
         let trust_store = self.trust_store.lock().await.clone();
         let owner_summary = verify_node_ownership(
             ann.owner_attestation.as_ref(),
@@ -675,12 +824,23 @@ impl Node {
         // on the hot gossip path.
         let my_model_metadata: Vec<_> = Vec::new();
         let my_model_sizes: HashMap<_, _> = HashMap::new();
+        let mut filtered_old_version: usize = 0;
         let mut announcements: Vec<PeerAnnouncement> = {
             let state = self.state.lock().await;
             state
                 .peers
                 .values()
                 .filter(|p| p.last_seen >= stale_cutoff || p.last_mentioned >= stale_cutoff)
+                .filter(|p| {
+                    // Belt-and-braces: ingest gates already reject below-floor
+                    // peers, but if one slipped through (e.g. version mutated
+                    // after ingest), still exclude from outbound gossip.
+                    let allowed = version_allowed_for_rebroadcast(p.version.as_deref());
+                    if !allowed {
+                        filtered_old_version += 1;
+                    }
+                    allowed
+                })
                 .map(|p| {
                     let latency = p.display_latency();
                     PeerAnnouncement {
@@ -732,6 +892,15 @@ impl Node {
                 })
                 .collect()
         };
+        if filtered_old_version > 0 {
+            tracing::debug!(
+                filtered = filtered_old_version,
+                "gossip: omitting {} peer(s) below v{}.{}.0 from outbound rebroadcast",
+                filtered_old_version,
+                MIN_REBROADCAST_VERSION_MAJOR,
+                MIN_REBROADCAST_VERSION_MINOR,
+            );
+        }
         let my_first_joined_mesh_ts = *self.first_joined_mesh_ts.lock().await;
         announcements.push(PeerAnnouncement {
             addr: self.endpoint_addr_for_advertisement(),
@@ -1043,6 +1212,254 @@ mod tests {
         assert_eq!(
             self_announcement.explicit_model_interests,
             vec!["Qwen/Qwen3-Coder-Next-GGUF@main:Q4_K_M".to_string()]
+        );
+    }
+
+    #[test]
+    fn version_allowed_for_rebroadcast_handles_floor() {
+        // At or above the floor — allowed.
+        assert!(version_allowed_for_rebroadcast(Some("0.60.0")));
+        assert!(version_allowed_for_rebroadcast(Some("0.60.2")));
+        assert!(version_allowed_for_rebroadcast(Some("0.64.0")));
+        assert!(version_allowed_for_rebroadcast(Some("0.65.1")));
+        assert!(version_allowed_for_rebroadcast(Some("1.0.0")));
+        // Below the floor — refused.
+        assert!(!version_allowed_for_rebroadcast(Some("0.57.0")));
+        assert!(!version_allowed_for_rebroadcast(Some("0.55.1")));
+        assert!(!version_allowed_for_rebroadcast(Some("0.58.0")));
+        assert!(!version_allowed_for_rebroadcast(Some("0.59.99")));
+    }
+
+    #[test]
+    fn version_allowed_for_rebroadcast_handles_metadata_and_prerelease() {
+        // Build metadata is stripped.
+        assert!(version_allowed_for_rebroadcast(Some(
+            "0.65.1+skippy.20260504.kv.2"
+        )));
+        assert!(!version_allowed_for_rebroadcast(Some("0.57.0+anything")));
+        // Pre-release tags are stripped — 0.63.0-rc5 still passes.
+        assert!(version_allowed_for_rebroadcast(Some("0.63.0-rc5")));
+        assert!(!version_allowed_for_rebroadcast(Some("0.58.0-beta")));
+    }
+
+    #[test]
+    fn version_allowed_for_rebroadcast_is_conservative_on_unknown() {
+        // Unparseable / missing / empty — preserved (don't drop legacy nodes
+        // that never advertised a version).
+        assert!(version_allowed_for_rebroadcast(None));
+        assert!(version_allowed_for_rebroadcast(Some("")));
+        assert!(version_allowed_for_rebroadcast(Some("   ")));
+        assert!(version_allowed_for_rebroadcast(Some("garbage")));
+        assert!(version_allowed_for_rebroadcast(Some("0")));
+        assert!(version_allowed_for_rebroadcast(Some("0.x")));
+    }
+
+    #[tokio::test]
+    async fn transitive_ingest_rejects_below_version_floor() {
+        let node = Node::new_for_tests(NodeRole::Worker).await.unwrap();
+
+        let old_addr = test_addr(0x57);
+        let new_addr = test_addr(0x65);
+        let old_id = old_addr.id;
+        let new_id = new_addr.id;
+
+        let mut old_ann = test_announcement(None);
+        old_ann.addr = old_addr.clone();
+        old_ann.role = NodeRole::Client;
+        old_ann.version = Some("0.57.0".to_string());
+        let mut new_ann = test_announcement(None);
+        new_ann.addr = new_addr.clone();
+        new_ann.role = NodeRole::Client;
+        new_ann.version = Some("0.65.0".to_string());
+        // Give the v0.65.0 client a demand signal so the idle-transitive-
+        // client filter (a separate gate) doesn't drop it — this test
+        // exercises the version floor specifically.
+        new_ann.requested_models = vec!["Qwen3-8B-Q4_K_M".to_string()];
+
+        let bridge = test_endpoint_id(0xBB);
+        node.update_transitive_peer(old_id, &old_addr, &old_ann, bridge)
+            .await;
+        node.update_transitive_peer(new_id, &new_addr, &new_ann, bridge)
+            .await;
+
+        // Old peer must NOT be in local state — it was rejected at ingest.
+        // New peer must be present.
+        {
+            let state = node.state.lock().await;
+            assert!(
+                !state.peers.contains_key(&old_id),
+                "v0.57.0 peer must be rejected at ingest, not appear in local state"
+            );
+            assert!(
+                state.peers.contains_key(&new_id),
+                "v0.65.0 peer should be added to local state"
+            );
+        }
+
+        // Outbound gossip must also exclude the old peer.
+        let announcements = node.collect_announcements().await;
+        assert!(
+            !announcements.iter().any(|a| a.addr.id == old_id),
+            "v0.57.0 peer must not appear in outbound gossip"
+        );
+        assert!(
+            announcements.iter().any(|a| a.addr.id == new_id),
+            "v0.65.0 peer should appear in outbound gossip"
+        );
+    }
+
+    #[test]
+    fn peer_is_idle_transitive_client_basic_shapes() {
+        // Empty idle client: no hostname, no direct measurement, no
+        // interests → caught.
+        let mut ann = test_announcement(None);
+        ann.role = NodeRole::Client;
+        assert!(peer_is_idle_transitive_client(&ann));
+
+        // Real idle user with a hostname → kept.
+        let mut ann = test_announcement(None);
+        ann.role = NodeRole::Client;
+        ann.hostname = Some("Sams-MacBook-Pro.local".into());
+        assert!(!peer_is_idle_transitive_client(&ann));
+
+        // Hostname-less client that someone directly measured → kept.
+        let mut ann = test_announcement(None);
+        ann.role = NodeRole::Client;
+        ann.latency_source = Some(crate::proto::node::LatencySource::Direct);
+        assert!(!peer_is_idle_transitive_client(&ann));
+
+        // Estimated latency (propagated guess, not direct) — still caught;
+        // only Direct counts as proof of contact.
+        let mut ann = test_announcement(None);
+        ann.role = NodeRole::Client;
+        ann.latency_source = Some(crate::proto::node::LatencySource::Estimated);
+        assert!(peer_is_idle_transitive_client(&ann));
+
+        // Client asking for a model → kept (demand signal).
+        let mut ann = test_announcement(None);
+        ann.role = NodeRole::Client;
+        ann.requested_models = vec!["Qwen3-8B-Q4_K_M".to_string()];
+        assert!(!peer_is_idle_transitive_client(&ann));
+
+        // Client somehow advertising serving → kept.
+        let mut ann = test_announcement(None);
+        ann.role = NodeRole::Client;
+        ann.serving_models = vec!["Qwen3-8B-Q4_K_M".to_string()];
+        assert!(!peer_is_idle_transitive_client(&ann));
+
+        // Client advertising hosted → kept.
+        let mut ann = test_announcement(None);
+        ann.role = NodeRole::Client;
+        ann.hosted_models = Some(vec!["Qwen3-8B-Q4_K_M".to_string()]);
+        assert!(!peer_is_idle_transitive_client(&ann));
+
+        // Host → never caught regardless of other fields.
+        let mut ann = test_announcement(None);
+        ann.role = NodeRole::Host { http_port: 9337 };
+        assert!(!peer_is_idle_transitive_client(&ann));
+
+        // Worker → never caught.
+        let mut ann = test_announcement(None);
+        ann.role = NodeRole::Worker;
+        assert!(!peer_is_idle_transitive_client(&ann));
+    }
+
+    #[tokio::test]
+    async fn transitive_ingest_drops_idle_clients_but_keeps_clients_with_demand() {
+        let node = Node::new_for_tests(NodeRole::Worker).await.unwrap();
+
+        let idle_addr = test_addr(0xC1);
+        let demand_addr = test_addr(0xC2);
+        let host_addr = test_addr(0xC3);
+        let idle_id = idle_addr.id;
+        let demand_id = demand_addr.id;
+        let host_id = host_addr.id;
+
+        // Idle client — should be dropped at transitive ingest.
+        let mut idle = test_announcement(None);
+        idle.addr = idle_addr.clone();
+        idle.role = NodeRole::Client;
+        idle.version = Some("0.65.1".to_string());
+
+        // Client asking for a model — must be kept (demand signal).
+        let mut with_demand = test_announcement(None);
+        with_demand.addr = demand_addr.clone();
+        with_demand.role = NodeRole::Client;
+        with_demand.version = Some("0.65.1".to_string());
+        with_demand.requested_models = vec!["Qwen3-8B-Q4_K_M".to_string()];
+
+        // Host — must be kept (real compute).
+        let mut host = test_announcement(None);
+        host.addr = host_addr.clone();
+        host.role = NodeRole::Host { http_port: 9337 };
+        host.version = Some("0.65.1".to_string());
+        host.serving_models = vec!["Qwen3-8B-Q4_K_M".to_string()];
+
+        let bridge = test_endpoint_id(0xBB);
+        node.update_transitive_peer(idle_id, &idle_addr, &idle, bridge)
+            .await;
+        node.update_transitive_peer(demand_id, &demand_addr, &with_demand, bridge)
+            .await;
+        node.update_transitive_peer(host_id, &host_addr, &host, bridge)
+            .await;
+
+        let state = node.state.lock().await;
+        assert!(
+            !state.peers.contains_key(&idle_id),
+            "idle transitive client must be rejected"
+        );
+        assert!(
+            state.peers.contains_key(&demand_id),
+            "client with requested_models must be kept (demand signal)"
+        );
+        assert!(
+            state.peers.contains_key(&host_id),
+            "host must be kept (real compute)"
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_add_peer_admits_idle_clients() {
+        // Idle clients we actually directly contact are still admitted.
+        // The predicate is for transitive ingest only — a direct connection
+        // is proof of life and the peer is observable.
+        let node = Node::new_for_tests(NodeRole::Worker).await.unwrap();
+        let addr = test_addr(0xC4);
+        let id = addr.id;
+
+        let mut ann = test_announcement(None);
+        ann.addr = addr.clone();
+        ann.role = NodeRole::Client;
+        ann.version = Some("0.65.1".to_string());
+        // No requested, no serving, no hosted — pure idle client.
+
+        node.add_peer(id, addr, &ann).await;
+
+        let state = node.state.lock().await;
+        assert!(
+            state.peers.contains_key(&id),
+            "direct idle client must be admitted (direct contact is proof of life)"
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_add_peer_rejects_below_version_floor() {
+        let node = Node::new_for_tests(NodeRole::Worker).await.unwrap();
+
+        let addr = test_addr(0x57);
+        let id = addr.id;
+
+        let mut ann = test_announcement(None);
+        ann.addr = addr.clone();
+        ann.role = NodeRole::Client;
+        ann.version = Some("0.57.0".to_string());
+
+        node.add_peer(id, addr, &ann).await;
+
+        let state = node.state.lock().await;
+        assert!(
+            !state.peers.contains_key(&id),
+            "direct add of v0.57.0 peer must be rejected (no local state entry)"
         );
     }
 }
