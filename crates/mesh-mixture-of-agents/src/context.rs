@@ -277,3 +277,284 @@ pub fn pack_for_tool_result_turn(
 
     (messages, tools)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::normalize::{OutputKind, WorkerOutput};
+    use serde_json::json;
+
+    fn user_msg(text: &str) -> Value {
+        json!({"role": "user", "content": text})
+    }
+    fn system_msg(text: &str) -> Value {
+        json!({"role": "system", "content": text})
+    }
+    fn assistant_msg(text: &str) -> Value {
+        json!({"role": "assistant", "content": text})
+    }
+    fn tools_two() -> Value {
+        json!([
+            {"type": "function", "function": {
+                "name": "read_file",
+                "description": "Read a file from disk",
+                "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}
+            }},
+            {"type": "function", "function": {
+                "name": "web_search",
+                "description": "Search the web",
+                "parameters": {"type": "object", "properties": {"q": {"type": "string"}}}
+            }},
+        ])
+    }
+
+    fn session_with(messages: &[Value], tools: Option<Value>) -> Session {
+        let mut s = Session::new();
+        s.ingest(messages, &tools);
+        s
+    }
+
+    /// Helper: extract the system message content from a packed message vec.
+    fn system_text(messages: &[Value]) -> String {
+        messages
+            .iter()
+            .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("system"))
+            .and_then(|m| m.get("content").and_then(|c| c.as_str()))
+            .unwrap_or("")
+            .to_string()
+    }
+
+    // ── pack_for_worker: shape contract per role ─────────────────────
+
+    #[test]
+    fn fast_worker_has_system_user_only_no_tools() {
+        let s = session_with(
+            &[
+                system_msg("You are a helpful assistant."),
+                user_msg("first"),
+                assistant_msg("first reply"),
+                user_msg("second"),
+            ],
+            Some(tools_two()),
+        );
+        let packed = pack_for_worker(&s, WorkerRole::Fast, true);
+
+        assert_eq!(packed.max_tokens, 256, "fast worker token budget");
+        assert!(
+            packed.tools.is_none(),
+            "fast worker must not receive tool schemas"
+        );
+        assert_eq!(packed.messages.len(), 2, "fast = system + last user only");
+        assert_eq!(
+            packed.messages[0].get("role").and_then(|r| r.as_str()),
+            Some("system"),
+        );
+        assert_eq!(
+            packed.messages[1].get("role").and_then(|r| r.as_str()),
+            Some("user"),
+        );
+        assert_eq!(
+            packed.messages[1].get("content").and_then(|c| c.as_str()),
+            Some("second"),
+            "fast worker sees only the LAST user message",
+        );
+
+        // Tool *names* appear in system prompt; full schemas do not.
+        let sys = system_text(&packed.messages);
+        assert!(
+            sys.contains("read_file"),
+            "tool names present in system: {sys}"
+        );
+        assert!(
+            sys.contains("web_search"),
+            "tool names present in system: {sys}"
+        );
+        assert!(
+            !sys.contains("\"parameters\""),
+            "fast worker system must not contain JSON Schema fragments: {sys}",
+        );
+    }
+
+    #[test]
+    fn specialist_worker_has_summaries_and_native_tools() {
+        let s = session_with(
+            &[
+                system_msg("Agent SP."),
+                user_msg("m1"),
+                assistant_msg("r1"),
+                user_msg("m2"),
+                assistant_msg("r2"),
+                user_msg("m3"),
+            ],
+            Some(tools_two()),
+        );
+        let packed = pack_for_worker(&s, WorkerRole::Specialist, true);
+
+        assert_eq!(packed.max_tokens, 512, "specialist token budget");
+        assert!(
+            packed.tools.is_some(),
+            "specialist must receive full native tool schemas",
+        );
+        // Tool *summaries* (name + description) must be in the system prompt.
+        let sys = system_text(&packed.messages);
+        assert!(sys.contains("read_file"));
+        assert!(
+            sys.contains("Read a file"),
+            "specialist system should include tool descriptions: {sys}",
+        );
+
+        // Last message is the latest user turn ("m3").
+        let last = packed.messages.last().unwrap();
+        assert_eq!(last.get("role").and_then(|r| r.as_str()), Some("user"));
+        assert_eq!(last.get("content").and_then(|c| c.as_str()), Some("m3"));
+    }
+
+    #[test]
+    fn strong_worker_has_deep_history_and_native_tools() {
+        // Build a session with many turns so we can verify depth.
+        let mut msgs = vec![system_msg("Agent ST.")];
+        for i in 0..8 {
+            msgs.push(user_msg(&format!("u{i}")));
+            msgs.push(assistant_msg(&format!("a{i}")));
+        }
+        msgs.push(user_msg("final"));
+        let s = session_with(&msgs, Some(tools_two()));
+
+        let packed = pack_for_worker(&s, WorkerRole::Strong, true);
+
+        assert_eq!(packed.max_tokens, 1024, "strong token budget");
+        assert!(
+            packed.tools.is_some(),
+            "strong must receive full native tool schemas",
+        );
+        // Strong gets up to last 10 messages on top of the system prompt,
+        // so it should see deeper history than the specialist's 4-message window.
+        assert!(
+            packed.messages.len() >= 6,
+            "strong worker should retain deep history, got {} messages",
+            packed.messages.len(),
+        );
+        let last = packed.messages.last().unwrap();
+        assert_eq!(last.get("content").and_then(|c| c.as_str()), Some("final"));
+    }
+
+    #[test]
+    fn generalist_and_reducer_roles_use_strong_shape() {
+        let s = session_with(&[system_msg("Agent."), user_msg("hi")], Some(tools_two()));
+        let g = pack_for_worker(&s, WorkerRole::Generalist, true);
+        let r = pack_for_worker(&s, WorkerRole::Reducer, true);
+        assert_eq!(g.max_tokens, 1024);
+        assert_eq!(r.max_tokens, 1024);
+        assert!(g.tools.is_some());
+        assert!(r.tools.is_some());
+    }
+
+    // ── MoA preamble: augment, don't replace ─────────────────────────
+
+    #[test]
+    fn preamble_augments_existing_system_prompt() {
+        let s = session_with(
+            &[
+                system_msg("CUSTOM_AGENT_INSTRUCTIONS_MARKER"),
+                user_msg("hi"),
+            ],
+            None,
+        );
+        let packed = pack_for_worker(&s, WorkerRole::Strong, false);
+        let sys = system_text(&packed.messages);
+        assert!(
+            sys.contains("CUSTOM_AGENT_INSTRUCTIONS_MARKER"),
+            "agent's original system prompt must survive: {sys}",
+        );
+        assert!(
+            sys.contains("Multiple models"),
+            "MoA preamble must be present: {sys}",
+        );
+    }
+
+    #[test]
+    fn preamble_only_when_no_system_prompt() {
+        let s = session_with(&[user_msg("hi")], None);
+        let packed = pack_for_worker(&s, WorkerRole::Strong, false);
+        let sys = system_text(&packed.messages);
+        assert!(
+            !sys.is_empty(),
+            "should synthesize a system prompt from preamble"
+        );
+        assert!(sys.contains("Multiple models"));
+    }
+
+    // ── pack_for_reducer: includes reason + worker outputs ───────────
+
+    fn worker_out(model: &str, payload: &str) -> WorkerOutput {
+        WorkerOutput {
+            kind: OutputKind::Answer,
+            confidence: 0.6,
+            tool_name: None,
+            tool_arguments: None,
+            payload: payload.to_string(),
+            model: model.to_string(),
+            role: WorkerRole::Strong,
+            elapsed_ms: 0,
+        }
+    }
+
+    #[test]
+    fn reducer_context_includes_reason_and_worker_payloads() {
+        let s = session_with(
+            &[
+                system_msg("Agent R."),
+                user_msg("which is bigger, 7^3 or 350?"),
+            ],
+            Some(tools_two()),
+        );
+        let outputs = vec![
+            worker_out("alpha", "It's 7^3 = 343, smaller than 350."),
+            worker_out("beta", "350 is bigger."),
+        ];
+        let (messages, tools) = pack_for_reducer(&s, &outputs, "tie between answers", true);
+
+        let sys = system_text(&messages);
+        assert!(
+            sys.contains("tie between answers"),
+            "reason must appear in reducer system: {sys}",
+        );
+        assert!(sys.contains("alpha"), "worker model labels must appear");
+        assert!(sys.contains("beta"));
+        assert!(sys.contains("7^3 = 343"));
+        assert!(sys.contains("350 is bigger"));
+        assert!(
+            tools.is_some(),
+            "reducer should still have native tool schemas",
+        );
+
+        // Last message should be the user's actual query.
+        let last = messages.last().unwrap();
+        assert_eq!(last.get("role").and_then(|r| r.as_str()), Some("user"));
+        assert_eq!(
+            last.get("content").and_then(|c| c.as_str()),
+            Some("which is bigger, 7^3 or 350?"),
+        );
+    }
+
+    #[test]
+    fn reducer_truncates_long_worker_payloads() {
+        let s = session_with(&[user_msg("go")], None);
+        let big = "x".repeat(2000);
+        let outputs = vec![worker_out("alpha", &big)];
+
+        let (messages, _tools) = pack_for_reducer(&s, &outputs, "conflict", false);
+        let sys = system_text(&messages);
+
+        // Long payloads must be truncated (cap is ~500 chars + ellipsis).
+        // The full 2000-char string must NOT appear verbatim.
+        assert!(
+            !sys.contains(&big),
+            "reducer must truncate long worker payloads to keep context bounded",
+        );
+        assert!(
+            sys.contains("..."),
+            "truncated payloads should be marked with an ellipsis",
+        );
+    }
+}
