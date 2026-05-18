@@ -61,18 +61,44 @@ pub(super) fn version_allowed_for_rebroadcast(version: Option<&str>) -> bool {
 
 /// Returns `true` if the announcement describes a peer the mesh has no
 /// observable use for via transitive gossip: a `Client`-role peer that
-/// isn't asking for, serving, or hosting any model.
+/// advertises **no identity** (no hostname), has **never been directly
+/// measured** by any peer in the mesh, and has **no model interests**
+/// (no requested/serving/hosted models).
 ///
-/// Such a peer contributes nothing through transitive propagation — they
-/// can't be routed to (no model), they can't be dialed (clients don't
-/// dial clients), they carry no demand signal (empty `requested_models`),
-/// and they aren't relaying anything for us (purely transitive means
-/// there's no connection through which they could relay).
+/// Three independent signals must all be absent before we treat a peer
+/// as a gossip-only ghost:
+///
+/// 1. `hostname` — populated synchronously by `system::hardware::survey()`
+///    at node construction. Every real client on every supported platform
+///    has one from its first gossip frame.
+///
+/// 2. `latency_source == Direct` — set when *any* peer in the mesh has
+///    measured this peer's RTT via direct contact, then propagated
+///    through gossip. A peer with a direct measurement is real — someone
+///    reached it on the network. The v0.57 swarm uniformly has
+///    `latency_source = Unknown`; no peer has ever directly contacted
+///    one.
+///
+/// 3. model interests (`requested`/`serving`/`hosted`) — any of these
+///    being populated makes the peer useful to the mesh (demand signal
+///    or routable capacity).
+///
+/// A peer that fails all three is invisible to routing, untraceable on
+/// the network, and contributes no demand signal. Real idle clients
+/// survive: they have a hostname. Real reachable clients survive: they
+/// have a direct measurement. Real demand-signaling clients survive:
+/// they have a requested model.
 ///
 /// Direct ingest in `add_peer` ignores this check — a client we actually
-/// connect to is admitted normally regardless of what they advertise.
+/// connect to is admitted regardless of what they advertise.
 pub(super) fn peer_is_idle_transitive_client(ann: &PeerAnnouncement) -> bool {
+    let directly_measured = matches!(
+        ann.latency_source,
+        Some(crate::proto::node::LatencySource::Direct)
+    );
     matches!(ann.role, NodeRole::Client)
+        && ann.hostname.is_none()
+        && !directly_measured
         && ann.requested_models.is_empty()
         && ann.serving_models.is_empty()
         && ann
@@ -1284,24 +1310,44 @@ mod tests {
 
     #[test]
     fn peer_is_idle_transitive_client_basic_shapes() {
-        // Idle client → caught.
+        // Empty idle client: no hostname, no direct measurement, no
+        // interests → caught.
         let mut ann = test_announcement(None);
         ann.role = NodeRole::Client;
         assert!(peer_is_idle_transitive_client(&ann));
 
-        // Client asking for a model → not caught (demand signal matters).
+        // Real idle user with a hostname → kept.
+        let mut ann = test_announcement(None);
+        ann.role = NodeRole::Client;
+        ann.hostname = Some("Sams-MacBook-Pro.local".into());
+        assert!(!peer_is_idle_transitive_client(&ann));
+
+        // Hostname-less client that someone directly measured → kept.
+        let mut ann = test_announcement(None);
+        ann.role = NodeRole::Client;
+        ann.latency_source = Some(crate::proto::node::LatencySource::Direct);
+        assert!(!peer_is_idle_transitive_client(&ann));
+
+        // Estimated latency (propagated guess, not direct) — still caught;
+        // only Direct counts as proof of contact.
+        let mut ann = test_announcement(None);
+        ann.role = NodeRole::Client;
+        ann.latency_source = Some(crate::proto::node::LatencySource::Estimated);
+        assert!(peer_is_idle_transitive_client(&ann));
+
+        // Client asking for a model → kept (demand signal).
         let mut ann = test_announcement(None);
         ann.role = NodeRole::Client;
         ann.requested_models = vec!["Qwen3-8B-Q4_K_M".to_string()];
         assert!(!peer_is_idle_transitive_client(&ann));
 
-        // Client somehow advertising serving → not caught.
+        // Client somehow advertising serving → kept.
         let mut ann = test_announcement(None);
         ann.role = NodeRole::Client;
         ann.serving_models = vec!["Qwen3-8B-Q4_K_M".to_string()];
         assert!(!peer_is_idle_transitive_client(&ann));
 
-        // Client advertising hosted → not caught.
+        // Client advertising hosted → kept.
         let mut ann = test_announcement(None);
         ann.role = NodeRole::Client;
         ann.hosted_models = Some(vec!["Qwen3-8B-Q4_K_M".to_string()]);
