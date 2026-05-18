@@ -13,29 +13,100 @@ and return one coherent OpenAI-compatible response.
 ## How it works
 
 ```
-Agent / Goose / pi
-    │
-    │  POST /v1/chat/completions { "model": "mesh" }
-    ▼
- Mesh proxy (ingress.rs)
-   │
-   │  intercepts model == "mesh", builds GatewayConfig
-   ▼
- MoA handle_turn()
-   ├─ role-shaped context slicing (real agent context, not synthetic)
-   ├─ parallel fan-out via ModelBackend trait
-   ├─ early-exit on consensus (cancel slow workers)
-   ├─ deterministic arbiter (code, not models)
-   ├─ reducer escalation only on genuine conflict
-   └─ native tool_call support through full pipeline
-         │
-         ├──► fast worker    — system prompt + last msg + tool names
-         ├──► specialist     — system prompt + 4 msgs + tool summaries
-         └──► strong/reducer — system prompt + 10 msgs + full tool schemas
+       Agent / Goose / Claude Code / pi
+              │
+              │  POST /v1/chat/completions
+              │  { model: "mesh", messages, tools, stream }
+              ▼
+    ┌──────────────────────────────────────────────────────┐
+    │  Mesh proxy (ingress.rs)                             │
+    │  - intercepts model == "mesh"                        │
+    │  - build_moa_config(callable models in mesh)         │
+    └──────────────────────┬───────────────────────────────┘
+                           │ handle_turn(config, body)
+                           ▼
+    ┌──────────────────────────────────────────────────────┐
+    │  MoA gateway (crate: mesh-mixture-of-agents)         │
+    │                                                      │
+    │  session.classify_turn()                             │
+    │    │                                                 │
+    │    ├─ Fresh / Continuation ──► fan-out path          │
+    │    └─ ToolResult ────────────► reducer-only path     │
+    └────┬─────────────────────────────┬───────────────────┘
+         │ fan-out path                │ tool-result path
+         ▼                             │
+    [LLM call #1]                      │
+    assign_roles(N) → fire N workers   │
+    in parallel:                       │
+                                       │
+       ┌─── fast       (smallest)      │
+       ├─── specialist                 │
+       ├─── specialist  …  (N-2 of)    │
+       └─── strong     (biggest)       │
+                                       │
+    wall-clock = slowest worker        │
+         │                             │
+         ▼                             │
+    [code] arbiter                     │
+         │                             │
+         ├─ consensus → emit one       │
+         │  worker's output  ──────► done (no reducer)
+         │                             │
+         └─ conflict ─────┐            │
+                          ▼            ▼
+                       [LLM call #2] reducer
+                       hedged candidate ladder
+                       (top-2 strongest from same pool)
+                       1 call usually, 2 if primary slow
+                          │
+                          ▼
+                       final response
 ```
 
 The client thinks it talks to one model. `mesh` is a routing directive
 like `auto` — the proxy intercepts it before normal model routing.
+
+### How many models, and how many LLM calls
+
+The number of workers is **not fixed** — it scales with whatever's
+callable in the mesh.
+
+| Callable models | Workers fanned out | Roles assigned |
+|---:|:---:|:---|
+| 0 or 1 | — | MoA bails (503 to client; needs ≥2) |
+| 2 | 2 | fast + strong |
+| 3 | 3 | fast + specialist + strong |
+| 4 | 4 | fast + specialist + specialist + strong |
+| N | N | fast + (N-2) specialists + strong |
+
+Models are tier-sorted before role assignment:
+single-digit-B names ("Qwen3-8B", "llama-3-7b") form the small tier and
+get `Fast`; everything else (multi-digit B, or names without an explicit
+size) forms the big tier — the largest of those gets `Strong` and also
+heads the reducer pool.
+
+**The reducer is not a separate fan-out slot.** It's the same strong
+model (or next-strongest if the primary is slow/broken), invoked
+*after* fan-out only when the arbiter says workers disagreed.
+
+So serially, a worst-case MoA turn is **2 LLM round-trips**:
+
+1. **Fan-out:** N workers in parallel — wall-clock equals the *slowest*
+   worker, not the sum (bounded by `worker_timeout`).
+2. **Reducer:** 1 strong model (sequential, blocks the response) — fires
+   only on arbiter conflict; hedged to up to 2 overlapping calls if the
+   primary stalls.
+
+Happy paths collapse to 1 round-trip:
+
+- **Early-exit / unanimous answer:** workers agree → no reducer.
+- **Tool-result turn:** skip fan-out entirely → 1 reducer call.
+
+This shape is why reducer streaming is the right TTFT lever: it's the
+one serial LLM call on the critical path that produces user-visible
+text. Workers are already parallelized; their wall-clock is bounded by
+the slowest one regardless of streaming (arbiter needs full outputs to
+compare).
 
 ---
 
@@ -152,12 +223,16 @@ stripped throughout the pipeline.
 
 | Module | LOC | Tests | Purpose |
 |--------|----:|------:|---------|
-| `lib.rs` | 714 | 0 | `handle_turn()`, `ModelBackend` trait, `GatewayConfig`, fan-out, SSE |
-| `normalize.rs` | 636 | 12 | 3-tier dirty output parsing |
-| `arbiter.rs` | 462 | 11 | Deterministic arbitration + early-exit |
-| `session.rs` | 456 | 3 | Canonical transcript, tool tracking, turn classification |
-| `context.rs` | 276 | 0 | Role-shaped context packing |
-| `worker.rs` | 170 | 3 | Role assignment, think-tag stripping |
+| `lib.rs` | 454 | 0 | `handle_turn()` orchestration, `GatewayConfig`, `TurnResult`, response builders |
+| `backend.rs` | 277 | 6 | `ModelBackend` trait, `HttpBackend`, `SamplingParams`, `call_backend()` |
+| `reducer.rs` | 390 | 4 | Reducer candidate ordering + hedged ladder |
+| `fanout.rs` | 119 | 0 | Incremental worker gathering with early-exit |
+| `arbiter.rs` | 560 | 15 | Deterministic arbitration + early-exit decisions |
+| `normalize.rs` | 650 | 13 | 3-tier dirty output parsing |
+| `session.rs` | 487 | 4 | Canonical transcript, tool tracking, turn classification |
+| `context.rs` | 560 | 8 | Role-shaped context packing |
+| `worker.rs` | 298 | 5 | Role assignment, tier sort, think-tag stripping |
+| `tool_guard.rs` | 116 | 4 | Allowed-tool enforcement on reducer outputs |
 
 ---
 
