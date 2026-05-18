@@ -1,7 +1,7 @@
-From 4b0b00d3a63f554a294d46a9678c50cccc7a6804 Mon Sep 17 00:00:00 2001
+From 32e5e9d80c0664dccd7cfbeaca70cacd3a41b8ae Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Sat, 2 May 2026 16:10:53 +1000
-Subject: [PATCH 33/80] Expose external media prefill ABI
+Subject: [PATCH 33/81] Expose external media prefill ABI
 
 ---
  include/skippy.h | 35 +++++++++++++++++++-
@@ -81,7 +81,7 @@ index 2f8f8466..1db835d5 100644
          struct skippy_session * session,
          int32_t layer_start,
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 26209b45..a9ea0446 100644
+index 3c714eff..08cfeb20 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -1126,7 +1126,8 @@ uint64_t skippy_abi_features(void) {
@@ -94,7 +94,7 @@ index 26209b45..a9ea0446 100644
  }
  
  const char * skippy_status_string(enum skippy_status status) {
-@@ -1327,6 +1328,11 @@ enum skippy_status skippy_model_free(
+@@ -1333,6 +1334,11 @@ enum skippy_status skippy_model_free(
      return skippy_success(out_error);
  }
  
@@ -106,7 +106,7 @@ index 26209b45..a9ea0446 100644
  enum skippy_status skippy_session_create(
          struct skippy_model * model,
          struct skippy_session ** out_session,
-@@ -1365,6 +1371,56 @@ enum skippy_status skippy_session_create(
+@@ -1371,6 +1377,56 @@ enum skippy_status skippy_session_create(
      return skippy_success(out_error);
  }
  
@@ -163,7 +163,7 @@ index 26209b45..a9ea0446 100644
  enum skippy_status skippy_session_reset(
          struct skippy_session * session,
          struct skippy_error ** out_error) {
-@@ -1811,6 +1867,32 @@ enum skippy_status skippy_verify_tokens_frame(
+@@ -1817,6 +1873,32 @@ enum skippy_status skippy_verify_tokens_frame(
      return skippy_success(out_error);
  }
  

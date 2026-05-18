@@ -1,7 +1,7 @@
-From cfabb1b93914cce374da44d1e862f0bc84f5efd1 Mon Sep 17 00:00:00 2001
+From 24feba715b6176fb0ce1bb0ff03af8ef5806649e Mon Sep 17 00:00:00 2001
 From: mesh-llm <mesh-llm@example.com>
 Date: Wed, 6 May 2026 00:00:00 +1000
-Subject: [PATCH 58/80] Support Phi2 runtime-slice execution
+Subject: [PATCH 58/81] Support Phi2 runtime-slice execution
 
 ---
  src/llama-model-loader.cpp | 11 +++++++++++
@@ -140,7 +140,7 @@ index a333602c..20a9752e 100644
              model.output_norm,
              model.output_norm_b,
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 18bbebf0..8831d968 100644
+index 85f01123..f44ce6e9 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -1615,6 +1615,7 @@ static enum skippy_status skippy_finish_model_open(

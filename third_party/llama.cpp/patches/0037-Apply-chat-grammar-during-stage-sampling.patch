@@ -1,7 +1,7 @@
-From 91d53e5f8363dc38f453f3eda4c3341a14987c83 Mon Sep 17 00:00:00 2001
+From 648455c37dbcb69118cac80698eb7f09c603f772 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Tue, 5 May 2026 07:11:33 +1000
-Subject: [PATCH 37/80] Apply chat grammar during stage sampling
+Subject: [PATCH 37/81] Apply chat grammar during stage sampling
 
 ---
  include/skippy.h |  10 +-
@@ -44,7 +44,7 @@ index 384c7e40..3ffdb879 100644
          struct skippy_session * session,
          struct skippy_error ** out_error);
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index fd2cd3d0..ae18f5fc 100644
+index eec2c8b4..94355b60 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -11,6 +11,7 @@
@@ -313,7 +313,7 @@ index fd2cd3d0..ae18f5fc 100644
      if (!skippy_sampling_enabled(sampling)) {
          return skippy_greedy_sample(session);
      }
-@@ -1431,6 +1659,7 @@ enum skippy_status skippy_session_set_position(
+@@ -1437,6 +1665,7 @@ enum skippy_status skippy_session_set_position(
      session->n_past = n_past;
      if (session->token_history.size() > static_cast<size_t>(n_past)) {
          session->token_history.resize(static_cast<size_t>(n_past));
@@ -321,7 +321,7 @@ index fd2cd3d0..ae18f5fc 100644
      }
      if (session->signal_history.size() > static_cast<size_t>(n_past)) {
          session->signal_history.resize(static_cast<size_t>(n_past));
-@@ -1451,6 +1680,48 @@ enum skippy_status skippy_session_sample_current(
+@@ -1457,6 +1686,48 @@ enum skippy_status skippy_session_sample_current(
      return skippy_success(out_error);
  }
  
@@ -370,7 +370,7 @@ index fd2cd3d0..ae18f5fc 100644
  enum skippy_status skippy_session_reset(
          struct skippy_session * session,
          struct skippy_error ** out_error) {
-@@ -1476,6 +1747,7 @@ enum skippy_status skippy_session_reset(
+@@ -1482,6 +1753,7 @@ enum skippy_status skippy_session_reset(
      session->checkpoint_n_past = 0;
      session->token_history.clear();
      session->signal_history.clear();
@@ -378,7 +378,7 @@ index fd2cd3d0..ae18f5fc 100644
      session->ctx->synchronize();
      return skippy_success(out_error);
  }
-@@ -2010,6 +2282,7 @@ enum skippy_status skippy_trim_session(
+@@ -2016,6 +2288,7 @@ enum skippy_status skippy_trim_session(
      session->n_past = static_cast<int32_t>(token_count);
      if (session->token_history.size() > token_count) {
          session->token_history.resize(static_cast<size_t>(token_count));

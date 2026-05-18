@@ -1,7 +1,7 @@
-From 05dd8b9337744fc4c0d8ae96f6a5028e04aeefc6 Mon Sep 17 00:00:00 2001
+From af02e48a88ecb9deb1f1e4b5ea23c4d2d7b613f2 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Thu, 7 May 2026 06:54:19 +1000
-Subject: [PATCH 66/80] Fix BitNet tied output runtime slices
+Subject: [PATCH 66/81] Fix BitNet tied output runtime slices
 
 ---
  src/models/bitnet.cpp | 4 ++--

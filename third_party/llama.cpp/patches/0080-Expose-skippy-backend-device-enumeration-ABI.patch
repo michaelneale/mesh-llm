@@ -1,14 +1,14 @@
-From d415123692810ac3ce941cb18db333599e034193 Mon Sep 17 00:00:00 2001
+From 4861c8501ea4c4a581a85f3100ba9fee950ce19f Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 11 May 2026 05:38:23 +1000
-Subject: [PATCH 80/80] Expose skippy backend device enumeration ABI
+Subject: [PATCH 80/81] Expose skippy backend device enumeration ABI
 
 ---
- include/skippy.h         | 81 ++------------------------------
- include/skippy/common.h  | 92 +++++++++++++++++++++++++++++++++++++
- include/skippy/devices.h | 49 ++++++++++++++++++++
- src/skippy.cpp           | 101 ++++++++++++++++++++++++++++++++++++++++-
- 4 files changed, 244 insertions(+), 79 deletions(-)
+ include/skippy.h         |  81 ++----------------------------
+ include/skippy/common.h  |  92 ++++++++++++++++++++++++++++++++++
+ include/skippy/devices.h |  49 ++++++++++++++++++
+ src/skippy.cpp           | 105 ++++++++++++++++++++++++++++++++++++++-
+ 4 files changed, 248 insertions(+), 79 deletions(-)
  create mode 100644 include/skippy/common.h
  create mode 100644 include/skippy/devices.h
 
@@ -288,16 +288,18 @@ index 00000000..382f1e69
 +
 +#endif
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 083d59ac..7585abe1 100644
+index 565c2837..f25da57e 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
-@@ -1,4 +1,6 @@
+@@ -1,6 +1,8 @@
  #include "skippy.h"
 +#include "skippy/devices.h"
  #include "skippy-signals.h"
  
 +#include <mutex>
  #include "gguf.h"
+ #include "llama-arch.h"
+ #include "llama-context.h"
 @@ -169,6 +171,40 @@ static enum skippy_status skippy_success(skippy_error ** out_error) {
      return SKIPPY_STATUS_OK;
  }
@@ -339,7 +341,7 @@ index 083d59ac..7585abe1 100644
  static int32_t skippy_layer_from_name(const char * name) {
      if (name == nullptr) {
          return -1;
-@@ -1722,7 +1757,8 @@ uint64_t skippy_abi_features(void) {
+@@ -1722,7 +1758,8 @@ uint64_t skippy_abi_features(void) {
             SKIPPY_FEATURE_SESSION_CHECKPOINT |
             SKIPPY_FEATURE_PACKAGE_PART_LOAD |
             SKIPPY_FEATURE_GENERATION_SIGNALS |
@@ -424,3 +426,4 @@ index 083d59ac..7585abe1 100644
          const struct skippy_runtime_config * config,
 -- 
 2.50.1 (Apple Git-155)
+

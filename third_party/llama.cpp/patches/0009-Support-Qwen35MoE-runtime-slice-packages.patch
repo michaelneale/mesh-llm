@@ -1,7 +1,7 @@
-From b8d99ddbd8cbc806d9aac8a93acd9ecdf4aba427 Mon Sep 17 00:00:00 2001
+From c7d9766e30880060ff95e7c02e4ce54ec9db99d1 Mon Sep 17 00:00:00 2001
 From: James Dumay <jameswdumay@gmail.com>
 Date: Sat, 25 Apr 2026 15:29:59 +1000
-Subject: [PATCH 09/80] Support Qwen35MoE runtime slice packages
+Subject: [PATCH 09/81] Support Qwen35MoE runtime slice packages
 
 ---
  src/llama-model-loader.cpp | 34 ++++++++++++++++++----------------

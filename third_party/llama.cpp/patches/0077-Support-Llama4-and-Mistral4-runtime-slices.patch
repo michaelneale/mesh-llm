@@ -1,7 +1,7 @@
-From 3983c0589fde2072359b46d842432010520be7a3 Mon Sep 17 00:00:00 2001
+From 01dfedb534818d8f613df8d316593ea90f66b7f6 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Fri, 8 May 2026 05:58:50 +1000
-Subject: [PATCH 77/80] Support Llama4 and Mistral4 runtime slices
+Subject: [PATCH 77/81] Support Llama4 and Mistral4 runtime slices
 
 ---
  src/llama-graph.cpp    | 66 ++++++++++++++++++++++++++++--------------
@@ -248,7 +248,7 @@ index 899611d5..5ca1078b 100644
              model.output_norm, NULL,
              LLM_NORM_RMS, -1);
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index b7dd3791..e263bf14 100644
+index 75479955..acfc850c 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -1501,7 +1501,6 @@ static enum skippy_status skippy_copy_output_activation_frame(

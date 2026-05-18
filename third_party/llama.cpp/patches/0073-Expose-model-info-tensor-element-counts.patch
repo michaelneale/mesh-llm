@@ -1,14 +1,14 @@
-From 4f4161eb6729faff8f474dcdcb3eb0ab4f0b171b Mon Sep 17 00:00:00 2001
+From 95ef05d3b73ae725b50ffe2d1914ab255208058f Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Thu, 7 May 2026 18:20:30 +1000
-Subject: [PATCH 73/80] Expose model info tensor element counts
+Subject: [PATCH 73/81] Expose model info tensor element counts
 
 ---
  src/skippy.cpp | 14 +++++++++++++-
  1 file changed, 13 insertions(+), 1 deletion(-)
 
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 34be30f7..a91fbc2b 100644
+index f81d8fc7..091d0c8c 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -83,6 +83,17 @@ struct skippy_tensor_meta {
@@ -29,7 +29,7 @@ index 34be30f7..a91fbc2b 100644
  struct skippy_slice_range {
      int32_t stage_index = -1;
      int32_t layer_start = 0;
-@@ -3666,7 +3677,8 @@ enum skippy_status skippy_model_info_tensor_at(
+@@ -3672,7 +3683,8 @@ enum skippy_status skippy_model_info_tensor_at(
      out_tensor->role = skippy_role_from_name(name, layer_index);
      out_tensor->ggml_type = static_cast<uint32_t>(gguf_get_tensor_type(info->ctx, tensor_id));
      out_tensor->byte_size = static_cast<uint64_t>(gguf_get_tensor_size(info->ctx, tensor_id));

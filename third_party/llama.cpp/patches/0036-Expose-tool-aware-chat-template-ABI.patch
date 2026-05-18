@@ -1,7 +1,7 @@
-From 7c3683bd6cabd9f2eea014fd6f746f281fd54515 Mon Sep 17 00:00:00 2001
+From 00eb130741d6bc1de5eb04c5f37feba278f697d1 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Tue, 5 May 2026 06:10:28 +1000
-Subject: [PATCH 36/80] Expose tool-aware chat template ABI
+Subject: [PATCH 36/81] Expose tool-aware chat template ABI
 
 ---
  common/stage-chat.cpp | 228 ++++++++++++++++++++++++++++++++++++++++++
@@ -9,7 +9,7 @@ Subject: [PATCH 36/80] Expose tool-aware chat template ABI
  2 files changed, 256 insertions(+), 1 deletion(-)
 
 diff --git a/common/stage-chat.cpp b/common/stage-chat.cpp
-index 60d53fc4..77d8fc8e 100644
+index 60d53fc4..a9e4c2de 100644
 --- a/common/stage-chat.cpp
 +++ b/common/stage-chat.cpp
 @@ -1,11 +1,16 @@
@@ -319,3 +319,4 @@ index 2b95ccc8..384c7e40 100644
          struct skippy_model_info ** out_info,
 -- 
 2.50.1 (Apple Git-155)
+

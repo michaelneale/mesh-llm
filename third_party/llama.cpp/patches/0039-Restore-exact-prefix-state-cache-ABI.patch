@@ -1,7 +1,7 @@
-From 99f9337e160cbd8aff82b314f0c0dfca542e714d Mon Sep 17 00:00:00 2001
+From 05ad181e10e0804ea33bc1e84327a6ee34ccb0dd Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Tue, 5 May 2026 08:21:34 +1000
-Subject: [PATCH 39/80] Restore exact prefix state cache ABI
+Subject: [PATCH 39/81] Restore exact prefix state cache ABI
 
 ---
  include/skippy.h       |  91 ++++++++-
@@ -560,7 +560,7 @@ index 2c54cec5..d93120b9 100644
      // graph_build API
      //
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 3002b720..56ab40d7 100644
+index ed8b7c27..d3d47b9f 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -1345,13 +1345,16 @@ uint64_t skippy_abi_features(void) {
@@ -580,7 +580,7 @@ index 3002b720..56ab40d7 100644
             SKIPPY_FEATURE_LOGIT_BIAS |
             SKIPPY_FEATURE_SESSION_TRIM |
             SKIPPY_FEATURE_SESSION_CHECKPOINT |
-@@ -2207,6 +2210,212 @@ enum skippy_status skippy_session_copy_output_activation_frame(
+@@ -2213,6 +2216,212 @@ enum skippy_status skippy_session_copy_output_activation_frame(
      return skippy_copy_output_activation_frame(session, token_count, output_payload, out_error);
  }
  
@@ -793,7 +793,7 @@ index 3002b720..56ab40d7 100644
  static llama_memory_recurrent * skippy_get_recurrent_memory(
          skippy_session * session,
          skippy_error ** out_error) {
-@@ -2234,6 +2443,207 @@ static llama_memory_recurrent * skippy_get_recurrent_memory(
+@@ -2240,6 +2449,207 @@ static llama_memory_recurrent * skippy_get_recurrent_memory(
      return nullptr;
  }
  

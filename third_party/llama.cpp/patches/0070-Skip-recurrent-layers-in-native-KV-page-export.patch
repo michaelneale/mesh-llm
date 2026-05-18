@@ -1,7 +1,7 @@
-From 1832cc5f83ab5e002829f942c39e0ec7a4eec8c8 Mon Sep 17 00:00:00 2001
+From 5272a1015cdabc3ea08cb679f3c7255aa9bbd075 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Thu, 7 May 2026 17:40:58 +1000
-Subject: [PATCH 70/80] Skip recurrent layers in native KV page export
+Subject: [PATCH 70/81] Skip recurrent layers in native KV page export
 
 ---
  src/llama-kv-cache.cpp | 42 ++++++++++++++++++++++++++----------------

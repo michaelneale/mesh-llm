@@ -1,7 +1,7 @@
-From ab94f2cae57d05f2bdf3bf6b54807604c68cee26 Mon Sep 17 00:00:00 2001
+From b241fa23c0b9a49898c3fe5afb2f8cb0df969a5f Mon Sep 17 00:00:00 2001
 From: James Dumay <jameswdumay@gmail.com>
 Date: Sat, 25 Apr 2026 10:19:37 +1000
-Subject: [PATCH 01/80] Draft skippy ABI header
+Subject: [PATCH 01/81] Draft skippy ABI header
 
 ---
  include/skippy.h | 241 +++++++++++++++++++++++++++++++++++++++++++++++

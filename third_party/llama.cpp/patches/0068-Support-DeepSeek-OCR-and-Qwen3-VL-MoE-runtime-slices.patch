@@ -1,7 +1,7 @@
-From e8df0b7d6df10dbd3a41a9b4b9a2c78e0274b8e0 Mon Sep 17 00:00:00 2001
+From c50f90e3e8660f3b2a0643c90ef2b47d11b59dff Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Thu, 7 May 2026 16:31:35 +1000
-Subject: [PATCH 68/80] Support DeepSeek OCR and Qwen3-VL-MoE runtime slices
+Subject: [PATCH 68/81] Support DeepSeek OCR and Qwen3-VL-MoE runtime slices
 
 ---
  src/models/qwen3vlmoe.cpp | 22 +++++++++++++++++-----
@@ -71,7 +71,7 @@ index b99143c8..2dc74ee0 100644
              model.output_norm, NULL,
              LLM_NORM_RMS, -1);
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index f3a92718..7268502c 100644
+index 05aa0d18..584c90a6 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -1638,6 +1638,7 @@ static enum skippy_status skippy_finish_model_open(

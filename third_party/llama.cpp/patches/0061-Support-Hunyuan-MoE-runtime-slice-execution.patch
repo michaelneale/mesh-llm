@@ -1,7 +1,7 @@
-From 0d83872e349a1810e5c6a443b7e9bdfa52a9cf50 Mon Sep 17 00:00:00 2001
+From 998771f71f65bfe2dc9cfc1918881205bd2bbfd3 Mon Sep 17 00:00:00 2001
 From: mesh-llm <mesh-llm@example.com>
 Date: Wed, 6 May 2026 00:00:00 +1000
-Subject: [PATCH 61/80] Support Hunyuan-MoE runtime-slice execution
+Subject: [PATCH 61/81] Support Hunyuan-MoE runtime-slice execution
 
 ---
  src/models/hunyuan-moe.cpp | 20 ++++++++++++++++----
@@ -62,7 +62,7 @@ index 44af4241..0af4c646 100644
              model.output_norm, NULL,
              LLM_NORM_RMS, -1);
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 73a66680..ff23bb7b 100644
+index 7f427aba..f977754c 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -1589,6 +1589,7 @@ static enum skippy_status skippy_finish_model_open(

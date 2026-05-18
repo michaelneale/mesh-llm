@@ -1,17 +1,17 @@
-From 2495cf73c41bddf7688bc477324c9656e11af4f7 Mon Sep 17 00:00:00 2001
+From d1716fec71bca66dee2f5a73b17d77bde40761e6 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Wed, 6 May 2026 21:03:48 +1000
-Subject: [PATCH 46/80] Remap recurrent state imports to active session
+Subject: [PATCH 46/81] Remap recurrent state imports to active session
 
 ---
  src/skippy.cpp | 16 +++++++++++++---
  1 file changed, 13 insertions(+), 3 deletions(-)
 
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 4486ad78..1f6fe94a 100644
+index c3de4c89..9ab53715 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
-@@ -2635,14 +2635,24 @@ enum skippy_status skippy_import_recurrent_state(
+@@ -2641,14 +2641,24 @@ enum skippy_status skippy_import_recurrent_state(
          return SKIPPY_STATUS_UNSUPPORTED;
      }
  
