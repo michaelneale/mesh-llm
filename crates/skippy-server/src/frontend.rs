@@ -97,7 +97,11 @@ pub const CONTEXT_BUDGET_MAX_TOKENS: u32 = u32::MAX;
 /// non-terminating generation cannot run for the full context window.
 /// Clients can still request more by sending max_tokens explicitly, up
 /// to the remaining context budget.
-pub const DEFAULT_EMBEDDED_MAX_TOKENS: u32 = 8192;
+///
+/// When the configured context window is smaller than this value, the
+/// request is silently clamped to whatever remaining budget exists
+/// rather than rejected — see [`GenerationTokenLimit::resolve`].
+pub const DEFAULT_EMBEDDED_MAX_TOKENS: u32 = 4096;
 const GENERATION_ADMISSION_TIMEOUT: Duration = Duration::from_secs(10);
 const GENERATION_RETRY_AFTER_SECS: u64 = 1;
 
@@ -445,7 +449,18 @@ fn reserve_generation_queue(
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GenerationTokenLimit {
+    /// Client sent a concrete `max_tokens`. Must fit in the context
+    /// window; otherwise return a context_length_exceeded error so the
+    /// client knows their request couldn't be honored as-asked.
     Explicit(u32),
+    /// Caller didn't send `max_tokens`, but the server has a configured
+    /// default cap. Clamp down to whatever fits in the remaining
+    /// context budget rather than rejecting — the client didn't ask
+    /// for the specific number, the server picked it.
+    Default(u32),
+    /// Caller didn't send `max_tokens` and the server is configured
+    /// with [`CONTEXT_BUDGET_MAX_TOKENS`] (opt-in unbounded). Use the
+    /// entire remaining context window.
     ContextBudget,
 }
 
@@ -454,7 +469,7 @@ impl GenerationTokenLimit {
         match requested {
             Some(max_tokens) => Self::Explicit(max_tokens),
             None if default_max_tokens == CONTEXT_BUDGET_MAX_TOKENS => Self::ContextBudget,
-            None => Self::Explicit(default_max_tokens),
+            None => Self::Default(default_max_tokens),
         }
     }
 
@@ -463,6 +478,14 @@ impl GenerationTokenLimit {
             Self::Explicit(max_tokens) => {
                 ensure_context_capacity(prompt_token_count, max_tokens, ctx_size)?;
                 Ok(max_tokens)
+            }
+            Self::Default(default_max_tokens) => {
+                // Server-picked default. Always clamp to the remaining
+                // context budget. If the prompt already exceeds the
+                // window, surface that as a real error — but never
+                // reject just because our default wouldn't fit.
+                let remaining = context_budget_completion_tokens(prompt_token_count, ctx_size)?;
+                Ok(remaining.min(default_max_tokens))
             }
             Self::ContextBudget => context_budget_completion_tokens(prompt_token_count, ctx_size),
         }
