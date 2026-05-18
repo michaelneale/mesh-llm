@@ -534,6 +534,36 @@ pub(crate) struct ModelTargetPayload {
     pub(crate) wanted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) wanted_reason: Option<&'static str>,
+    pub(crate) capacity_advice: ModelTargetCapacityAdvicePayload,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub(crate) struct ModelTargetCapacityAdvicePayload {
+    pub(crate) state: ModelTargetCapacityAdviceState,
+    pub(crate) reason: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) required_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) best_single_node_capacity_bytes: Option<u64>,
+    pub(crate) aggregate_capacity_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) shortfall_bytes: Option<u64>,
+    pub(crate) eligible_node_count: usize,
+    pub(crate) missing_capacity_node_count: usize,
+    pub(crate) excluded_client_node_count: usize,
+    pub(crate) split_capable: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ModelTargetCapacityAdviceState {
+    AlreadyServing,
+    SingleNodeFit,
+    SplitCandidate,
+    InsufficientCapacity,
+    UnknownModelSize,
+    UnknownCapacity,
+    NoEligibleHosts,
 }
 
 pub(crate) fn build_runtime_status_payload(

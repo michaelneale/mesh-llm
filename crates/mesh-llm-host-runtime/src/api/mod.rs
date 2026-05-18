@@ -40,6 +40,7 @@
 
 mod assets;
 mod http;
+mod model_target_capacity;
 mod model_targets;
 mod routes;
 mod server;

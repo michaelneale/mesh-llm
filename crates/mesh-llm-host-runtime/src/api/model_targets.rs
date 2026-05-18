@@ -3,7 +3,13 @@
 //! This module keeps raw mesh signals separate from the derived ranking and
 //! wanted hints that API handlers expose to operators.
 
-use super::{status::ModelTargetPayload, LocalModelInterest, MeshApi};
+use super::{
+    model_target_capacity::{
+        evaluate_model_target_capacity, ModelTargetCapacityInput, ModelTargetSizeLookup,
+    },
+    status::ModelTargetPayload,
+    LocalModelInterest, MeshApi,
+};
 use crate::mesh;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -74,6 +80,8 @@ impl MeshApi {
             )
         };
 
+        let local_role = node.role().await;
+        let local_vram_bytes = node.vram_bytes();
         let peers = node.peers().await;
         let catalog = node.mesh_catalog_entries().await;
         let active_demand = node.active_demand().await;
@@ -89,6 +97,8 @@ impl MeshApi {
             active_demand,
             requested_models,
             my_hosted_models,
+            local_role,
+            local_vram_bytes,
             now: current_unix_secs(),
         })
     }
@@ -102,6 +112,8 @@ struct ModelTargetSource {
     active_demand: HashMap<String, mesh::ModelDemand>,
     requested_models: Vec<String>,
     my_hosted_models: Vec<String>,
+    local_role: mesh::NodeRole,
+    local_vram_bytes: u64,
     now: u64,
 }
 
@@ -124,7 +136,14 @@ fn build_model_target_lookup(source: ModelTargetSource) -> ModelTargetLookup {
 
     let mut targets = targets.into_values().collect::<Vec<_>>();
     sort_model_targets(&mut targets);
-    let payloads = build_target_payloads(targets);
+    let size_lookup = ModelTargetSizeLookup::load();
+    let payloads = build_target_payloads(
+        targets,
+        &source.local_role,
+        source.local_vram_bytes,
+        &source.peers,
+        &size_lookup,
+    );
     build_target_lookup(payloads)
 }
 
@@ -270,12 +289,27 @@ fn apply_serving_signals(
     }
 }
 
-fn build_target_payloads(targets: Vec<ModelTargetAccumulator>) -> Vec<ModelTargetPayload> {
+fn build_target_payloads(
+    targets: Vec<ModelTargetAccumulator>,
+    local_role: &mesh::NodeRole,
+    local_vram_bytes: u64,
+    peers: &[mesh::PeerInfo],
+    size_lookup: &ModelTargetSizeLookup,
+) -> Vec<ModelTargetPayload> {
     targets
         .into_iter()
         .enumerate()
         .map(|(index, target)| {
             let wanted_reason = wanted_reason(&target);
+            let capacity_advice = evaluate_model_target_capacity(ModelTargetCapacityInput {
+                model_ref: &target.model_ref,
+                model_name: target.model_name.as_deref(),
+                serving_node_count: target.serving_node_count,
+                local_role,
+                local_vram_bytes,
+                peers,
+                size_lookup,
+            });
             ModelTargetPayload {
                 rank: index + 1,
                 model_ref: target.model_ref,
@@ -288,6 +322,7 @@ fn build_target_payloads(targets: Vec<ModelTargetAccumulator>) -> Vec<ModelTarge
                 requested: target.requested,
                 wanted: wanted_reason.is_some(),
                 wanted_reason: wanted_reason.map(WantedReason::as_str),
+                capacity_advice,
             }
         })
         .collect()
