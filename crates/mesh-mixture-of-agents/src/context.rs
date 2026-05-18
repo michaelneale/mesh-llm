@@ -208,7 +208,7 @@ pub fn pack_for_reducer(
     for (i, output) in outputs.iter().enumerate() {
         system_parts.push(format!("\n[Worker {} — {}]:", i + 1, output.model,));
         let payload = if output.payload.len() > 500 {
-            format!("{}...", &output.payload[..497])
+            format!("{}...", crate::worker::truncate_chars(&output.payload, 497))
         } else {
             output.payload.clone()
         };

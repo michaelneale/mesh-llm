@@ -119,7 +119,10 @@ impl ModelBackend for HttpBackend {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            return Err(format!("HTTP {status}: {}", &text[..text.len().min(200)]));
+            return Err(format!(
+                "HTTP {status}: {}",
+                crate::worker::truncate_chars(&text, 200)
+            ));
         }
 
         resp.json::<Value>()

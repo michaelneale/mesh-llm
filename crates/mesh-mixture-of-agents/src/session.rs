@@ -197,7 +197,7 @@ impl Session {
         // Truncate individual facts — generous enough to capture a useful
         // summary of the turn but not the full response.
         let truncated = if outcome.len() > 500 {
-            format!("{}...", &outcome[..497])
+            format!("{}...", crate::worker::truncate_chars(outcome, 497))
         } else {
             outcome.to_string()
         };
@@ -234,7 +234,7 @@ impl Session {
             .map(|p| {
                 if let Some(ref result) = p.result {
                     let short_result = if result.len() > 300 {
-                        format!("{}...", &result[..297])
+                        format!("{}...", crate::worker::truncate_chars(result, 297))
                     } else {
                         result.clone()
                     };

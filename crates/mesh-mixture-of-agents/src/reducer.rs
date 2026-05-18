@@ -144,8 +144,58 @@ pub(crate) async fn hedged_reducer_call(
         attempts += 1;
     }
 
-    // Race in-flight calls against a hedge timer.
+    // Try to spawn the next candidate. Returns true while there was one to
+    // spawn; once it returns false the caller should stop arming the hedge
+    // timer.
+    let try_spawn_next = |join_set: &mut JoinSet<(String, Result<String, String>)>,
+                          remaining: &mut std::vec::IntoIter<(String, usize)>,
+                          attempts: &mut u32| {
+        if let Some((next_name, next_idx)) = remaining.next() {
+            spawn(
+                join_set,
+                backends,
+                next_name,
+                next_idx,
+                messages.clone(),
+                tools.clone(),
+                timeout,
+            );
+            *attempts += 1;
+            true
+        } else {
+            false
+        }
+    };
+
+    // Race in-flight calls against a hedge timer. Once `remaining` is
+    // exhausted we drop the timer entirely and just await join_next() so
+    // we don't wake every hedge_delay just to no-op.
+    let mut remaining_exhausted = false;
     while !join_set.is_empty() {
+        // Without the hedge timer: just await whichever candidate finishes.
+        if remaining_exhausted {
+            match join_set.join_next().await {
+                Some(Ok((name, Ok(text)))) => {
+                    join_set.abort_all();
+                    while join_set.join_next().await.is_some() {}
+                    return Ok(HedgedReducerOk {
+                        winner: name,
+                        text,
+                        attempts,
+                    });
+                }
+                Some(Ok((name, Err(e)))) => {
+                    tracing::warn!("moa: reducer {name} failed: {e} (no more candidates)");
+                    last_err = Some(e);
+                }
+                Some(Err(join_err)) => {
+                    tracing::warn!("moa: reducer task join error: {join_err}");
+                }
+                None => break,
+            }
+            continue;
+        }
+
         let hedge_sleep = tokio::time::sleep(hedge_delay);
         tokio::pin!(hedge_sleep);
 
@@ -170,32 +220,14 @@ pub(crate) async fn hedged_reducer_call(
                         );
                         last_err = Some(e);
                         // Start the next candidate immediately on failure.
-                        if let Some((next_name, next_idx)) = remaining.next() {
-                            spawn(
-                                &mut join_set,
-                                backends,
-                                next_name,
-                                next_idx,
-                                messages.clone(),
-                                tools.clone(),
-                                timeout,
-                            );
-                            attempts += 1;
+                        if !try_spawn_next(&mut join_set, &mut remaining, &mut attempts) {
+                            remaining_exhausted = true;
                         }
                     }
                     Some(Err(join_err)) => {
                         tracing::warn!("moa: reducer task join error: {join_err}");
-                        if let Some((next_name, next_idx)) = remaining.next() {
-                            spawn(
-                                &mut join_set,
-                                backends,
-                                next_name,
-                                next_idx,
-                                messages.clone(),
-                                tools.clone(),
-                                timeout,
-                            );
-                            attempts += 1;
+                        if !try_spawn_next(&mut join_set, &mut remaining, &mut attempts) {
+                            remaining_exhausted = true;
                         }
                     }
                     None => break,
@@ -203,21 +235,9 @@ pub(crate) async fn hedged_reducer_call(
             }
             // Hedge timer fires: start another candidate alongside in-flight ones.
             _ = &mut hedge_sleep => {
-                if let Some((next_name, next_idx)) = remaining.next() {
-                    spawn(
-                        &mut join_set,
-                        backends,
-                        next_name,
-                        next_idx,
-                        messages.clone(),
-                        tools.clone(),
-                        timeout,
-                    );
-                    attempts += 1;
+                if !try_spawn_next(&mut join_set, &mut remaining, &mut attempts) {
+                    remaining_exhausted = true;
                 }
-                // If no more to start, just wait on the JoinSet without the
-                // hedge timer racing again (next loop iteration's sleep will
-                // simply never fire because we'll take the join branch).
             }
         }
     }
