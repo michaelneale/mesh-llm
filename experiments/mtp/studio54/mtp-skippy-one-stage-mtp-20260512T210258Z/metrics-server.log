@@ -1,0 +1,1 @@
+metrics-server listening: http=127.0.0.1:36860 otlp_grpc=127.0.0.1:36960 db=/Users/jdumay/tmp/mesh-llm-mtp/experiments/mtp/mtp-skippy-one-stage-mtp-20260512T210258Z/metrics.duckdb debug_retain_raw_otlp=false

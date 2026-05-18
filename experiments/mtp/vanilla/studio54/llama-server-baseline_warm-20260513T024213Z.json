@@ -1,0 +1,102 @@
+{
+  "condition": "baseline_warm",
+  "server": "llama.cpp PR 22673 llama-server",
+  "model_path": "/Users/jdumay/tmp/mesh-llm-mtp/experiments/mtp/models/Qwen3.6-27B-IQ4_XS.gguf",
+  "prompt_corpus": "/Users/jdumay/tmp/mesh-llm-mtp/experiments/mtp/mtp_structured_code_512_prompts_7.jsonl",
+  "prompt_count": 7,
+  "max_tokens": 512,
+  "warmup_requests": 2,
+  "warmup_tokens": 64,
+  "corpus_warmup_tokens": 256,
+  "concurrency_depth": 1,
+  "sampling": {
+    "temperature": 0,
+    "enable_thinking": null
+  },
+  "spec_args": [
+    "--spec-type",
+    "none"
+  ],
+  "summary": {
+    "ok": 7,
+    "errors": 0,
+    "mean_latency_ms": 50692.40186885717,
+    "p50_latency_ms": 28684.426708000046,
+    "p95_latency_ms": 123375.18319990014,
+    "completion_tokens": 3584,
+    "completion_tok_s": 10.100132980965475
+  },
+  "results": [
+    {
+      "prompt_id": "mtp512-rust-module-001",
+      "category": "code_rust_long",
+      "latency_ms": 28030.525083000157,
+      "prompt_tokens": 73,
+      "completion_tokens": 512,
+      "completion_tok_s": 18.265801246460267,
+      "content_chars": 0,
+      "error": null
+    },
+    {
+      "prompt_id": "mtp512-typescript-module-001",
+      "category": "code_typescript_long",
+      "latency_ms": 28591.600666999966,
+      "prompt_tokens": 73,
+      "completion_tokens": 512,
+      "completion_tok_s": 17.9073569879193,
+      "content_chars": 0,
+      "error": null
+    },
+    {
+      "prompt_id": "mtp512-json-schema-001",
+      "category": "structured_json_long",
+      "latency_ms": 28575.5952909999,
+      "prompt_tokens": 97,
+      "completion_tokens": 512,
+      "completion_tok_s": 17.91738701455008,
+      "content_chars": 0,
+      "error": null
+    },
+    {
+      "prompt_id": "mtp512-yaml-config-001",
+      "category": "structured_yaml_long",
+      "latency_ms": 28684.426708000046,
+      "prompt_tokens": 66,
+      "completion_tokens": 512,
+      "completion_tok_s": 17.849406760400896,
+      "content_chars": 0,
+      "error": null
+    },
+    {
+      "prompt_id": "mtp512-rust-tests-001",
+      "category": "code_rust_long",
+      "latency_ms": 42096.216957999786,
+      "prompt_tokens": 63,
+      "completion_tokens": 512,
+      "completion_tok_s": 12.162613103947852,
+      "content_chars": 0,
+      "error": null
+    },
+    {
+      "prompt_id": "mtp512-typescript-tests-001",
+      "category": "code_typescript_long",
+      "latency_ms": 158209.0258750004,
+      "prompt_tokens": 65,
+      "completion_tokens": 512,
+      "completion_tok_s": 3.2362249698985366,
+      "content_chars": 0,
+      "error": null
+    },
+    {
+      "prompt_id": "mtp512-checklist-001",
+      "category": "structured_list_long",
+      "latency_ms": 40659.42249999989,
+      "prompt_tokens": 67,
+      "completion_tokens": 512,
+      "completion_tok_s": 12.592407085959014,
+      "content_chars": 0,
+      "error": null
+    }
+  ],
+  "server_log": "/Users/jdumay/tmp/mesh-llm-mtp/experiments/mtp/vanilla/llama-server-baseline_warm-20260513T024213Z.log"
+}

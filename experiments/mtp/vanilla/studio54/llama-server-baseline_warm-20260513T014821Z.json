@@ -1,0 +1,112 @@
+{
+  "condition": "baseline_warm",
+  "server": "llama.cpp PR 22673 llama-server",
+  "model_path": "/Users/jdumay/tmp/mesh-llm-mtp/experiments/mtp/models/Qwen3.6-27B-IQ4_XS.gguf",
+  "prompt_corpus": "/Users/jdumay/tmp/mesh-llm-mtp/experiments/mtp/mtp_mixed_smoke_prompts.jsonl",
+  "prompt_count": 8,
+  "max_tokens": 192,
+  "warmup_requests": 2,
+  "warmup_tokens": 64,
+  "corpus_warmup_tokens": 192,
+  "concurrency_depth": 1,
+  "sampling": {
+    "temperature": 0,
+    "enable_thinking": null
+  },
+  "spec_args": [
+    "--spec-type",
+    "none"
+  ],
+  "summary": {
+    "ok": 8,
+    "errors": 0,
+    "mean_latency_ms": 10876.745932374974,
+    "p50_latency_ms": 10883.798624999996,
+    "p95_latency_ms": 10944.485870949968,
+    "completion_tokens": 1536,
+    "completion_tok_s": 17.652338410195462
+  },
+  "results": [
+    {
+      "prompt_id": "mtp-code-rust-001",
+      "category": "code_rust",
+      "latency_ms": 10913.435875000005,
+      "prompt_tokens": 46,
+      "completion_tokens": 192,
+      "completion_tok_s": 17.592992912509317,
+      "content_chars": 0,
+      "error": null
+    },
+    {
+      "prompt_id": "mtp-code-ts-001",
+      "category": "code_typescript",
+      "latency_ms": 10925.007666999933,
+      "prompt_tokens": 42,
+      "completion_tokens": 192,
+      "completion_tok_s": 17.574358375962976,
+      "content_chars": 0,
+      "error": null
+    },
+    {
+      "prompt_id": "mtp-json-001",
+      "category": "structured_json",
+      "latency_ms": 10948.707249999985,
+      "prompt_tokens": 41,
+      "completion_tokens": 192,
+      "completion_tok_s": 17.536316901705476,
+      "content_chars": 0,
+      "error": null
+    },
+    {
+      "prompt_id": "mtp-list-001",
+      "category": "structured_list",
+      "latency_ms": 10770.876250000016,
+      "prompt_tokens": 29,
+      "completion_tokens": 192,
+      "completion_tok_s": 17.82584773453318,
+      "content_chars": 0,
+      "error": null
+    },
+    {
+      "prompt_id": "mtp-explain-001",
+      "category": "short_explanation",
+      "latency_ms": 10814.089374999981,
+      "prompt_tokens": 30,
+      "completion_tokens": 192,
+      "completion_tok_s": 17.754615607659552,
+      "content_chars": 0,
+      "error": null
+    },
+    {
+      "prompt_id": "mtp-debug-001",
+      "category": "debugging",
+      "latency_ms": 10936.646166999935,
+      "prompt_tokens": 37,
+      "completion_tokens": 192,
+      "completion_tok_s": 17.55565619187149,
+      "content_chars": 0,
+      "error": null
+    },
+    {
+      "prompt_id": "mtp-open-001",
+      "category": "open_ended",
+      "latency_ms": 10851.043499999945,
+      "prompt_tokens": 31,
+      "completion_tokens": 192,
+      "completion_tok_s": 17.694150797570845,
+      "content_chars": 0,
+      "error": null
+    },
+    {
+      "prompt_id": "mtp-doc-001",
+      "category": "documentation",
+      "latency_ms": 10854.161374999989,
+      "prompt_tokens": 28,
+      "completion_tokens": 192,
+      "completion_tok_s": 17.689068124804823,
+      "content_chars": 0,
+      "error": null
+    }
+  ],
+  "server_log": "/Users/jdumay/tmp/mesh-llm-mtp/experiments/mtp/vanilla/llama-server-baseline_warm-20260513T014821Z.log"
+}

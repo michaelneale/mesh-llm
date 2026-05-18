@@ -25,7 +25,7 @@ pub async fn run() -> Result<()> {
 mod tests {
     use super::{
         api::otlp_http_traces,
-        otlp_value::{kv_i64, kv_string},
+        otlp_value::{kv_bool, kv_i64, kv_string},
         server::AppState,
         store::Store,
         util::now_unix_nanos,
@@ -81,6 +81,63 @@ mod tests {
                             kv_string(attr::STAGE_ID, "stage-0"),
                             kv_i64(metric::OTEL_DROPPED_EVENTS, 2),
                             kv_i64(metric::OTEL_EXPORT_ERRORS, 1),
+                        ],
+                        dropped_attributes_count: 0,
+                        events: vec![],
+                        dropped_events_count: 0,
+                        links: vec![],
+                        dropped_links_count: 0,
+                        status: None,
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        }
+    }
+
+    fn fixture_spec_request(run_id: &str) -> ExportTraceServiceRequest {
+        let start = now_unix_nanos() as u64;
+        ExportTraceServiceRequest {
+            resource_spans: vec![ResourceSpans {
+                resource: Some(Resource {
+                    attributes: vec![kv_string(attr::RUN_ID, run_id)],
+                    dropped_attributes_count: 0,
+                    entity_refs: vec![],
+                }),
+                scope_spans: vec![ScopeSpans {
+                    scope: Some(InstrumentationScope {
+                        name: "metrics-server-test".to_string(),
+                        version: "test".to_string(),
+                        attributes: vec![],
+                        dropped_attributes_count: 0,
+                    }),
+                    spans: vec![Span {
+                        trace_id: vec![8; 16],
+                        span_id: vec![10; 8],
+                        trace_state: String::new(),
+                        parent_span_id: vec![],
+                        flags: 1,
+                        name: "stage.openai_generation_summary".to_string(),
+                        kind: span::SpanKind::Internal as i32,
+                        start_time_unix_nano: start,
+                        end_time_unix_nano: start + 10,
+                        attributes: vec![
+                            kv_string(attr::RUN_ID, run_id),
+                            kv_string(attr::REQUEST_ID, "request-1"),
+                            kv_string(attr::SESSION_ID, "session-1"),
+                            kv_string(attr::STAGE_ID, "stage-0"),
+                            kv_bool("llama_stage.spec.enabled", true),
+                            kv_i64("llama_stage.spec.windows", 5),
+                            kv_i64("llama_stage.spec.proposed", 12),
+                            kv_i64("llama_stage.spec.accepted", 9),
+                            kv_i64("llama_stage.spec.rejected", 3),
+                            kv_i64("llama_stage.spec.full_accept_windows", 2),
+                            kv_i64("llama_stage.spec.accepted_stop_windows", 1),
+                            kv_i64("llama_stage.spec.rejected_windows", 2),
+                            kv_i64("llama_stage.spec.early_reject_windows", 1),
+                            kv_i64("llama_stage.spec.tail_reject_windows", 1),
+                            kv_i64("llama_stage.spec.repair_required_windows", 1),
                         ],
                         dropped_attributes_count: 0,
                         events: vec![],
@@ -215,6 +272,26 @@ mod tests {
             )
             .unwrap();
         assert!(raw_json.contains("stage.test"));
+    }
+
+    #[test]
+    fn report_aggregates_speculative_decode_counters() {
+        let store = in_memory_store(false);
+        store
+            .ingest_traces(fixture_spec_request("run-spec"))
+            .unwrap();
+
+        let report = store.report("run-spec").unwrap();
+        assert_eq!(report.speculation.decode_spans, 1);
+        assert_eq!(report.speculation.enabled_decode_spans, 1);
+        assert_eq!(report.speculation.windows, 5);
+        assert_eq!(report.speculation.proposed_tokens, 12);
+        assert_eq!(report.speculation.accepted_tokens, 9);
+        assert_eq!(report.speculation.rejected_tokens, 3);
+        assert_eq!(report.speculation.accept_rate, Some(0.75));
+        assert_eq!(report.speculation.full_accept_windows, 2);
+        assert_eq!(report.speculation.accepted_stop_windows, 1);
+        assert_eq!(report.speculation.repair_required_windows, 1);
     }
 
     #[test]

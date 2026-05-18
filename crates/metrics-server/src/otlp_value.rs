@@ -85,6 +85,16 @@ pub(crate) fn kv_i64(key: &str, value: i64) -> KeyValue {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn kv_bool(key: &str, value: bool) -> KeyValue {
+    KeyValue {
+        key: key.to_string(),
+        value: Some(AnyValue {
+            value: Some(any_value::Value::BoolValue(value)),
+        }),
+    }
+}
+
 pub(crate) fn bytes_to_hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {

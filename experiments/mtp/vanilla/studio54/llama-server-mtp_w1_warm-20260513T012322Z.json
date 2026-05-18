@@ -1,0 +1,116 @@
+{
+  "condition": "mtp_w1_warm",
+  "server": "llama.cpp PR 22673 llama-server",
+  "model_path": "/Users/jdumay/tmp/mesh-llm-mtp/experiments/mtp/models/Qwen3.6-27B-IQ4_XS.gguf",
+  "prompt_corpus": "/Users/jdumay/tmp/mesh-llm-mtp/experiments/mtp/mtp_mixed_smoke_prompts.jsonl",
+  "prompt_count": 8,
+  "max_tokens": 192,
+  "warmup_requests": 2,
+  "warmup_tokens": 64,
+  "corpus_warmup_tokens": 192,
+  "concurrency_depth": 1,
+  "sampling": {
+    "temperature": 0,
+    "enable_thinking": null
+  },
+  "spec_args": [
+    "--spec-type",
+    "mtp",
+    "--spec-draft-n-max",
+    "1",
+    "--spec-draft-n-min",
+    "1"
+  ],
+  "summary": {
+    "ok": 8,
+    "errors": 0,
+    "mean_latency_ms": 22116.941333501018,
+    "p50_latency_ms": 13382.872791997215,
+    "p95_latency_ms": 57209.445600102445,
+    "completion_tokens": 1536,
+    "completion_tok_s": 8.681128059474181
+  },
+  "results": [
+    {
+      "prompt_id": "mtp-code-rust-001",
+      "category": "code_rust",
+      "latency_ms": 77587.6661670045,
+      "prompt_tokens": 46,
+      "completion_tokens": 192,
+      "completion_tok_s": 2.4746201230840903,
+      "content_chars": 0,
+      "error": null
+    },
+    {
+      "prompt_id": "mtp-code-ts-001",
+      "category": "code_typescript",
+      "latency_ms": 19364.178832998732,
+      "prompt_tokens": 42,
+      "completion_tokens": 192,
+      "completion_tok_s": 9.915215184483344,
+      "content_chars": 0,
+      "error": null
+    },
+    {
+      "prompt_id": "mtp-json-001",
+      "category": "structured_json",
+      "latency_ms": 14968.658666999545,
+      "prompt_tokens": 41,
+      "completion_tokens": 192,
+      "completion_tok_s": 12.82680060193304,
+      "content_chars": 0,
+      "error": null
+    },
+    {
+      "prompt_id": "mtp-list-001",
+      "category": "structured_list",
+      "latency_ms": 13864.488584003993,
+      "prompt_tokens": 29,
+      "completion_tokens": 192,
+      "completion_tok_s": 13.848329048466884,
+      "content_chars": 0,
+      "error": null
+    },
+    {
+      "prompt_id": "mtp-explain-001",
+      "category": "short_explanation",
+      "latency_ms": 12901.256999990437,
+      "prompt_tokens": 30,
+      "completion_tokens": 192,
+      "completion_tok_s": 14.882270774091417,
+      "content_chars": 0,
+      "error": null
+    },
+    {
+      "prompt_id": "mtp-debug-001",
+      "category": "debugging",
+      "latency_ms": 12857.909417012706,
+      "prompt_tokens": 37,
+      "completion_tokens": 192,
+      "completion_tok_s": 14.932443041320445,
+      "content_chars": 0,
+      "error": null
+    },
+    {
+      "prompt_id": "mtp-open-001",
+      "category": "open_ended",
+      "latency_ms": 12614.08970800403,
+      "prompt_tokens": 31,
+      "completion_tokens": 192,
+      "completion_tok_s": 15.221074563800672,
+      "content_chars": 0,
+      "error": null
+    },
+    {
+      "prompt_id": "mtp-doc-001",
+      "category": "documentation",
+      "latency_ms": 12777.282291994197,
+      "prompt_tokens": 28,
+      "completion_tokens": 192,
+      "completion_tok_s": 15.026669647918835,
+      "content_chars": 0,
+      "error": null
+    }
+  ],
+  "server_log": "/Users/jdumay/tmp/mesh-llm-mtp/experiments/mtp/vanilla/llama-server-mtp_w1_warm-20260513T012322Z.log"
+}

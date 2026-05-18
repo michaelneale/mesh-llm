@@ -1,0 +1,51 @@
+=== pre-w1-attempt1-after ===
+Wed May 13 00:43:04 UTC 2026
+10:43  up 1 day,  1:58, 3 users, load averages: 1.90 3.46 5.40
+--- top cpu ---
+  635  38.5  0.1 /usr/libexec/airportd
+ 1993  11.2  0.1 /Applications/Tailscale.app/Contents/MacOS/Tailscale
+  584   7.3  0.0 /usr/libexec/locationd
+  996   5.2  0.0 /System/Library/CoreServices/WiFiAgent.app/Contents/MacOS/WiFiAgent
+  994   4.5  0.0 /usr/libexec/networkserviceproxy
+  629   4.4  0.0 /usr/sbin/mDNSResponder
+ 1063   3.9  0.1 /System/Library/CoreServices/ControlCenter.app/Contents/MacOS/ControlCenter
+  725   3.1  0.0 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN com.apple.bcmwlan 0x1000015ac com.apple.DriverKit-AppleBCMWLAN
+  639   2.2  0.0 /usr/libexec/symptomsd
+  999   2.1  0.1 /System/Library/PrivateFrameworks/IMCore.framework/imagent.app/Contents/MacOS/imagent
+  536   2.0  0.1 /usr/libexec/logd
+  746   1.8  0.0 /usr/libexec/searchpartyd
+  602   1.7  0.0 /usr/sbin/bluetoothd
+18038   1.5  0.4 /Applications/Dia.app/Contents/MacOS/Dia
+--- vm_stat ---
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                  4611321.
+Pages active:                                1630782.
+Pages inactive:                              1538175.
+Pages speculative:                            262925.
+Pages throttled:                                   0.
+Pages wired down:                             219887.
+Pages purgeable:                              111908.
+"Translation faults":                      751695559.
+Pages copy-on-write:                        12294519.
+Pages zero filled:                         349251350.
+Pages reactivated:                           1954620.
+Pages purged:                                2346184.
+File-backed pages:                           2346469.
+Anonymous pages:                             1085413.
+Pages stored in compressor:                   199271.
+Pages occupied by compressor:                  70680.
+Decompressions:                               358167.
+Compressions:                                4945937.
+Pageins:                                    18304145.
+Pageouts:                                      40395.
+Swapins:                                           0.
+Swapouts:                                          0.
+--- memory_pressure ---
+The system has 137438953472 (8388608 pages with a page size of 16384).
+System-wide memory free percentage: 96%
+--- pmset therm ---
+Note: No thermal warning level has been recorded
+Note: No performance warning level has been recorded
+Note: No CPU power status has been recorded
+--- pmset batt ---
+Now drawing from 'AC Power'

@@ -1,0 +1,20 @@
+{
+  "run_id": "mtp-skippy-one-stage-mtp-20260512T152237Z",
+  "topology_id": "mtp-skippy-local",
+  "model_id": "unsloth/Qwen3.6-27B-MTP-GGUF:IQ4_XS",
+  "model_path": "/Users/jdumay/tmp/mesh-llm-mtp/experiments/mtp/models/Qwen3.6-27B-IQ4_XS.gguf",
+  "stage_id": "stage-0",
+  "stage_index": 0,
+  "layer_start": 0,
+  "layer_end": 65,
+  "ctx_size": 4096,
+  "lane_count": 1,
+  "n_gpu_layers": -1,
+  "cache_type_k": "f16",
+  "cache_type_v": "f16",
+  "filter_tensors_on_load": false,
+  "load_mode": "runtime-slice",
+  "bind_addr": "127.0.0.1:33930",
+  "upstream": null,
+  "downstream": null
+}

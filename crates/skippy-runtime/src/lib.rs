@@ -17,9 +17,10 @@ use skippy_ffi::{
     ChatMessage as RawChatMessage, Error as RawError,
     GenerationSignalWindow as RawGenerationSignalWindow, KvPageDesc as RawKvPageDesc, LoadMode,
     LogitBias as RawLogitBias, Model as RawModel, ModelInfo as RawModelInfo,
-    RuntimeConfig as RawRuntimeConfig, SamplingConfig as RawSamplingConfig, Session as RawSession,
-    SlicePlan as RawSlicePlan, Status, TensorInfo as RawTensorInfo, TensorRole,
-    TokenSignal as RawTokenSignal,
+    MtpDraftResult as RawMtpDraftResult, MtpHead as RawMtpHead, MtpParams as RawMtpParams,
+    MtpSession as RawMtpSession, RuntimeConfig as RawRuntimeConfig,
+    SamplingConfig as RawSamplingConfig, Session as RawSession, SlicePlan as RawSlicePlan, Status,
+    TensorInfo as RawTensorInfo, TensorRole, TokenSignal as RawTokenSignal,
 };
 use tokio::sync::mpsc;
 
@@ -1059,6 +1060,122 @@ pub struct StageSession {
     token_count: u64,
 }
 
+pub struct MtpHead {
+    raw: *mut RawMtpHead,
+}
+
+pub struct MtpSession {
+    raw: *mut RawMtpSession,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MtpParams {
+    pub n_min: u32,
+    pub n_max: u32,
+    pub top_k: u32,
+    pub p_min: f32,
+}
+
+impl Default for MtpParams {
+    fn default() -> Self {
+        Self {
+            n_min: 0,
+            n_max: 3,
+            top_k: 10,
+            p_min: 0.75,
+        }
+    }
+}
+
+impl MtpParams {
+    fn as_raw(&self) -> RawMtpParams {
+        RawMtpParams {
+            version: 1,
+            n_min: self.n_min,
+            n_max: self.n_max,
+            top_k: self.top_k,
+            p_min: self.p_min,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MtpDraftResult {
+    pub token_count: u32,
+    pub accepted_floor: u32,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct MtpDecodeResult {
+    pub committed_count: u32,
+    pub proposed_tokens: u32,
+    pub accepted_tokens: u32,
+    pub rejected_tokens: u32,
+    pub windows: u32,
+    pub full_accept_windows: u32,
+    pub tail_reject_windows: u32,
+    pub early_reject_windows: u32,
+    pub repair_required_windows: u32,
+    pub rejected_windows: u32,
+    pub mtp_disabled: bool,
+    pub target_decode_calls: u32,
+    pub target_verify_decode_calls: u32,
+    pub target_verify_tokens: u32,
+    pub target_repair_decode_calls: u32,
+    pub target_repair_tokens: u32,
+    pub mtp_ingest_calls: u32,
+    pub mtp_ingest_tokens: u32,
+    pub mtp_draft_calls: u32,
+    pub mtp_draft_decode_calls: u32,
+    pub mtp_draft_tokens: u32,
+    pub checkpoint_calls: u32,
+    pub restore_calls: u32,
+    pub target_decode_ms: f64,
+    pub mtp_ingest_ms: f64,
+    pub mtp_propose_ms: f64,
+    pub primary_verify_ms: f64,
+    pub repair_ms: f64,
+    pub checkpoint_ms: f64,
+    pub restore_ms: f64,
+}
+
+impl MtpDecodeResult {
+    fn from_raw(raw: skippy_ffi::MtpDecodeResult) -> Self {
+        Self {
+            committed_count: raw.committed_count,
+            proposed_tokens: raw.proposed_tokens,
+            accepted_tokens: raw.accepted_tokens,
+            rejected_tokens: raw.rejected_tokens,
+            windows: raw.windows,
+            full_accept_windows: raw.full_accept_windows,
+            tail_reject_windows: raw.tail_reject_windows,
+            early_reject_windows: raw.early_reject_windows,
+            repair_required_windows: raw.repair_required_windows,
+            rejected_windows: raw.rejected_windows,
+            mtp_disabled: raw.mtp_disabled != 0,
+            target_decode_calls: raw.target_decode_calls,
+            target_verify_decode_calls: raw.target_verify_decode_calls,
+            target_verify_tokens: raw.target_verify_tokens,
+            target_repair_decode_calls: raw.target_repair_decode_calls,
+            target_repair_tokens: raw.target_repair_tokens,
+            mtp_ingest_calls: raw.mtp_ingest_calls,
+            mtp_ingest_tokens: raw.mtp_ingest_tokens,
+            mtp_draft_calls: raw.mtp_draft_calls,
+            mtp_draft_decode_calls: raw.mtp_draft_decode_calls,
+            mtp_draft_tokens: raw.mtp_draft_tokens,
+            checkpoint_calls: raw.checkpoint_calls,
+            restore_calls: raw.restore_calls,
+            target_decode_ms: raw.target_decode_ms,
+            mtp_ingest_ms: raw.mtp_ingest_ms,
+            mtp_propose_ms: raw.mtp_propose_ms,
+            primary_verify_ms: raw.primary_verify_ms,
+            repair_ms: raw.repair_ms,
+            checkpoint_ms: raw.checkpoint_ms,
+            restore_ms: raw.restore_ms,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MediaInput {
     pub bytes: Vec<u8>,
@@ -1234,6 +1351,8 @@ pub struct ChatTemplateJsonResult {
 // Rust stage-server access is additionally serialized behind a Mutex.
 unsafe impl Send for StageModel {}
 unsafe impl Send for StageSession {}
+unsafe impl Send for MtpHead {}
+unsafe impl Send for MtpSession {}
 unsafe impl Send for MediaProjector {}
 
 impl MediaProjector {
@@ -1384,6 +1503,10 @@ impl StageModel {
             raw,
             token_count: u64::try_from(token_ids.len()).context("token count exceeds u64")?,
         })
+    }
+
+    pub fn supports_mtp_head(&self) -> bool {
+        unsafe { skippy_ffi::skippy_mtp_model_supports_head(self.raw) }
     }
 
     pub fn media_marker(&self) -> String {
@@ -2201,9 +2324,328 @@ impl Drop for StageModel {
     }
 }
 
+impl MtpHead {
+    pub fn open(
+        path: impl AsRef<Path>,
+        target_config: &RuntimeConfig,
+        params: &MtpParams,
+    ) -> Result<Self> {
+        let path = path.as_ref();
+        let path = CString::new(path.to_string_lossy().as_bytes())
+            .context("model path contains an interior NUL byte")?;
+        let raw_config = target_config.as_raw()?;
+        let raw_params = params.as_raw();
+        let mut raw = ptr::null_mut();
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_mtp_head_open(
+                path.as_ptr(),
+                &raw_config.raw,
+                &raw_params,
+                &mut raw,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        if raw.is_null() {
+            return Err(anyhow!("skippy_mtp_head_open returned a null handle"));
+        }
+        Ok(Self { raw })
+    }
+
+    pub fn create_session(&mut self) -> Result<MtpSession> {
+        let mut raw = ptr::null_mut();
+        let mut error = ptr::null_mut();
+        let status =
+            unsafe { skippy_ffi::skippy_mtp_session_create(self.raw, &mut raw, &mut error) };
+        ensure_ok(status, error)?;
+        if raw.is_null() {
+            return Err(anyhow!("skippy_mtp_session_create returned a null handle"));
+        }
+        Ok(MtpSession { raw })
+    }
+}
+
+impl Drop for MtpHead {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            unsafe {
+                let _ = skippy_ffi::skippy_mtp_head_free(self.raw, ptr::null_mut());
+            }
+        }
+    }
+}
+
+impl MtpSession {
+    pub fn reset(&mut self) -> Result<()> {
+        let mut error = ptr::null_mut();
+        let status = unsafe { skippy_ffi::skippy_mtp_session_reset(self.raw, &mut error) };
+        ensure_ok(status, error)
+    }
+
+    pub fn draft(
+        &mut self,
+        h_pre_norm: &[f32],
+        last_token: i32,
+        position: u32,
+        output_capacity: usize,
+    ) -> Result<(Vec<i32>, MtpDraftResult)> {
+        if h_pre_norm.is_empty() {
+            return Err(anyhow!("MTP draft requires a pre-norm hidden row"));
+        }
+        if output_capacity == 0 {
+            return Err(anyhow!(
+                "MTP draft output capacity must be greater than zero"
+            ));
+        }
+        let position = i32::try_from(position).context("MTP draft position exceeds i32")?;
+        let mut output_tokens = vec![0_i32; output_capacity];
+        let mut raw_result = RawMtpDraftResult::default();
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_mtp_session_draft(
+                self.raw,
+                h_pre_norm.as_ptr().cast(),
+                std::mem::size_of_val(h_pre_norm),
+                last_token,
+                position,
+                output_tokens.as_mut_ptr(),
+                output_tokens.len(),
+                &mut raw_result,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        output_tokens.truncate(
+            usize::try_from(raw_result.token_count).context("MTP token count exceeds usize")?,
+        );
+        Ok((
+            output_tokens,
+            MtpDraftResult {
+                token_count: raw_result.token_count,
+                accepted_floor: raw_result.accepted_floor,
+            },
+        ))
+    }
+
+    pub fn ingest(&mut self, token_ids: &[i32], h_pre_norm: &[f32], pos_start: u32) -> Result<()> {
+        if token_ids.is_empty() {
+            return Ok(());
+        }
+        if h_pre_norm.is_empty() {
+            return Err(anyhow!("MTP ingest requires pre-norm hidden rows"));
+        }
+        let pos_start = i32::try_from(pos_start).context("MTP ingest position exceeds i32")?;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_mtp_session_ingest(
+                self.raw,
+                token_ids.as_ptr(),
+                token_ids.len(),
+                h_pre_norm.as_ptr().cast(),
+                std::mem::size_of_val(h_pre_norm),
+                pos_start,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)
+    }
+
+    pub fn draft_synced(
+        &mut self,
+        last_token: i32,
+        position: u32,
+        output_capacity: usize,
+    ) -> Result<(Vec<i32>, MtpDraftResult)> {
+        if output_capacity == 0 {
+            return Err(anyhow!(
+                "MTP draft output capacity must be greater than zero"
+            ));
+        }
+        let position = i32::try_from(position).context("MTP draft position exceeds i32")?;
+        let mut output_tokens = vec![0_i32; output_capacity];
+        let mut raw_result = RawMtpDraftResult::default();
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_mtp_session_draft_synced(
+                self.raw,
+                last_token,
+                position,
+                output_tokens.as_mut_ptr(),
+                output_tokens.len(),
+                &mut raw_result,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        output_tokens.truncate(
+            usize::try_from(raw_result.token_count).context("MTP token count exceeds usize")?,
+        );
+        Ok((
+            output_tokens,
+            MtpDraftResult {
+                token_count: raw_result.token_count,
+                accepted_floor: raw_result.accepted_floor,
+            },
+        ))
+    }
+}
+
+impl StageSession {
+    pub fn mtp_decode_step(
+        &mut self,
+        mtp_session: &mut MtpSession,
+        input_token: i32,
+        sampling: Option<&SamplingConfig>,
+        max_new_tokens: usize,
+        max_speculative_tokens: usize,
+        mtp_enabled: bool,
+    ) -> Result<(Vec<i32>, MtpDecodeResult)> {
+        if max_new_tokens == 0 {
+            return Ok((Vec::new(), MtpDecodeResult::default()));
+        }
+        let capacity = max_new_tokens.max(1);
+        let mut output_tokens = vec![0_i32; capacity];
+        let mut raw_result = skippy_ffi::MtpDecodeResult::default();
+        let mut error = ptr::null_mut();
+        let raw_sampling = sampling.map(SamplingConfig::as_raw);
+        let sampling_ptr = raw_sampling
+            .as_ref()
+            .map_or(ptr::null(), |sampling| sampling as *const RawSamplingConfig);
+        let status = unsafe {
+            skippy_ffi::skippy_mtp_decode_step(
+                self.raw,
+                mtp_session.raw,
+                input_token,
+                sampling_ptr,
+                max_new_tokens,
+                max_speculative_tokens,
+                mtp_enabled,
+                output_tokens.as_mut_ptr(),
+                output_tokens.len(),
+                &mut raw_result,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        let committed_count = usize::try_from(raw_result.committed_count)
+            .context("MTP committed token count exceeds usize")?;
+        output_tokens.truncate(committed_count);
+        self.token_count = self
+            .token_count
+            .checked_add(u64::try_from(committed_count).context("token count exceeds u64")?)
+            .context("session token count overflow")?;
+        Ok((output_tokens, MtpDecodeResult::from_raw(raw_result)))
+    }
+
+    pub fn mtp_generate_span(
+        &mut self,
+        mtp_session: &mut MtpSession,
+        input_token: i32,
+        sampling: Option<&SamplingConfig>,
+        max_new_tokens: usize,
+        max_speculative_tokens: usize,
+        mtp_enabled: bool,
+    ) -> Result<(Vec<i32>, MtpDecodeResult)> {
+        if max_new_tokens == 0 {
+            return Ok((Vec::new(), MtpDecodeResult::default()));
+        }
+        let capacity = max_new_tokens.max(1);
+        let mut output_tokens = vec![0_i32; capacity];
+        let mut raw_result = skippy_ffi::MtpDecodeResult::default();
+        let mut error = ptr::null_mut();
+        let raw_sampling = sampling.map(SamplingConfig::as_raw);
+        let sampling_ptr = raw_sampling
+            .as_ref()
+            .map_or(ptr::null(), |sampling| sampling as *const RawSamplingConfig);
+        let status = unsafe {
+            skippy_ffi::skippy_mtp_generate_span(
+                self.raw,
+                mtp_session.raw,
+                input_token,
+                sampling_ptr,
+                max_new_tokens,
+                max_speculative_tokens,
+                mtp_enabled,
+                output_tokens.as_mut_ptr(),
+                output_tokens.len(),
+                &mut raw_result,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        let committed_count = usize::try_from(raw_result.committed_count)
+            .context("MTP committed token count exceeds usize")?;
+        output_tokens.truncate(committed_count);
+        self.token_count = self
+            .token_count
+            .checked_add(u64::try_from(committed_count).context("token count exceeds u64")?)
+            .context("session token count overflow")?;
+        Ok((output_tokens, MtpDecodeResult::from_raw(raw_result)))
+    }
+}
+
+impl Drop for MtpSession {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            unsafe {
+                let _ = skippy_ffi::skippy_mtp_session_free(self.raw, ptr::null_mut());
+            }
+        }
+    }
+}
+
 impl StageSession {
     pub fn token_count(&self) -> u64 {
         self.token_count
+    }
+
+    pub fn set_capture_pre_norm(&mut self, enabled: bool) -> Result<()> {
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_mtp_session_set_capture_pre_norm(self.raw, enabled, &mut error)
+        };
+        ensure_ok(status, error)
+    }
+
+    pub fn copy_pre_norm(&mut self, token_count: u32) -> Result<Vec<f32>> {
+        if token_count == 0 {
+            return Err(anyhow!("copy_pre_norm requires at least one token"));
+        }
+        let mut output_bytes = 0usize;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_mtp_session_copy_pre_norm(
+                self.raw,
+                token_count,
+                ptr::null_mut(),
+                0,
+                &mut output_bytes,
+                &mut error,
+            )
+        };
+        if status != Status::BufferTooSmall && status != Status::Ok {
+            ensure_ok(status, error)?;
+        } else {
+            free_error(error);
+        }
+        let float_count = output_bytes
+            .checked_div(std::mem::size_of::<f32>())
+            .ok_or_else(|| anyhow!("invalid pre-norm byte count"))?;
+        let mut output = vec![0.0_f32; float_count];
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_mtp_session_copy_pre_norm(
+                self.raw,
+                token_count,
+                output.as_mut_ptr().cast(),
+                output_bytes,
+                &mut output_bytes,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        Ok(output)
     }
 
     pub fn batch_size(&self) -> Result<usize> {

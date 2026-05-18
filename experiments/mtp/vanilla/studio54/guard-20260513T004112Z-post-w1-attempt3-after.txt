@@ -1,0 +1,51 @@
+=== post-w1-attempt3-after ===
+Wed May 13 00:56:55 UTC 2026
+10:56  up 1 day,  2:12, 3 users, load averages: 5.32 5.05 5.02
+--- top cpu ---
+ 1003  96.4  0.1 /System/Library/PrivateFrameworks/IMDPersistence.framework/XPCServices/IMDPersistenceAgent.xpc/Contents/MacOS/IMDPersistenceAgent
+59883   6.7  0.0 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mdworker_shared -s mdworker -c MDSImporterWorker -m com.apple.mdworker.shared
+  584   3.4  0.0 /usr/libexec/locationd
+  844   2.2  0.4 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mds_stores
+  999   1.9  0.1 /System/Library/PrivateFrameworks/IMCore.framework/imagent.app/Contents/MacOS/imagent
+  746   1.6  0.0 /usr/libexec/searchpartyd
+  930   1.4  0.0 /usr/sbin/cfprefsd agent
+  725   0.7  0.0 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN com.apple.bcmwlan 0x1000015ac com.apple.DriverKit-AppleBCMWLAN
+ 1984   0.6  0.4 /Applications/JetBrains Toolbox.app/Contents/MacOS/jetbrains-toolbox --minimize
+35709   0.3  0.0 /usr/libexec/PerfPowerServices
+ 2035   0.3  0.1 /Users/jdumay/Library/Application Support/JetBrains/Daemon/bundles/current/jetbrainsd.app/Contents/MacOS/jetbrainsd run
+  602   0.3  0.0 /usr/sbin/bluetoothd
+45824   0.2  0.0 /System/Library/ExtensionKit/Extensions/VPN.appex/Contents/MacOS/VPN -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6Miwic2VydmljZU5hbWUiOiJjb20uYXBwbGUuTmV0d29ya0V4dGVuc2lvblNldHRpbmdzVUkuTkVTZXR0aW5nc1VJRXh0ZW5zaW9uIn0=
+ 8108   0.2  0.2 /Applications/Tailscale.app/Contents/PlugIns/IPNExtension.appex/Contents/MacOS/IPNExtension -AppleLanguages ("en-US")
+--- vm_stat ---
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                  4613620.
+Pages active:                                1630968.
+Pages inactive:                              1537784.
+Pages speculative:                            264480.
+Pages throttled:                                   0.
+Pages wired down:                             216456.
+Pages purgeable:                              108979.
+"Translation faults":                      758923875.
+Pages copy-on-write:                        12343768.
+Pages zero filled:                         351587851.
+Pages reactivated:                           1955767.
+Pages purged:                                2360482.
+File-backed pages:                           2349089.
+Anonymous pages:                             1084143.
+Pages stored in compressor:                   195414.
+Pages occupied by compressor:                  70564.
+Decompressions:                               358201.
+Compressions:                                4945937.
+Pageins:                                    18305861.
+Pageouts:                                      40395.
+Swapins:                                           0.
+Swapouts:                                          0.
+--- memory_pressure ---
+The system has 137438953472 (8388608 pages with a page size of 16384).
+System-wide memory free percentage: 96%
+--- pmset therm ---
+Note: No thermal warning level has been recorded
+Note: No performance warning level has been recorded
+Note: No CPU power status has been recorded
+--- pmset batt ---
+Now drawing from 'AC Power'

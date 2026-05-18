@@ -28,6 +28,8 @@ pub(super) struct OpenAiSpeculativeStats {
     pub(super) checkpoint_ms: f64,
     pub(super) draft_reset_ms: f64,
     pub(super) draft_propose_ms: f64,
+    pub(super) mtp_propose_ms: f64,
+    pub(super) mtp_ingest_ms: f64,
     pub(super) recovery_restores: usize,
     pub(super) recovery_decode_repairs: usize,
     pub(super) recovery_decode_elapsed_ms: f64,
@@ -47,9 +49,57 @@ pub(super) struct OpenAiSpeculativeStats {
     pub(super) adaptive_window_grows: usize,
     pub(super) adaptive_window_shrinks: usize,
     pub(super) adaptive_window_enabled: bool,
+    pub(super) fused_target_decode_calls: usize,
+    pub(super) fused_target_verify_decode_calls: usize,
+    pub(super) fused_target_verify_tokens: usize,
+    pub(super) fused_target_repair_decode_calls: usize,
+    pub(super) fused_target_repair_tokens: usize,
+    pub(super) fused_mtp_ingest_calls: usize,
+    pub(super) fused_mtp_ingest_tokens: usize,
+    pub(super) fused_mtp_draft_calls: usize,
+    pub(super) fused_mtp_draft_decode_calls: usize,
+    pub(super) fused_mtp_draft_tokens: usize,
+    pub(super) fused_checkpoint_calls: usize,
+    pub(super) fused_restore_calls: usize,
 }
 
 impl OpenAiSpeculativeStats {
+    pub(super) fn observe_mtp_decode_result(&mut self, result: &MtpDecodeResult) {
+        self.windows += result.windows as usize;
+        self.draft_tokens += result.proposed_tokens as usize;
+        self.accepted_tokens += result.accepted_tokens as usize;
+        self.rejected_tokens += result.rejected_tokens as usize;
+        self.rejected_windows += result.rejected_windows as usize;
+        self.full_accept_windows += result.full_accept_windows as usize;
+        self.tail_reject_windows += result.tail_reject_windows as usize;
+        self.early_reject_windows += result.early_reject_windows as usize;
+        self.repair_required_windows += result.repair_required_windows as usize;
+        self.primary_verify_requests += result.windows as usize;
+        self.primary_verify_tokens += result.proposed_tokens as usize;
+        self.draft_propose_ms += result.mtp_propose_ms;
+        self.mtp_propose_ms += result.mtp_propose_ms;
+        self.mtp_ingest_ms += result.mtp_ingest_ms;
+        self.primary_verify_elapsed_ms += result.primary_verify_ms;
+        self.checkpoint_ms += result.checkpoint_ms;
+        self.recovery_ms += result.repair_ms;
+        self.recovery_restore_local_ms += result.restore_ms;
+        self.fused_target_decode_calls += result.target_decode_calls as usize;
+        self.fused_target_verify_decode_calls += result.target_verify_decode_calls as usize;
+        self.fused_target_verify_tokens += result.target_verify_tokens as usize;
+        self.fused_target_repair_decode_calls += result.target_repair_decode_calls as usize;
+        self.fused_target_repair_tokens += result.target_repair_tokens as usize;
+        self.fused_mtp_ingest_calls += result.mtp_ingest_calls as usize;
+        self.fused_mtp_ingest_tokens += result.mtp_ingest_tokens as usize;
+        self.fused_mtp_draft_calls += result.mtp_draft_calls as usize;
+        self.fused_mtp_draft_decode_calls += result.mtp_draft_decode_calls as usize;
+        self.fused_mtp_draft_tokens += result.mtp_draft_tokens as usize;
+        self.fused_checkpoint_calls += result.checkpoint_calls as usize;
+        self.fused_restore_calls += result.restore_calls as usize;
+        if result.repair_required_windows > 0 {
+            self.recovery_restores += result.repair_required_windows as usize;
+        }
+    }
+
     pub(super) fn observe_verify_decision(
         &mut self,
         decision: VerifySpanDecision,
@@ -145,19 +195,164 @@ impl OpenAiSpeculativeStats {
             attrs.insert("llama_stage.spec.enabled".to_string(), json!(false));
             return;
         }
-        attrs.insert("llama_stage.spec.enabled".to_string(), json!(true));
-        attrs.insert("llama_stage.spec.windows".to_string(), json!(self.windows));
-        attrs.insert(
-            "llama_stage.spec.proposed".to_string(),
-            json!(self.draft_tokens),
+        insert_bool_attrs(attrs, &[("llama_stage.spec.enabled", true)]);
+        insert_usize_attrs(
+            attrs,
+            &[
+                ("llama_stage.spec.windows", self.windows),
+                ("llama_stage.spec.proposed", self.draft_tokens),
+                ("llama_stage.spec.accepted", self.accepted_tokens),
+                ("llama_stage.spec.rejected", self.rejected_tokens),
+                (
+                    "llama_stage.spec.full_accept_windows",
+                    self.full_accept_windows,
+                ),
+                (
+                    "llama_stage.spec.accepted_stop_windows",
+                    self.accepted_stop_windows,
+                ),
+                ("llama_stage.spec.rejected_windows", self.rejected_windows),
+                (
+                    "llama_stage.spec.early_reject_windows",
+                    self.early_reject_windows,
+                ),
+                (
+                    "llama_stage.spec.tail_reject_windows",
+                    self.tail_reject_windows,
+                ),
+                (
+                    "llama_stage.spec.repair_required_windows",
+                    self.repair_required_windows,
+                ),
+                ("llama_stage.spec.recovery_restores", self.recovery_restores),
+                ("llama_stage.spec.window_start", self.adaptive_window_start),
+                ("llama_stage.spec.window_final", self.adaptive_window_final),
+                ("llama_stage.spec.window_max", self.adaptive_window_max),
+                ("llama_stage.spec.window_min", self.adaptive_window_min),
+                (
+                    "llama_stage.spec.window_max_seen",
+                    self.adaptive_window_max_seen,
+                ),
+                ("llama_stage.spec.window_grows", self.adaptive_window_grows),
+                (
+                    "llama_stage.spec.window_shrinks",
+                    self.adaptive_window_shrinks,
+                ),
+                (
+                    "llama_stage.spec.fused_target_decode_calls",
+                    self.fused_target_decode_calls,
+                ),
+                (
+                    "llama_stage.spec.primary_verify_output_activation_bytes",
+                    self.primary_verify_output_activation_bytes,
+                ),
+                (
+                    "llama_stage.spec.primary_verify_forward_activation_bytes",
+                    self.primary_verify_forward_activation_bytes,
+                ),
+                (
+                    "llama_stage.spec.fused_target_verify_decode_calls",
+                    self.fused_target_verify_decode_calls,
+                ),
+                (
+                    "llama_stage.spec.fused_target_verify_tokens",
+                    self.fused_target_verify_tokens,
+                ),
+                (
+                    "llama_stage.spec.fused_target_repair_decode_calls",
+                    self.fused_target_repair_decode_calls,
+                ),
+                (
+                    "llama_stage.spec.fused_target_repair_tokens",
+                    self.fused_target_repair_tokens,
+                ),
+                (
+                    "llama_stage.spec.fused_mtp_ingest_calls",
+                    self.fused_mtp_ingest_calls,
+                ),
+                (
+                    "llama_stage.spec.fused_mtp_ingest_tokens",
+                    self.fused_mtp_ingest_tokens,
+                ),
+                (
+                    "llama_stage.spec.fused_mtp_draft_calls",
+                    self.fused_mtp_draft_calls,
+                ),
+                (
+                    "llama_stage.spec.fused_mtp_draft_decode_calls",
+                    self.fused_mtp_draft_decode_calls,
+                ),
+                (
+                    "llama_stage.spec.fused_mtp_draft_tokens",
+                    self.fused_mtp_draft_tokens,
+                ),
+                (
+                    "llama_stage.spec.fused_checkpoint_calls",
+                    self.fused_checkpoint_calls,
+                ),
+                (
+                    "llama_stage.spec.fused_restore_calls",
+                    self.fused_restore_calls,
+                ),
+            ],
         );
-        attrs.insert(
-            "llama_stage.spec.accepted".to_string(),
-            json!(self.accepted_tokens),
+        insert_f64_attrs(
+            attrs,
+            &[
+                ("llama_stage.spec.draft_reset_ms", self.draft_reset_ms),
+                ("llama_stage.spec.draft_propose_ms", self.draft_propose_ms),
+                ("llama_stage.spec.mtp_propose_ms", self.mtp_propose_ms),
+                ("llama_stage.spec.mtp_ingest_ms", self.mtp_ingest_ms),
+                (
+                    "llama_stage.spec.primary_verify_elapsed_ms",
+                    self.primary_verify_elapsed_ms,
+                ),
+                (
+                    "llama_stage.spec.primary_verify_stage0_compute_ms",
+                    self.primary_verify_stage0_compute_ms,
+                ),
+                (
+                    "llama_stage.spec.primary_verify_runtime_lock_wait_ms",
+                    self.primary_verify_runtime_lock_wait_ms,
+                ),
+                (
+                    "llama_stage.spec.primary_verify_runtime_lock_hold_ms",
+                    self.primary_verify_runtime_lock_hold_ms,
+                ),
+                (
+                    "llama_stage.spec.primary_verify_activation_encode_ms",
+                    self.primary_verify_activation_encode_ms,
+                ),
+                (
+                    "llama_stage.spec.primary_verify_forward_write_ms",
+                    self.primary_verify_forward_write_ms,
+                ),
+                (
+                    "llama_stage.spec.primary_verify_downstream_wait_ms",
+                    self.primary_verify_downstream_wait_ms,
+                ),
+                ("llama_stage.spec.checkpoint_ms", self.checkpoint_ms),
+                ("llama_stage.spec.recovery_ms", self.recovery_ms),
+                (
+                    "llama_stage.spec.recovery_restore_local_ms",
+                    self.recovery_restore_local_ms,
+                ),
+                (
+                    "llama_stage.spec.recovery_restore_downstream_write_ms",
+                    self.recovery_restore_downstream_write_ms,
+                ),
+                (
+                    "llama_stage.spec.recovery_restore_downstream_wait_ms",
+                    self.recovery_restore_downstream_wait_ms,
+                ),
+            ],
         );
-        attrs.insert(
-            "llama_stage.spec.rejected".to_string(),
-            json!(self.rejected_tokens),
+        insert_bool_attrs(
+            attrs,
+            &[(
+                "llama_stage.spec.adaptive_enabled",
+                self.adaptive_window_enabled,
+            )],
         );
         attrs.insert(
             "llama_stage.spec.accept_rate".to_string(),
@@ -167,130 +362,24 @@ impl OpenAiSpeculativeStats {
                 self.accepted_tokens as f64 / self.draft_tokens as f64
             }),
         );
-        attrs.insert(
-            "llama_stage.spec.full_accept_windows".to_string(),
-            json!(self.full_accept_windows),
-        );
-        attrs.insert(
-            "llama_stage.spec.accepted_stop_windows".to_string(),
-            json!(self.accepted_stop_windows),
-        );
-        attrs.insert(
-            "llama_stage.spec.rejected_windows".to_string(),
-            json!(self.rejected_windows),
-        );
-        attrs.insert(
-            "llama_stage.spec.early_reject_windows".to_string(),
-            json!(self.early_reject_windows),
-        );
-        attrs.insert(
-            "llama_stage.spec.tail_reject_windows".to_string(),
-            json!(self.tail_reject_windows),
-        );
-        attrs.insert(
-            "llama_stage.spec.repair_required_windows".to_string(),
-            json!(self.repair_required_windows),
-        );
-        attrs.insert(
-            "llama_stage.spec.draft_reset_ms".to_string(),
-            json!(self.draft_reset_ms),
-        );
-        attrs.insert(
-            "llama_stage.spec.draft_propose_ms".to_string(),
-            json!(self.draft_propose_ms),
-        );
-        attrs.insert(
-            "llama_stage.spec.primary_verify_elapsed_ms".to_string(),
-            json!(self.primary_verify_elapsed_ms),
-        );
-        attrs.insert(
-            "llama_stage.spec.primary_verify_stage0_compute_ms".to_string(),
-            json!(self.primary_verify_stage0_compute_ms),
-        );
-        attrs.insert(
-            "llama_stage.spec.primary_verify_runtime_lock_wait_ms".to_string(),
-            json!(self.primary_verify_runtime_lock_wait_ms),
-        );
-        attrs.insert(
-            "llama_stage.spec.primary_verify_runtime_lock_hold_ms".to_string(),
-            json!(self.primary_verify_runtime_lock_hold_ms),
-        );
-        attrs.insert(
-            "llama_stage.spec.primary_verify_activation_encode_ms".to_string(),
-            json!(self.primary_verify_activation_encode_ms),
-        );
-        attrs.insert(
-            "llama_stage.spec.primary_verify_forward_write_ms".to_string(),
-            json!(self.primary_verify_forward_write_ms),
-        );
-        attrs.insert(
-            "llama_stage.spec.primary_verify_downstream_wait_ms".to_string(),
-            json!(self.primary_verify_downstream_wait_ms),
-        );
-        attrs.insert(
-            "llama_stage.spec.primary_verify_output_activation_bytes".to_string(),
-            json!(self.primary_verify_output_activation_bytes),
-        );
-        attrs.insert(
-            "llama_stage.spec.primary_verify_forward_activation_bytes".to_string(),
-            json!(self.primary_verify_forward_activation_bytes),
-        );
-        attrs.insert(
-            "llama_stage.spec.checkpoint_ms".to_string(),
-            json!(self.checkpoint_ms),
-        );
-        attrs.insert(
-            "llama_stage.spec.recovery_restores".to_string(),
-            json!(self.recovery_restores),
-        );
-        attrs.insert(
-            "llama_stage.spec.recovery_ms".to_string(),
-            json!(self.recovery_ms),
-        );
-        attrs.insert(
-            "llama_stage.spec.recovery_restore_local_ms".to_string(),
-            json!(self.recovery_restore_local_ms),
-        );
-        attrs.insert(
-            "llama_stage.spec.recovery_restore_downstream_write_ms".to_string(),
-            json!(self.recovery_restore_downstream_write_ms),
-        );
-        attrs.insert(
-            "llama_stage.spec.recovery_restore_downstream_wait_ms".to_string(),
-            json!(self.recovery_restore_downstream_wait_ms),
-        );
-        attrs.insert(
-            "llama_stage.spec.adaptive_enabled".to_string(),
-            json!(self.adaptive_window_enabled),
-        );
-        attrs.insert(
-            "llama_stage.spec.window_start".to_string(),
-            json!(self.adaptive_window_start),
-        );
-        attrs.insert(
-            "llama_stage.spec.window_final".to_string(),
-            json!(self.adaptive_window_final),
-        );
-        attrs.insert(
-            "llama_stage.spec.window_max".to_string(),
-            json!(self.adaptive_window_max),
-        );
-        attrs.insert(
-            "llama_stage.spec.window_min".to_string(),
-            json!(self.adaptive_window_min),
-        );
-        attrs.insert(
-            "llama_stage.spec.window_max_seen".to_string(),
-            json!(self.adaptive_window_max_seen),
-        );
-        attrs.insert(
-            "llama_stage.spec.window_grows".to_string(),
-            json!(self.adaptive_window_grows),
-        );
-        attrs.insert(
-            "llama_stage.spec.window_shrinks".to_string(),
-            json!(self.adaptive_window_shrinks),
-        );
+    }
+}
+
+fn insert_bool_attrs(attrs: &mut BTreeMap<String, Value>, values: &[(&str, bool)]) {
+    for (key, value) in values {
+        attrs.insert((*key).to_string(), json!(*value));
+    }
+}
+
+fn insert_usize_attrs(attrs: &mut BTreeMap<String, Value>, values: &[(&str, usize)]) {
+    for (key, value) in values {
+        attrs.insert((*key).to_string(), json!(*value));
+    }
+}
+
+fn insert_f64_attrs(attrs: &mut BTreeMap<String, Value>, values: &[(&str, f64)]) {
+    for (key, value) in values {
+        attrs.insert((*key).to_string(), json!(*value));
     }
 }
 

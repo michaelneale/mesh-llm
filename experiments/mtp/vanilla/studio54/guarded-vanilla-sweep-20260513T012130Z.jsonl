@@ -1,0 +1,30 @@
+{
+  "run_tag": "20260513T012130Z",
+  "type": "baseline_guard",
+  "phase": "pre",
+  "window": 1,
+  "attempt": 1,
+  "artifact": "/Users/jdumay/tmp/mesh-llm-mtp/experiments/mtp/vanilla/llama-server-baseline_warm-20260513T012131Z.json",
+  "tok_s": 17.65850077935823,
+  "threshold": 17.3,
+  "accepted": true
+}
+{
+  "run_tag": "20260513T012130Z",
+  "type": "condition",
+  "window": 1,
+  "artifact": "/Users/jdumay/tmp/mesh-llm-mtp/experiments/mtp/vanilla/llama-server-mtp_w1_warm-20260513T012322Z.json",
+  "tok_s": 8.681128059474181,
+  "mean_ms": 22116.941333501018
+}
+{
+  "run_tag": "20260513T012130Z",
+  "type": "baseline_guard",
+  "phase": "post",
+  "window": 1,
+  "attempt": 1,
+  "artifact": "/Users/jdumay/tmp/mesh-llm-mtp/experiments/mtp/vanilla/llama-server-baseline_warm-20260513T012933Z.json",
+  "tok_s": 14.293615356791129,
+  "threshold": 17.3,
+  "accepted": false
+}

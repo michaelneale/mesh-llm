@@ -57,6 +57,7 @@ pub enum WireMessageKind {
     TryRestorePrefill = 17,
     TryRestorePrefillDecode = 18,
     TrimSession = 19,
+    MtpDraft = 20,
 }
 
 impl WireMessageKind {
@@ -79,6 +80,7 @@ impl WireMessageKind {
                 | Self::DecodeReadout
                 | Self::DecodeLightCtx
                 | Self::VerifySpan
+                | Self::MtpDraft
                 | Self::PrefillFinalEmbd
                 | Self::DecodeReplayFinalEmbd
         )
@@ -137,6 +139,7 @@ impl TryFrom<i32> for WireMessageKind {
             17 => Ok(Self::TryRestorePrefill),
             18 => Ok(Self::TryRestorePrefillDecode),
             19 => Ok(Self::TrimSession),
+            20 => Ok(Self::MtpDraft),
             _ => Err(invalid_data("unknown stage message kind")),
         }
     }
@@ -181,6 +184,7 @@ pub mod state_flags {
     pub const CHAT_SAMPLING_METADATA: i32 = 1 << 5;
     pub const RWKV7_V_FIRST_SIDEBAND: i32 = 1 << 6;
     pub const GEMMA3N_ALTUP_SIDEBAND: i32 = 1 << 7;
+    pub const MTP_CAPTURE: i32 = 1 << 8;
 }
 
 pub const ACTIVATION_FLAG_RWKV7_V_FIRST: u64 = 1 << 0;

@@ -13,6 +13,8 @@ impl StageOpenAiBackend {
                     max_tokens: request.max_tokens,
                     sampling: request.sampling,
                     chat_sampling_metadata: request.chat_sampling_metadata,
+                    mtp: request.mtp,
+                    mtp_window: request.mtp_window,
                     hook_request: request.hook_request,
                     hook_runtime: request.hook_runtime,
                     cancellation: request.cancellation,
@@ -176,6 +178,7 @@ impl StageOpenAiBackend {
                             prefill_runtime_sessions_before
                                 .get_or_insert_with(|| runtime.session_stats());
                             let output = run_binary_stage_message(
+                                request.config,
                                 &mut runtime,
                                 &session_key,
                                 &message,
@@ -663,7 +666,27 @@ impl StageOpenAiBackend {
                     let proposal_limit = remaining.min(adaptive_window);
                     let propose_timer = PhaseTimer::start();
                     let mut draft_tokens = Vec::new();
-                    if draft_tokens.is_empty() {
+                    let mut mtp_propose_elapsed_ms = 0.0;
+                    let mut mtp_propose_stats = None;
+                    if request.mtp && proposal_limit > 0 {
+                        let mtp_limit = proposal_limit.min(request.mtp_window.max(1));
+                        let mtp = self.execute_embedded_mtp_draft(
+                            &request,
+                            downstream,
+                            request_id,
+                            session_id,
+                            prefill_token_count + decoded_tokens + 1,
+                            current,
+                            mtp_limit,
+                        )?;
+                        mtp_propose_elapsed_ms = mtp.elapsed_ms;
+                        mtp_propose_stats = Some(mtp.stats);
+                        draft_tokens = mtp.reply.predicted_tokens;
+                        if draft_tokens.len() > 1 {
+                            proposal_source = "mtp";
+                        }
+                    }
+                    if draft_tokens.len() <= 1 {
                         if let Some(draft) = draft_guard.as_deref_mut() {
                             let proposal_limit = proposal_limit.min(draft.window);
                             draft_tokens = draft
@@ -676,7 +699,8 @@ impl StageOpenAiBackend {
                     }
                     let draft_propose_ms = propose_timer.elapsed_ms();
                     speculative_stats.draft_propose_ms += draft_propose_ms;
-                    if !draft_tokens.is_empty() {
+                    speculative_stats.mtp_propose_ms += mtp_propose_elapsed_ms;
+                    if draft_tokens.len() > 1 {
                         let verify_inputs = verify_inputs_for_proposals(current, &draft_tokens);
                         let message = embedded_verify_message(
                             request.wire_dtype,
@@ -738,6 +762,10 @@ impl StageOpenAiBackend {
                             .saturating_add(verify.stats.forward_activation_bytes);
                         decode_forward_write_ms += verify.stats.forward_write_ms;
                         decode_downstream_wait_ms += verify.stats.downstream_wait_ms;
+                        if let Some(stats) = mtp_propose_stats.as_ref() {
+                            decode_forward_write_ms += stats.forward_write_ms;
+                            decode_downstream_wait_ms += stats.downstream_wait_ms;
+                        }
                         speculative_stats.checkpoint_ms +=
                             us_to_ms(verify.reply.stats.checkpoint_total_us);
                         let decision = classify_verify_span(
@@ -1006,6 +1034,7 @@ impl StageOpenAiBackend {
                     let lock_hold_timer = PhaseTimer::start();
                     decode_runtime_sessions_before.get_or_insert_with(|| runtime.session_stats());
                     let output = run_binary_stage_message(
+                        request.config,
                         &mut runtime,
                         &session_key,
                         &message,

@@ -44,8 +44,8 @@ use skippy_protocol::{MessageBase, StageConfig, StageTopology, SCHEMA_VERSION};
 use skippy_runtime::{
     ActivationFrame, ChatTemplateJsonOptions, ChatTemplateOptions,
     FlashAttentionType as RuntimeFlashAttentionType, GenerationSignalWindow,
-    LogitBias as RuntimeLogitBias, MediaInput, ModelInfo, RuntimeConfig, RuntimeLoadMode,
-    SamplingConfig, StageModel, StageSession, TokenSignal, MAX_LOGIT_BIAS,
+    LogitBias as RuntimeLogitBias, MediaInput, ModelInfo, MtpDecodeResult, RuntimeConfig,
+    RuntimeLoadMode, SamplingConfig, StageModel, StageSession, TokenSignal, MAX_LOGIT_BIAS,
 };
 use tokio::{
     net::TcpListener,
@@ -107,6 +107,9 @@ pub async fn serve_openai(args: ServeOpenAiArgs) -> Result<()> {
     if args.generation_concurrency == 0 {
         bail!("--generation-concurrency must be greater than zero");
     }
+    if args.mtp && args.mtp_window == 0 {
+        bail!("--mtp-window must be greater than zero when --mtp is set");
+    }
 
     let runtime = load_runtime(&config)?.ok_or_else(|| {
         anyhow!("serve-openai requires a stage config with model_path for tokenization and decode")
@@ -154,6 +157,21 @@ pub async fn serve_openai(args: ServeOpenAiArgs) -> Result<()> {
             "stage.openai_runtime_prewarm",
         )
         .context("prewarm OpenAI runtime sessions")?;
+        if args.mtp {
+            let started = Instant::now();
+            {
+                let mut runtime = runtime
+                    .lock()
+                    .map_err(|_| anyhow!("runtime lock poisoned while warming MTP head"))?;
+                runtime.warm_mtp_head().context("warm OpenAI MTP head")?;
+            }
+            let mut attrs = lifecycle_attrs(&config);
+            attrs.insert(
+                "llama_stage.mtp_warm_ms".to_string(),
+                json!(started.elapsed().as_secs_f64() * 1000.0),
+            );
+            telemetry.emit("stage.openai_mtp_warm", attrs);
+        }
     }
     let kv = KvStageIntegration::from_config(&config)?.map(Arc::new);
     let ctx_size = usize::try_from(config.ctx_size).unwrap_or(usize::MAX);
@@ -168,6 +186,8 @@ pub async fn serve_openai(args: ServeOpenAiArgs) -> Result<()> {
         draft: None,
         speculative_window: 0,
         adaptive_speculative_window: false,
+        mtp: args.mtp,
+        mtp_window: args.mtp_window,
         generation_limit: Arc::new(Semaphore::new(args.generation_concurrency)),
         generation_queue_depth: Arc::new(AtomicUsize::new(0)),
         generation_queue_limit: args.generation_concurrency,
@@ -203,6 +223,8 @@ pub struct EmbeddedOpenAiArgs {
     pub draft_model_path: Option<PathBuf>,
     pub speculative_window: usize,
     pub adaptive_speculative_window: bool,
+    pub mtp: bool,
+    pub mtp_window: usize,
     pub draft_n_gpu_layers: Option<i32>,
     pub activation_width: i32,
     pub wire_dtype: WireActivationDType,
@@ -276,6 +298,9 @@ pub fn embedded_openai_backend(args: EmbeddedOpenAiArgs) -> Result<EmbeddedOpenA
     if args.draft_model_path.is_some() && args.speculative_window == 0 {
         bail!("--openai-speculative-window must be greater than zero when a draft model is set");
     }
+    if args.mtp && args.mtp_window == 0 {
+        bail!("--openai-mtp-window must be greater than zero when --openai-mtp is set");
+    }
     if args.config.stage_index != 0 || args.config.layer_start != 0 {
         bail!("embedded OpenAI serving is only supported on stage 0");
     }
@@ -327,6 +352,24 @@ pub fn embedded_openai_backend(args: EmbeddedOpenAiArgs) -> Result<EmbeddedOpenA
         "stage.openai_runtime_prewarm",
     )
     .context("prewarm embedded OpenAI runtime sessions")?;
+    if args.mtp {
+        let started = Instant::now();
+        {
+            let mut runtime = args
+                .runtime
+                .lock()
+                .map_err(|_| anyhow!("runtime lock poisoned while warming embedded MTP head"))?;
+            runtime
+                .warm_mtp_head()
+                .context("warm embedded OpenAI MTP head")?;
+        }
+        let mut attrs = lifecycle_attrs(&args.config);
+        attrs.insert(
+            "llama_stage.mtp_warm_ms".to_string(),
+            json!(started.elapsed().as_secs_f64() * 1000.0),
+        );
+        args.telemetry.emit("stage.openai_mtp_warm", attrs);
+    }
     let kv = KvStageIntegration::from_config(&args.config)?.map(Arc::new);
     let ctx_size = usize::try_from(args.config.ctx_size).unwrap_or(usize::MAX);
     let backend = Arc::new(StageOpenAiBackend {
@@ -340,6 +383,8 @@ pub fn embedded_openai_backend(args: EmbeddedOpenAiArgs) -> Result<EmbeddedOpenA
         draft,
         speculative_window: args.speculative_window,
         adaptive_speculative_window: args.adaptive_speculative_window,
+        mtp: args.mtp,
+        mtp_window: args.mtp_window,
         generation_limit: Arc::new(Semaphore::new(args.generation_concurrency)),
         generation_queue_depth: Arc::new(AtomicUsize::new(0)),
         generation_queue_limit: args.generation_concurrency,
@@ -366,6 +411,8 @@ struct StageOpenAiBackend {
     draft: Option<Arc<Mutex<DraftRunner>>>,
     speculative_window: usize,
     adaptive_speculative_window: bool,
+    mtp: bool,
+    mtp_window: usize,
     generation_limit: Arc<Semaphore>,
     generation_queue_depth: Arc<AtomicUsize>,
     generation_queue_limit: usize,
@@ -868,12 +915,13 @@ fn prompt_cache_retention_label(retention: openai_frontend::PromptCacheRetention
     }
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Default)]
 struct GenerationCacheStats {
     cached_prompt_tokens: u32,
     matched_prefix_tokens: u32,
     suffix_prefill_tokens: u32,
     hit_kind: Option<&'static str>,
+    speculative_stats: OpenAiSpeculativeStats,
 }
 
 struct ChainPrefixRestore {
@@ -1394,6 +1442,8 @@ struct LocalGeneration<'a> {
     max_tokens: u32,
     sampling: &'a SamplingConfig,
     chat_sampling_metadata: Option<&'a str>,
+    mtp: bool,
+    mtp_window: usize,
     hook_request: Option<ChatCompletionRequest>,
     hook_runtime: Option<tokio::runtime::Handle>,
     cancellation: Option<&'a openai_frontend::CancellationToken>,
@@ -1424,6 +1474,8 @@ struct EmbeddedStageZeroGeneration<'a> {
     draft: Option<Arc<Mutex<DraftRunner>>>,
     speculative_window: usize,
     adaptive_speculative_window: bool,
+    mtp: bool,
+    mtp_window: usize,
     prompt_token_ids: &'a [i32],
     max_tokens: u32,
     sampling: &'a SamplingConfig,
@@ -1774,6 +1826,7 @@ where
             matched_prefix_tokens: cache_stats.matched_prefix_tokens,
             suffix_prefill_tokens: cache_stats.suffix_prefill_tokens,
             cache_hit_kind: cache_stats.hit_kind,
+            speculative_stats: cache_stats.speculative_stats,
             text: self.text,
             finish_reason: self.finish_reason,
             detokenize_ms: self.metrics.detokenize_ms,
@@ -1790,6 +1843,7 @@ struct GeneratedText {
     matched_prefix_tokens: u32,
     suffix_prefill_tokens: u32,
     cache_hit_kind: Option<&'static str>,
+    speculative_stats: OpenAiSpeculativeStats,
     text: String,
     finish_reason: FinishReason,
     detokenize_ms: f64,

@@ -1,0 +1,8 @@
+{"prompt_id":"mtp-code-rust-001","category":"code_rust","prompt":"Write a Rust function named normalize_path_parts(parts: &[&str]) -> Vec<String> that removes empty segments and single dots while preserving normal names. Include one small unit test."}
+{"prompt_id":"mtp-code-ts-001","category":"code_typescript","prompt":"Write a TypeScript function named countByStatus that accepts an array of { status: string } objects and returns a Record<string, number>. Include one tiny example."}
+{"prompt_id":"mtp-json-001","category":"structured_json","prompt":"Return only compact JSON for three benchmark cases comparing baseline and MTP. Each item needs fields: name, nodes, mtp_enabled, and expected_signal."}
+{"prompt_id":"mtp-list-001","category":"structured_list","prompt":"List five concrete checks to run before trusting an MTP benchmark result. Use short numbered items."}
+{"prompt_id":"mtp-explain-001","category":"short_explanation","prompt":"Explain in two short paragraphs why MTP proposals still need target-model verification before tokens are committed."}
+{"prompt_id":"mtp-debug-001","category":"debugging","prompt":"A local inference run gets faster TTFT but slower total latency with MTP enabled. Give three likely causes and one measurement for each."}
+{"prompt_id":"mtp-open-001","category":"open_ended","prompt":"Sketch a practical rollout plan for testing a new speculative decoding path across one-node and two-node serving setups."}
+{"prompt_id":"mtp-doc-001","category":"documentation","prompt":"Draft a concise README note explaining when to use a smaller quant for local MTP experiments."}

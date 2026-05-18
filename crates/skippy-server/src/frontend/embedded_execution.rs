@@ -36,6 +36,7 @@ impl StageOpenAiBackend {
                 stats.verify_span_skip_checkpoint_requests += 1;
             }
             let output = run_binary_stage_message(
+                request.config,
                 &mut runtime,
                 session_key,
                 message,
@@ -157,6 +158,59 @@ impl StageOpenAiBackend {
             local_ms,
             downstream_write_ms,
             downstream_wait_ms,
+        })
+    }
+
+    pub(super) fn execute_embedded_mtp_draft(
+        &self,
+        request: &EmbeddedStageZeroGeneration<'_>,
+        downstream: &mut TcpStream,
+        request_id: u64,
+        session_id: u64,
+        position: usize,
+        last_token: i32,
+        output_capacity: usize,
+    ) -> OpenAiResult<EmbeddedStageExecution> {
+        let timer = PhaseTimer::start();
+        let message = embedded_mtp_draft_message(
+            request.wire_dtype,
+            request_id,
+            session_id,
+            position,
+            last_token,
+            output_capacity,
+        )?;
+        let write_timer = PhaseTimer::start();
+        write_stage_message_conditioned(
+            &mut *downstream,
+            &message,
+            request.wire_dtype,
+            request.downstream_wire_condition,
+        )
+        .map_err(openai_io_error)?;
+        let forward_write_ms = write_timer.elapsed_ms();
+        let wait_timer = PhaseTimer::start();
+        let reply = recv_reply(&mut *downstream).map_err(openai_io_error)?;
+        let downstream_wait_ms = wait_timer.elapsed_ms();
+        if reply.kind != WireReplyKind::PredictedTokens {
+            return Err(OpenAiError::backend(format!(
+                "expected MTP predicted-tokens reply from downstream, got {:?}",
+                reply.kind
+            )));
+        }
+        Ok(EmbeddedStageExecution {
+            reply,
+            stats: EmbeddedExecutionStats {
+                stage0_compute_ms: 0.0,
+                runtime_lock_wait_ms: 0.0,
+                runtime_lock_hold_ms: 0.0,
+                activation_encode_ms: 0.0,
+                output_activation_bytes: 0,
+                forward_activation_bytes: 0,
+                forward_write_ms,
+                downstream_wait_ms,
+            },
+            elapsed_ms: timer.elapsed_ms(),
         })
     }
 }

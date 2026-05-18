@@ -61,6 +61,8 @@ impl StageOpenAiBackend {
                     max_tokens,
                     sampling: &sampling,
                     chat_sampling_metadata,
+                    mtp: self.mtp,
+                    mtp_window: self.mtp_window,
                     hook_request: hook_request.clone(),
                     hook_runtime: hook_runtime.clone(),
                     cancellation,
@@ -108,6 +110,8 @@ impl StageOpenAiBackend {
                     draft: self.draft.clone(),
                     speculative_window: self.speculative_window,
                     adaptive_speculative_window: self.adaptive_speculative_window,
+                    mtp: self.mtp,
+                    mtp_window: self.mtp_window,
                     prompt_token_ids: &prompt_token_ids,
                     max_tokens,
                     sampling: &sampling,
@@ -158,6 +162,7 @@ impl StageOpenAiBackend {
             "llama_stage.eog_check_ms".to_string(),
             json!(output.eog_check_ms),
         );
+        output.speculative_stats.insert_attrs(&mut summary_attrs);
         self.emit_openai_summary(
             "stage.openai_generation_summary",
             generation_timer,
@@ -709,6 +714,7 @@ impl StageOpenAiBackend {
                     decode_runtime_lock_acquires += 1;
                     let hold_timer = PhaseTimer::start();
                     let output = run_binary_stage_message(
+                        &request.config,
                         &mut runtime,
                         &session_key,
                         &message,
