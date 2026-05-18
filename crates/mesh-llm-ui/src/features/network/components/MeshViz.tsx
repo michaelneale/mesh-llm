@@ -1812,7 +1812,7 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
 
   return (
     <section className="panel-shell flex h-full min-h-0 flex-col overflow-hidden rounded-[var(--radius-lg)] border border-border bg-panel">
-      <header className="flex shrink-0 items-center justify-between border-b border-border-soft px-3.5 py-2.5">
+      <header className="flex shrink-0 items-center justify-between border-b border-border-soft px-4 py-3">
         <h2 className="type-panel-title">Mesh overview</h2>
         {!compact && (
           <button

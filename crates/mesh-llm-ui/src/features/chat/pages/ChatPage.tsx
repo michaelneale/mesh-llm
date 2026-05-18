@@ -41,6 +41,7 @@ import {
 import { useModelsQuery } from '@/features/network/api/use-models-query'
 import { useStatusQuery } from '@/features/network/api/use-status-query'
 import { adaptModelsToSummary } from '@/features/network/api/models-adapter'
+import { cn } from '@/lib/utils'
 import { useDataMode } from '@/lib/data-mode'
 import { useBooleanFeatureFlag } from '@/lib/feature-flags'
 import { CHAT_HARNESS } from '@/features/app-tabs/data'
@@ -267,21 +268,24 @@ function AttachmentProcessingPanel({ status }: { status: AttachmentProcessingSta
             return (
               <li
                 key={step.stage}
-                className="rounded-[var(--radius)] border border-border-soft bg-panel px-3 py-3"
+                className={cn(
+                  'rounded-[var(--radius)] border px-3 py-3 transition-colors',
+                  active
+                    ? 'border-[color:color-mix(in_oklab,var(--color-accent)_35%,var(--color-border-soft))] bg-[color:color-mix(in_oklab,var(--color-accent)_6%,var(--color-panel))]'
+                    : 'border-border-soft bg-panel'
+                )}
                 aria-current={active ? 'step' : undefined}
               >
                 <div className="mb-2 flex items-center gap-2">
                   <span
-                    className="inline-flex size-6 items-center justify-center rounded-full border text-[length:var(--density-type-label)]"
-                    style={{
-                      borderColor: active || complete ? 'var(--color-accent)' : 'var(--color-border)',
-                      background: complete
-                        ? 'var(--color-accent)'
+                    className={cn(
+                      'inline-flex size-6 items-center justify-center rounded-full border text-[length:var(--density-type-label)] transition-colors',
+                      complete
+                        ? 'border-accent bg-accent text-panel'
                         : active
-                          ? 'color-mix(in oklab, var(--color-accent) 18%, transparent)'
-                          : 'transparent',
-                      color: complete ? 'var(--color-panel)' : active ? 'var(--color-accent)' : 'var(--color-fg-faint)'
-                    }}
+                          ? 'border-accent bg-[color:color-mix(in_oklab,var(--color-accent)_18%,transparent)] text-accent'
+                          : 'border-border text-fg-faint'
+                    )}
                   >
                     {complete ? (
                       <Check className="size-3.5" aria-hidden={true} />
@@ -291,7 +295,12 @@ function AttachmentProcessingPanel({ status }: { status: AttachmentProcessingSta
                       <Icon className="size-3.5" aria-hidden={true} />
                     )}
                   </span>
-                  <span className={active ? 'font-semibold text-foreground' : 'font-medium text-fg-muted'}>
+                  <span
+                    className={cn(
+                      'text-[length:var(--density-type-caption)]',
+                      active ? 'font-semibold text-foreground' : 'font-medium text-fg-muted'
+                    )}
+                  >
                     {copy.title}
                   </span>
                 </div>
@@ -425,8 +434,8 @@ function ChatMetricBadge({ metric }: { metric: ChatActionMetric }) {
   const Icon = metric.icon === 'cpu' ? Cpu : HardDrive
 
   return (
-    <span className="hidden shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-border px-2 py-px text-[length:var(--density-type-label)] font-medium text-fg-faint md:inline-flex">
-      <Icon className="size-[10px]" /> {metric.label}
+    <span className="hidden shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-border px-2.5 py-0.5 text-[length:var(--density-type-caption)] font-medium text-fg-faint md:inline-flex">
+      <Icon className="size-3" /> {metric.label}
     </span>
   )
 }

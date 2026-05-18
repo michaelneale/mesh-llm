@@ -383,8 +383,14 @@ impl StageControlState {
         if let Err(error) =
             wait_for_binary_stage_ready(bind_addr, stage_load_timeout(&effective_load)).await
         {
+            let last_error = server.status().last_error;
+            let context = stage_load_failure_context(
+                &effective_load,
+                "binary stage did not become ready",
+                last_error.as_deref(),
+            );
             let _ = server.shutdown().await;
-            return Err(error);
+            return Err(error.context(context));
         }
 
         self.stages.insert(
@@ -600,6 +606,40 @@ pub(crate) fn stage_load_timeout(load: &StageLoadRequest) -> Duration {
     )
 }
 
+fn stage_load_failure_context(
+    load: &StageLoadRequest,
+    error: &str,
+    last_error: Option<&str>,
+) -> String {
+    let source_bytes = load
+        .source_model_bytes
+        .map(|bytes| bytes.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let device = load
+        .selected_device
+        .as_ref()
+        .map(|device| device.backend_device.as_str())
+        .unwrap_or("auto");
+    format!(
+        "split stage load failed: model={} topology={} run={} stage={} index={} layers={}..{} mode={:?} bind={} ctx={} lanes={} source_bytes={} device={} error={} last_error={}",
+        load.model_id,
+        load.topology_id,
+        load.run_id,
+        load.stage_id,
+        load.stage_index,
+        load.layer_start,
+        load.layer_end,
+        load.load_mode,
+        load.bind_addr,
+        load.ctx_size,
+        load.lane_count,
+        source_bytes,
+        device,
+        error,
+        last_error.unwrap_or("none"),
+    )
+}
+
 fn probe_binary_stage_ready(bind_addr: SocketAddr, timeout: Duration) -> Result<()> {
     let deadline = std::time::Instant::now() + timeout;
     let mut last_error = None;
@@ -624,7 +664,10 @@ fn probe_binary_stage_ready(bind_addr: SocketAddr, timeout: Duration) -> Result<
         std::thread::sleep(Duration::from_millis(250));
     }
     Err(last_error
-        .unwrap_or_else(|| anyhow!("timed out waiting for binary stage ready at {bind_addr}")))
+        .unwrap_or_else(|| anyhow!("timed out waiting for binary stage ready at {bind_addr}"))
+        .context(format!(
+            "binary stage did not become ready at {bind_addr} before timeout"
+        )))
 }
 
 fn stage_config(

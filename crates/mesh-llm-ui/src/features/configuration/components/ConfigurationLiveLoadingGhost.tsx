@@ -11,9 +11,9 @@ export function ConfigurationLiveLoadingGhost() {
   return (
     <LiveLoadingGhostRoot>
       <ConfigurationLayout header={<ConfigurationHeaderLoadingGhost />}>
-        <div className="grid gap-3.5 px-5" style={{ gridTemplateColumns: '220px minmax(0, 1fr)' }}>
+        <div className="grid min-w-0 gap-[14px] lg:grid-cols-[220px_minmax(0,1fr)]">
           <ConfigurationRailLoadingGhost />
-          <section className="space-y-3">
+          <section className="space-y-[14px]">
             <ConfigurationDeploymentLoadingGhost />
             <ConfigurationSettingsLoadingGhost />
           </section>

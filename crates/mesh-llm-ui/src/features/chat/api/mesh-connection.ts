@@ -14,13 +14,19 @@ function nowMs() {
   return performance.now()
 }
 
-function resolveModel(model: string | (() => string)): string {
-  return typeof model === 'function' ? model() : model
+type StringSource = string | (() => string) | { readonly value: string }
+
+function resolveModel(model: StringSource): string {
+  if (typeof model === 'function') return model()
+  if (typeof model === 'string') return model
+  return model.value
 }
 
-function resolveSystemPrompt(systemPrompt: string | (() => string) | undefined): string {
+function resolveSystemPrompt(systemPrompt: StringSource | undefined): string {
   if (!systemPrompt) return ''
-  return typeof systemPrompt === 'function' ? systemPrompt() : systemPrompt
+  if (typeof systemPrompt === 'function') return systemPrompt()
+  if (typeof systemPrompt === 'string') return systemPrompt
+  return systemPrompt.value
 }
 
 function parseChatSSEEvent(data: string) {
@@ -268,9 +274,9 @@ async function* runConnect(
 }
 
 export function createMeshConnectionAdapter(
-  model: string | (() => string),
+  model: StringSource,
   onResponseMetadata?: (metadata: ChatResponseMetadata) => void,
-  systemPrompt?: string | (() => string)
+  systemPrompt?: StringSource
 ): ConnectConnectionAdapter {
   return {
     connect: (_messages, _data, abortSignal) =>

@@ -414,7 +414,9 @@ function renderPersistentChatRoute(showChat: boolean) {
 }
 
 function queryAllByTextContent(text: string) {
-  return screen.queryAllByText((_, element) => element?.textContent?.includes(text) ?? false, { selector: 'span' })
+  return screen.queryAllByText((_, element) => element?.textContent?.includes(text) ?? false, {
+    selector: 'span,button'
+  })
 }
 
 function shortTimestamp(date: Date) {

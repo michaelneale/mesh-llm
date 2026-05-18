@@ -83,14 +83,14 @@ function ModelRow({
       aria-label={`View ${model.name} model from ${provider.label}${active ? ' (selected)' : ''}`}
       data-active={active ? 'true' : undefined}
       className={cn(
-        'ui-row-action grid w-full gap-x-2.5 border-b border-border-soft px-3 py-2.5 text-left',
+        'ui-row-action grid w-full gap-x-3 border-b border-border-soft px-4 py-3 text-left',
         active ? 'bg-[color-mix(in_oklab,var(--color-accent)_10%,var(--color-panel))]' : 'bg-transparent'
       )}
       style={{ gridTemplateColumns: 'auto 1fr auto' }}
       onClick={() => onSelect?.(model)}
       type="button"
     >
-      <AccentIconFrame className="size-8 self-start" style={modelIconStyle(familyColorKey)} tone="subtle">
+      <AccentIconFrame className="size-9 self-start" style={modelIconStyle(familyColorKey)} tone="subtle">
         <ProviderIcon className="size-4" aria-hidden="true" strokeWidth={1.8} />
       </AccentIconFrame>
       <div className="min-w-0">
@@ -100,7 +100,7 @@ function ModelRow({
             {model.fullId}
           </div>
         )}
-        <div className="mt-1.5 flex items-center gap-1.5">
+        <div className="mt-2 flex items-center gap-2">
           <span className="text-[length:var(--density-type-label)] font-medium text-fg-dim">{provider.label}</span>
           <span className="text-[length:var(--density-type-label)] text-fg-faint">·</span>
           <span className="font-mono text-[length:var(--density-type-label)] text-fg-faint">
@@ -112,11 +112,11 @@ function ModelRow({
           <span className="font-mono text-[length:var(--density-type-label)] text-fg-dim">{contextLabel}</span>
         </div>
       </div>
-      <div className="flex flex-col items-end gap-[5px]">
+      <div className="flex flex-col items-end gap-1.5">
         <StatusBadge dot tone={status.tone}>
           {status.label}
         </StatusBadge>
-        <span className="inline-flex items-center rounded-full border border-border px-[7px] py-px text-[length:var(--density-type-label)] font-medium text-fg-faint">
+        <span className="inline-flex items-center rounded-full border border-border px-2.5 py-[3px] text-[length:var(--density-type-caption)] font-medium text-fg-faint">
           {architectureLabel}
         </span>
       </div>
@@ -195,15 +195,20 @@ export function ModelCatalog({ models, onSelect, selectedModelName }: ModelCatal
     isModelColumnFiltered(filters, column.key, filterOptionsByColumn[column.key])
   ).length
 
-  const filteredModels = useMemo(
-    () =>
-      models.filter((model) =>
+  const filteredModels = useMemo(() => {
+    const STATUS_ORDER: Record<string, number> = { ready: 0, warm: 0, warming: 1, offline: 2 }
+    return models
+      .filter((model) =>
         modelFilterColumns.every((column) =>
           modelFilterValues(model, column.key).some((value) => selectedFilterValues[column.key].has(value))
         )
-      ),
-    [models, selectedFilterValues]
-  )
+      )
+      .sort((a, b) => {
+        const aRank = STATUS_ORDER[a.status ?? ''] ?? 3
+        const bRank = STATUS_ORDER[b.status ?? ''] ?? 3
+        return aRank - bRank
+      })
+  }, [models, selectedFilterValues])
 
   function handleFilterValueChange(key: ModelFilterKey, value: string, checked: boolean) {
     const options = filterOptionsByColumn[key]
@@ -249,7 +254,7 @@ export function ModelCatalog({ models, onSelect, selectedModelName }: ModelCatal
 
   return (
     <aside className="panel-shell flex h-full min-h-0 flex-col overflow-hidden rounded-[var(--radius-lg)] border border-border bg-panel">
-      <header className="flex shrink-0 items-center justify-between border-b border-border-soft px-3.5 py-2.5">
+      <header className="flex shrink-0 items-center justify-between border-b border-border-soft px-4 py-3">
         <h2 className="type-panel-title">Model catalog</h2>
         <div className="flex items-center gap-2">
           <ModelFilterPopover
@@ -271,7 +276,7 @@ export function ModelCatalog({ models, onSelect, selectedModelName }: ModelCatal
             <ModelRow key={model.name} active={model.name === selectedModelName} model={model} onSelect={onSelect} />
           ))
         ) : (
-          <div className="px-3.5 py-8 text-center">
+          <div className="px-4 py-8 text-center">
             <p className="text-[length:var(--density-type-control)] font-semibold text-fg">
               {activeFilterGroups > 0 ? 'No models match these filters.' : 'No models available.'}
             </p>

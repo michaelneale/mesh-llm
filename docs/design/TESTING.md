@@ -594,6 +594,61 @@ MESH_LLM_EPHEMERAL_KEY=1 mesh-llm serve --model Qwen2.5-3B --join <TOKEN> --port
 - Stage placement is proportional to VRAM (e.g. `0.98,0.02`)
 - Kill worker → host detects via heartbeat (~60s), reverts to solo mode
 
+#### Split startup + worker-loss recovery certification
+
+For large-model/manual release QA, use the opt-in certification harness after
+building a binary and preparing a model or layer-package ref:
+
+```bash
+scripts/certify-split-startup-recovery.sh \
+  target/release/mesh-llm \
+  /absolute/path/to/model.gguf
+```
+
+The harness starts one seed and two workers with isolated homes, ephemeral mesh
+keys, private join-token bootstrapping, fixed local ports, and per-process
+runtime roots. It then proves:
+
+- a multi-node split topology becomes routable via `/api/runtime/stages` and
+  `/v1/models`;
+- an active downstream worker is terminated;
+- the coordinator reaches the requested recovery outcome without using the
+  killed worker.
+
+By default the expected outcome is replacement:
+
+```bash
+MESH_SPLIT_CERT_EXPECT=replacement \
+scripts/certify-split-startup-recovery.sh target/release/mesh-llm /models/qwen.gguf
+```
+
+Supported expectations are:
+
+- `replacement` — a new ready split topology appears without the killed node;
+- `withdraw` — the split route is explicitly withdrawn after the worker loss;
+- `local-fallback` — serving remains available through a single local route;
+- `any` — accept the first stable explicit recovery state for exploratory QA.
+
+Useful knobs:
+
+```bash
+MESH_SPLIT_CERT_WORKERS=2
+MESH_SPLIT_CERT_SEED_MAX_VRAM=10
+MESH_SPLIT_CERT_WORKER_MAX_VRAM=9,10
+MESH_SPLIT_CERT_CTX_SIZE=2048
+MESH_SPLIT_CERT_DISCOVERY_MODE=mdns
+MESH_SPLIT_CERT_RUN_INFERENCE=1
+MESH_SPLIT_CERT_KEEP_LOGS=1
+MESH_SPLIT_CERT_WORK_DIR=target/split-recovery-cert/manual
+MESH_SPLIT_CERT_PROCESS_ROOT=/tmp/mesh-split-cert-manual
+```
+
+Expected output includes machine-readable `PASS`/`FAIL` lines and a
+`result.jsonl` evidence file in the work directory. The per-process homes and
+runtime roots default to a short temp directory to avoid Unix socket path length
+limits on macOS. The script never publishes a mesh and does not run by default
+in CI.
+
 ### 15. Passive client on one machine
 
 ```bash

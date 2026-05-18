@@ -92,7 +92,7 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: latest
+          version: 10
 
       - uses: actions/setup-node@v5
         with:
@@ -120,8 +120,8 @@ jobs:
         env:
           RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
         run: |
-          just --shell bash --shell-arg -lc ${{ matrix.build_recipe }}
-          just --shell bash --shell-arg -lc ${{ matrix.bundle_recipe }} "$RELEASE_TAG" dist
+          just --shell bash --shell-arg -c ${{ matrix.build_recipe }}
+          just --shell bash --shell-arg -c ${{ matrix.bundle_recipe }} "$RELEASE_TAG" dist
 
       - name: Upload release bundle
         uses: actions/upload-artifact@v6
@@ -158,7 +158,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
         with:
-          version: latest
+          version: 10
       - uses: actions/setup-node@v5
         with:
           node-version: 24
@@ -174,8 +174,8 @@ jobs:
         env:
           RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
         run: |
-          just --shell bash --shell-arg -lc release-build-arm64
-          just --shell bash --shell-arg -lc release-bundle-arm64 "$RELEASE_TAG" dist
+          just --shell bash --shell-arg -c release-build-arm64
+          just --shell bash --shell-arg -c release-bundle-arm64 "$RELEASE_TAG" dist
       - uses: actions/upload-artifact@v6
         with:
           name: release-linux-arm64
@@ -207,7 +207,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
         with:
-          version: latest
+          version: 10
       - uses: actions/setup-node@v5
         with:
           node-version: 24
@@ -221,8 +221,8 @@ jobs:
         env:
           RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
         run: |
-          just --shell bash --shell-arg -lc release-build-cuda
-          just --shell bash --shell-arg -lc release-bundle-cuda "$RELEASE_TAG" dist
+          just --shell bash --shell-arg -c release-build-cuda
+          just --shell bash --shell-arg -c release-bundle-cuda "$RELEASE_TAG" dist
       - uses: actions/upload-artifact@v6
         with:
           name: release-linux-cuda
@@ -254,7 +254,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
         with:
-          version: latest
+          version: 10
       - uses: actions/setup-node@v5
         with:
           node-version: 24
@@ -268,8 +268,8 @@ jobs:
         env:
           RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
         run: |
-          just --shell bash --shell-arg -lc release-build-cuda-blackwell
-          just --shell bash --shell-arg -lc release-bundle-cuda-blackwell "$RELEASE_TAG" dist
+          just --shell bash --shell-arg -c release-build-cuda-blackwell
+          just --shell bash --shell-arg -c release-bundle-cuda-blackwell "$RELEASE_TAG" dist
       - uses: actions/upload-artifact@v6
         with:
           name: release-linux-cuda-blackwell
@@ -301,7 +301,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
         with:
-          version: latest
+          version: 10
       - uses: actions/setup-node@v5
         with:
           node-version: 24
@@ -315,8 +315,8 @@ jobs:
         env:
           RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
         run: |
-          just --shell bash --shell-arg -lc release-build-rocm
-          just --shell bash --shell-arg -lc release-bundle-rocm "$RELEASE_TAG" dist
+          just --shell bash --shell-arg -c release-build-rocm
+          just --shell bash --shell-arg -c release-bundle-rocm "$RELEASE_TAG" dist
       - uses: actions/upload-artifact@v6
         with:
           name: release-linux-rocm
@@ -334,7 +334,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
         with:
-          version: latest
+          version: 10
       - uses: actions/setup-node@v5
         with:
           node-version: 24
@@ -350,8 +350,8 @@ jobs:
         env:
           RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
         run: |
-          just --shell bash --shell-arg -lc release-build-vulkan
-          just --shell bash --shell-arg -lc release-bundle-vulkan "$RELEASE_TAG" dist
+          just --shell bash --shell-arg -c release-build-vulkan
+          just --shell bash --shell-arg -c release-bundle-vulkan "$RELEASE_TAG" dist
       - uses: actions/upload-artifact@v6
         with:
           name: release-linux-vulkan
@@ -366,13 +366,16 @@ jobs:
       LLAMA_STAGE_BACKEND: cpu
     steps:
       - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-          cache: npm
+          cache: pnpm
           cache-dependency-path: |
             .github/cache-version.txt
-            crates/mesh-llm-ui/package-lock.json
+            crates/mesh-llm-ui/pnpm-lock.yaml
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@just
       - uses: mozilla-actions/sccache-action@v0.0.9
@@ -418,13 +421,16 @@ jobs:
             artifact_name: release-windows-vulkan
     steps:
       - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-          cache: npm
+          cache: pnpm
           cache-dependency-path: |
             .github/cache-version.txt
-            crates/mesh-llm-ui/package-lock.json
+            crates/mesh-llm-ui/pnpm-lock.yaml
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@just
       - uses: mozilla-actions/sccache-action@v0.0.9
@@ -445,6 +451,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
           MESH_LLM_REQUIRE_SCCACHE: "1"
+          MESH_LLM_WINDOWS_BUILD_JOBS: ${{ matrix.backend == 'cuda' && '1' || '' }}
         run: |
           just ${{ matrix.build_recipe }}
           just ${{ matrix.bundle_recipe }} "$env:RELEASE_TAG" dist

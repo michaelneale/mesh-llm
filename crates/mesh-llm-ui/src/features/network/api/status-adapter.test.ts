@@ -268,7 +268,12 @@ describe('adaptStatusToDashboard', () => {
       expect.objectContaining({ firstJoinedMeshTs: 1_700_001_000_000 })
     )
     expect(remoteNodes.find((node) => node.peerId === 'peer-a')).toEqual(
-      expect.objectContaining({ host: true, renderKind: 'serving', meshState: 'serving', firstJoinedMeshTs: 1_700_001_000_000 })
+      expect.objectContaining({
+        host: true,
+        renderKind: 'serving',
+        meshState: 'serving',
+        firstJoinedMeshTs: 1_700_001_000_000
+      })
     )
     expect(remoteNodes.find((node) => node.peerId === 'peer-b')).toEqual(
       expect.objectContaining({ client: false, host: false, renderKind: 'serving', meshState: 'serving' })

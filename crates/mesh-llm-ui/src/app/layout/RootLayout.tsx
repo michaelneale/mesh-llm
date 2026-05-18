@@ -107,7 +107,7 @@ export function RootLayout({ data = SHELL_HARNESS }: RootLayoutProps = {}) {
     <>
       <HeadContent />
       <LiveStatusConnector />
-      <div className="min-h-screen">
+      <div className="flex h-dvh flex-col overflow-hidden">
         <TopNav
           enabledTabs={enabledTabs}
           tab={activeTab === 'configuration' && !newConfigurationPageEnabled ? null : activeTab}
@@ -142,8 +142,10 @@ export function RootLayout({ data = SHELL_HARNESS }: RootLayoutProps = {}) {
           />
         ) : null}
         <ChatSessionProvider>
-          <main className="density-shell mx-auto px-[var(--shell-pad-x)] pb-[var(--shell-pad-bottom)] pt-[var(--shell-pad-top)]">
-            <Outlet />
+          <main className="min-h-0 flex-1 overflow-y-auto">
+            <div className="density-shell mx-auto flex min-h-full flex-col px-[var(--shell-pad-x)] pb-[var(--shell-pad-bottom)] pt-[var(--shell-pad-top)]">
+              <Outlet />
+            </div>
           </main>
         </ChatSessionProvider>
         <Footer

@@ -76,7 +76,7 @@ export function SettingsCategoryRail({ categories, activeId, footer, onSelect }:
     <SidebarNavigation
       activeId={activeId}
       ariaLabel="Defaults sections"
-      className="static self-start lg:sticky lg:top-[76px]"
+      className="static self-start lg:sticky lg:top-[72px]"
       eyebrow="Categories"
       footer={footer}
       items={categories.map((category) => ({
@@ -95,19 +95,19 @@ export function SettingsSection({ id, icon, title, subtitle, children }: Setting
     <section
       id={id}
       aria-labelledby={`${id}-heading`}
-      className="panel-shell scroll-mt-20 rounded-[var(--radius-lg)] border border-border bg-panel px-[18px] pb-[18px] pt-4 shadow-surface-panel"
+      className="panel-shell scroll-mt-20 rounded-[var(--radius-lg)] border border-border bg-panel px-5 pb-5 pt-4 shadow-surface-panel"
       data-panel-soft-elevation="none"
     >
-      <header className="mb-1 flex items-start gap-2.5">
+      <header className="mb-2 flex items-start gap-3">
         <AccentIconFrame className="size-9">{icon}</AccentIconFrame>
         <div>
           <h3
             id={`${id}-heading`}
-            className="text-[length:var(--density-type-control-lg)] font-semibold leading-tight text-foreground"
+            className="text-[length:var(--density-type-title)] font-semibold leading-tight text-foreground"
           >
             {title}
           </h3>
-          <p className="mt-1 text-[length:var(--density-type-caption)] leading-snug text-fg-faint">{subtitle}</p>
+          <p className="mt-1 text-[length:var(--density-type-caption-lg)] leading-snug text-fg-faint">{subtitle}</p>
         </div>
       </header>
       <div>{children}</div>
@@ -119,14 +119,16 @@ export function SettingsRow({ className, label, hint, children }: SettingsRowPro
   return (
     <div
       className={cn(
-        'grid gap-3 border-t border-border-soft py-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center',
+        'grid gap-4 border-t border-border-soft py-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center',
         className
       )}
       data-settings-row="true"
     >
       <div className="min-w-0">
-        <p className="text-[length:var(--density-type-control)] font-medium leading-tight text-foreground">{label}</p>
-        <p className="mt-1 text-[length:var(--density-type-caption)] leading-relaxed text-fg-faint">{hint}</p>
+        <p className="text-[length:var(--density-type-control-lg)] font-medium leading-tight text-foreground">
+          {label}
+        </p>
+        <p className="mt-1.5 text-[length:var(--density-type-caption-lg)] leading-relaxed text-fg-faint">{hint}</p>
       </div>
       <div className="min-w-0 md:justify-self-end">{children}</div>
     </div>
@@ -137,7 +139,7 @@ export function SettingsPreviewRail({ title, code, tip }: SettingsPreviewRailPro
   const [scrollOffset, setScrollOffset] = useState({ left: 0, top: 0 })
 
   return (
-    <aside aria-label={title} className="sticky top-[76px] space-y-2.5">
+    <aside aria-label={title} className="sticky top-[72px] space-y-3">
       <section
         className="panel-shell rounded-[var(--radius-lg)] border border-border bg-panel p-3 shadow-surface-panel"
         data-panel-soft-elevation="none"
@@ -146,7 +148,7 @@ export function SettingsPreviewRail({ title, code, tip }: SettingsPreviewRailPro
           <span>Preview</span>
           <span className="font-mono text-fg-dim">{title}</span>
         </h3>
-        <div className="relative mt-2.5 max-h-[360px] min-h-[220px] overflow-hidden rounded-[var(--radius)] border border-border-soft bg-background font-mono text-[length:var(--density-type-caption-lg)] leading-relaxed">
+        <div className="relative mt-2.5 max-h-[320px] min-h-[210px] overflow-hidden rounded-[var(--radius)] border border-border-soft bg-background font-mono text-[length:var(--density-type-caption)] leading-relaxed">
           <pre
             aria-hidden="true"
             className="pointer-events-none absolute inset-0 m-0 whitespace-pre p-3 text-fg-dim"

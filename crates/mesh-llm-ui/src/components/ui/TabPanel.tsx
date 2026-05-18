@@ -35,6 +35,7 @@ export type TabPanelProps<TValue extends string = string> = {
   iconClassName?: string
   iconStrokeWidth?: number
   listClassName?: string
+  stretchTabs?: boolean
   tabBarAccessory?: ReactNode
   tabBarClassName?: string
   tabs: readonly TabPanelItem<TValue>[]
@@ -65,6 +66,7 @@ export function TabPanel<TValue extends string = string>({
   iconClassName,
   iconStrokeWidth = 1.6,
   listClassName,
+  stretchTabs = false,
   tabBarAccessory,
   tabBarClassName,
   tabs,
@@ -104,7 +106,11 @@ export function TabPanel<TValue extends string = string>({
         <Tabs.List
           aria-label={ariaLabel}
           aria-labelledby={ariaLabelledBy}
-          className={cn('flex h-[56px] items-center gap-0 overflow-x-auto overflow-y-hidden', listClassName)}
+          className={cn(
+            'flex h-[56px] items-center gap-0 overflow-x-auto overflow-y-hidden',
+            stretchTabs && 'w-full',
+            listClassName
+          )}
         >
           {tabs.map((item) => {
             const active = currentValue === item.value
@@ -119,7 +125,8 @@ export function TabPanel<TValue extends string = string>({
             const trigger = (
               <Tabs.Trigger
                 className={cn(
-                  '-mb-px inline-flex h-[44px] items-center gap-[7px] whitespace-nowrap border-b-2 px-[14px] text-[12.5px] font-medium leading-none tracking-[-0.05px] outline-none transition-[border-color,color] hover:text-fg-dim focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50',
+                  '-mb-px inline-flex h-[44px] items-center gap-2 whitespace-nowrap border-b-2 px-[14px] text-[length:var(--density-type-control)] font-medium leading-none tracking-[-0.01em] outline-none transition-[border-color,color] hover:text-fg-dim focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50',
+                  stretchTabs && 'flex-1 justify-center',
                   triggerClassName,
                   item.triggerClassName
                 )}
@@ -136,7 +143,7 @@ export function TabPanel<TValue extends string = string>({
                 ) : Icon ? (
                   <Icon
                     aria-hidden={true}
-                    className={cn('size-[13px] shrink-0', iconClassName, item.iconClassName)}
+                    className={cn('size-[15px] shrink-0', iconClassName, item.iconClassName)}
                     strokeWidth={iconStrokeWidth}
                   />
                 ) : null}

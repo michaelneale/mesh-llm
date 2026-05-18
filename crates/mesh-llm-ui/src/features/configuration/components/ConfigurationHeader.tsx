@@ -27,7 +27,7 @@ function InlineMeta({ children, className, icon }: { children: ReactNode; classN
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1.5 whitespace-nowrap text-[12px] leading-none text-fg-dim',
+        'inline-flex items-center gap-1.5 whitespace-nowrap text-[length:var(--density-type-caption)] leading-none text-fg-dim',
         className
       )}
     >
@@ -53,7 +53,7 @@ export function ConfigurationHistoryActions({
   onSave
 }: Omit<ConfigurationHeaderProps, 'title' | 'description' | 'nodes'>) {
   return (
-    <fieldset aria-label="Configuration history actions" className="mt-[11px] flex items-center gap-1.5 border-0 p-0">
+    <fieldset aria-label="Configuration history actions" className="flex items-center gap-1.5 border-0 p-0">
       <button
         className={iconActionClass}
         disabled={!canUndo}
@@ -110,12 +110,15 @@ export function ConfigurationHeader(props: ConfigurationHeaderProps) {
 
   return (
     <header className="relative z-20 bg-transparent">
-      <div className="flex min-h-[76px] flex-wrap items-center justify-between gap-3 px-5 py-3">
+      <div className="flex min-h-[58px] flex-wrap items-center justify-between gap-x-4 gap-y-2 py-0">
         <div className="min-w-0">
-          <h1 className="text-[20px] font-bold leading-none tracking-[-0.4px] text-foreground">{props.title}</h1>
-          <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-[12px] text-fg-dim">
+          <h1 className="type-headline text-foreground">{props.title}</h1>
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-fg-dim">
             <InlineMeta icon={<UserRound aria-hidden="true" className="size-[11px]" strokeWidth={1.6} />}>
-              Editing <strong className="font-mono text-[11.5px] font-semibold text-foreground">{localHostname}</strong>
+              Editing{' '}
+              <strong className="font-mono text-[length:var(--density-type-caption-lg)] font-semibold text-foreground">
+                {localHostname}
+              </strong>
               <span className="hidden text-fg-faint md:inline">· local node only</span>
             </InlineMeta>
             <InlineMeta

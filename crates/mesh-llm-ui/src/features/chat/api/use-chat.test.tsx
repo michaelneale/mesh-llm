@@ -23,23 +23,32 @@ function createUserMessage(content: string): UIMessage {
 }
 
 async function drainStream(adapter: ConnectConnectionAdapter, message: UIMessage) {
-  for await (const _chunk of adapter.connect([message], undefined, undefined)) {
+  for await (const chunk of adapter.connect([message], undefined, undefined)) {
+    void chunk
     // Drain the stream so the request body is built and posted.
   }
 }
 
-vi.mock('@tanstack/ai-react', () => ({
-  useChat: vi.fn(({ connection, initialMessages }: UseChatOptions) => ({
-    messages: initialMessages,
-    sendMessage: vi.fn((content: string) => drainStream(connection, createUserMessage(content))),
-    setMessages: vi.fn(),
-    reload: vi.fn(),
-    stop: vi.fn(),
-    status: 'ready',
-    error: null,
-    isLoading: false
-  }))
-}))
+vi.mock('@tanstack/ai-react', async () => {
+  const React = await import('react')
+
+  return {
+    useChat: vi.fn(({ connection, initialMessages }: UseChatOptions) => {
+      const connectionRef = React.useRef(connection)
+
+      return {
+        messages: initialMessages,
+        sendMessage: vi.fn((content: string) => drainStream(connectionRef.current, createUserMessage(content))),
+        setMessages: vi.fn(),
+        reload: vi.fn(),
+        stop: vi.fn(),
+        status: 'ready',
+        error: null,
+        isLoading: false
+      }
+    })
+  }
+})
 
 function createSSEStream(lines: string[]) {
   const encoder = new TextEncoder()
@@ -70,6 +79,31 @@ function SendFirstMessageOnLayout() {
   return null
 }
 
+function SendMessageOnLayout({
+  message,
+  model,
+  systemPrompt
+}: {
+  message?: string
+  model: string
+  systemPrompt: string
+}) {
+  const chat = useMeshChat({
+    conversationId: 'chat-1',
+    model,
+    systemPrompt,
+    initialMessages: []
+  })
+
+  useLayoutEffect(() => {
+    if (message) {
+      void chat.sendMessage(message)
+    }
+  }, [chat, message])
+
+  return null
+}
+
 describe('useMeshChat', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
@@ -88,5 +122,26 @@ describe('useMeshChat', () => {
 
     expect(body.input[0]).toEqual({ role: 'system', content: DEFAULT_SYSTEM_PROMPT })
     expect(body.input[1]).toEqual({ role: 'user', content: 'What is MeshLLM?' })
+  })
+
+  it('sends the latest model and system prompt after rerendering the chat hook', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(createSSEStream(['data: [DONE]\n']), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { rerender } = render(<SendMessageOnLayout model="model-a" systemPrompt="prompt-a" />)
+
+    rerender(<SendMessageOnLayout message="Use latest values" model="model-b" systemPrompt="prompt-b" />)
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+
+    const request = fetchMock.mock.calls[0]?.[1]
+    const body = JSON.parse(String(request?.body)) as {
+      model: string
+      input: Array<{ role: string; content: string }>
+    }
+
+    expect(body.model).toBe('model-b')
+    expect(body.input[0]).toEqual({ role: 'system', content: 'prompt-b' })
+    expect(body.input[1]).toEqual({ role: 'user', content: 'Use latest values' })
   })
 })
