@@ -2783,7 +2783,7 @@ fn initialize_runtime_entrypoint() -> Result<()> {
 }
 
 fn acquire_instance_runtime(cli: &Cli) -> Option<Arc<crate::runtime::instance::InstanceRuntime>> {
-    if cli.client {
+    if cli.client && !swarm_capture_observer_requested(cli) {
         return None;
     }
 
@@ -3152,7 +3152,9 @@ pub(crate) async fn run() -> Result<()> {
     let has_config_models = !config.models.is_empty();
     let has_startup_models = cli_has_explicit_models || has_config_models;
 
-    // Acquire the per-instance runtime directory and flock (skip for --client).
+    // Acquire the per-instance runtime directory and flock. Plain --client still
+    // skips this, but capture observers register so detached runs can be found
+    // and stopped by `mesh-llm stop`.
     // Wrap in Arc so it can be cheaply shared with local model tasks.
     let runtime = acquire_instance_runtime(&cli);
 
@@ -3418,6 +3420,13 @@ fn apply_backend_devices_for_flavor(
     for gpu in gpus {
         gpu.backend_device = backend::backend_device_for_flavor(gpu.index, binary_flavor);
     }
+}
+
+fn swarm_capture_observer_requested(cli: &Cli) -> bool {
+    cli.client
+        && (cli.swarm_capture.is_some()
+            || std::env::var_os(crate::capture::SWARM_CAPTURE_ENV)
+                .is_some_and(|value| !value.is_empty()))
 }
 
 fn pinned_startup_preflight_metrics() -> &'static [hardware::Metric] {
@@ -5094,6 +5103,7 @@ async fn start_run_auto_node_and_plugins(
     cli: &Cli,
     config: &plugin::MeshConfig,
     resolved_plugins: &plugin::ResolvedPlugins,
+    swarm_capture: Option<crate::capture::SwarmCaptureRecorder>,
 ) -> Result<(mesh::Node, mesh::TunnelChannels, plugin::PluginManager)> {
     let role = if cli.client {
         NodeRole::Client
@@ -5115,6 +5125,7 @@ async fn start_run_auto_node_and_plugins(
         cli.config.as_deref(),
     )
     .await?;
+    node.set_swarm_capture_recorder(swarm_capture);
     node.set_stage_control_sender(skippy::spawn_stage_control_loop(Some(Arc::new(
         node.clone(),
     ))))
@@ -5149,6 +5160,7 @@ async fn build_run_auto_node_setup(
     config: &plugin::MeshConfig,
     resolved_plugins: &plugin::ResolvedPlugins,
     bin_dir: &Path,
+    swarm_capture: Option<crate::capture::SwarmCaptureRecorder>,
 ) -> Result<AutoRuntimeNodeSetup> {
     let console_port = Some(cli.console);
     let is_client = cli.client;
@@ -5160,7 +5172,7 @@ async fn build_run_auto_node_setup(
     };
     tracing::info!("Local models on disk: {:?}", local_models);
     let (node, channels, plugin_manager) =
-        start_run_auto_node_and_plugins(cli, config, resolved_plugins).await?;
+        start_run_auto_node_and_plugins(cli, config, resolved_plugins, swarm_capture).await?;
     let survey_hardware = run_auto_survey_hardware(is_client);
     let survey_telemetry = survey::SurveyTelemetry::start(
         config,
@@ -6645,6 +6657,51 @@ async fn spawn_run_auto_local_instance_scanner(
     );
 }
 
+fn configure_swarm_capture(cli: &Cli) -> Result<Option<crate::capture::SwarmCaptureRecorder>> {
+    let recorder =
+        crate::capture::SwarmCaptureRecorder::from_cli_or_env(cli.swarm_capture.as_deref())?;
+    if let Some(recorder) = recorder.as_ref() {
+        tracing::info!(
+            path = %recorder.path().display(),
+            "passive swarm capture enabled; writing local debug capture JSONL"
+        );
+    }
+    Ok(recorder)
+}
+
+struct RunAutoModelSelectionContext<'a> {
+    cli: &'a Cli,
+    node: &'a mesh::Node,
+    startup_models: &'a [StartupModelPlan],
+    local_models: &'a [String],
+    is_client: bool,
+    plugin_manager: &'a plugin::PluginManager,
+    bootstrap_listener_tx: &'a mut Option<BootstrapProxyStopTx>,
+    primary_startup_model: Option<&'a StartupModelPlan>,
+}
+
+async fn select_advertised_run_auto_model(
+    ctx: RunAutoModelSelectionContext<'_>,
+) -> Result<Option<(PathBuf, String)>> {
+    let Some(model) = run_auto_model_path_or_shutdown(
+        ctx.cli,
+        ctx.node,
+        ctx.startup_models,
+        ctx.local_models,
+        ctx.is_client,
+        ctx.plugin_manager,
+        ctx.bootstrap_listener_tx,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+
+    let (model_name, model_source) = run_auto_model_identity(ctx.primary_startup_model, &model);
+    advertise_run_auto_models(ctx.node, ctx.startup_models, &model_name, model_source).await;
+    Ok(Some((model, model_name)))
+}
+
 /// Serve mode: join the mesh and serve local models through the embedded runtime.
 async fn run_auto(
     mut cli: Cli,
@@ -6656,6 +6713,7 @@ async fn run_auto(
     auto_join_candidates: Vec<(String, Option<String>)>,
 ) -> Result<()> {
     let resolved_plugins = resolve_plugins_from_config(&config, &cli)?;
+    let swarm_capture = configure_swarm_capture(&cli)?;
     let api_port = cli.port;
     configure_run_auto_process_state(&cli, runtime.as_ref());
     let _native_log_forwarding = SkippyNativeLogForwardingGuard;
@@ -6672,7 +6730,8 @@ async fn run_auto(
         channels,
         plugin_manager,
         survey_telemetry,
-    } = build_run_auto_node_setup(&cli, &config, &resolved_plugins, &bin_dir).await?;
+    } = build_run_auto_node_setup(&cli, &config, &resolved_plugins, &bin_dir, swarm_capture)
+        .await?;
 
     // Advertise what we have on disk and what we want the mesh to serve
     node.set_requested_models(requested_model_names.clone())
@@ -6689,24 +6748,21 @@ async fn run_auto(
 
     let primary_startup_model = startup_models.first().cloned();
 
-    // Decide which model THIS node will serve
-    let Some(model) = run_auto_model_path_or_shutdown(
-        &cli,
-        &node,
-        &startup_models,
-        &local_models,
-        is_client,
-        &plugin_manager,
-        &mut bootstrap_listener_tx,
-    )
-    .await?
+    let Some((model, model_name)) =
+        select_advertised_run_auto_model(RunAutoModelSelectionContext {
+            cli: &cli,
+            node: &node,
+            startup_models: &startup_models,
+            local_models: &local_models,
+            is_client,
+            plugin_manager: &plugin_manager,
+            bootstrap_listener_tx: &mut bootstrap_listener_tx,
+            primary_startup_model: primary_startup_model.as_ref(),
+        })
+        .await?
     else {
         return Ok(());
     };
-
-    let (model_name, model_source) =
-        run_auto_model_identity(primary_startup_model.as_ref(), &model);
-    advertise_run_auto_models(&node, &startup_models, &model_name, model_source).await;
 
     let tunnel_mgr =
         tunnel::Manager::start(node.clone(), channels.rpc, channels.http, channels.stage).await?;
@@ -9507,6 +9563,45 @@ mod tests {
     /// Helper to build a minimal `Cli` for publication-state tests.
     fn make_cli(args: &[&str]) -> crate::cli::Cli {
         crate::cli::Cli::try_parse_from(args).unwrap()
+    }
+
+    fn make_runtime_cli(args: &[&str]) -> crate::cli::Cli {
+        let normalized = crate::cli::normalize_runtime_surface_args(args.iter().copied());
+        crate::cli::Cli::try_parse_from(normalized.normalized).unwrap()
+    }
+
+    #[test]
+    fn swarm_capture_client_registers_runtime_owner() {
+        let cli = make_runtime_cli(&[
+            "mesh-llm",
+            "client",
+            "--auto",
+            "--swarm-capture",
+            "/tmp/mesh-capture",
+        ]);
+
+        assert!(cli.client);
+        assert!(swarm_capture_observer_requested(&cli));
+    }
+
+    #[test]
+    fn plain_client_still_skips_runtime_owner_registration() {
+        let cli = make_runtime_cli(&["mesh-llm", "client", "--auto"]);
+
+        assert!(cli.client);
+        assert!(!swarm_capture_observer_requested(&cli));
+    }
+
+    #[test]
+    #[serial]
+    fn swarm_capture_env_client_registers_runtime_owner() {
+        let key = crate::capture::SWARM_CAPTURE_ENV;
+        let old = std::env::var_os(key);
+        std::env::set_var(key, "/tmp/mesh-capture");
+        let cli = make_runtime_cli(&["mesh-llm", "client", "--auto"]);
+
+        assert!(swarm_capture_observer_requested(&cli));
+        restore_env(key, old);
     }
 
     #[test]

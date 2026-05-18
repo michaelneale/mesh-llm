@@ -301,6 +301,10 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) headless: bool,
 
+    /// Write passive swarm debug capture JSONL to this local directory (opt-in, no telemetry egress).
+    #[arg(long)]
+    pub(crate) swarm_capture: Option<PathBuf>,
+
     /// Publish this mesh for discovery by other nodes.
     /// Without this flag, your mesh is private and only joinable via invite token.
     #[arg(long)]
@@ -757,7 +761,7 @@ where
     // Skip leading global flags to find the pseudo-subcommand position.
     // Recognized value-taking flags: --log-format, --mesh-discovery-mode, --max-vram,
     // --llama-flavor, --device, --tensor-split, --bind-port, --bind-ip, --max-clients,
-    // --port, --console, --draft-max, --ctx-size.
+    // --port, --console, --swarm-capture, --draft-max, --ctx-size.
     // Boolean flags: --help-advanced, --auto, --client, --headless, --publish, --blackboard,
     // --plugin, --auto-update, --no-draft, --split, --no-enumerate-host, --listen-all,
     // --no-console, --owner-required.
@@ -773,6 +777,7 @@ where
         "--max-clients",
         "--port",
         "--console",
+        "--swarm-capture",
         "--draft-max",
         "--ctx-size",
         "--model",
@@ -1207,6 +1212,38 @@ mod tests {
         let normalized = normalize_runtime_surface_args(args);
         let cli = Cli::try_parse_from(&normalized.normalized).unwrap();
         assert!(cli.headless);
+    }
+
+    #[test]
+    fn cli_accepts_swarm_capture_flag_for_client_surface() {
+        let args = vec![
+            "mesh-llm",
+            "client",
+            "--swarm-capture",
+            "/tmp/mesh-capture",
+            "--auto",
+        ];
+        let normalized = normalize_runtime_surface_args(args);
+        let cli = Cli::try_parse_from(&normalized.normalized).unwrap();
+
+        assert!(cli.client);
+        assert_eq!(cli.swarm_capture, Some(PathBuf::from("/tmp/mesh-capture")));
+    }
+
+    #[test]
+    fn cli_accepts_global_swarm_capture_before_client() {
+        let normalized = normalize_runtime_surface_args([
+            "mesh-llm",
+            "--swarm-capture",
+            "/tmp/mesh-capture",
+            "client",
+            "--auto",
+        ]);
+        let cli = Cli::parse_from(normalized.normalized);
+
+        assert!(cli.client);
+        assert_eq!(cli.swarm_capture, Some(PathBuf::from("/tmp/mesh-capture")));
+        assert_eq!(normalized.explicit_surface, Some(RuntimeSurface::Client));
     }
 
     #[test]

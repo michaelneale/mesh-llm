@@ -320,6 +320,12 @@ impl Node {
         let Some(conn) = conn else {
             return;
         };
+        let capture_source = if ceiling_rtt_ms.is_some() {
+            "gossip_round_trip_path"
+        } else {
+            "inbound_gossip_path"
+        };
+        self.capture_selected_connection_path(remote, &conn, capture_source);
         let path_list = conn.paths();
         for path_info in &path_list {
             if !path_info.is_selected() {
@@ -536,6 +542,12 @@ impl Node {
         should_publish_count: bool,
         count: usize,
     ) {
+        let capture_event = if should_publish_count {
+            "peer_direct_update"
+        } else {
+            "peer_direct_seen"
+        };
+        self.capture_peer_observation(capture_event, &updated_peer, "direct", None);
         if should_publish_count {
             let _ = self.peer_change_tx.send(count);
         }
@@ -594,6 +606,7 @@ impl Node {
         state.peers.insert(id, peer.clone());
         let count = state.peers.len();
         drop(state);
+        self.capture_peer_observation("peer_direct_add", &peer, "direct", None);
         let _ = self.peer_change_tx.send(count);
         self.emit_plugin_mesh_event(
             crate::plugin::proto::mesh_event::Kind::PeerUp,
@@ -861,18 +874,40 @@ impl Node {
     ) -> Result<()> {
         tracing::info!("Inbound gossip from {}", remote.fmt_short());
 
-        {
+        let (recovered_from_dead, prior_state) = {
             let mut state = self.state.lock().await;
-            if state.dead_peers.remove(&remote).is_some() {
+            let recovered_from_dead = state.dead_peers.remove(&remote).is_some();
+            let prior_state = state
+                .peers
+                .get(&remote)
+                .map(|peer| {
+                    if peer.last_seen >= peer.last_mentioned {
+                        "direct"
+                    } else {
+                        "transitive"
+                    }
+                })
+                .unwrap_or("unknown")
+                .to_string();
+            if recovered_from_dead {
                 super::emit_mesh_info(format!(
                     "🔄 Dead peer {} is gossiping — clearing dead status",
                     remote.fmt_short()
                 ));
             }
-        }
+            (recovered_from_dead, prior_state)
+        };
 
         let buf = read_len_prefixed(&mut recv).await?;
         let their_announcements = decode_gossip_payload(protocol, remote, &buf)?;
+        self.capture_gossip_inbound(remote, protocol, their_announcements.len());
+        self.capture_direct_proof_of_life(
+            remote,
+            protocol,
+            their_announcements.len(),
+            recovered_from_dead,
+            &prior_state,
+        );
 
         let our_announcements = self.collect_announcements().await;
         write_gossip_payload(&mut send, protocol, &our_announcements, self.endpoint.id()).await?;
@@ -896,7 +931,14 @@ impl Node {
         let mut state = self.state.lock().await;
         // Always clear any rejection-tracking entry so the map stays bounded.
         state.policy_rejected_peers.remove(&id);
+        let had_connection = state.connections.contains_key(&id);
         if let Some(peer) = state.peers.remove(&id) {
+            let last_seen_age_ms = super::elapsed_ms_u64(peer.last_seen.elapsed());
+            let last_mentioned_age_ms = super::elapsed_ms_u64(peer.last_mentioned.elapsed());
+            let bridge_id = peer
+                .propagated_latency
+                .as_ref()
+                .and_then(|latency| latency.observer_id);
             tracing::info!(
                 "Peer removed: {} (total: {})",
                 id.fmt_short(),
@@ -904,6 +946,16 @@ impl Node {
             );
             let count = state.peers.len();
             drop(state);
+            self.capture_peer_lifecycle_event(PeerLifecycleCaptureEvent {
+                event: "peer_removed",
+                peer: id,
+                reason: "remove_peer",
+                reporter: None,
+                last_seen_age_ms: Some(last_seen_age_ms),
+                last_mentioned_age_ms: Some(last_mentioned_age_ms),
+                had_connection: Some(had_connection),
+                bridge_id,
+            });
             let _ = self.peer_change_tx.send(count);
             self.emit_plugin_mesh_event(
                 crate::plugin::proto::mesh_event::Kind::PeerDown,
@@ -935,6 +987,7 @@ impl Node {
         }
         let owner_summary = self.direct_peer_owner_summary(id, ann).await;
         if self.reject_direct_peer_for_policy(id, &owner_summary).await {
+            self.capture_peer_rejected(id, &addr, ann, &owner_summary, "direct", None);
             return;
         }
         let mut state = self.state.lock().await;
@@ -1020,6 +1073,15 @@ impl Node {
             if state.peers.remove(&id).is_some() {
                 let _ = self.peer_change_tx.send(state.peers.len());
             }
+            drop(state);
+            self.capture_peer_rejected(
+                id,
+                addr,
+                ann,
+                &owner_summary,
+                "transitive",
+                Some(bridge_id),
+            );
             return;
         }
         let mut state = self.state.lock().await;
@@ -1048,6 +1110,12 @@ impl Node {
             if serving_changed {
                 let count = state.peers.len();
                 drop(state);
+                self.capture_peer_observation(
+                    "peer_transitive_update",
+                    &updated_peer,
+                    "transitive",
+                    Some(bridge_id),
+                );
                 let _ = self.peer_change_tx.send(count);
                 if changed {
                     self.emit_plugin_mesh_event(
@@ -1059,6 +1127,12 @@ impl Node {
                 }
             } else {
                 drop(state);
+                self.capture_peer_observation(
+                    "peer_transitive_seen",
+                    &updated_peer,
+                    "transitive",
+                    Some(bridge_id),
+                );
                 if changed {
                     self.emit_plugin_mesh_event(
                         crate::plugin::proto::mesh_event::Kind::PeerUpdated,
@@ -1078,6 +1152,12 @@ impl Node {
                 std::time::Instant::now() - std::time::Duration::from_secs(PEER_STALE_SECS * 2);
             state.peers.insert(id, peer.clone());
             drop(state);
+            self.capture_peer_observation(
+                "peer_transitive_add",
+                &peer,
+                "transitive",
+                Some(bridge_id),
+            );
             self.emit_plugin_mesh_event(
                 crate::plugin::proto::mesh_event::Kind::PeerUp,
                 Some(&peer),

@@ -196,6 +196,7 @@ impl MeshApi {
             runtime_data_producer.initial_process_count(),
         );
         MeshApi {
+            capture_node: node.clone(),
             inner: Arc::new(Mutex::new(ApiInner {
                 node,
                 plugin_manager,

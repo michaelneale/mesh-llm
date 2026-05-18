@@ -17,6 +17,7 @@ use iroh::endpoint::Connection;
 use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey, TransportAddr};
 use prost::Message;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -61,6 +62,136 @@ fn current_time_unix_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn elapsed_ms_u64(duration: std::time::Duration) -> u64 {
+    duration.as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SelectedPathObservation {
+    pub(crate) path_type: &'static str,
+    pub(crate) rtt_ms: Option<u32>,
+    pub(crate) observed_direct_remote_addr: Option<SocketAddr>,
+}
+
+pub(crate) struct ConnectionCaptureEvent<'a> {
+    pub(crate) event: &'a str,
+    pub(crate) remote: EndpointId,
+    pub(crate) direction: &'a str,
+    pub(crate) phase: &'a str,
+    pub(crate) protocol: Option<ControlProtocol>,
+    pub(crate) path_type: Option<&'a str>,
+    pub(crate) rtt_ms: Option<u32>,
+    pub(crate) admitted_peer: Option<bool>,
+    pub(crate) reason: Option<&'a str>,
+}
+
+pub(crate) struct PeerLifecycleCaptureEvent<'a> {
+    pub(crate) event: &'a str,
+    pub(crate) peer: EndpointId,
+    pub(crate) reason: &'a str,
+    pub(crate) reporter: Option<EndpointId>,
+    pub(crate) last_seen_age_ms: Option<u64>,
+    pub(crate) last_mentioned_age_ms: Option<u64>,
+    pub(crate) had_connection: Option<bool>,
+    pub(crate) bridge_id: Option<EndpointId>,
+}
+
+pub(crate) struct HttpCaptureEvent<'a> {
+    pub(crate) event: &'a str,
+    pub(crate) source_addr: Option<SocketAddr>,
+    pub(crate) method: &'a str,
+    pub(crate) path: &'a str,
+    pub(crate) body_len_bytes: usize,
+    pub(crate) model_name: Option<&'a str>,
+    pub(crate) completion_tokens: Option<u32>,
+    pub(crate) stream: Option<bool>,
+}
+
+fn selected_path_observation(conn: &Connection) -> Option<SelectedPathObservation> {
+    let path_list = conn.paths();
+    for path_info in &path_list {
+        if !path_info.is_selected() {
+            continue;
+        }
+
+        let path_type = if path_info.is_ip() { "direct" } else { "relay" };
+        let rtt = path_info.rtt();
+        let rtt_ms = if rtt.is_zero() {
+            None
+        } else {
+            Some(rtt.as_millis().min(u128::from(u32::MAX)) as u32)
+        };
+        let observed_direct_remote_addr = match path_info.remote_addr() {
+            TransportAddr::Ip(addr) => Some(*addr),
+            _ => None,
+        };
+
+        return Some(SelectedPathObservation {
+            path_type,
+            rtt_ms,
+            observed_direct_remote_addr,
+        });
+    }
+
+    None
+}
+
+fn endpoint_id_capture_fields(id: EndpointId) -> serde_json::Value {
+    json!({
+        "short": id.fmt_short().to_string(),
+        "hex": hex::encode(id.as_bytes()),
+    })
+}
+
+fn peer_capture_fields(
+    peer: &PeerInfo,
+    source: &str,
+    bridge_id: Option<EndpointId>,
+) -> serde_json::Value {
+    let direct_rtt_ms = peer
+        .display_rtt
+        .as_ref()
+        .map(|observation| observation.rtt_ms);
+    let propagated_latency = peer.propagated_latency.as_ref().map(|observation| {
+        json!({
+            "latency_ms": observation.latency_ms,
+            "age_ms_at_received": observation.age_ms_at_received,
+            "observer": observation.observer_id.map(endpoint_id_capture_fields),
+        })
+    });
+
+    json!({
+        "peer": endpoint_id_capture_fields(peer.id),
+        "source": source,
+        "bridge": bridge_id.map(endpoint_id_capture_fields),
+        "role": &peer.role,
+        "version": &peer.version,
+        "hostname": &peer.hostname,
+        "models": &peer.models,
+        "serving_models": &peer.serving_models,
+        "hosted_models": &peer.hosted_models,
+        "hosted_models_known": peer.hosted_models_known,
+        "available_models": &peer.available_models,
+        "requested_models": &peer.requested_models,
+        "explicit_model_interests": &peer.explicit_model_interests,
+        "model_source": &peer.model_source,
+        "gpu_name": &peer.gpu_name,
+        "is_soc": peer.is_soc,
+        "vram_bytes": peer.vram_bytes,
+        "gpu_vram": &peer.gpu_vram,
+        "gpu_reserved_bytes": &peer.gpu_reserved_bytes,
+        "gpu_mem_bandwidth_gbps": &peer.gpu_mem_bandwidth_gbps,
+        "gpu_compute_tflops_fp32": &peer.gpu_compute_tflops_fp32,
+        "gpu_compute_tflops_fp16": &peer.gpu_compute_tflops_fp16,
+        "direct_rtt_ms": direct_rtt_ms.or(peer.rtt_ms),
+        "propagated_latency": propagated_latency,
+        "owner": &peer.owner_summary,
+        "artifact_transfer_supported": peer.artifact_transfer_supported,
+        "stage_status_list_supported": peer.stage_status_list_supported,
+        "first_joined_mesh_ts": peer.first_joined_mesh_ts,
+    })
 }
 
 pub(super) const PEER_CONNECT_AND_GOSSIP_TIMEOUT: std::time::Duration =
@@ -1587,6 +1718,7 @@ pub struct Node {
     routing_metrics: crate::network::metrics::RoutingMetrics,
     routing_telemetry:
         Arc<std::sync::Mutex<Option<Arc<dyn crate::network::metrics::RoutingTelemetrySink>>>>,
+    swarm_capture: Arc<std::sync::Mutex<Option<crate::capture::SwarmCaptureRecorder>>>,
     local_request_metrics: Arc<LocalRequestMetricsSampler>,
     runtime_data_producer: crate::runtime_data::RuntimeDataProducer,
     tunnel_tx: tokio::sync::mpsc::Sender<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)>,
@@ -2068,6 +2200,280 @@ impl crate::inference::skippy::StagePackagePrefetcher for Node {
         request: &crate::inference::skippy::StagePrepareRequest,
     ) -> Result<()> {
         self.prefetch_stage_package_from_coordinator(request).await
+    }
+}
+
+impl Node {
+    pub(crate) fn set_swarm_capture_recorder(
+        &self,
+        recorder: Option<crate::capture::SwarmCaptureRecorder>,
+    ) {
+        *self
+            .swarm_capture
+            .lock()
+            .expect("swarm capture recorder lock poisoned") = recorder;
+    }
+
+    fn swarm_capture_recorder(&self) -> Option<crate::capture::SwarmCaptureRecorder> {
+        self.swarm_capture
+            .lock()
+            .expect("swarm capture recorder lock poisoned")
+            .clone()
+    }
+
+    pub(crate) fn swarm_capture_enabled(&self) -> bool {
+        self.swarm_capture
+            .lock()
+            .expect("swarm capture recorder lock poisoned")
+            .is_some()
+    }
+
+    fn capture_event(&self, event: &str, fields: impl FnOnce() -> serde_json::Value) {
+        if let Some(recorder) = self.swarm_capture_recorder() {
+            recorder.record_event(event, fields());
+        }
+    }
+
+    pub(crate) fn capture_peer_observation(
+        &self,
+        event: &str,
+        peer: &PeerInfo,
+        source: &str,
+        bridge_id: Option<EndpointId>,
+    ) {
+        self.capture_event(event, || peer_capture_fields(peer, source, bridge_id));
+    }
+
+    pub(crate) fn capture_peer_rejected(
+        &self,
+        id: EndpointId,
+        _addr: &EndpointAddr,
+        ann: &PeerAnnouncement,
+        owner_summary: &OwnershipSummary,
+        source: &str,
+        bridge_id: Option<EndpointId>,
+    ) {
+        self.capture_event("peer_rejected", || {
+            json!({
+                "peer": endpoint_id_capture_fields(id),
+                "source": source,
+                "bridge": bridge_id.map(endpoint_id_capture_fields),
+                "role": &ann.role,
+                "version": &ann.version,
+                "hostname": &ann.hostname,
+                "mesh_id": &ann.mesh_id,
+                "models": &ann.models,
+                "serving_models": &ann.serving_models,
+                "hosted_models": &ann.hosted_models,
+                "available_models": &ann.available_models,
+                "requested_models": &ann.requested_models,
+                "gpu_name": &ann.gpu_name,
+                "is_soc": ann.is_soc,
+                "vram_bytes": ann.vram_bytes,
+                "latency_ms": ann.latency_ms,
+                "latency_source": ann.latency_source.map(|value| value.as_str_name()),
+                "owner": owner_summary,
+            })
+        });
+    }
+
+    pub(crate) fn capture_gossip_inbound(
+        &self,
+        remote: EndpointId,
+        protocol: ControlProtocol,
+        announcement_count: usize,
+    ) {
+        self.capture_event("gossip_inbound", || {
+            json!({
+                "remote": endpoint_id_capture_fields(remote),
+                "protocol": format!("{protocol:?}"),
+                "announcement_count": announcement_count,
+            })
+        });
+    }
+
+    pub(crate) fn capture_path_observation(
+        &self,
+        remote: EndpointId,
+        path_type: &str,
+        rtt_ms: Option<u32>,
+        observed_direct_remote_addr: Option<SocketAddr>,
+        source: &str,
+    ) {
+        let observed_via_relay = path_type == "relay";
+        self.capture_event("peer_path_observed", || json!({
+            "remote": endpoint_id_capture_fields(remote),
+            "path_type": path_type,
+            "rtt_ms": rtt_ms,
+            "observed_direct_remote_addr": observed_direct_remote_addr.map(|addr| addr.to_string()),
+            "observed_via_relay": observed_via_relay,
+            "direct_addr_available": observed_direct_remote_addr.is_some(),
+            "source": source,
+        }));
+    }
+
+    pub(crate) fn capture_selected_connection_path(
+        &self,
+        remote: EndpointId,
+        conn: &Connection,
+        source: &str,
+    ) -> Option<SelectedPathObservation> {
+        let observation = selected_path_observation(conn)?;
+        self.capture_path_observation(
+            remote,
+            observation.path_type,
+            observation.rtt_ms,
+            observation.observed_direct_remote_addr,
+            source,
+        );
+        Some(observation)
+    }
+
+    pub(crate) fn capture_connection_event(&self, event: ConnectionCaptureEvent<'_>) {
+        self.capture_event(event.event, || {
+            json!({
+                "remote": endpoint_id_capture_fields(event.remote),
+                "direction": event.direction,
+                "phase": event.phase,
+                "protocol": event.protocol.map(|value| format!("{value:?}")),
+                "path_type": event.path_type,
+                "rtt_ms": event.rtt_ms,
+                "admitted_peer": event.admitted_peer,
+                "reason": event.reason,
+            })
+        });
+    }
+
+    pub(crate) fn capture_direct_proof_of_life(
+        &self,
+        remote: EndpointId,
+        protocol: ControlProtocol,
+        announcement_count: usize,
+        recovered_from_dead: bool,
+        prior_state: &str,
+    ) {
+        self.capture_event("peer_direct_proof_of_life", || {
+            json!({
+                "remote": endpoint_id_capture_fields(remote),
+                "protocol": format!("{protocol:?}"),
+                "announcement_count": announcement_count,
+                "recovered_from_dead": recovered_from_dead,
+                "prior_state": prior_state,
+            })
+        });
+    }
+
+    pub(crate) fn capture_peer_lifecycle_event(&self, event: PeerLifecycleCaptureEvent<'_>) {
+        self.capture_event(event.event, || {
+            json!({
+                "peer": endpoint_id_capture_fields(event.peer),
+                "reason": event.reason,
+                "reporter": event.reporter.map(endpoint_id_capture_fields),
+                "last_seen_age_ms": event.last_seen_age_ms,
+                "last_mentioned_age_ms": event.last_mentioned_age_ms,
+                "had_connection": event.had_connection,
+                "bridge": event.bridge_id.map(endpoint_id_capture_fields),
+            })
+        });
+    }
+
+    pub(crate) async fn capture_peer_lifecycle_snapshot(
+        &self,
+        event: &str,
+        peer: EndpointId,
+        reason: &str,
+        reporter: Option<EndpointId>,
+    ) {
+        if !self.swarm_capture_enabled() {
+            return;
+        }
+
+        let (last_seen_age_ms, last_mentioned_age_ms, had_connection, bridge_id) = {
+            let state = self.state.lock().await;
+            let peer_info = state.peers.get(&peer);
+            (
+                peer_info.map(|info| elapsed_ms_u64(info.last_seen.elapsed())),
+                peer_info.map(|info| elapsed_ms_u64(info.last_mentioned.elapsed())),
+                Some(state.connections.contains_key(&peer)),
+                peer_info
+                    .and_then(|info| info.propagated_latency.as_ref())
+                    .and_then(|latency| latency.observer_id),
+            )
+        };
+        self.capture_peer_lifecycle_event(PeerLifecycleCaptureEvent {
+            event,
+            peer,
+            reason,
+            reporter,
+            last_seen_age_ms,
+            last_mentioned_age_ms,
+            had_connection,
+            bridge_id,
+        });
+    }
+
+    pub(crate) fn capture_stream_observation(
+        &self,
+        remote: EndpointId,
+        stream_type: u8,
+        protocol: ControlProtocol,
+        admitted: bool,
+    ) {
+        self.capture_event("mesh_stream_observed", || {
+            json!({
+                "remote": endpoint_id_capture_fields(remote),
+                "stream_type": stream_type,
+                "protocol": format!("{protocol:?}"),
+                "admitted": admitted,
+            })
+        });
+    }
+
+    pub(crate) fn capture_stream_rejected(
+        &self,
+        remote: EndpointId,
+        stream_type: u8,
+        protocol: ControlProtocol,
+        reason: &str,
+    ) {
+        self.capture_event("mesh_stream_rejected", || {
+            json!({
+                "remote": endpoint_id_capture_fields(remote),
+                "stream_type": stream_type,
+                "protocol": format!("{protocol:?}"),
+                "reason": reason,
+            })
+        });
+    }
+
+    pub(crate) fn capture_route_request(
+        &self,
+        remote: EndpointId,
+        protocol: ControlProtocol,
+        outcome: &str,
+    ) {
+        self.capture_event("route_request", || {
+            json!({
+                "remote": endpoint_id_capture_fields(remote),
+                "protocol": format!("{protocol:?}"),
+                "outcome": outcome,
+            })
+        });
+    }
+
+    pub(crate) fn capture_http_request(&self, event: HttpCaptureEvent<'_>) {
+        self.capture_event(event.event, || {
+            json!({
+                "source_addr": event.source_addr.map(|addr| addr.to_string()),
+                "method": event.method,
+                "path": crate::capture::http_path_without_query(event.path),
+                "query_present": event.path.contains('?'),
+                "body_len_bytes": event.body_len_bytes,
+                "model": event.model_name,
+                "completion_tokens": event.completion_tokens,
+                "stream": event.stream,
+            })
+        });
     }
 }
 
@@ -2688,6 +3094,7 @@ impl Node {
             inflight_change_tx,
             routing_metrics: crate::network::metrics::RoutingMetrics::default(),
             routing_telemetry: Arc::new(std::sync::Mutex::new(None)),
+            swarm_capture: Arc::new(std::sync::Mutex::new(None)),
             local_request_metrics: Arc::new(LocalRequestMetricsSampler::default()),
             runtime_data_producer,
             tunnel_tx,
@@ -2829,6 +3236,8 @@ impl Node {
             inflight_change_tx,
             routing_metrics: crate::network::metrics::RoutingMetrics::default(),
             routing_telemetry: Arc::new(std::sync::Mutex::new(None)),
+            #[cfg(debug_assertions)]
+            swarm_capture: Arc::new(std::sync::Mutex::new(None)),
             local_request_metrics: Arc::new(LocalRequestMetricsSampler::default()),
             runtime_data_producer,
             tunnel_tx,
@@ -4302,9 +4711,14 @@ impl Node {
         }
     }
 
-    async fn remember_incoming_connection(&self, remote: EndpointId, conn: &Connection) -> bool {
+    async fn remember_incoming_connection(
+        &self,
+        remote: EndpointId,
+        conn: &Connection,
+    ) -> (bool, bool) {
         let mut state = self.state.lock().await;
         let was_dead = state.dead_peers.remove(&remote).is_some();
+        let admitted = state.peers.contains_key(&remote);
         if was_dead {
             emit_mesh_info(format!(
                 "🔄 Previously dead peer {} reconnected",
@@ -4312,7 +4726,7 @@ impl Node {
             ));
         }
         state.connections.insert(remote, conn.clone());
-        was_dead
+        (was_dead, admitted)
     }
 
     fn spawn_reconnect_gossip(&self, conn: Connection, remote: EndpointId) {
@@ -4336,7 +4750,19 @@ impl Node {
 
         // Store connection for stream dispatch (tunneling, route requests, etc.)
         // Don't add to peer list yet — only gossip exchange promotes to peer.
-        let was_dead = self.remember_incoming_connection(remote, &conn).await;
+        let (was_dead, admitted) = self.remember_incoming_connection(remote, &conn).await;
+        self.capture_connection_event(ConnectionCaptureEvent {
+            event: "peer_connection_accepted",
+            remote,
+            direction: "inbound",
+            phase: "accept",
+            protocol: Some(connection_protocol(&conn)),
+            path_type: None,
+            rtt_ms: None,
+            admitted_peer: Some(admitted),
+            reason: was_dead.then_some("previously_dead"),
+        });
+        self.capture_selected_connection_path(remote, &conn, "inbound_connection_accept_path");
 
         // If this peer was previously dead, immediately gossip to restore their
         // assigned/routable state in our peer list. Without this, models served by the
@@ -4667,9 +5093,21 @@ impl Node {
         &self,
         conn: &Connection,
         remote: EndpointId,
+        protocol: ControlProtocol,
     ) -> Result<AcceptedMeshStream, ()> {
         let (send, mut recv) = conn.accept_bi().await.map_err(|error| {
             tracing::info!("Connection to {} closed: {error}", remote.fmt_short());
+            self.capture_connection_event(ConnectionCaptureEvent {
+                event: "peer_connection_closed",
+                remote,
+                direction: "unknown",
+                phase: "accept_bi",
+                protocol: Some(protocol),
+                path_type: None,
+                rtt_ms: None,
+                admitted_peer: None,
+                reason: Some("accept_bi_error"),
+            });
         })?;
         let mut type_buf = [0u8; 1];
         if recv.read_exact(&mut type_buf).await.is_err() {
@@ -4685,20 +5123,29 @@ impl Node {
     async fn admitted_mesh_stream(
         &self,
         remote: EndpointId,
+        protocol: ControlProtocol,
         stream_type: u8,
         send: iroh::endpoint::SendStream,
         recv: iroh::endpoint::RecvStream,
     ) -> Option<MeshBiStream> {
+        let capture_streams = self.swarm_capture_enabled();
         if stream_allowed_before_admission(stream_type) {
+            if capture_streams {
+                self.capture_stream_observation(remote, stream_type, protocol, true);
+            }
             return Some((send, recv));
         }
         let admitted = {
             let state = self.state.lock().await;
             state.peers.contains_key(&remote)
         };
+        if capture_streams {
+            self.capture_stream_observation(remote, stream_type, protocol, admitted);
+        }
         if admitted {
             Some((send, recv))
         } else {
+            self.capture_stream_rejected(remote, stream_type, protocol, "unadmitted_peer");
             tracing::warn!(
                 "Quarantine: stream {:#04x} from unadmitted peer {} rejected — peer must complete gossip first",
                 stream_type,
@@ -4859,6 +5306,7 @@ impl Node {
 
     fn spawn_route_request_stream(
         &self,
+        remote: EndpointId,
         protocol: ControlProtocol,
         send: iroh::endpoint::SendStream,
         mut recv: iroh::endpoint::RecvStream,
@@ -4872,6 +5320,7 @@ impl Node {
                         tracing::warn!(
                             "Route request: failed to read proto body — rejecting: {error}"
                         );
+                        node.capture_route_request(remote, protocol, "read_error");
                         return;
                     }
                 };
@@ -4880,11 +5329,13 @@ impl Node {
                     Ok(request) => request,
                     Err(error) => {
                         tracing::warn!("Route request: invalid protobuf — rejecting: {error}");
+                        node.capture_route_request(remote, protocol, "decode_error");
                         return;
                     }
                 };
                 if let Err(error) = req.validate_frame() {
                     tracing::warn!("Route request: frame validation failed — rejecting: {error}");
+                    node.capture_route_request(remote, protocol, "validation_error");
                     return;
                 }
             }
@@ -4892,7 +5343,14 @@ impl Node {
             let mut send = send;
             let table = node.routing_table().await;
             let proto_table = routing_table_to_proto(&table);
-            let _ = write_len_prefixed(&mut send, &proto_table.encode_to_vec()).await;
+            if write_len_prefixed(&mut send, &proto_table.encode_to_vec())
+                .await
+                .is_err()
+            {
+                node.capture_route_request(remote, protocol, "write_error");
+                return;
+            }
+            node.capture_route_request(remote, protocol, "served");
             let _ = send.finish();
         });
     }
@@ -5201,7 +5659,7 @@ impl Node {
         match stream_type {
             STREAM_GOSSIP => self.spawn_gossip_stream(remote, protocol, send, recv),
             STREAM_TUNNEL_MAP => self.spawn_tunnel_map_stream(remote, protocol, recv),
-            STREAM_ROUTE_REQUEST => self.spawn_route_request_stream(protocol, send, recv),
+            STREAM_ROUTE_REQUEST => self.spawn_route_request_stream(remote, protocol, send, recv),
             STREAM_PEER_DOWN => self.spawn_peer_down_stream(remote, recv),
             STREAM_PEER_LEAVING => self.spawn_peer_leaving_stream(remote, recv),
             STREAM_PLUGIN_CHANNEL => self.spawn_plugin_channel_stream(remote, send, recv),
@@ -5298,7 +5756,7 @@ impl Node {
         let protocol = connection_protocol(&conn);
         let dispatcher_stable_id = conn.stable_id();
         loop {
-            let accepted = match self.accept_mesh_stream(&conn, remote).await {
+            let accepted = match self.accept_mesh_stream(&conn, remote, protocol).await {
                 Ok(accepted) => accepted,
                 Err(()) => {
                     self.recover_closed_connection(remote, dispatcher_stable_id)
@@ -5307,7 +5765,13 @@ impl Node {
                 }
             };
             let Some((send, recv)) = self
-                .admitted_mesh_stream(remote, accepted.stream_type, accepted.send, accepted.recv)
+                .admitted_mesh_stream(
+                    remote,
+                    protocol,
+                    accepted.stream_type,
+                    accepted.send,
+                    accepted.recv,
+                )
                 .await
             else {
                 continue;

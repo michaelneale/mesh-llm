@@ -172,6 +172,7 @@ pub(crate) fn is_ui_only_route(path: &str) -> bool {
 }
 
 pub(crate) async fn handle_request(mut stream: TcpStream, state: &MeshApi) -> anyhow::Result<()> {
+    let source_addr = stream.peer_addr().ok();
     let Some(request) = read_management_request(&mut stream).await? else {
         return Ok(());
     };
@@ -180,6 +181,20 @@ pub(crate) async fn handle_request(mut stream: TcpStream, state: &MeshApi) -> an
     let path = request.path.as_str();
     let path_only = path.split('?').next().unwrap_or(path);
     let body = http_body_text(&request.raw);
+    if state.capture_node.swarm_capture_enabled() {
+        state
+            .capture_node
+            .capture_http_request(crate::mesh::HttpCaptureEvent {
+                event: "management_http_request",
+                source_addr,
+                method,
+                path,
+                body_len_bytes: request.body_len_bytes,
+                model_name: request.model_name.as_deref(),
+                completion_tokens: request.completion_tokens,
+                stream: request.stream,
+            });
+    }
 
     if method == "GET" && state.is_headless().await && is_ui_only_route(path_only) {
         respond_error(&mut stream, 404, "Not found").await?;

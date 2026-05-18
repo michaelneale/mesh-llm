@@ -212,6 +212,8 @@ async fn make_test_node(role: super::NodeRole) -> Result<Node> {
         inflight_change_tx,
         routing_metrics: crate::network::metrics::RoutingMetrics::default(),
         routing_telemetry: Arc::new(std::sync::Mutex::new(None)),
+        #[cfg(debug_assertions)]
+        swarm_capture: Arc::new(std::sync::Mutex::new(None)),
         local_request_metrics: Arc::new(LocalRequestMetricsSampler::default()),
         runtime_data_producer,
         tunnel_tx,

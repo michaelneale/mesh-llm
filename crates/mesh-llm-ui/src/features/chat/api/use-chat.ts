@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useChat } from '@tanstack/ai-react'
 import type { UseChatReturn } from '@tanstack/ai-react'
 import type { ThreadMessage } from '@/features/app-tabs/types'
@@ -38,10 +38,8 @@ export function useMeshChat({
   const currentModel = useMemo(() => createMutableStringSource(), [])
   const currentSystemPrompt = useMemo(() => createMutableStringSource(), [])
 
-  useLayoutEffect(() => {
-    currentModel.setValue(model)
-    currentSystemPrompt.setValue(systemPrompt)
-  }, [currentModel, currentSystemPrompt, model, systemPrompt])
+  currentModel.setValue(model)
+  currentSystemPrompt.setValue(systemPrompt)
 
   const connection = useMemo(
     () => createMeshConnectionAdapter(currentModel, onResponseMetadata, currentSystemPrompt),
