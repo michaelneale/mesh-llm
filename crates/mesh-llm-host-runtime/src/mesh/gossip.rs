@@ -49,11 +49,12 @@ pub(super) fn version_allowed_for_rebroadcast(version: Option<&str>) -> bool {
     let Some(minor) = parts.next().and_then(|s| s.parse::<u64>().ok()) else {
         return true;
     };
-    if major > MIN_REBROADCAST_VERSION_MAJOR {
-        return true;
-    }
-    if major < MIN_REBROADCAST_VERSION_MAJOR {
-        return false;
+    if major != MIN_REBROADCAST_VERSION_MAJOR {
+        // Any major > floor (e.g. v1.x.y) is allowed; any major < floor is
+        // refused. With MIN_REBROADCAST_VERSION_MAJOR == 0, the "less than"
+        // case cannot occur, but we keep the comparison structure for the
+        // day the floor bumps to a non-zero major.
+        return major > MIN_REBROADCAST_VERSION_MAJOR;
     }
     minor >= MIN_REBROADCAST_VERSION_MINOR
 }
