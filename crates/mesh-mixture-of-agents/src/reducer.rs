@@ -40,6 +40,18 @@ pub(crate) fn reducer_candidates(config: &GatewayConfig) -> Vec<(String, usize)>
     big
 }
 
+/// Successful hedged-reducer outcome.
+///
+/// `attempts` reports how many candidates were actually spawned:
+/// `1` = clean happy path (cand 0 returned before hedge fired),
+/// `≥2` = hedge fired or a fast-fail cascaded to the next candidate.
+#[derive(Debug)]
+pub(crate) struct HedgedReducerOk {
+    pub winner: String,
+    pub text: String,
+    pub attempts: u32,
+}
+
 /// Call the ordered reducer candidates with hedging.
 ///
 /// Starts the first candidate immediately. If it hasn't returned within
@@ -47,7 +59,7 @@ pub(crate) fn reducer_candidates(config: &GatewayConfig) -> Vec<(String, usize)>
 /// cancelling the in-flight one — we race for the first OK. If a candidate
 /// errors, the next one is started immediately (no hedge wait).
 ///
-/// Returns the first successful (name, response_text). If every candidate
+/// Returns the first successful [`HedgedReducerOk`]. If every candidate
 /// fails, returns the last error encountered.
 ///
 /// Cost shape:
@@ -64,7 +76,7 @@ pub(crate) async fn hedged_reducer_call(
     tools: Option<Value>,
     timeout: Duration,
     hedge_delay: Duration,
-) -> Result<(String, String), String> {
+) -> Result<HedgedReducerOk, String> {
     use tokio::task::JoinSet;
 
     if candidates.is_empty() {
@@ -74,6 +86,7 @@ pub(crate) async fn hedged_reducer_call(
     let mut join_set: JoinSet<(String, Result<String, String>)> = JoinSet::new();
     let mut remaining = candidates.into_iter();
     let mut last_err: Option<String> = None;
+    let mut attempts: u32 = 0;
 
     // Spawn a single candidate.
     fn spawn(
@@ -113,6 +126,7 @@ pub(crate) async fn hedged_reducer_call(
             tools.clone(),
             timeout,
         );
+        attempts += 1;
     }
 
     // Race in-flight calls against a hedge timer.
@@ -129,7 +143,11 @@ pub(crate) async fn hedged_reducer_call(
                         join_set.abort_all();
                         // Drain so cancellations complete cleanly.
                         while join_set.join_next().await.is_some() {}
-                        return Ok((name, text));
+                        return Ok(HedgedReducerOk {
+                            winner: name,
+                            text,
+                            attempts,
+                        });
                     }
                     Some(Ok((name, Err(e)))) => {
                         tracing::warn!(
@@ -147,6 +165,7 @@ pub(crate) async fn hedged_reducer_call(
                                 tools.clone(),
                                 timeout,
                             );
+                            attempts += 1;
                         }
                     }
                     Some(Err(join_err)) => {
@@ -161,6 +180,7 @@ pub(crate) async fn hedged_reducer_call(
                                 tools.clone(),
                                 timeout,
                             );
+                            attempts += 1;
                         }
                     }
                     None => break,
@@ -178,6 +198,7 @@ pub(crate) async fn hedged_reducer_call(
                         tools.clone(),
                         timeout,
                     );
+                    attempts += 1;
                 }
                 // If no more to start, just wait on the JoinSet without the
                 // hedge timer racing again (next loop iteration's sleep will
@@ -277,8 +298,9 @@ mod tests {
         )
         .await;
 
-        let (name, _) = res.expect("happy path returns Ok");
-        assert_eq!(name, "alpha", "first candidate should win");
+        let ok = res.expect("happy path returns Ok");
+        assert_eq!(ok.winner, "alpha", "first candidate should win");
+        assert_eq!(ok.attempts, 1, "happy path spawns exactly one candidate");
         assert_eq!(fake.calls(), 1, "only one backend call on happy path");
     }
 
@@ -308,12 +330,13 @@ mod tests {
         )
         .await;
 
-        let (name, body) = res.expect("hedge returns Ok");
+        let ok = res.expect("hedge returns Ok");
         assert_eq!(
-            name, "beta",
+            ok.winner, "beta",
             "hedge winner should be the faster second candidate"
         );
-        assert_eq!(body, "beta-fast");
+        assert_eq!(ok.text, "beta-fast");
+        assert_eq!(ok.attempts, 2, "hedge fires the second candidate");
         assert_eq!(fake.calls(), 2, "both candidates should have been issued");
     }
 
@@ -344,10 +367,14 @@ mod tests {
         )
         .await;
 
-        let (name, body) = res.expect("fail-then-recover returns Ok");
+        let ok = res.expect("fail-then-recover returns Ok");
         let elapsed = start.elapsed();
-        assert_eq!(name, "beta");
-        assert_eq!(body, "beta-ok");
+        assert_eq!(ok.winner, "beta");
+        assert_eq!(ok.text, "beta-ok");
+        assert_eq!(
+            ok.attempts, 2,
+            "fast-fail should cascade to a second attempt"
+        );
         assert_eq!(fake.calls(), 2);
         assert!(
             elapsed < Duration::from_secs(10),

@@ -3387,6 +3387,29 @@ pub async fn send_json_ok(mut stream: TcpStream, data: &serde_json::Value) -> st
     Ok(())
 }
 
+/// Like `send_json_ok` but allows the caller to append arbitrary response
+/// headers (e.g. `x-moa-*` observability headers). Header names and values
+/// must be plain ASCII without CR/LF; values are not validated further.
+pub async fn send_json_ok_with_headers(
+    mut stream: TcpStream,
+    data: &serde_json::Value,
+    extra_headers: &[(&str, String)],
+) -> std::io::Result<()> {
+    let body = data.to_string();
+    let mut headers = String::from("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n");
+    for (name, value) in extra_headers {
+        headers.push_str(name);
+        headers.push_str(": ");
+        headers.push_str(value);
+        headers.push_str("\r\n");
+    }
+    headers.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));
+    stream.write_all(headers.as_bytes()).await?;
+    stream.write_all(body.as_bytes()).await?;
+    stream.shutdown().await?;
+    Ok(())
+}
+
 pub async fn send_400(mut stream: TcpStream, msg: &str) -> std::io::Result<()> {
     let body = serde_json::to_vec(&serde_json::json!({ "error": msg }))
         .expect("serializing JSON error response should not fail");

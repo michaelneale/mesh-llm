@@ -275,25 +275,51 @@ pub(crate) async fn api_proxy(
 
                                 let moa_result = moa::handle_turn(&config, &moa_body).await;
 
+                                let workers_ok = moa_result
+                                    .worker_summaries
+                                    .iter()
+                                    .filter(|w| w.succeeded)
+                                    .count();
+                                let workers_total = moa_result.worker_summaries.len();
                                 tracing::info!(
-                                    "moa: {}ms, {}/{} workers, reducer={}",
+                                    "moa: {}ms, {}/{} workers, kind={}, reducer={} (attempts={})",
                                     moa_result.elapsed_ms,
-                                    moa_result
-                                        .worker_summaries
-                                        .iter()
-                                        .filter(|w| w.succeeded)
-                                        .count(),
-                                    moa_result.worker_summaries.len(),
+                                    workers_ok,
+                                    workers_total,
+                                    moa_result.turn_kind.label(),
                                     moa_result.reducer_used,
+                                    moa_result.reducer_attempts,
                                 );
 
+                                // Observability headers — benches and ops
+                                // tooling can read these without parsing the
+                                // body. Ignored by normal OpenAI clients.
+                                let extra_headers: Vec<(&str, String)> = vec![
+                                    ("x-moa-elapsed-ms", moa_result.elapsed_ms.to_string()),
+                                    ("x-moa-turn", moa_result.turn_kind.label().to_string()),
+                                    ("x-moa-workers", workers_total.to_string()),
+                                    ("x-moa-workers-ok", workers_ok.to_string()),
+                                    ("x-moa-reducer", moa_result.reducer_used.to_string()),
+                                    (
+                                        "x-moa-reducer-attempts",
+                                        moa_result.reducer_attempts.to_string(),
+                                    ),
+                                ];
+
                                 if was_streaming {
-                                    let _ = send_moa_as_sse(tcp_stream, &moa_result.response_body)
-                                        .await;
+                                    let _ = send_moa_as_sse(
+                                        tcp_stream,
+                                        &moa_result.response_body,
+                                        &extra_headers,
+                                    )
+                                    .await;
                                 } else {
-                                    let _ =
-                                        proxy::send_json_ok(tcp_stream, &moa_result.response_body)
-                                            .await;
+                                    let _ = proxy::send_json_ok_with_headers(
+                                        tcp_stream,
+                                        &moa_result.response_body,
+                                        &extra_headers,
+                                    )
+                                    .await;
                                 }
                                 return;
                             }
@@ -578,13 +604,26 @@ fn has_available_candidates(targets: &election::ModelTargets, model: &str) -> bo
 /// Wrap a completed MoA chat-completion response as SSE frames so streaming
 /// clients (like Goose) can consume it.  Emits one delta chunk with the full
 /// content, then a `finish_reason: stop` chunk, then `[DONE]`.
+///
+/// `extra_headers` are emitted alongside the standard SSE response headers
+/// (used to attach `x-moa-*` observability headers).
 async fn send_moa_as_sse(
     mut stream: tokio::net::TcpStream,
     response: &serde_json::Value,
+    extra_headers: &[(&str, String)],
 ) -> std::io::Result<()> {
     use tokio::io::AsyncWriteExt;
 
-    let header = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
+    let mut header = String::from(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nCache-Control: no-cache\r\nConnection: close\r\n",
+    );
+    for (name, value) in extra_headers {
+        header.push_str(name);
+        header.push_str(": ");
+        header.push_str(value);
+        header.push_str("\r\n");
+    }
+    header.push_str("\r\n");
     stream.write_all(header.as_bytes()).await?;
 
     let id = response

@@ -82,6 +82,31 @@ pub struct GatewayConfig {
 
 // ─── Turn result ─────────────────────────────────────────────────────
 
+/// Which gateway path produced this turn's response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnKind {
+    /// Fan-out path: arbiter decided from full worker outputs.
+    Fanout,
+    /// Fan-out path with early-exit consensus before all workers returned.
+    EarlyExit,
+    /// Tool-result turn: skipped fan-out, went straight to reducer.
+    ToolResult,
+    /// All workers failed and no reducer recovery happened.
+    Failed,
+}
+
+impl TurnKind {
+    /// Lowercase header-friendly label.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Fanout => "fanout",
+            Self::EarlyExit => "early-exit",
+            Self::ToolResult => "tool-result",
+            Self::Failed => "failed",
+        }
+    }
+}
+
 /// What the gateway returns for a single turn.
 #[derive(Debug)]
 pub struct TurnResult {
@@ -91,6 +116,12 @@ pub struct TurnResult {
     pub worker_summaries: Vec<WorkerSummary>,
     /// Whether the reducer was invoked.
     pub reducer_used: bool,
+    /// How many reducer candidates were spawned (0 if reducer didn't run,
+    /// 1 on the happy reducer path, ≥2 if the hedge fired or a fast-fail
+    /// cascaded to the next candidate).
+    pub reducer_attempts: u32,
+    /// Which gateway path produced this response.
+    pub turn_kind: TurnKind,
     /// Wall-clock time for this turn.
     pub elapsed_ms: u64,
 }
@@ -205,12 +236,17 @@ async fn handle_query(
             response_body: error_response("All MoA workers failed"),
             worker_summaries: summaries,
             reducer_used: false,
+            reducer_attempts: 0,
+            turn_kind: TurnKind::Failed,
             elapsed_ms: start.elapsed().as_millis() as u64,
         };
     }
 
+    // Capture whether we took the early-exit path BEFORE we resolve the
+    // decision: the arbiter never runs when early_decision is Some.
+    let took_early_exit = early_decision.is_some();
     let decision = early_decision.unwrap_or_else(|| arbiter::arbitrate(&outputs, has_tools));
-    let (response_body, reducer_used) = resolve_decision(
+    let (response_body, reducer_used, reducer_attempts) = resolve_decision(
         config,
         session,
         decision,
@@ -220,10 +256,22 @@ async fn handle_query(
     )
     .await;
 
+    // turn_kind is "early-exit" only when we genuinely short-circuited via
+    // consensus AND didn't need to escalate to the reducer. A reducer-
+    // escalated turn is "fanout" even if early_decision was set, because
+    // we still did the expensive serial call.
+    let turn_kind = if took_early_exit && !reducer_used {
+        TurnKind::EarlyExit
+    } else {
+        TurnKind::Fanout
+    };
+
     TurnResult {
         response_body,
         worker_summaries: summaries,
         reducer_used,
+        reducer_attempts,
+        turn_kind,
         elapsed_ms: start.elapsed().as_millis() as u64,
     }
 }
@@ -257,19 +305,24 @@ async fn handle_tool_result(
     .await;
 
     let mut last_err: Option<String> = None;
+    let mut attempts: u32 = 0;
     let chosen: Option<(String, normalize::WorkerOutput)> = match hedge_result {
-        Ok((name, text)) => {
+        Ok(reducer::HedgedReducerOk {
+            winner,
+            text,
+            attempts: spawned,
+        }) => {
+            attempts = spawned;
             let mut reduced =
-                normalize::normalize_worker_output(&text, &name, WorkerRole::Reducer, 0);
-            enforce_allowed_tools(&mut reduced, allowed_tools, &name);
-            Some((name, reduced))
+                normalize::normalize_worker_output(&text, &winner, WorkerRole::Reducer, 0);
+            enforce_allowed_tools(&mut reduced, allowed_tools, &winner);
+            Some((winner, reduced))
         }
         Err(e) => {
             last_err = Some(e);
             None
         }
     };
-    let attempts = candidate_count;
 
     let (reducer_name, succeeded, response_body) = match chosen {
         Some((name, reduced)) => {
@@ -309,12 +362,15 @@ async fn handle_tool_result(
             confidence: None,
         }],
         reducer_used: true,
+        reducer_attempts: attempts,
+        turn_kind: TurnKind::ToolResult,
         elapsed_ms: start.elapsed().as_millis() as u64,
     }
 }
 
 // ─── Decision resolution ─────────────────────────────────────────────
 
+/// Returns (response body, reducer_used, reducer_attempts).
 async fn resolve_decision(
     config: &GatewayConfig,
     session: &Session,
@@ -322,11 +378,11 @@ async fn resolve_decision(
     outputs: &[WorkerOutput],
     has_tools: bool,
     allowed_tools: &[String],
-) -> (Value, bool) {
+) -> (Value, bool, u32) {
     match decision {
-        arbiter::Decision::Answer(text) => (chat_response(&text), false),
+        arbiter::Decision::Answer(text) => (chat_response(&text), false, 0),
         arbiter::Decision::ToolCall { name, arguments } => {
-            (tool_call_response(&name, &arguments), false)
+            (tool_call_response(&name, &arguments), false, 0)
         }
         arbiter::Decision::NeedsReducer { reason } => {
             tracing::info!("moa: reducer — {reason}");
@@ -344,11 +400,17 @@ async fn resolve_decision(
             )
             .await;
 
+            let mut attempts: u32 = 0;
             let chosen: Option<normalize::WorkerOutput> = match hedge_result {
-                Ok((name, text)) => {
+                Ok(reducer::HedgedReducerOk {
+                    winner,
+                    text,
+                    attempts: spawned,
+                }) => {
+                    attempts = spawned;
                     let mut reduced =
-                        normalize::normalize_worker_output(&text, &name, WorkerRole::Reducer, 0);
-                    enforce_allowed_tools(&mut reduced, allowed_tools, &name);
+                        normalize::normalize_worker_output(&text, &winner, WorkerRole::Reducer, 0);
+                    enforce_allowed_tools(&mut reduced, allowed_tools, &winner);
                     Some(reduced)
                 }
                 Err(_) => None,
@@ -360,16 +422,20 @@ async fn resolve_decision(
                         if let (Some(name), Some(args)) =
                             (reduced.tool_name.as_ref(), reduced.tool_arguments.as_ref())
                         {
-                            (tool_call_response(name, args), true)
+                            (tool_call_response(name, args), true, attempts)
                         } else {
-                            (chat_response(&reduced.payload), true)
+                            (chat_response(&reduced.payload), true, attempts)
                         }
                     }
-                    _ => (chat_response(&reduced.payload), true),
+                    _ => (chat_response(&reduced.payload), true, attempts),
                 },
                 None => {
                     tracing::warn!("moa: all reducer candidates failed, using best worker");
-                    (chat_response(&best_answer(outputs)), false)
+                    // reducer_used=false here because the reducer did NOT
+                    // produce the output we're returning — we fell back to
+                    // a worker. attempts still reflects what was spawned so
+                    // observability can see "we tried N times and all failed".
+                    (chat_response(&best_answer(outputs)), false, attempts)
                 }
             }
         }
