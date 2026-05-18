@@ -913,7 +913,13 @@ async fn build_moa_config(
         backends,
         models,
         worker_timeout: std::time::Duration::from_secs(15),
-        reducer_timeout: std::time::Duration::from_secs(30),
+        // Per-attempt cap; hedged_reducer_call hedges across candidates so the
+        // end-to-end wait is roughly reducer_timeout + a couple of hedge delays.
+        reducer_timeout: std::time::Duration::from_secs(15),
+        // Start a second reducer candidate after 5s if the first hasn't replied
+        // (or sooner on outright failure). Cheap on the happy path, big win on
+        // the cold-KV / stale-peer tail.
+        hedge_delay: std::time::Duration::from_secs(5),
     })
 }
 

@@ -176,6 +176,12 @@ pub struct GatewayConfig {
     pub models: Vec<ModelEntry>,
     /// Per-worker timeout.
     pub worker_timeout: Duration,
+    /// Per-candidate wait before hedging a second reducer candidate. When the
+    /// primary candidate is slow (e.g. cold KV) we don't want to wait the full
+    /// reducer_timeout before kicking off candidate 2 — start the next one
+    /// after hedge_delay and race them. Cost: up to 2× tokens for the rare
+    /// slow case; zero cost on the happy path (candidate 1 returns first).
+    pub hedge_delay: Duration,
     /// Reducer timeout.
     pub reducer_timeout: Duration,
 }
@@ -375,45 +381,38 @@ async fn handle_tool_result(
     start: Instant,
 ) -> TurnResult {
     let candidates = reducer_candidates(config);
+    let candidate_count = candidates.len();
     let (messages, tools) = context::pack_for_tool_result_turn(session, has_tools);
 
-    // Try each big-tier reducer in order; on 5xx / timeout, fall through to
-    // the next candidate. This rescues the tool-result turn when the first
-    // strong peer is broken (e.g. stale binary that 502s on tool grammars).
+    // Hedged ladder: start candidate 0, hedge to candidate 1 after hedge_delay
+    // (or immediately on candidate 0 error), race for the first OK. Rescues
+    // tool-result turns when the first strong peer is broken (e.g. stale
+    // binary that 502s on tool grammars) without paying N×timeout serially.
+    tracing::info!("moa: tool result → hedged reducer over {candidate_count} candidate(s)");
+    let hedge_result = hedged_reducer_call(
+        &config.backends,
+        candidates.clone(),
+        messages,
+        tools,
+        config.reducer_timeout,
+        config.hedge_delay,
+    )
+    .await;
+
     let mut last_err: Option<String> = None;
-    let mut chosen: Option<(String, normalize::WorkerOutput)> = None;
-    let mut attempts = 0usize;
-    for (reducer_name, reducer_backend_idx) in &candidates {
-        attempts += 1;
-        tracing::info!(
-            "moa: tool result → reducer {reducer_name} (attempt {attempts}/{})",
-            candidates.len()
-        );
-        let backend = &*config.backends[*reducer_backend_idx];
-        match call_backend(
-            backend,
-            reducer_name,
-            &messages,
-            tools.as_ref(),
-            2048,
-            config.reducer_timeout,
-            SamplingParams::reducer(),
-        )
-        .await
-        {
-            Ok(text) => {
-                let mut reduced =
-                    normalize::normalize_worker_output(&text, reducer_name, WorkerRole::Reducer, 0);
-                enforce_allowed_tools(&mut reduced, allowed_tools, reducer_name);
-                chosen = Some((reducer_name.clone(), reduced));
-                break;
-            }
-            Err(e) => {
-                tracing::warn!("moa: reducer {reducer_name} failed: {e}, trying next");
-                last_err = Some(e);
-            }
+    let chosen: Option<(String, normalize::WorkerOutput)> = match hedge_result {
+        Ok((name, text)) => {
+            let mut reduced =
+                normalize::normalize_worker_output(&text, &name, WorkerRole::Reducer, 0);
+            enforce_allowed_tools(&mut reduced, allowed_tools, &name);
+            Some((name, reduced))
         }
-    }
+        Err(e) => {
+            last_err = Some(e);
+            None
+        }
+    };
+    let attempts = candidate_count;
 
     let (reducer_name, succeeded, response_body) = match chosen {
         Some((name, reduced)) => {
@@ -477,42 +476,26 @@ async fn resolve_decision(
             let candidates = reducer_candidates(config);
             let (messages, tools) = context::pack_for_reducer(session, outputs, &reason, has_tools);
 
-            // Try each big-tier reducer in order; on 5xx / timeout fall
-            // through to the next. If all candidates fail we fall back to
-            // the best worker output we already have.
-            let mut chosen: Option<normalize::WorkerOutput> = None;
-            for (reducer_name, reducer_backend_idx) in &candidates {
-                tracing::info!("moa: reducer attempt → {reducer_name}");
-                let backend = &*config.backends[*reducer_backend_idx];
-                match call_backend(
-                    backend,
-                    reducer_name,
-                    &messages,
-                    tools.as_ref(),
-                    2048,
-                    config.reducer_timeout,
-                    SamplingParams::reducer(),
-                )
-                .await
-                {
-                    Ok(text) => {
-                        let mut reduced = normalize::normalize_worker_output(
-                            &text,
-                            reducer_name,
-                            WorkerRole::Reducer,
-                            0,
-                        );
-                        enforce_allowed_tools(&mut reduced, allowed_tools, reducer_name);
-                        chosen = Some(reduced);
-                        break;
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "moa: reducer {reducer_name} failed: {e}, trying next candidate"
-                        );
-                    }
+            // Hedged ladder over the ordered candidates (see hedged_reducer_call).
+            let hedge_result = hedged_reducer_call(
+                &config.backends,
+                candidates,
+                messages,
+                tools,
+                config.reducer_timeout,
+                config.hedge_delay,
+            )
+            .await;
+
+            let chosen: Option<normalize::WorkerOutput> = match hedge_result {
+                Ok((name, text)) => {
+                    let mut reduced =
+                        normalize::normalize_worker_output(&text, &name, WorkerRole::Reducer, 0);
+                    enforce_allowed_tools(&mut reduced, allowed_tools, &name);
+                    Some(reduced)
                 }
-            }
+                Err(_) => None,
+            };
 
             match chosen {
                 Some(reduced) => match reduced.kind {
@@ -559,6 +542,155 @@ fn reducer_candidates(config: &GatewayConfig) -> Vec<(String, usize)> {
         big.push(("unknown".into(), 0));
     }
     big
+}
+
+/// Call the ordered reducer candidates with hedging.
+///
+/// Starts the first candidate immediately. If it hasn't returned within
+/// `hedge_delay`, the next candidate is started in parallel without
+/// cancelling the in-flight one — we race for the first OK. If a candidate
+/// errors, the next one is started immediately (no hedge wait).
+///
+/// Returns the first successful (name, response_text). If every candidate
+/// fails, returns the last error encountered.
+///
+/// Cost shape:
+/// - Happy path (cand 0 OK in <hedge_delay): exactly 1 backend call.
+/// - Slow happy path (cand 0 OK in hedge_delay..reducer_timeout): up to 2
+///   overlapping calls, accept whichever wins, cancel the loser.
+/// - Fast-fail (cand 0 errors quickly): immediate move to cand 1, 1 call.
+/// - All fail: at most N calls, capped at reducer_timeout + (N-1)·hedge_delay
+///   end-to-end (vs N·reducer_timeout sequentially).
+async fn hedged_reducer_call(
+    backends: &[std::sync::Arc<dyn ModelBackend>],
+    candidates: Vec<(String, usize)>,
+    messages: Vec<Value>,
+    tools: Option<Value>,
+    timeout: Duration,
+    hedge_delay: Duration,
+) -> Result<(String, String), String> {
+    use tokio::task::JoinSet;
+
+    if candidates.is_empty() {
+        return Err("no reducer candidates".into());
+    }
+
+    let mut join_set: JoinSet<(String, Result<String, String>)> = JoinSet::new();
+    let mut remaining = candidates.into_iter();
+    let mut last_err: Option<String> = None;
+
+    // Spawn a single candidate.
+    fn spawn(
+        join_set: &mut JoinSet<(String, Result<String, String>)>,
+        backends: &[std::sync::Arc<dyn ModelBackend>],
+        name: String,
+        backend_idx: usize,
+        messages: Vec<Value>,
+        tools: Option<Value>,
+        timeout: Duration,
+    ) {
+        let backend = backends[backend_idx].clone();
+        tracing::info!("moa: reducer hedge → {name}");
+        join_set.spawn(async move {
+            let result = call_backend(
+                &*backend,
+                &name,
+                &messages,
+                tools.as_ref(),
+                2048,
+                timeout,
+                SamplingParams::reducer(),
+            )
+            .await;
+            (name, result)
+        });
+    }
+
+    // Start candidate 0.
+    if let Some((name, idx)) = remaining.next() {
+        spawn(
+            &mut join_set,
+            backends,
+            name,
+            idx,
+            messages.clone(),
+            tools.clone(),
+            timeout,
+        );
+    }
+
+    // Race in-flight calls against a hedge timer.
+    while !join_set.is_empty() {
+        let hedge_sleep = tokio::time::sleep(hedge_delay);
+        tokio::pin!(hedge_sleep);
+
+        tokio::select! {
+            // A candidate finished.
+            joined = join_set.join_next() => {
+                match joined {
+                    Some(Ok((name, Ok(text)))) => {
+                        // First success wins. Cancel the rest.
+                        join_set.abort_all();
+                        // Drain so cancellations complete cleanly.
+                        while join_set.join_next().await.is_some() {}
+                        return Ok((name, text));
+                    }
+                    Some(Ok((name, Err(e)))) => {
+                        tracing::warn!(
+                            "moa: reducer {name} failed: {e}, trying next candidate"
+                        );
+                        last_err = Some(e);
+                        // Start the next candidate immediately on failure.
+                        if let Some((next_name, next_idx)) = remaining.next() {
+                            spawn(
+                                &mut join_set,
+                                backends,
+                                next_name,
+                                next_idx,
+                                messages.clone(),
+                                tools.clone(),
+                                timeout,
+                            );
+                        }
+                    }
+                    Some(Err(join_err)) => {
+                        tracing::warn!("moa: reducer task join error: {join_err}");
+                        if let Some((next_name, next_idx)) = remaining.next() {
+                            spawn(
+                                &mut join_set,
+                                backends,
+                                next_name,
+                                next_idx,
+                                messages.clone(),
+                                tools.clone(),
+                                timeout,
+                            );
+                        }
+                    }
+                    None => break,
+                }
+            }
+            // Hedge timer fires: start another candidate alongside in-flight ones.
+            _ = &mut hedge_sleep => {
+                if let Some((next_name, next_idx)) = remaining.next() {
+                    spawn(
+                        &mut join_set,
+                        backends,
+                        next_name,
+                        next_idx,
+                        messages.clone(),
+                        tools.clone(),
+                        timeout,
+                    );
+                }
+                // If no more to start, just wait on the JoinSet without the
+                // hedge timer racing again (next loop iteration's sleep will
+                // simply never fire because we'll take the join branch).
+            }
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| "all reducer candidates failed".into()))
 }
 
 // ─── Backend call + text extraction ──────────────────────────────────
@@ -935,5 +1067,201 @@ mod tests {
         let r = SamplingParams::reducer();
         assert!((d.temperature - r.temperature).abs() < f32::EPSILON);
         assert!((d.top_p - r.top_p).abs() < f32::EPSILON);
+    }
+
+    // ── hedged_reducer_call ──────────────────────────────────────────
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Clone)]
+    enum FakeBehavior {
+        OkAfter(Duration, String),
+        ErrAfter(Duration, String),
+    }
+
+    struct FakeBackend {
+        behaviors: std::sync::Mutex<std::collections::HashMap<String, FakeBehavior>>,
+        calls: AtomicUsize,
+    }
+
+    impl FakeBackend {
+        fn new(behaviors: Vec<(&str, FakeBehavior)>) -> std::sync::Arc<Self> {
+            let mut map = std::collections::HashMap::new();
+            for (n, b) in behaviors {
+                map.insert(n.to_string(), b);
+            }
+            std::sync::Arc::new(FakeBackend {
+                behaviors: std::sync::Mutex::new(map),
+                calls: AtomicUsize::new(0),
+            })
+        }
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ModelBackend for FakeBackend {
+        async fn chat_completion(
+            &self,
+            model: &str,
+            _messages: &[Value],
+            _tools: Option<&Value>,
+            _max_tokens: u32,
+            _timeout: Duration,
+            _sampling: SamplingParams,
+        ) -> Result<Value, String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let behavior = self.behaviors.lock().unwrap().get(model).cloned();
+            match behavior {
+                Some(FakeBehavior::OkAfter(d, body)) => {
+                    tokio::time::sleep(d).await;
+                    Ok(serde_json::json!({
+                        "choices": [{"message": {"content": body}}],
+                    }))
+                }
+                Some(FakeBehavior::ErrAfter(d, msg)) => {
+                    tokio::time::sleep(d).await;
+                    Err(msg)
+                }
+                None => Err(format!("unconfigured model: {model}")),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn hedged_reducer_happy_path_calls_only_first() {
+        let fake = FakeBackend::new(vec![
+            (
+                "alpha",
+                FakeBehavior::OkAfter(Duration::from_millis(50), "alpha-resp".into()),
+            ),
+            (
+                "beta",
+                FakeBehavior::OkAfter(Duration::from_millis(50), "beta-resp".into()),
+            ),
+        ]);
+        let backends: Vec<std::sync::Arc<dyn ModelBackend>> = vec![fake.clone(), fake.clone()];
+        let candidates = vec![("alpha".into(), 0), ("beta".into(), 1)];
+
+        let res = hedged_reducer_call(
+            &backends,
+            candidates,
+            vec![],
+            None,
+            Duration::from_secs(15),
+            Duration::from_secs(5),
+        )
+        .await;
+
+        let (name, _) = res.expect("happy path returns Ok");
+        assert_eq!(name, "alpha", "first candidate should win");
+        assert_eq!(fake.calls(), 1, "only one backend call on happy path");
+    }
+
+    #[tokio::test]
+    async fn hedged_reducer_slow_first_hedges_to_second() {
+        let fake = FakeBackend::new(vec![
+            // alpha takes longer than hedge_delay; beta is fast.
+            (
+                "alpha",
+                FakeBehavior::OkAfter(Duration::from_millis(800), "alpha-late".into()),
+            ),
+            (
+                "beta",
+                FakeBehavior::OkAfter(Duration::from_millis(100), "beta-fast".into()),
+            ),
+        ]);
+        let backends: Vec<std::sync::Arc<dyn ModelBackend>> = vec![fake.clone(), fake.clone()];
+        let candidates = vec![("alpha".into(), 0), ("beta".into(), 1)];
+
+        let res = hedged_reducer_call(
+            &backends,
+            candidates,
+            vec![],
+            None,
+            Duration::from_secs(15),
+            Duration::from_millis(100),
+        )
+        .await;
+
+        let (name, body) = res.expect("hedge returns Ok");
+        assert_eq!(
+            name, "beta",
+            "hedge winner should be the faster second candidate"
+        );
+        assert_eq!(body, "beta-fast");
+        assert_eq!(fake.calls(), 2, "both candidates should have been issued");
+    }
+
+    #[tokio::test]
+    async fn hedged_reducer_fast_fail_starts_next_immediately() {
+        let fake = FakeBackend::new(vec![
+            (
+                "alpha",
+                FakeBehavior::ErrAfter(Duration::from_millis(50), "boom".into()),
+            ),
+            (
+                "beta",
+                FakeBehavior::OkAfter(Duration::from_millis(100), "beta-ok".into()),
+            ),
+        ]);
+        let backends: Vec<std::sync::Arc<dyn ModelBackend>> = vec![fake.clone(), fake.clone()];
+        let candidates = vec![("alpha".into(), 0), ("beta".into(), 1)];
+
+        let start = tokio::time::Instant::now();
+        let res = hedged_reducer_call(
+            &backends,
+            candidates,
+            vec![],
+            None,
+            Duration::from_secs(15),
+            // Large hedge_delay — the fast-fail path must not wait for it.
+            Duration::from_secs(60),
+        )
+        .await;
+
+        let (name, body) = res.expect("fail-then-recover returns Ok");
+        let elapsed = start.elapsed();
+        assert_eq!(name, "beta");
+        assert_eq!(body, "beta-ok");
+        assert_eq!(fake.calls(), 2);
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "fast-fail should not wait for hedge_delay; took {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn hedged_reducer_all_fail_returns_last_err() {
+        let fake = FakeBackend::new(vec![
+            (
+                "alpha",
+                FakeBehavior::ErrAfter(Duration::from_millis(10), "alpha-boom".into()),
+            ),
+            (
+                "beta",
+                FakeBehavior::ErrAfter(Duration::from_millis(10), "beta-boom".into()),
+            ),
+        ]);
+        let backends: Vec<std::sync::Arc<dyn ModelBackend>> = vec![fake.clone(), fake.clone()];
+        let candidates = vec![("alpha".into(), 0), ("beta".into(), 1)];
+
+        let res = hedged_reducer_call(
+            &backends,
+            candidates,
+            vec![],
+            None,
+            Duration::from_secs(15),
+            Duration::from_millis(200),
+        )
+        .await;
+
+        let err = res.expect_err("all-fail returns Err");
+        assert!(
+            err.contains("boom"),
+            "should surface a backend error: {err}"
+        );
+        assert_eq!(fake.calls(), 2);
     }
 }

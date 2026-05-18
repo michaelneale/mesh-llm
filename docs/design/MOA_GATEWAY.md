@@ -96,8 +96,21 @@ The full arbiter (`arbitrate()`) runs when early-exit doesn't fire:
 - **Conflicting tools** → escalate to reducer
 - **All uncertain** → escalate to reducer
 
-The reducer is the first model in the config (typically local, zero RTT).
-It sees all worker outputs and produces the final decision.
+The reducer step uses a **hedged candidate ladder** (`hedged_reducer_call`)
+over the ordered list from `reducer_candidates` — big-tier models first
+(multi-digit B, or names with no size), then small-tier as last-resort.
+
+- Start candidate 0 immediately.
+- If candidate 0 hasn't replied within `hedge_delay` (5s by default),
+  start candidate 1 **alongside** it — don't cancel candidate 0, race them.
+- If a candidate errors fast, start the next one immediately (no hedge wait).
+- First success wins; cancel the rest.
+- All-fail falls back to the best worker output already gathered.
+
+Cost shape: 1 backend call on the happy path (free), up to 2 overlapping
+calls when the first is slow, N calls only when everything is failing.
+End-to-end wall-clock for the worst case is bounded by
+`reducer_timeout + (N-1)·hedge_delay` rather than `N·reducer_timeout`.
 
 ---
 
@@ -135,7 +148,7 @@ stripped throughout the pipeline.
 
 ## Crate structure
 
-`crates/mesh-mixture-of-agents/` — zero mesh dependency, 2714 LOC, 29 tests.
+`crates/mesh-mixture-of-agents/` — zero mesh dependency.
 
 | Module | LOC | Tests | Purpose |
 |--------|----:|------:|---------|
@@ -250,7 +263,9 @@ client, no recursive hook loops.
 |----------|-------------------|
 | 2+ workers agree quickly | Early-exit, faster than single-model |
 | 1 worker much faster than others | Returns fast worker if confident |
-| Remote peer timeout (30s) | Degrades to local-only, adds latency |
+| Remote peer timeout (15s worker / 15s reducer) | Degrades to local-only, adds latency |
+| First reducer candidate slow / cold KV | Hedges to second candidate after 5s, races for first OK |
+| First reducer candidate broken (502s) | Fast-fails to next candidate immediately, no hedge wait |
 | Only 1 model available | Returns 503, does not activate MoA |
 | All workers fail | Returns error response |
 
@@ -259,7 +274,8 @@ client, no recursive hook loops.
 - **GLM chain-of-thought leaking** — GLM uses numbered markdown lists for
   reasoning, not `<think>` tags. When GLM is sole survivor, its internal
   deliberation can leak into the response.
-- **30s timeout penalty** — when one of two workers times out, early-exit
-  needs ≥2 agreements, so the sole survivor waits for the timeout.
+- **Sole-survivor wait** — with exactly two workers and one slow/dead,
+  the survivor waits up to the worker timeout (15s) before being released by
+  the majority-failed early-exit. With 3+ workers this rarely bites.
 - **Remote peer 503s** — mesh peers can be flaky. Gateway degrades to
   fewer workers but this limits model diversity.
