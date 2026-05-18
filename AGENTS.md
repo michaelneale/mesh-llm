@@ -214,6 +214,29 @@ When making changes that touch gossip, routing, proxy, election, or capability a
 
 Run `cargo` commands serially. Do not run multiple `cargo` commands in parallel (including parallel test runs), because this repo frequently hits Cargo lock conflicts (`package cache` / `artifact directory`) under concurrent invocation.
 
+## Running mesh-llm locally
+
+Default the launch to a normal foreground run (TUI visible) unless you have a
+specific reason to suppress UI surfaces. Most observation/debug tasks do not
+need the TUI suppressed.
+
+- `mesh-llm client --auto` — normal foreground run with the TUI. Use this by
+  default.
+- `--log-format json` — emits machine-parseable JSON log lines. Use this when
+  you want to programmatically read events.
+- `--headless` — disables the **embedded web UI**, not the TUI. The TUI still
+  draws. Only use `--headless` when you are intentionally avoiding the
+  management web console — it is **not** the way to get a quiet background run.
+- `--no-console` — fully disables the management console (HTTP API on the
+  console port).
+- `nohup … &` with a foreground binary that draws a TUI will appear to run but
+  often exits or behaves oddly when the TUI cannot attach to a terminal. Prefer
+  letting the developer launch the binary in their own terminal and observing
+  via `/api/status`, `--log-format json`, or by reading stderr.
+
+Do not reach for `--headless` to "go quiet" — that is a recurring mistake. If
+you want quiet output, use `--log-format json` and parse what you need.
+
 ## Pre-Commit Checklist
 
 Before committing, run the local checks most likely to fail in CI for the files you touched. Do not rely on CI to catch basic formatting, compile, or stale UI build issues.
