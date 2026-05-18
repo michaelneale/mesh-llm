@@ -361,9 +361,7 @@ impl RuntimeState {
                                     prefix.token_count
                                 );
                                 eprintln!(
-                                    "skippy::runtime_state: drop_session_timed: \
-                                     discarding lane {lane_index} for session {session_id}: \
-                                     {reason}"
+                                    "skippy::runtime_state: drop_session_timed: discarding lane {lane_index} for session {session_id}: {reason}"
                                 );
                                 lane_discard_reason = Some(reason);
                                 // `lane_session` falls out of scope and its
@@ -384,9 +382,7 @@ impl RuntimeState {
                         lane_discarded = true;
                         let reason = format!("reset() failed ({reset_err:#})");
                         eprintln!(
-                            "skippy::runtime_state: drop_session_timed: \
-                             discarding lane {lane_index} for session {session_id}: \
-                             {reason}"
+                            "skippy::runtime_state: drop_session_timed: discarding lane {lane_index} for session {session_id}: {reason}"
                         );
                         lane_discard_reason = Some(reason);
                     }
