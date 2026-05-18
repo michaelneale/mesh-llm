@@ -12,6 +12,8 @@ use sha2::{Digest, Sha256};
 
 use crate::write_gguf_from_parts;
 
+mod materialized_cache;
+
 #[derive(Debug, Clone)]
 pub struct PackageStageRequest {
     pub model_id: String,
@@ -204,6 +206,10 @@ pub fn materialize_layer_package(request: &PackageStageRequest) -> Result<PathBu
     Ok(materialize_layer_package_details(request)?.output_path)
 }
 
+pub fn materialized_layer_package_cache_record_path(output: &Path) -> PathBuf {
+    materialized_cache::record_path(output)
+}
+
 pub fn materialize_layer_package_details(
     request: &PackageStageRequest,
 ) -> Result<MaterializedPackage> {
@@ -214,12 +220,14 @@ pub fn materialize_layer_package_details(
         &selection.manifest_sha256,
         &selection.selected_parts,
     );
-    if output.is_file()
-        && fs::metadata(&output)
-            .with_context(|| format!("read materialized model {}", output.display()))?
-            .len()
-            > 0
-        && !env_flag("SKIPPY_FORCE_MATERIALIZE")
+    let cache_identity = materialized_cache::MaterializedCacheIdentity::new(
+        request,
+        &selection.manifest_sha256,
+        &selection.selected_parts,
+    );
+    let force_materialize = env_flag("SKIPPY_FORCE_MATERIALIZE");
+    if !force_materialize
+        && materialized_cache::record_matches_output(&output, &cache_identity)?
         && crate::ModelInfo::open(&output).is_ok()
     {
         return Ok(MaterializedPackage {
@@ -229,17 +237,22 @@ pub fn materialize_layer_package_details(
         });
     }
 
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("create materialization directory {}", parent.display()))?;
+    let _lock = materialized_cache::lock_output(&output)?;
+    if !force_materialize
+        && materialized_cache::record_matches_output(&output, &cache_identity)?
+        && crate::ModelInfo::open(&output).is_ok()
+    {
+        return Ok(MaterializedPackage {
+            output_path: output,
+            manifest_sha256: selection.manifest_sha256,
+            selected_parts: selection.selected_parts,
+        });
     }
-    let tmp_output = output.with_extension(format!(
-        "tmp-{}-{}",
-        std::process::id(),
-        selection.manifest_sha256.get(..12).unwrap_or("manifest")
-    ));
-    if tmp_output.exists() {
-        let _ = fs::remove_file(&tmp_output);
+
+    let tmp_output = materialized_cache::temporary_output_path(&output, &selection.manifest_sha256);
+    if let Some(parent) = tmp_output.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create materialization staging {}", parent.display()))?;
     }
     if let Err(error) =
         write_gguf_from_parts(&selection.absolute_paths, &tmp_output).with_context(|| {
@@ -249,20 +262,17 @@ pub fn materialize_layer_package_details(
             )
         })
     {
-        let _ = fs::remove_file(&tmp_output);
+        materialized_cache::cleanup_temporary_output(&tmp_output);
         return Err(error);
     }
-    if output.exists() {
-        fs::remove_file(&output)
-            .with_context(|| format!("remove stale materialized model {}", output.display()))?;
+    if let Err(error) = crate::ModelInfo::open(&tmp_output)
+        .with_context(|| format!("validate materialized model {}", tmp_output.display()))
+    {
+        materialized_cache::cleanup_temporary_output(&tmp_output);
+        return Err(error);
     }
-    fs::rename(&tmp_output, &output).with_context(|| {
-        format!(
-            "publish materialized model {} -> {}",
-            tmp_output.display(),
-            output.display()
-        )
-    })?;
+    materialized_cache::publish_output(&tmp_output, &output)?;
+    materialized_cache::write_record(&output, &cache_identity)?;
 
     Ok(MaterializedPackage {
         output_path: output,
@@ -1206,6 +1216,107 @@ mod tests {
             include_embeddings: true,
             include_output: true,
         }
+    }
+
+    fn materialized_cache_parts() -> Vec<PackagePart> {
+        vec![
+            PackagePart {
+                role: "metadata".to_string(),
+                layer_index: None,
+                path: PathBuf::from("metadata.gguf"),
+                sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .to_string(),
+                artifact_bytes: 8,
+            },
+            PackagePart {
+                role: "layer".to_string(),
+                layer_index: Some(0),
+                path: PathBuf::from("layers/00000.gguf"),
+                sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    .to_string(),
+                artifact_bytes: 6,
+            },
+        ]
+    }
+
+    #[test]
+    fn materialized_cache_record_requires_matching_identity_and_output_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let package_dir = dir.path().join("package");
+        fs::create_dir_all(&package_dir).unwrap();
+        let request = package_stage_request(&package_dir);
+        let parts = materialized_cache_parts();
+        let manifest_sha = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        let output = dir.path().join("stage.gguf");
+        fs::write(&output, b"materialized-output").unwrap();
+        let identity =
+            materialized_cache::MaterializedCacheIdentity::new(&request, manifest_sha, &parts);
+
+        assert!(
+            !materialized_cache::record_matches_output(&output, &identity).unwrap(),
+            "a final artifact without a provenance record must not be a cache hit"
+        );
+
+        materialized_cache::write_record(&output, &identity).unwrap();
+        assert!(materialized_cache::record_matches_output(&output, &identity).unwrap());
+
+        let mut changed_parts = parts.clone();
+        changed_parts[1].sha256 =
+            "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd".to_string();
+        let changed_identity = materialized_cache::MaterializedCacheIdentity::new(
+            &request,
+            manifest_sha,
+            &changed_parts,
+        );
+        assert!(
+            !materialized_cache::record_matches_output(&output, &changed_identity).unwrap(),
+            "selected artifact identity must be part of the cache hit contract"
+        );
+
+        fs::write(&output, b"materialized-output-corrupted").unwrap();
+        assert!(
+            !materialized_cache::record_matches_output(&output, &identity).unwrap(),
+            "changed final output metadata must invalidate the provenance record"
+        );
+    }
+
+    #[test]
+    fn materialized_cache_tmp_paths_are_unique_for_same_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("stage.gguf");
+        let first = materialized_cache::temporary_output_path(
+            &output,
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        );
+        let second = materialized_cache::temporary_output_path(
+            &output,
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        );
+
+        assert_ne!(first, second);
+        assert!(
+            first.starts_with(dir.path().join(".staging")),
+            "temporary materialization must stay in the cache-owned staging directory"
+        );
+        assert!(
+            second.starts_with(dir.path().join(".staging")),
+            "temporary materialization must stay in the cache-owned staging directory"
+        );
+    }
+
+    #[test]
+    fn materialized_cache_publish_replaces_existing_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("stage.gguf");
+        let tmp = dir.path().join(".staging").join("stage.tmp");
+        fs::create_dir_all(tmp.parent().unwrap()).unwrap();
+        fs::write(&output, b"old-output").unwrap();
+        fs::write(&tmp, b"new-output").unwrap();
+
+        materialized_cache::publish_output(&tmp, &output).unwrap();
+
+        assert_eq!(fs::read(&output).unwrap(), b"new-output");
+        assert!(!tmp.exists());
     }
 
     #[test]
