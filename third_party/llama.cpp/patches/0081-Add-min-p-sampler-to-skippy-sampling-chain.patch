@@ -1,0 +1,73 @@
+From e7b7e044dbebeb3fdefe182e4803736d181fc724 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Mon, 18 May 2026 14:57:16 +1000
+Subject: [PATCH] Add min-p sampler to skippy sampling chain
+
+Insert llama_sampler_init_min_p between top_p and temperature in both
+skippy_build_sampling_chain (chat sampler) and skippy_sample_token (legacy
+non-chat sampler), matching upstream llama-server's default chain order.
+
+Swap the trailing 'uint32_t reserved' in skippy_sampling_config for 'float
+min_p'. The Rust FFI side has already been carrying min_p in that 4-byte slot;
+the C side was reading it as a discarded reserved field. Wire layout is
+unchanged; only the field meaning changes. Bump SKIPPY_ABI_VERSION_PATCH
+23 -> 24 to mark the field-layout transition for external C consumers.
+---
+ include/skippy.h        | 2 +-
+ include/skippy/common.h | 2 +-
+ src/skippy.cpp          | 6 ++++++
+ 3 files changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/include/skippy.h b/include/skippy.h
+index 486e95dc..84173c02 100644
+--- a/include/skippy.h
++++ b/include/skippy.h
+@@ -111,7 +111,7 @@ struct skippy_sampling_config {
+     float frequency_penalty;
+     float repeat_penalty;
+     uint32_t logit_bias_count;
+-    uint32_t reserved;
++    float min_p;
+     llama_logit_bias logit_bias[SKIPPY_MAX_LOGIT_BIAS];
+ };
+ 
+diff --git a/include/skippy/common.h b/include/skippy/common.h
+index afef2749..26e944d8 100644
+--- a/include/skippy/common.h
++++ b/include/skippy/common.h
+@@ -26,7 +26,7 @@ extern "C" {
+ 
+ #define SKIPPY_ABI_VERSION_MAJOR 0
+ #define SKIPPY_ABI_VERSION_MINOR 1
+-#define SKIPPY_ABI_VERSION_PATCH 23
++#define SKIPPY_ABI_VERSION_PATCH 24
+ 
+ enum skippy_feature {
+     SKIPPY_FEATURE_RUNTIME_SLICE          = 1 << 0,
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index f25da57e..ca7ac4c5 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -1283,6 +1283,9 @@ static llama_sampler * skippy_build_sampling_chain(
+     if (sampling->top_p > 0.0f && sampling->top_p < 1.0f) {
+         llama_sampler_chain_add(sampler, llama_sampler_init_top_p(sampling->top_p, 1));
+     }
++    if (sampling->min_p > 0.0f && sampling->min_p < 1.0f) {
++        llama_sampler_chain_add(sampler, llama_sampler_init_min_p(sampling->min_p, 1));
++    }
+     if (sampling->temperature != 1.0f) {
+         llama_sampler_chain_add(sampler, llama_sampler_init_temp(sampling->temperature));
+     }
+@@ -1483,6 +1486,9 @@ static llama_token skippy_sample_token(
+     if (sampling->top_p > 0.0f && sampling->top_p < 1.0f) {
+         llama_sampler_chain_add(sampler, llama_sampler_init_top_p(sampling->top_p, 1));
+     }
++    if (sampling->min_p > 0.0f && sampling->min_p < 1.0f) {
++        llama_sampler_chain_add(sampler, llama_sampler_init_min_p(sampling->min_p, 1));
++    }
+     if (sampling->temperature != 1.0f) {
+         llama_sampler_chain_add(sampler, llama_sampler_init_temp(sampling->temperature));
+     }
+-- 
+2.50.1 (Apple Git-155)
+
