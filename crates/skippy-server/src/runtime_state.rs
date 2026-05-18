@@ -60,6 +60,13 @@ pub struct RuntimeSessionDropStats {
     pub reset_session: bool,
     pub reset_ms: f64,
     pub preserved_resident_prefix: bool,
+    /// True when the lane could not be returned to the idle pool because
+    /// the underlying StageSession failed to reset cleanly. The lane is
+    /// dropped (which invokes the C-side skippy_session_free) and the
+    /// pool capacity is restored on the next prewarm/admission cycle.
+    pub lane_discarded: bool,
+    /// Reset-error detail, when [`Self::lane_discarded`] is true.
+    pub lane_discard_reason: Option<String>,
     pub stats_after: RuntimeSessionStats,
 }
 
@@ -296,11 +303,43 @@ impl RuntimeState {
         Ok(self.session_stats())
     }
 
+    /// Release the session slot identified by `session_id`.
+    ///
+    /// This is the cleanup path called at the end of every chat
+    /// completion (success, cancellation, or backend error). It must
+    /// leave [`Self`] in a self-consistent state regardless of whether
+    /// the underlying StageSession can be reset cleanly:
+    ///
+    ///  - The lane is either returned to `idle_sessions` (reset OK) or
+    ///    dropped entirely (reset failed). Dropping the lane triggers
+    ///    `StageSession::drop`, which calls `skippy_session_free` on
+    ///    the C side — the authoritative path for releasing native KV
+    ///    cells held by that sequence id.
+    ///  - `session_token_counts`, `session_checkpoints`, and
+    ///    `session_resident_prefixes` for `session_id` are always
+    ///    removed.
+    ///  - The function always returns `Ok` so per-request cleanup at
+    ///    callsites never propagates a reset failure as a request
+    ///    error. The outcome is reported via [`RuntimeSessionDropStats`]
+    ///    fields (`lane_discarded`, `lane_discard_reason`) for
+    ///    telemetry.
+    ///
+    /// Previously a reset error propagated `?` through this function,
+    /// which left `session_token_counts` and `session_checkpoints`
+    /// holding stale entries and dropped the lane on the floor without
+    /// any record. That accumulated bookkeeping drift over time and
+    /// could leave the native KV cache reporting "all slots in use"
+    /// long after the owning sessions were gone, producing
+    /// `failed to find a memory slot` errors on subsequent admissions.
     pub fn drop_session_timed(&mut self, session_id: &str) -> Result<RuntimeSessionDropStats> {
         let reset_started = Instant::now();
         let mut reset_session = false;
         let mut preserved_resident_prefix = false;
+        let mut lane_discarded = false;
+        let mut lane_discard_reason: Option<String> = None;
+
         if let Some(mut lane_session) = self.sessions.remove(session_id) {
+            let lane_index = lane_session.index;
             if let Some(prefix) = self.session_resident_prefixes.remove(session_id) {
                 match lane_session.session.trim_session(prefix.token_count) {
                     Ok(()) => {
@@ -308,26 +347,65 @@ impl RuntimeState {
                         lane_session.resident_prefix = Some(prefix);
                         self.idle_sessions.push(lane_session);
                     }
-                    Err(_) => {
+                    Err(trim_err) => {
                         reset_session = true;
-                        lane_session.session.reset()?;
-                        lane_session.resident_prefix = None;
-                        self.idle_sessions.push(lane_session);
+                        match lane_session.session.reset() {
+                            Ok(()) => {
+                                lane_session.resident_prefix = None;
+                                self.idle_sessions.push(lane_session);
+                            }
+                            Err(reset_err) => {
+                                lane_discarded = true;
+                                let reason = format!(
+                                    "trim_session({}) failed ({trim_err:#}); fallback reset() also failed ({reset_err:#})",
+                                    prefix.token_count
+                                );
+                                eprintln!(
+                                    "skippy::runtime_state: drop_session_timed: \
+                                     discarding lane {lane_index} for session {session_id}: \
+                                     {reason}"
+                                );
+                                lane_discard_reason = Some(reason);
+                                // `lane_session` falls out of scope and its
+                                // StageSession::drop runs, which calls
+                                // skippy_session_free on the C side.
+                            }
+                        }
                     }
                 }
             } else {
                 reset_session = true;
-                lane_session.session.reset()?;
-                lane_session.resident_prefix = None;
-                self.idle_sessions.push(lane_session);
+                match lane_session.session.reset() {
+                    Ok(()) => {
+                        lane_session.resident_prefix = None;
+                        self.idle_sessions.push(lane_session);
+                    }
+                    Err(reset_err) => {
+                        lane_discarded = true;
+                        let reason = format!("reset() failed ({reset_err:#})");
+                        eprintln!(
+                            "skippy::runtime_state: drop_session_timed: \
+                             discarding lane {lane_index} for session {session_id}: \
+                             {reason}"
+                        );
+                        lane_discard_reason = Some(reason);
+                    }
+                }
             }
         }
+
+        // Always clear per-session bookkeeping. The previous version
+        // skipped these when reset returned Err, which leaked entries.
         self.session_token_counts.remove(session_id);
         self.session_checkpoints.remove(session_id);
+        // session_resident_prefixes was already removed above (or absent).
+
         Ok(RuntimeSessionDropStats {
             reset_session,
             reset_ms: reset_started.elapsed().as_secs_f64() * 1000.0,
             preserved_resident_prefix,
+            lane_discarded,
+            lane_discard_reason,
             stats_after: self.session_stats(),
         })
     }
