@@ -10632,15 +10632,7 @@ mod tests {
         })
     }
 
-    #[test]
-    fn tui_layout_uses_join_token_band_with_nested_process_tables() {
-        let mut state = DashboardState::default();
-        state.reduce(DashboardAction::Resize(dashboard_layout_for_terminal_size(
-            120, 24,
-        )));
-
-        let areas = tui_layout(Rect::new(0, 0, 120, 24), &state);
-
+    fn assert_join_token_layout(state: &DashboardState, areas: &TuiFrameAreas) {
         assert_eq!(
             areas.join_token_panel.y,
             areas.loading.map_or(0, |area| area.bottom())
@@ -10676,6 +10668,30 @@ mod tests {
             areas.requests.0.y,
             areas.main_body.y + areas.main_body.height
         );
+        assert_eq!(areas.events.0.y, areas.main_body.y);
+        assert!(areas.processes.x > areas.events.0.x);
+        assert!(areas.models.0.x > areas.processes.x);
+
+        let requests_inner = tui_panel_block(state, DashboardPanel::Requests)
+            .inner(combine_panel_rect(areas.requests.0, areas.requests.1));
+        assert_eq!(
+            requests_inner.height as usize,
+            state.panel_layout.rows_for(DashboardPanel::Requests)
+        );
+    }
+
+    fn assert_process_table_layout(state: &DashboardState, areas: &TuiFrameAreas) {
+        let events_inner = tui_panel_block(state, DashboardPanel::Events)
+            .inner(combine_panel_rect(areas.events.0, areas.events.1));
+        let models_inner = tui_panel_block(state, DashboardPanel::Models)
+            .inner(combine_panel_rect(areas.models.0, areas.models.1));
+        let llama_inner = tui_panel_block(state, DashboardPanel::LlamaCpp).inner(
+            combine_panel_rect(areas.llama_processes.0, areas.llama_processes.1),
+        );
+        let webserver_inner = tui_panel_block(state, DashboardPanel::Webserver).inner(
+            combine_panel_rect(areas.webserver_processes.0, areas.webserver_processes.1),
+        );
+
         assert_eq!(
             areas.requests.1.y,
             areas.requests.0.y + areas.requests.0.height
@@ -10685,21 +10701,6 @@ mod tests {
             areas.requests.1.y + areas.requests.1.height
         );
         assert_eq!(areas.status_bar.height, 1);
-        assert_eq!(areas.events.0.y, areas.main_body.y);
-        assert!(areas.processes.x > areas.events.0.x);
-        assert!(areas.models.0.x > areas.processes.x);
-        let events_inner = tui_panel_block(&state, DashboardPanel::Events)
-            .inner(combine_panel_rect(areas.events.0, areas.events.1));
-        let models_inner = tui_panel_block(&state, DashboardPanel::Models)
-            .inner(combine_panel_rect(areas.models.0, areas.models.1));
-        let llama_inner = tui_panel_block(&state, DashboardPanel::LlamaCpp).inner(
-            combine_panel_rect(areas.llama_processes.0, areas.llama_processes.1),
-        );
-        let webserver_inner = tui_panel_block(&state, DashboardPanel::Webserver).inner(
-            combine_panel_rect(areas.webserver_processes.0, areas.webserver_processes.1),
-        );
-        let requests_inner = tui_panel_block(&state, DashboardPanel::Requests)
-            .inner(combine_panel_rect(areas.requests.0, areas.requests.1));
         assert_eq!(
             events_inner.height as usize,
             state.panel_layout.rows_for(DashboardPanel::Events)
@@ -10710,7 +10711,7 @@ mod tests {
         );
         assert_eq!(
             areas.llama_processes.0.y,
-            tui_processes_block(&state).inner(areas.processes).y
+            tui_processes_block(state).inner(areas.processes).y
         );
         assert_eq!(
             areas.llama_processes.1.y,
@@ -10734,10 +10735,19 @@ mod tests {
         );
         assert_eq!(state.panel_layout.rows_for(DashboardPanel::LlamaCpp), 1);
         assert_eq!(state.panel_layout.rows_for(DashboardPanel::Webserver), 2);
-        assert_eq!(
-            requests_inner.height as usize,
-            state.panel_layout.rows_for(DashboardPanel::Requests)
-        );
+    }
+
+    #[test]
+    fn tui_layout_uses_join_token_band_with_nested_process_tables() {
+        let mut state = DashboardState::default();
+        state.reduce(DashboardAction::Resize(dashboard_layout_for_terminal_size(
+            120, 24,
+        )));
+
+        let areas = tui_layout(Rect::new(0, 0, 120, 24), &state);
+
+        assert_join_token_layout(&state, &areas);
+        assert_process_table_layout(&state, &areas);
     }
 
     #[test]
@@ -13944,41 +13954,8 @@ tail line"
         let areas = tui_layout(Rect::new(0, 0, 220, 24), &state);
         let (rendered, buffer) = render_tui_frame_snapshot_with_buffer(&state, 220, 24);
 
-        assert!(rendered.contains("Mesh Events"));
-        assert!(rendered.contains("Processes"));
-        assert!(rendered.contains("llama.cpp"));
-        assert!(rendered.contains("mesh-llm Processes"));
-        assert!(rendered.contains("Loaded Models"));
-        assert!(rendered.contains("Incoming Requests"));
-        assert!(!rendered.contains('📋'));
-        assert!(!rendered.contains('⚙'));
-        assert!(!rendered.contains('🔧'));
-        assert!(!rendered.contains('📊'));
-        assert!(!rendered.contains('📈'));
-        assert!(rendered.contains("RPS "));
-        assert!(rendered.contains("READY"));
-        assert!(rendered.contains("[Tab] Next"));
-        assert!(rendered.contains("[Enter/Z] Full"));
-        assert!(rendered.contains("[Shift-Tab] Prev"));
-        assert!(rendered.contains('─'));
-        assert!(rendered.contains('│'));
-        assert!(rendered.contains("q"));
-        assert!(!rendered.contains("Running llama.cpp instances"));
-        assert!(!rendered.contains("Running models"));
-
-        for panel_area in [
-            combine_panel_rect(areas.events.0, areas.events.1),
-            (combine_panel_rect(areas.llama_processes.0, areas.llama_processes.1)),
-            (combine_panel_rect(areas.webserver_processes.0, areas.webserver_processes.1)),
-            combine_panel_rect(areas.models.0, areas.models.1),
-            combine_panel_rect(areas.requests.0, areas.requests.1),
-        ] {
-            assert_eq!(buffer[(panel_area.x, panel_area.y)].symbol(), "╭");
-            assert_eq!(
-                buffer[(panel_area.right().saturating_sub(1), panel_area.y)].symbol(),
-                "╮"
-            );
-        }
+        assert_dashboard_snapshot_shell(&rendered);
+        assert_dashboard_panel_borders(&buffer, &areas);
     }
 
     #[test]
@@ -14709,6 +14686,90 @@ tail line"
             "json formatter should emit newline-delimited output"
         );
         serde_json::from_str(rendered.trim_end()).expect("line should parse as json")
+    }
+
+    fn format_json_event(formatter: &mut JsonFormatter, event: OutputEvent) -> Value {
+        parse_json_line(
+            &formatter
+                .format(&event)
+                .expect("json formatter should preserve representative metadata"),
+        )
+    }
+
+    fn assert_dashboard_snapshot_shell(rendered: &str) {
+        for expected in [
+            "Mesh Events",
+            "Processes",
+            "llama.cpp",
+            "mesh-llm Processes",
+            "Loaded Models",
+            "Incoming Requests",
+            "RPS ",
+            "READY",
+            "[Tab] Next",
+            "[Enter/Z] Full",
+            "[Shift-Tab] Prev",
+            "q",
+        ] {
+            assert!(rendered.contains(expected));
+        }
+
+        for ch in ['📋', '⚙', '🔧', '📊', '📈'] {
+            assert!(!rendered.contains(ch));
+        }
+
+        assert!(rendered.contains('─'));
+        assert!(rendered.contains('│'));
+        assert!(!rendered.contains("Running llama.cpp instances"));
+        assert!(!rendered.contains("Running models"));
+    }
+
+    fn assert_dashboard_panel_borders(buffer: &ratatui::buffer::Buffer, areas: &TuiFrameAreas) {
+        for panel_area in [
+            combine_panel_rect(areas.events.0, areas.events.1),
+            combine_panel_rect(areas.llama_processes.0, areas.llama_processes.1),
+            combine_panel_rect(areas.webserver_processes.0, areas.webserver_processes.1),
+            combine_panel_rect(areas.models.0, areas.models.1),
+            combine_panel_rect(areas.requests.0, areas.requests.1),
+        ] {
+            assert_eq!(buffer[(panel_area.x, panel_area.y)].symbol(), "╭");
+            assert_eq!(
+                buffer[(panel_area.right().saturating_sub(1), panel_area.y)].symbol(),
+                "╮"
+            );
+        }
+    }
+
+    fn assert_model_ready_metadata(model_ready: &Value) {
+        assert_eq!(model_ready["model"], "Qwen3-32B");
+        assert_eq!(model_ready["port"], 38373);
+        assert_eq!(model_ready["internal_port"], 38373);
+        assert_eq!(model_ready["role"], "host");
+    }
+
+    fn assert_rpc_starting_metadata(rpc_starting: &Value) {
+        assert_eq!(rpc_starting["port"], 43683);
+        assert_eq!(rpc_starting["device"], "CUDA0");
+        assert_eq!(rpc_starting["log_path"], "/tmp/rpc.log");
+    }
+
+    fn assert_llama_starting_metadata(llama_starting: &Value) {
+        assert_eq!(llama_starting["model"], "Qwen3-32B");
+        assert_eq!(llama_starting["http_port"], 8001);
+        assert_eq!(llama_starting["ctx_size"], 8192);
+        assert_eq!(llama_starting["log_path"], "/tmp/llama.log");
+    }
+
+    fn assert_runtime_ready_metadata(runtime_ready: &Value) {
+        assert_eq!(runtime_ready["api_port"], 9337);
+        assert_eq!(runtime_ready["console_port"], 3131);
+        assert_eq!(runtime_ready["console_url"], "http://localhost:3131");
+        assert_eq!(runtime_ready["models_count"], 2);
+        assert_eq!(
+            runtime_ready["pi_command"],
+            "mesh-llm pi --host 127.0.0.1:9337 --model 'Qwen3-32B'"
+        );
+        assert_eq!(runtime_ready["goose_command"], "goose session");
     }
 
     fn assert_required_json_envelope(value: &Value, event: &OutputEvent) {
@@ -15541,93 +15602,71 @@ tail line"
     fn json_formatter_preserves_representative_optional_metadata_fields() {
         let mut formatter = JsonFormatter;
 
-        let model_ready = parse_json_line(
-            &formatter
-                .format(&OutputEvent::ModelReady {
-                    model: "Qwen3-32B".to_string(),
-                    internal_port: Some(38373),
-                    role: Some("host".to_string()),
-                })
-                .expect("model ready render should succeed"),
+        let model_ready = format_json_event(
+            &mut formatter,
+            OutputEvent::ModelReady {
+                model: "Qwen3-32B".to_string(),
+                internal_port: Some(38373),
+                role: Some("host".to_string()),
+            },
         );
-        assert_eq!(model_ready["model"], "Qwen3-32B");
-        assert_eq!(model_ready["port"], 38373);
-        assert_eq!(model_ready["internal_port"], 38373);
-        assert_eq!(model_ready["role"], "host");
+        assert_model_ready_metadata(&model_ready);
 
-        let rpc_starting = parse_json_line(
-            &formatter
-                .format(&OutputEvent::RpcServerStarting {
-                    port: 43683,
-                    device: "CUDA0".to_string(),
-                    log_path: Some("/tmp/rpc.log".to_string()),
-                })
-                .expect("rpc startup render should succeed"),
+        let rpc_starting = format_json_event(
+            &mut formatter,
+            OutputEvent::RpcServerStarting {
+                port: 43683,
+                device: "CUDA0".to_string(),
+                log_path: Some("/tmp/rpc.log".to_string()),
+            },
         );
-        assert_eq!(rpc_starting["port"], 43683);
-        assert_eq!(rpc_starting["device"], "CUDA0");
-        assert_eq!(rpc_starting["log_path"], "/tmp/rpc.log");
+        assert_rpc_starting_metadata(&rpc_starting);
 
-        let llama_starting = parse_json_line(
-            &formatter
-                .format(&OutputEvent::LlamaStarting {
-                    model: Some("Qwen3-32B".to_string()),
-                    http_port: 8001,
-                    ctx_size: Some(8192),
-                    log_path: Some("/tmp/llama.log".to_string()),
-                })
-                .expect("llama startup render should succeed"),
+        let llama_starting = format_json_event(
+            &mut formatter,
+            OutputEvent::LlamaStarting {
+                model: Some("Qwen3-32B".to_string()),
+                http_port: 8001,
+                ctx_size: Some(8192),
+                log_path: Some("/tmp/llama.log".to_string()),
+            },
         );
-        assert_eq!(llama_starting["model"], "Qwen3-32B");
-        assert_eq!(llama_starting["http_port"], 8001);
-        assert_eq!(llama_starting["ctx_size"], 8192);
-        assert_eq!(llama_starting["log_path"], "/tmp/llama.log");
+        assert_llama_starting_metadata(&llama_starting);
 
-        let info = parse_json_line(
-            &formatter
-                .format(&OutputEvent::Info {
-                    message: "joined mesh".to_string(),
-                    context: Some("mesh=mesh-123".to_string()),
-                })
-                .expect("info render should succeed"),
+        let info = format_json_event(
+            &mut formatter,
+            OutputEvent::Info {
+                message: "joined mesh".to_string(),
+                context: Some("mesh=mesh-123".to_string()),
+            },
         );
         assert_eq!(info["context"], "mesh=mesh-123");
 
-        let warning = parse_json_line(
-            &formatter
-                .format(&OutputEvent::Warning {
-                    message: "bind warning".to_string(),
-                    context: Some("model=Qwen3-32B".to_string()),
-                })
-                .expect("warning render should succeed"),
+        let warning = format_json_event(
+            &mut formatter,
+            OutputEvent::Warning {
+                message: "bind warning".to_string(),
+                context: Some("model=Qwen3-32B".to_string()),
+            },
         );
         assert_eq!(warning["warning"], "bind warning");
         assert_eq!(warning["context"], "model=Qwen3-32B");
 
-        let runtime_ready = parse_json_line(
-            &formatter
-                .format(&OutputEvent::RuntimeReady {
-                    api_url: "http://localhost:9337".to_string(),
-                    console_url: Some("http://localhost:3131".to_string()),
-                    api_port: 9337,
-                    console_port: Some(3131),
-                    models_count: Some(2),
-                    pi_command: Some(
-                        "mesh-llm pi --host 127.0.0.1:9337 --model 'Qwen3-32B'".to_string(),
-                    ),
-                    goose_command: Some("goose session".to_string()),
-                })
-                .expect("runtime ready render should succeed"),
+        let runtime_ready = format_json_event(
+            &mut formatter,
+            OutputEvent::RuntimeReady {
+                api_url: "http://localhost:9337".to_string(),
+                console_url: Some("http://localhost:3131".to_string()),
+                api_port: 9337,
+                console_port: Some(3131),
+                models_count: Some(2),
+                pi_command: Some(
+                    "mesh-llm pi --host 127.0.0.1:9337 --model 'Qwen3-32B'".to_string(),
+                ),
+                goose_command: Some("goose session".to_string()),
+            },
         );
-        assert_eq!(runtime_ready["api_port"], 9337);
-        assert_eq!(runtime_ready["console_port"], 3131);
-        assert_eq!(runtime_ready["console_url"], "http://localhost:3131");
-        assert_eq!(runtime_ready["models_count"], 2);
-        assert_eq!(
-            runtime_ready["pi_command"],
-            "mesh-llm pi --host 127.0.0.1:9337 --model 'Qwen3-32B'"
-        );
-        assert_eq!(runtime_ready["goose_command"], "goose session");
+        assert_runtime_ready_metadata(&runtime_ready);
     }
 
     #[test]

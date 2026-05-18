@@ -211,11 +211,12 @@ async fn finish_relay_pair(
     finished_label: &str,
     waiting_for_label: &str,
 ) -> Result<()> {
-    join_relay_task(first_result)?;
+    let first = join_relay_task(first_result);
     tracing::debug!(
         "relay_bidirectional: {finished_label} finished, waiting for {waiting_for_label}"
     );
-    join_relay_task(remaining_task.await)
+    let second = join_relay_task(remaining_task.await);
+    first.and(second)
 }
 
 async fn relay_tcp_to_quic(

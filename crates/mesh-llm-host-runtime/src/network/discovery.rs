@@ -264,7 +264,6 @@ pub(crate) async fn publish_lan_loop(node: crate::mesh::Node, config: LanPublish
             region: config.region.clone(),
             max_clients: config.max_clients,
             api_port: config.api_port,
-            interval_secs: config.interval_secs,
             status_tx: &config.status_tx,
             last_reported: &mut last_reported,
             instance_name: &instance_name,
@@ -295,7 +294,6 @@ struct LanPublishAttempt<'a> {
     region: Option<String>,
     max_clients: Option<usize>,
     api_port: u16,
-    interval_secs: u64,
     status_tx: &'a Option<tokio::sync::watch::Sender<Option<nostr::PublishStateUpdate>>>,
     last_reported: &'a mut Option<nostr::PublishStateUpdate>,
     instance_name: &'a str,
@@ -310,7 +308,6 @@ async fn publish_lan_advertisement(attempt: LanPublishAttempt<'_>) {
         region,
         max_clients,
         api_port,
-        interval_secs,
         status_tx,
         last_reported,
         instance_name,
@@ -327,7 +324,6 @@ async fn publish_lan_advertisement(attempt: LanPublishAttempt<'_>) {
         instance_name,
         host_name,
         api_port,
-        interval_secs,
         status_tx,
         last_reported,
     )
@@ -343,7 +339,6 @@ async fn encode_lan_service_info(
     instance_name: &str,
     host_name: &str,
     api_port: u16,
-    interval_secs: u64,
     status_tx: &Option<tokio::sync::watch::Sender<Option<nostr::PublishStateUpdate>>>,
     last_reported: &mut Option<nostr::PublishStateUpdate>,
 ) -> Option<ServiceInfo> {
@@ -356,7 +351,6 @@ async fn encode_lan_service_info(
                 last_reported,
                 nostr::PublishStateUpdate::PublishFailed,
             );
-            tokio::time::sleep(Duration::from_secs(interval_secs)).await;
             None
         }
     }

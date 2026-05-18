@@ -3881,7 +3881,52 @@ pub(crate) fn assert_quitting_during_startup_cancels_without_late_ready_render()
 
 #[cfg(test)]
 pub(crate) fn assert_startup_launch_plan_describes_planned_runtime_before_process_start() {
-    let startup_models = vec![
+    let startup_models = startup_model_plan_fixture();
+
+    let plan = startup_launch_plan(
+        &startup_models,
+        "Fallback-Model",
+        9337,
+        Some(3131),
+        false,
+        Some(4),
+        None,
+    );
+
+    assert_llama_process_row(&plan, "llama-server unsloth/Model-A-GGUF:Q4_K_M");
+    assert_llama_process_row(&plan, "llama-server Model-B");
+    assert_eq!(plan.llama_process_rows.len(), 2);
+    assert_webserver_plan_row(&plan, "API", 9337);
+    assert_webserver_plan_row(&plan, "Console", 3131);
+
+    let headless_plan = startup_launch_plan(
+        &startup_models,
+        "Fallback-Model",
+        9337,
+        Some(3131),
+        true,
+        Some(4),
+        None,
+    );
+    assert_headless_launch_plan(&headless_plan);
+    assert_loaded_model_plan_row(
+        &plan,
+        "unsloth/Model-A-GGUF:Q4_K_M",
+        "primary",
+        Some("GPU0"),
+        2,
+    );
+    assert_loaded_model_plan_row(&plan, "Model-B", "model", Some("CUDA1"), 4);
+
+    let fallback_plan =
+        startup_launch_plan(&[], "Auto-Assigned-Model", 9337, None, false, Some(8), None);
+    assert_llama_process_row(&fallback_plan, "llama-server Auto-Assigned-Model");
+    assert_loaded_model_plan_row(&fallback_plan, "Auto-Assigned-Model", "primary", None, 8);
+}
+
+#[cfg(test)]
+fn startup_model_plan_fixture() -> Vec<StartupModelPlan> {
+    vec![
         StartupModelPlan {
             declared_ref: "unsloth/Model-A-GGUF:Q4_K_M".to_string(),
             resolved_path: PathBuf::from("/tmp/Model-A-Q4_K_M.gguf"),
@@ -3915,105 +3960,58 @@ pub(crate) fn assert_startup_launch_plan_describes_planned_runtime_before_proces
             n_ubatch: None,
             flash_attention: FlashAttentionType::Auto,
         },
-    ];
+    ]
+}
 
-    let plan = startup_launch_plan(
-        &startup_models,
-        "Fallback-Model",
-        9337,
-        Some(3131),
-        false,
-        Some(4),
-        None,
-    );
+#[cfg(test)]
+fn assert_llama_process_row(plan: &DashboardLaunchPlan, name: &str) {
+    assert!(plan
+        .llama_process_rows
+        .iter()
+        .any(|row| { row.name == name && row.status == RuntimeStatus::Loading && row.port == 0 }));
+}
 
-    assert!(plan.llama_process_rows.iter().any(|row| {
-        row.name == "llama-server unsloth/Model-A-GGUF:Q4_K_M"
-            && row.status == RuntimeStatus::Loading
-            && row.port == 0
-    }));
-    assert!(plan.llama_process_rows.iter().any(|row| {
-        row.name == "llama-server Model-B" && row.status == RuntimeStatus::Loading && row.port == 0
-    }));
-    assert_eq!(plan.llama_process_rows.len(), 2);
-
-    let api_row = plan
+#[cfg(test)]
+fn assert_webserver_plan_row(plan: &DashboardLaunchPlan, label: &str, port: u16) {
+    let row = plan
         .webserver_rows
         .iter()
-        .find(|row| row.label == "API")
-        .expect("launch plan should include planned API row");
-    assert_eq!(api_row.status, RuntimeStatus::NotReady);
-    assert_eq!(api_row.port, 9337);
+        .find(|row| row.label == label)
+        .unwrap_or_else(|| panic!("launch plan should include planned {label} row"));
+    assert_eq!(row.status, RuntimeStatus::NotReady);
+    assert_eq!(row.port, port);
+}
 
-    let console_row = plan
-        .webserver_rows
-        .iter()
-        .find(|row| row.label == "Console")
-        .expect("launch plan should include planned Console row");
-    assert_eq!(console_row.status, RuntimeStatus::NotReady);
-    assert_eq!(console_row.port, 3131);
-
-    let headless_plan = startup_launch_plan(
-        &startup_models,
-        "Fallback-Model",
-        9337,
-        Some(3131),
-        true,
-        Some(4),
-        None,
-    );
+#[cfg(test)]
+fn assert_headless_launch_plan(plan: &DashboardLaunchPlan) {
     assert!(
-        headless_plan
-            .webserver_rows
-            .iter()
-            .any(|row| row.label == "API"),
+        plan.webserver_rows.iter().any(|row| row.label == "API"),
         "headless launch plan should keep the API row"
     );
     assert!(
-        headless_plan
-            .webserver_rows
-            .iter()
-            .all(|row| row.label != "Console"),
+        plan.webserver_rows.iter().all(|row| row.label != "Console"),
         "headless launch plan should not seed a stale Console row"
     );
+}
 
-    let model_a = plan
+#[cfg(test)]
+fn assert_loaded_model_plan_row(
+    plan: &DashboardLaunchPlan,
+    name: &str,
+    role: &str,
+    device: Option<&str>,
+    slots: usize,
+) {
+    let row = plan
         .loaded_model_rows
         .iter()
-        .find(|row| row.name == "unsloth/Model-A-GGUF:Q4_K_M")
-        .expect("launch plan should include first startup model row");
-    assert_eq!(model_a.role.as_deref(), Some("primary"));
-    assert_eq!(model_a.status, RuntimeStatus::Loading);
-    assert_eq!(model_a.device.as_deref(), Some("GPU0"));
-    assert_eq!(model_a.slots, Some(2));
-    assert_eq!(model_a.file_size_gb, None);
-
-    let model_b = plan
-        .loaded_model_rows
-        .iter()
-        .find(|row| row.name == "Model-B")
-        .expect("launch plan should include second startup model row");
-    assert_eq!(model_b.role.as_deref(), Some("model"));
-    assert_eq!(model_b.status, RuntimeStatus::Loading);
-    assert_eq!(model_b.device.as_deref(), Some("CUDA1"));
-    assert_eq!(model_b.slots, Some(4));
-    assert_eq!(model_b.file_size_gb, None);
-
-    let fallback_plan =
-        startup_launch_plan(&[], "Auto-Assigned-Model", 9337, None, false, Some(8), None);
-    assert!(fallback_plan.llama_process_rows.iter().any(|row| {
-        row.name == "llama-server Auto-Assigned-Model"
-            && row.status == RuntimeStatus::Loading
-            && row.port == 0
-    }));
-    let fallback_model = fallback_plan
-        .loaded_model_rows
-        .iter()
-        .find(|row| row.name == "Auto-Assigned-Model")
-        .expect("fallback launch plan should include planned loaded-model row");
-    assert_eq!(fallback_model.role.as_deref(), Some("primary"));
-    assert_eq!(fallback_model.status, RuntimeStatus::Loading);
-    assert_eq!(fallback_model.slots, Some(8));
+        .find(|row| row.name == name)
+        .unwrap_or_else(|| panic!("launch plan should include loaded-model row for {name}"));
+    assert_eq!(row.role.as_deref(), Some(role));
+    assert_eq!(row.status, RuntimeStatus::Loading);
+    assert_eq!(row.device.as_deref(), device);
+    assert_eq!(row.slots, Some(slots));
+    assert_eq!(row.file_size_gb, None);
 }
 
 #[test]

@@ -1549,6 +1549,13 @@ mod tests {
     fn mesh_config_proto_roundtrip() {
         let snapshot = make_config_snapshot();
         let config = proto_config_to_mesh(&snapshot);
+        assert_mesh_config_from_proto(&config);
+
+        let roundtripped = mesh_config_to_proto(&config);
+        assert_proto_config_roundtrip_matches(&roundtripped, &snapshot);
+    }
+
+    fn assert_mesh_config_from_proto(config: &crate::plugin::MeshConfig) {
         assert_eq!(config.version, Some(1));
         assert_eq!(config.gpu.assignment, crate::plugin::GpuAssignment::Auto);
         assert_eq!(config.models.len(), 1);
@@ -1558,8 +1565,12 @@ mod tests {
         assert_eq!(config.models[0].gpu_id.as_deref(), Some("pci:0000:65:00.0"));
         assert_eq!(config.plugins.len(), 1);
         assert_eq!(config.plugins[0].name, "blackboard");
+    }
 
-        let roundtripped = mesh_config_to_proto(&config);
+    fn assert_proto_config_roundtrip_matches(
+        roundtripped: &NodeConfigSnapshot,
+        snapshot: &NodeConfigSnapshot,
+    ) {
         assert_eq!(roundtripped.version, snapshot.version);
         assert_eq!(
             roundtripped.gpu.as_ref().map(|g| g.assignment),

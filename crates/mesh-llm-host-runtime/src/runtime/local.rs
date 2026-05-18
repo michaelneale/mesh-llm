@@ -2805,25 +2805,14 @@ fn plan_runtime_slice_topology_with_exclusions(
         layer_count = package.layer_count,
         "planning split runtime topology"
     );
-    let topology_participants = participants
-        .iter()
-        .copied()
-        .map(SplitParticipant::to_topology_participant)
-        .collect::<Vec<_>>();
+    let topology_participants = collect_topology_participants(participants);
     let plan = skippy::plan_package_identity_topology(
         topology_id,
         model_ref,
         package,
         &topology_participants,
     )?;
-    if !plan.diagnostics.is_empty() {
-        tracing::debug!(
-            topology_id,
-            model_ref,
-            diagnostics = ?plan.diagnostics,
-            "package-aware split topology planner emitted diagnostics"
-        );
-    }
+    log_topology_plan_diagnostics(topology_id, model_ref, &plan.diagnostics);
     let mut stages = plan
         .stages
         .into_iter()
@@ -2845,6 +2834,29 @@ fn plan_runtime_slice_topology_with_exclusions(
         "planned split runtime topology"
     );
     Ok(stages)
+}
+
+#[cfg(test)]
+fn collect_topology_participants(
+    participants: &[SplitParticipant],
+) -> Vec<skippy::StageTopologyParticipant> {
+    participants
+        .iter()
+        .copied()
+        .map(SplitParticipant::to_topology_participant)
+        .collect()
+}
+
+#[cfg(test)]
+fn log_topology_plan_diagnostics(topology_id: &str, model_ref: &str, diagnostics: &[String]) {
+    if !diagnostics.is_empty() {
+        tracing::debug!(
+            topology_id,
+            model_ref,
+            diagnostics = ?diagnostics,
+            "package-aware split topology planner emitted diagnostics"
+        );
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
