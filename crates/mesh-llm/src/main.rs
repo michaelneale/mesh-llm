@@ -1,5 +1,7 @@
 #![recursion_limit = "256"]
 
+// ci: macos runner pool test (rust touch)
+
 /// Default Tokio worker thread stack size: 8 MB.
 ///
 /// The standard Tokio default is 2 MB, which is too small for several spawned
