@@ -51,6 +51,8 @@ message PeerAnnouncement {
   optional LatencySource latency_source = 41;
   optional uint32 latency_age_ms = 42;
   optional bytes latency_observer_id = 43;
+  optional string inference_public_key = 44;         // X25519 public key (base64) for E2E inference encryption
+  optional SecurityPosture security_posture = 45;    // Runtime security posture
 
 enum LatencySource {
   LATENCY_SOURCE_UNSPECIFIED = 0;
@@ -58,6 +60,14 @@ enum LatencySource {
   LATENCY_SOURCE_ESTIMATED = 2;    // Estimated via transitive gossip
   LATENCY_SOURCE_UNKNOWN = 3;      // Unknown source (e.g. propagated with no origin)
 }
+}
+
+message SecurityPosture {
+  bool sip_enabled = 1;
+  bool rdma_disabled = 2;
+  bool debugger_blocked = 3;
+  bool core_dumps_disabled = 4;
+  optional string binary_hash = 5;
 }
 
 message MeshSubprotocol {

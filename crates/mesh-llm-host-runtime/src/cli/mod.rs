@@ -436,6 +436,13 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) trust_owner: Vec<String>,
 
+    /// Only route inference to peers that self-report a hardened security
+    /// posture (debugger blocked, core dumps disabled, SIP enabled, RDMA
+    /// disabled). NOTE: posture is currently self-reported with no
+    /// cryptographic attestation backing — a malicious peer can lie.
+    #[arg(long)]
+    pub(crate) require_hardened: bool,
+
     /// Internal: set when this node joined via Nostr discovery (not --join).
     #[arg(skip)]
     pub(crate) nostr_discovery: bool,

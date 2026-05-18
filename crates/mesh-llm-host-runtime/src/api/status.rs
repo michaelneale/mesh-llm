@@ -393,6 +393,14 @@ pub(crate) struct PeerPayload {
     pub(crate) gpus: Vec<GpuEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) first_joined_mesh_ts: Option<u64>,
+    /// True if this peer advertises a valid X25519 inference public key,
+    /// meaning it is capable of E2E encryption (not that traffic is
+    /// currently encrypted).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) e2e_encryption_capable: Option<bool>,
+    /// True if this peer's security posture is fully hardened.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) hardened: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
@@ -917,6 +925,8 @@ mod tests {
             is_soc: None,
             gpus: vec![],
             first_joined_mesh_ts: None,
+            e2e_encryption_capable: None,
+            hardened: None,
         };
 
         let json = serde_json::to_string(&peer).expect("serialization failed");
@@ -947,6 +957,8 @@ mod tests {
             is_soc: None,
             gpus: vec![],
             first_joined_mesh_ts: None,
+            e2e_encryption_capable: None,
+            hardened: None,
         };
 
         let json = serde_json::to_string(&peer).expect("serialization failed");
@@ -1201,6 +1213,8 @@ mod tests {
             is_soc: Some(false),
             gpus: vec![],
             first_joined_mesh_ts: None,
+            e2e_encryption_capable: None,
+            hardened: None,
         };
 
         let json = serde_json::to_string(&peer).expect("serialization failed");

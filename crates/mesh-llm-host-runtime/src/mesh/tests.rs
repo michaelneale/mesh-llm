@@ -242,6 +242,11 @@ async fn make_test_node(role: super::NodeRole) -> Result<Node> {
             let (tx, _rx) = tokio::sync::watch::channel(0u64);
             Arc::new(tx)
         },
+        inference_keypair: Arc::new(
+            crate::crypto::inference_encryption::InferenceKeypair::generate(),
+        ),
+        local_security_posture: Arc::new(Mutex::new(None)),
+        require_hardened: false,
     };
 
     let accept_node = node.clone();
@@ -973,6 +978,8 @@ fn make_test_peer_info(peer_id: EndpointId) -> PeerInfo {
         owner_summary: OwnershipSummary::default(),
         display_rtt: None,
         propagated_latency: None,
+        inference_public_key: None,
+        security_posture: None,
     }
 }
 
@@ -2857,6 +2864,8 @@ fn gossip_frame_roundtrip_preserves_scanned_model_metadata() {
         latency_source: None,
         latency_age_ms: None,
         latency_observer_id: None,
+        inference_public_key: None,
+        security_posture: None,
     };
 
     let proto_pa = local_ann_to_proto_ann(&local_ann);
@@ -3141,6 +3150,8 @@ fn transitive_peer_update_refreshes_metadata_fields() {
         latency_source: None,
         latency_age_ms: None,
         latency_observer_id: None,
+        inference_public_key: None,
+        security_posture: None,
     };
 
     apply_transitive_ann(&mut existing, &addr, &ann, make_test_endpoint_id(0xee));
@@ -3225,6 +3236,8 @@ fn transitive_peer_merge_preserves_richer_direct_address() {
         latency_source: None,
         latency_age_ms: None,
         latency_observer_id: None,
+        inference_public_key: None,
+        security_posture: None,
     };
 
     apply_transitive_ann(&mut existing, &weak_addr, &ann, make_test_endpoint_id(0xee));
@@ -3283,6 +3296,8 @@ fn transitive_peer_merge_preserves_richer_direct_address() {
         latency_source: None,
         latency_age_ms: None,
         latency_observer_id: None,
+        inference_public_key: None,
+        security_posture: None,
     };
     apply_transitive_ann(
         &mut existing,
@@ -3864,6 +3879,8 @@ fn transitive_peer_update_refreshes_last_mentioned() {
         latency_source: None,
         latency_age_ms: None,
         latency_observer_id: None,
+        inference_public_key: None,
+        security_posture: None,
     };
 
     apply_transitive_ann(&mut peer, &addr, &ann, make_test_endpoint_id(0xee));
@@ -4613,6 +4630,8 @@ fn make_test_peer(id: EndpointId, rtt_ms: Option<u32>, vram_gb: u64) -> PeerInfo
         owner_summary: OwnershipSummary::default(),
         display_rtt: None,
         propagated_latency: None,
+        inference_public_key: None,
+        security_posture: None,
     }
 }
 
@@ -5840,4 +5859,85 @@ fn active_stage_refresh_marks_missing_stage_failed() {
         status.error.as_deref(),
         Some("stage status missing from runtime")
     );
+}
+
+#[tokio::test]
+async fn require_hardened_filters_non_hardened_hosts() {
+    let mut node = Node::new_for_tests(super::NodeRole::Client).await.unwrap();
+    node.require_hardened = true;
+
+    let hardened_id = make_test_endpoint_id(0x10);
+    let unhardened_id = make_test_endpoint_id(0x20);
+
+    let mut hardened_peer = make_test_peer_info(hardened_id);
+    hardened_peer.role = super::NodeRole::Host { http_port: 9337 };
+    hardened_peer.hosted_models = vec!["test-model".into()];
+    hardened_peer.hosted_models_known = true;
+    hardened_peer.security_posture = Some(mesh_llm_system::hardening::SecurityPosture {
+        sip_enabled: true,
+        rdma_disabled: true,
+        debugger_blocked: true,
+        core_dumps_disabled: true,
+        binary_hash: Some("abcd".into()),
+    });
+
+    let mut unhardened_peer = make_test_peer_info(unhardened_id);
+    unhardened_peer.role = super::NodeRole::Host { http_port: 9337 };
+    unhardened_peer.hosted_models = vec!["test-model".into()];
+    unhardened_peer.hosted_models_known = true;
+    unhardened_peer.security_posture = None;
+
+    {
+        let mut state = node.state.lock().await;
+        state.peers.insert(hardened_id, hardened_peer);
+        state.peers.insert(unhardened_id, unhardened_peer);
+    }
+
+    let hosts = node.hosts_for_model("test-model").await;
+    assert_eq!(hosts.len(), 1, "only hardened host should be returned");
+    assert_eq!(hosts[0], hardened_id);
+}
+
+#[tokio::test]
+async fn soft_preference_puts_hardened_first() {
+    let node = Node::new_for_tests(super::NodeRole::Client).await.unwrap();
+    assert!(!node.require_hardened);
+
+    let hardened_id = make_test_endpoint_id(0x30);
+    let unhardened_id = make_test_endpoint_id(0x40);
+
+    let mut hardened_peer = make_test_peer_info(hardened_id);
+    hardened_peer.role = super::NodeRole::Host { http_port: 9337 };
+    hardened_peer.hosted_models = vec!["test-model".into()];
+    hardened_peer.hosted_models_known = true;
+    hardened_peer.security_posture = Some(mesh_llm_system::hardening::SecurityPosture {
+        sip_enabled: true,
+        rdma_disabled: true,
+        debugger_blocked: true,
+        core_dumps_disabled: true,
+        binary_hash: Some("abcd".into()),
+    });
+
+    let mut unhardened_peer = make_test_peer_info(unhardened_id);
+    unhardened_peer.role = super::NodeRole::Host { http_port: 9337 };
+    unhardened_peer.hosted_models = vec!["test-model".into()];
+    unhardened_peer.hosted_models_known = true;
+    unhardened_peer.security_posture = None;
+
+    {
+        let mut state = node.state.lock().await;
+        state.peers.insert(hardened_id, hardened_peer);
+        state.peers.insert(unhardened_id, unhardened_peer);
+    }
+
+    let hosts = node.hosts_for_model("test-model").await;
+    assert_eq!(
+        hosts.len(),
+        2,
+        "both hosts returned without require_hardened"
+    );
+    // Hardened host must always come before unhardened, regardless of
+    // hash rotation (rotation is applied within each partition).
+    assert_eq!(hosts[0], hardened_id, "hardened host must be first");
+    assert_eq!(hosts[1], unhardened_id, "unhardened host must be second");
 }

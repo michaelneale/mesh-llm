@@ -1028,6 +1028,11 @@ fn build_peer_payload(peer: &mesh::PeerInfo) -> PeerPayload {
             peer.gpu_compute_tflops_fp16.as_deref(),
         ),
         first_joined_mesh_ts: peer.first_joined_mesh_ts,
+        e2e_encryption_capable: peer
+            .inference_public_key
+            .as_ref()
+            .map(|key| crate::crypto::inference_encryption::parse_public_key(key).is_ok()),
+        hardened: peer.security_posture.as_ref().map(|p| p.is_hardened()),
     }
 }
 

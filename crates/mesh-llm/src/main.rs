@@ -14,6 +14,9 @@
 const DEFAULT_WORKER_STACK_SIZE: usize = 8 * 1024 * 1024;
 
 fn main() {
+    // Must run before any threads are spawned (see hardening module docs).
+    mesh_llm_system::hardening::scrub_env_pre_thread();
+
     let mut builder = tokio::runtime::Builder::new_multi_thread();
     builder.enable_all();
 

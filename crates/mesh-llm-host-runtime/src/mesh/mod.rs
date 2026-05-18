@@ -874,6 +874,8 @@ pub(crate) struct PeerAnnouncement {
     pub(crate) latency_source: Option<crate::proto::node::LatencySource>,
     pub(crate) latency_age_ms: Option<u64>,
     pub(crate) latency_observer_id: Option<EndpointId>,
+    pub(crate) inference_public_key: Option<String>,
+    pub(crate) security_posture: Option<mesh_llm_system::hardening::SecurityPosture>,
 }
 
 /// A single direct RTT measurement (e.g. from gossip exchange).
@@ -966,6 +968,8 @@ pub struct PeerInfo {
     /// Latency propagated via transitive gossip.
     pub propagated_latency: Option<PropagatedLatencyObservation>,
     pub owner_summary: OwnershipSummary,
+    pub inference_public_key: Option<String>,
+    pub security_posture: Option<mesh_llm_system::hardening::SecurityPosture>,
 }
 
 #[derive(Debug)]
@@ -1035,6 +1039,8 @@ impl PeerInfo {
             display_rtt: None,
             propagated_latency: None,
             owner_summary,
+            inference_public_key: ann.inference_public_key.clone(),
+            security_posture: ann.security_posture.clone(),
         }
     }
 
@@ -1371,6 +1377,9 @@ pub struct Node {
     pub gpu_compute_tflops_fp16: Arc<tokio::sync::Mutex<Option<Vec<f64>>>>,
     config_state: Arc<tokio::sync::Mutex<crate::runtime::config_state::ConfigState>>,
     config_revision_tx: Arc<tokio::sync::watch::Sender<u64>>,
+    inference_keypair: Arc<crate::crypto::inference_encryption::InferenceKeypair>,
+    local_security_posture: Arc<Mutex<Option<mesh_llm_system::hardening::SecurityPosture>>>,
+    require_hardened: bool,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -2310,6 +2319,7 @@ impl Node {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn start(
         role: NodeRole,
         relay_urls: &[String],
@@ -2318,6 +2328,7 @@ impl Node {
         enumerate_host: bool,
         owner_config: Option<OwnerRuntimeConfig>,
         config_path: Option<&std::path::Path>,
+        require_hardened: bool,
     ) -> Result<(Self, TunnelChannels)> {
         // Clients use an ephemeral key so they get a unique identity even
         // when running on the same machine as a GPU node.
@@ -2543,6 +2554,11 @@ impl Node {
                 let (tx, _rx) = tokio::sync::watch::channel(config_revision_init);
                 Arc::new(tx)
             },
+            inference_keypair: Arc::new(
+                crate::crypto::inference_encryption::InferenceKeypair::generate(),
+            ),
+            local_security_posture: Arc::new(Mutex::new(None)),
+            require_hardened,
         };
 
         node.maybe_start_control_listener(
@@ -2686,6 +2702,11 @@ impl Node {
                 let (tx, _rx) = tokio::sync::watch::channel(0);
                 Arc::new(tx)
             },
+            inference_keypair: Arc::new(
+                crate::crypto::inference_encryption::InferenceKeypair::generate(),
+            ),
+            local_security_posture: Arc::new(Mutex::new(None)),
+            require_hardened: false,
         }
     }
 
@@ -2885,6 +2906,38 @@ impl Node {
     /// Connect to a peer without gossip exchange — for passive nodes (clients/standby).
     pub fn id(&self) -> EndpointId {
         self.endpoint.id()
+    }
+
+    /// The node's X25519 inference public key (base64).
+    /// Used by API status and future challenge-response attestation.
+    #[allow(dead_code)]
+    pub fn inference_public_key_base64(&self) -> String {
+        self.inference_keypair.public_key_base64()
+    }
+
+    /// Get the inference keypair for encrypting/decrypting.
+    /// Used by tunnel proxy when E2E encryption is wired into the request path.
+    #[allow(dead_code)]
+    pub fn inference_keypair(&self) -> &crate::crypto::inference_encryption::InferenceKeypair {
+        &self.inference_keypair
+    }
+
+    /// Set the local security posture (from hardening checks).
+    pub async fn set_security_posture(&self, posture: mesh_llm_system::hardening::SecurityPosture) {
+        *self.local_security_posture.lock().await = Some(posture);
+    }
+
+    /// Look up a peer's inference public key for E2E encryption.
+    /// Used by tunnel proxy when E2E encryption is wired into the request path.
+    #[allow(dead_code)]
+    pub async fn peer_inference_public_key(
+        &self,
+        peer_id: EndpointId,
+    ) -> Option<crypto_box::PublicKey> {
+        let state = self.state.lock().await;
+        let peer = state.peers.get(&peer_id)?;
+        let key_b64 = peer.inference_public_key.as_ref()?;
+        crate::crypto::inference_encryption::parse_public_key(key_b64).ok()
     }
 
     pub async fn role(&self) -> NodeRole {
@@ -3855,24 +3908,64 @@ impl Node {
     /// Used for retry: if the first host fails, try the next.
     pub async fn hosts_for_model(&self, model: &str) -> Vec<EndpointId> {
         let state = self.state.lock().await;
-        let mut hosts: Vec<EndpointId> = state
+        let require_hardened = self.require_hardened;
+        let mut hosts: Vec<(EndpointId, bool)> = state
             .peers
             .values()
             .filter(|p| p.routes_http_model(model))
-            .map(|p| p.id)
+            .map(|p| {
+                let hardened = p
+                    .security_posture
+                    .as_ref()
+                    .is_some_and(|sp| sp.is_hardened());
+                (p.id, hardened)
+            })
             .collect();
-        hosts.sort();
-        // Put the hash-preferred host first so normal path tries it first
-        if !hosts.is_empty() {
-            let my_id = self.endpoint.id();
-            let id_bytes = my_id.as_bytes();
-            let hash = id_bytes
-                .iter()
-                .fold(0u64, |acc, &b| acc.wrapping_mul(31).wrapping_add(b as u64));
-            let idx = (hash as usize) % hosts.len();
-            hosts.rotate_left(idx);
+
+        // When --require-hardened is set, drop non-hardened peers entirely.
+        if require_hardened {
+            let before = hosts.len();
+            hosts.retain(|(_, h)| *h);
+            if hosts.len() < before {
+                tracing::debug!(
+                    model,
+                    dropped = before - hosts.len(),
+                    remaining = hosts.len(),
+                    "require-hardened: filtered non-hardened hosts"
+                );
+            }
         }
-        hosts
+
+        // Partition into hardened and unhardened, preserving deterministic
+        // ID order within each group.
+        let (mut hardened, mut unhardened): (Vec<_>, Vec<_>) =
+            hosts.into_iter().partition(|(_, h)| *h);
+        hardened.sort_by_key(|(id, _)| *id);
+        unhardened.sort_by_key(|(id, _)| *id);
+
+        // Apply hash-based rotation within each partition so we spread
+        // load across hardened hosts without ever promoting an unhardened
+        // host ahead of a hardened one.
+        let my_id = self.endpoint.id();
+        let id_bytes = my_id.as_bytes();
+        let hash = id_bytes
+            .iter()
+            .fold(0u64, |acc, &b| acc.wrapping_mul(31).wrapping_add(b as u64));
+        if !hardened.is_empty() {
+            let idx = (hash as usize) % hardened.len();
+            hardened.rotate_left(idx);
+        }
+        if !unhardened.is_empty() {
+            let idx = (hash as usize) % unhardened.len();
+            unhardened.rotate_left(idx);
+        }
+
+        // Hardened first, then unhardened as fallback.
+        hardened
+            .into_iter()
+            .chain(unhardened)
+            .map(|(id, _)| id)
+            .collect()
     }
 
     /// Find ANY host in the mesh (fallback when no model match).
