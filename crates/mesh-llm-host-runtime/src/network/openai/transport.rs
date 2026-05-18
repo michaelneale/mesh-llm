@@ -2467,25 +2467,32 @@ pub async fn handle_mesh_request(
         }
     }
 
-    // MoA routing directive: `model: "mesh"` is not a real model — it's a
-    // request for mixture-of-agents fan-out.  MoA orchestration runs on
-    // serving hosts (their api_proxy has the MoA intercept).  Client and
-    // standby nodes that arrive here just forward the request verbatim to any
-    // serving host and let that host fan out.  Skip the per-model host lookup
-    // (no host advertises "mesh") and let the body rewrite earlier skip too
-    // (effective_model == request.model_name == "mesh", so it's already a
-    // no-op).  The host's api_proxy sees the literal "mesh" model name.
-    let is_moa_request = effective_model.as_deref() == Some(moa::VIRTUAL_MODEL_NAME);
+    // MoA routing directive: `model: "mesh"` triggers mixture-of-agents
+    // fan-out. Orchestration happens here, regardless of whether this node
+    // is serving models locally — the worker pool is built from gossip.
+    // On a pure --client node every backend is remote (QUIC tunnels to
+    // peers serving each model); on a host node the locally-served model
+    // is wired directly to its skippy port via the targets table.
+    if effective_model.as_deref() == Some(moa::VIRTUAL_MODEL_NAME) {
+        let _ = crate::network::openai::moa_gateway::try_handle_moa(
+            &node,
+            tcp_stream,
+            &mut request,
+            effective_model.as_deref(),
+            None, // passive path has no local targets table
+        )
+        .await;
+        release_request_objects(&node, &request.request_object_request_ids).await;
+        return;
+    }
 
     // Resolve target hosts by model name
-    let target_hosts = if is_moa_request {
-        vec![]
-    } else if let Some(ref name) = effective_model {
+    let target_hosts = if let Some(ref name) = effective_model {
         node.hosts_for_model(name).await
     } else {
         vec![]
     };
-    let target_hosts = if target_hosts.is_empty() && effective_model.is_some() && !is_moa_request {
+    let target_hosts = if target_hosts.is_empty() && effective_model.is_some() {
         // Named model requested but no host serves it — tell the agent to retry.
         let model = effective_model.as_deref().unwrap();
         node.record_routed_request(
