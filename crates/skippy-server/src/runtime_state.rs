@@ -20,7 +20,21 @@ pub struct RuntimeState {
     layer_start: u32,
     layer_end: u32,
     lane_count: u32,
+    /// High-water mark of lane indices ever handed out. Combined with
+    /// [`Self::free_lane_indices`], the count of live lanes equals
+    /// `next_lane_index - free_lane_indices.len()`.
     next_lane_index: usize,
+    /// Lane indices that were previously handed out but are now free
+    /// to reuse. An index lands here only when the lane's underlying
+    /// StageSession has been dropped (which calls skippy_session_free
+    /// on the C side, clearing that seq_id's KV cells).
+    ///
+    /// Without this list, a discarded lane (see
+    /// [`Self::drop_session_timed`]) would permanently consume one of
+    /// the slots represented by [`Self::next_lane_index`], leading to
+    /// "all execution lanes are busy" errors long before the runtime
+    /// has actually run out of capacity.
+    free_lane_indices: Vec<usize>,
     sessions: BTreeMap<String, RuntimeLaneSession>,
     idle_sessions: Vec<RuntimeLaneSession>,
     session_token_counts: BTreeMap<String, u64>,
@@ -366,7 +380,14 @@ impl RuntimeState {
                                 lane_discard_reason = Some(reason);
                                 // `lane_session` falls out of scope and its
                                 // StageSession::drop runs, which calls
-                                // skippy_session_free on the C side.
+                                // skippy_session_free on the C side. After
+                                // the native KV cells for this seq_id are
+                                // released, return the lane index to the
+                                // free list so the next allocation can
+                                // reuse it instead of consuming a fresh
+                                // slot from next_lane_index.
+                                drop(lane_session);
+                                self.free_lane_indices.push(lane_index);
                             }
                         }
                     }
@@ -385,6 +406,11 @@ impl RuntimeState {
                             "skippy::runtime_state: drop_session_timed: discarding lane {lane_index} for session {session_id}: {reason}"
                         );
                         lane_discard_reason = Some(reason);
+                        // See sibling branch above: free the lane index
+                        // after the StageSession drop releases the
+                        // native KV cells for this seq_id.
+                        drop(lane_session);
+                        self.free_lane_indices.push(lane_index);
                     }
                 }
             }
@@ -694,10 +720,12 @@ impl RuntimeState {
             bail!("session {session_id} already exists");
         }
         let model = &self.model;
-        let (index, session) =
-            create_indexed_lane_resource(&mut self.next_lane_index, self.lane_count, || {
-                model.create_session_from_resident_prefix(cache_seq_id, token_ids)
-            })?;
+        let (index, session) = create_indexed_lane_resource(
+            &mut self.next_lane_index,
+            &mut self.free_lane_indices,
+            self.lane_count,
+            || model.create_session_from_resident_prefix(cache_seq_id, token_ids),
+        )?;
         let lane_session = RuntimeLaneSession {
             index,
             session,
@@ -756,10 +784,12 @@ impl RuntimeState {
 
     fn create_lane_session(&mut self) -> Result<RuntimeLaneSession> {
         let model = &self.model;
-        let (index, session) =
-            create_indexed_lane_resource(&mut self.next_lane_index, self.lane_count, || {
-                model.create_session()
-            })?;
+        let (index, session) = create_indexed_lane_resource(
+            &mut self.next_lane_index,
+            &mut self.free_lane_indices,
+            self.lane_count,
+            || model.create_session(),
+        )?;
         Ok(RuntimeLaneSession {
             index,
             session,
@@ -768,11 +798,35 @@ impl RuntimeState {
     }
 }
 
+/// Allocate the next lane slot.
+///
+/// Prefers indices in `free_lane_indices` (lanes previously discarded
+/// via [`RuntimeState::drop_session_timed`]) so they can be reused
+/// without growing `next_lane_index` past `lane_count`. If the free
+/// list is empty, falls through to bumping `next_lane_index`. If both
+/// are exhausted, returns "all execution lanes are busy".
+///
+/// If `create()` fails after popping from the free list, the index is
+/// pushed back so a retry can reuse it. The high-water counter is only
+/// bumped on success, matching the prior behavior.
 fn create_indexed_lane_resource<T>(
     next_lane_index: &mut usize,
+    free_lane_indices: &mut Vec<usize>,
     lane_count: u32,
     create: impl FnOnce() -> Result<T>,
 ) -> Result<(usize, T)> {
+    if let Some(index) = free_lane_indices.pop() {
+        let resource = match create() {
+            Ok(resource) => resource,
+            Err(err) => {
+                // Return the freed index so the next allocation can
+                // still reuse it.
+                free_lane_indices.push(index);
+                return Err(err);
+            }
+        };
+        return Ok((index, resource));
+    }
     if *next_lane_index >= lane_count as usize {
         bail!("all execution lanes are busy");
     }
@@ -821,6 +875,7 @@ pub fn load_runtime(config: &StageConfig) -> Result<Option<Arc<Mutex<RuntimeStat
         layer_end: config.layer_end,
         lane_count: config.lane_count,
         next_lane_index: 0,
+        free_lane_indices: Vec::new(),
         sessions: BTreeMap::new(),
         idle_sessions: Vec::new(),
         session_token_counts: BTreeMap::new(),
@@ -897,22 +952,119 @@ mod tests {
     #[test]
     fn create_indexed_lane_resource_keeps_index_available_when_creation_fails() {
         let mut next_lane_index = 0;
+        let mut free_lane_indices: Vec<usize> = Vec::new();
 
-        let error = create_indexed_lane_resource(&mut next_lane_index, 2, || -> Result<()> {
-            bail!("transient session creation failure")
-        })
+        let error = create_indexed_lane_resource(
+            &mut next_lane_index,
+            &mut free_lane_indices,
+            2,
+            || -> Result<()> { bail!("transient session creation failure") },
+        )
         .expect_err("failed creation should propagate the original error");
 
         assert_eq!(error.to_string(), "transient session creation failure");
         assert_eq!(next_lane_index, 0);
+        assert!(free_lane_indices.is_empty());
 
         let (index, resource) =
-            create_indexed_lane_resource(&mut next_lane_index, 2, || Ok("lane"))
-                .expect("successful retry should reuse the unconsumed lane index");
+            create_indexed_lane_resource(&mut next_lane_index, &mut free_lane_indices, 2, || {
+                Ok("lane")
+            })
+            .expect("successful retry should reuse the unconsumed lane index");
 
         assert_eq!(index, 0);
         assert_eq!(resource, "lane");
         assert_eq!(next_lane_index, 1);
+    }
+
+    #[test]
+    fn create_indexed_lane_resource_reuses_freed_indices_before_growing() {
+        // Simulate the wedge scenario: all lanes allocated, one lane
+        // freed via the discard path, next allocation must reuse the
+        // freed index rather than bailing with "all execution lanes
+        // are busy".
+        let mut next_lane_index = 0;
+        let mut free_lane_indices: Vec<usize> = Vec::new();
+        let lane_count = 2;
+
+        // Allocate both lanes.
+        let (a_idx, _) = create_indexed_lane_resource(
+            &mut next_lane_index,
+            &mut free_lane_indices,
+            lane_count,
+            || Ok("a"),
+        )
+        .expect("first allocation should succeed");
+        let (b_idx, _) = create_indexed_lane_resource(
+            &mut next_lane_index,
+            &mut free_lane_indices,
+            lane_count,
+            || Ok("b"),
+        )
+        .expect("second allocation should succeed");
+        assert_eq!(a_idx, 0);
+        assert_eq!(b_idx, 1);
+        assert_eq!(next_lane_index, 2);
+
+        // Pool is full at the high-water mark. A third allocation must
+        // fail.
+        let error = create_indexed_lane_resource(
+            &mut next_lane_index,
+            &mut free_lane_indices,
+            lane_count,
+            || Ok("c"),
+        )
+        .expect_err("allocating past lane_count should fail when no slots are free");
+        assert!(error.to_string().contains("all execution lanes are busy"));
+
+        // Discard one lane: the caller pushes its freed index onto the
+        // free list (this is what drop_session_timed does on the
+        // discard branch).
+        free_lane_indices.push(a_idx);
+
+        // The next allocation MUST reuse the freed index instead of
+        // bailing. This is the wedge regression: previously
+        // next_lane_index stayed at lane_count and every allocation
+        // failed forever.
+        let (reused_idx, _) = create_indexed_lane_resource(
+            &mut next_lane_index,
+            &mut free_lane_indices,
+            lane_count,
+            || Ok("c"),
+        )
+        .expect("allocation must reuse a freed index, not stay wedged");
+        assert_eq!(reused_idx, 0);
+        assert_eq!(next_lane_index, 2);
+        assert!(free_lane_indices.is_empty());
+    }
+
+    #[test]
+    fn create_indexed_lane_resource_returns_freed_index_on_create_failure() {
+        // If create() fails while consuming a freed index, the index
+        // must go back onto the free list so a retry can use it.
+        let mut next_lane_index = 1;
+        let mut free_lane_indices: Vec<usize> = vec![0];
+
+        let error = create_indexed_lane_resource(
+            &mut next_lane_index,
+            &mut free_lane_indices,
+            2,
+            || -> Result<()> { bail!("create failed mid-reuse") },
+        )
+        .expect_err("failed creation should propagate");
+        assert_eq!(error.to_string(), "create failed mid-reuse");
+        assert_eq!(next_lane_index, 1);
+        assert_eq!(free_lane_indices, vec![0]);
+
+        // A retry should now succeed using the same freed index.
+        let (idx, _) =
+            create_indexed_lane_resource(&mut next_lane_index, &mut free_lane_indices, 2, || {
+                Ok("retry")
+            })
+            .expect("retry should succeed");
+        assert_eq!(idx, 0);
+        assert_eq!(next_lane_index, 1);
+        assert!(free_lane_indices.is_empty());
     }
 
     #[test]
