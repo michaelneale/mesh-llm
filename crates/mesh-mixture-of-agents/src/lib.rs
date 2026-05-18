@@ -42,6 +42,7 @@ mod fanout;
 pub mod normalize;
 mod reducer;
 pub mod session;
+mod tool_guard;
 pub mod worker;
 
 pub use backend::{HttpBackend, ModelBackend, ModelEntry, SamplingParams};
@@ -53,6 +54,7 @@ use reducer::{hedged_reducer_call, reducer_candidates};
 use serde_json::{json, Value};
 use session::Session;
 use std::time::{Duration, Instant};
+use tool_guard::enforce_allowed_tools;
 use worker::WorkerRole;
 
 /// The virtual model name that triggers MoA routing.
@@ -145,43 +147,6 @@ pub async fn handle_turn(config: &GatewayConfig, body: &Value) -> TurnResult {
             handle_query(config, &session, has_tools, &allowed_tools, start).await
         }
     }
-}
-
-/// Demote a `ToolProposal` whose `tool_name` is not in `allowed_tools`
-/// to `Uncertainty`. This guards downstream arbitration from worker
-/// hallucinations like proposing `execute_typescript` when only `shell`
-/// is declared.
-///
-/// If `allowed_tools` is empty (no tools were declared on the request
-/// body) we leave the proposal as-is — the arbiter will route to the
-/// reducer which has the same call site policy.
-pub(crate) fn enforce_allowed_tools(
-    output: &mut normalize::WorkerOutput,
-    allowed_tools: &[String],
-    model: &str,
-) {
-    if allowed_tools.is_empty() {
-        return;
-    }
-    if output.kind != normalize::OutputKind::ToolProposal {
-        return;
-    }
-    let Some(ref name) = output.tool_name else {
-        return;
-    };
-    if allowed_tools.iter().any(|t| t == name) {
-        return;
-    }
-    tracing::warn!(
-        "moa: worker {model} proposed unknown tool {name:?}, demoting to uncertainty \
-         (allowed: {allowed_tools:?})"
-    );
-    output.kind = normalize::OutputKind::Uncertainty;
-    output.tool_name = None;
-    output.tool_arguments = None;
-    // Drop confidence so this proposal doesn't outrank real ones in any
-    // tie-breaking path that still inspects it.
-    output.confidence = 0.0;
 }
 
 // ─── Query handling ──────────────────────────────────────────────────
@@ -409,62 +374,6 @@ async fn resolve_decision(
             }
         }
     }
-}
-
-// ─── Endpoint discovery (for standalone/test use) ────────────────────
-
-/// An endpoint for the HTTP backend (convenience for test harnesses).
-#[derive(Debug, Clone)]
-pub struct Endpoint {
-    pub base_url: String,
-    pub model: String,
-}
-
-/// Discover models from an OpenAI-compatible `/v1/models` endpoint.
-pub async fn discover_endpoints(base_url: &str) -> Result<Vec<Endpoint>, String> {
-    let client = reqwest::Client::new();
-    let resp = client
-        .get(format!("{base_url}/models"))
-        .timeout(Duration::from_secs(10))
-        .send()
-        .await
-        .map_err(|e| format!("can't reach {base_url}/models: {e}"))?;
-    let body: Value = resp.json().await.map_err(|e| format!("bad json: {e}"))?;
-
-    let empty = vec![];
-    let mut entries: Vec<&Value> = body["data"].as_array().unwrap_or(&empty).iter().collect();
-    entries.sort_by_key(|m| m["id"].as_str().unwrap_or("").len());
-
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut endpoints = Vec::new();
-
-    for m in entries {
-        let id = match m["id"].as_str() {
-            Some(id) => id,
-            None => continue,
-        };
-        if id.contains("cloud") || id == VIRTUAL_MODEL_NAME {
-            continue;
-        }
-        let display = m["display_name"].as_str().unwrap_or(id).to_string();
-        let base_name = display
-            .split("-Q")
-            .next()
-            .unwrap_or(&display)
-            .to_lowercase()
-            .replace("-gguf", "")
-            .replace("unsloth/", "")
-            .replace("meshllm/", "");
-        if seen.contains(&base_name) {
-            continue;
-        }
-        seen.insert(base_name);
-        endpoints.push(Endpoint {
-            base_url: base_url.to_string(),
-            model: id.to_string(),
-        });
-    }
-    Ok(endpoints)
 }
 
 // ─── Response builders ───────────────────────────────────────────────
