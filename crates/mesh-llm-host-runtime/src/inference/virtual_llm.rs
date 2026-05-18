@@ -38,21 +38,31 @@ pub async fn handle_image(
     tracing::info!("virtual: handle_image trigger={trigger} model={model}");
 
     match trigger {
-        "images_no_multimodal" => {
-            if image_url.is_empty() {
-                tracing::warn!("virtual: images trigger but no image URL");
-                return json!({ "action": "none" });
-            }
-            caption_image(node, model, image_url, user_text).await
-        }
+        "images_no_multimodal" => handle_image_caption(node, model, image_url, user_text).await,
         "audio_no_support" => transcribe_audio(node, model).await,
-        "video_no_support" => {
-            // TODO: extract keyframes, caption via vision peer
-            tracing::info!("virtual: video — not yet implemented");
-            json!({ "action": "none" })
-        }
-        _ => json!({ "action": "none" }),
+        "video_no_support" => video_not_supported(),
+        _ => no_virtual_action(),
     }
+}
+
+async fn handle_image_caption(
+    node: &mesh::Node,
+    model: &str,
+    image_url: &str,
+    user_text: &str,
+) -> Value {
+    if image_url.is_empty() {
+        tracing::warn!("virtual: images trigger but no image URL");
+        return no_virtual_action();
+    }
+
+    caption_image(node, model, image_url, user_text).await
+}
+
+fn video_not_supported() -> Value {
+    // TODO: extract keyframes, caption via vision peer
+    tracing::info!("virtual: video — not yet implemented");
+    no_virtual_action()
 }
 
 async fn caption_image(
@@ -61,36 +71,58 @@ async fn caption_image(
     image_url: &str,
     user_text: &str,
 ) -> Value {
-    let peer_id = match consult::find_vision_peer(node, current_model).await {
-        Some(id) => id,
-        None => {
-            tracing::info!("virtual: no vision peer available");
-            return json!({ "action": "none" });
-        }
+    let Some((peer_id, vision_model)) = vision_peer_model(node, current_model).await else {
+        tracing::info!("virtual: no vision peer available");
+        return no_virtual_action();
     };
-
-    let vision_model =
-        peer_model_with_capability(node, peer_id, |d| d.capabilities.supports_vision_runtime())
-            .await;
 
     tracing::info!(
         "virtual: captioning via {} model={vision_model}",
         peer_id.fmt_short()
     );
 
-    match consult::caption_image(node, peer_id, &vision_model, image_url, user_text).await {
-        Ok(caption) => {
-            tracing::info!("virtual: caption ({} chars)", caption.len());
-            json!({
-                "action": "inject",
-                "text": format!("[Image description: {caption}]\n\n"),
-            })
-        }
+    let Some(caption) =
+        request_image_caption(node, peer_id, &vision_model, image_url, user_text).await
+    else {
+        return no_virtual_action();
+    };
+
+    image_caption_response(caption)
+}
+
+async fn vision_peer_model(
+    node: &mesh::Node,
+    current_model: &str,
+) -> Option<(iroh::EndpointId, String)> {
+    let peer_id = consult::find_vision_peer(node, current_model).await?;
+    let vision_model =
+        peer_model_with_capability(node, peer_id, |d| d.capabilities.supports_vision_runtime())
+            .await;
+    Some((peer_id, vision_model))
+}
+
+async fn request_image_caption(
+    node: &mesh::Node,
+    peer_id: iroh::EndpointId,
+    vision_model: &str,
+    image_url: &str,
+    user_text: &str,
+) -> Option<String> {
+    match consult::caption_image(node, peer_id, vision_model, image_url, user_text).await {
+        Ok(caption) => Some(caption),
         Err(e) => {
             tracing::warn!("virtual: caption failed: {e}");
-            json!({ "action": "none" })
+            None
         }
     }
+}
+
+fn image_caption_response(caption: String) -> Value {
+    tracing::info!("virtual: caption ({} chars)", caption.len());
+    json!({
+        "action": "inject",
+        "text": format!("[Image description: {caption}]\n\n"),
+    })
 }
 
 async fn transcribe_audio(node: &mesh::Node, current_model: &str) -> Value {
@@ -98,7 +130,7 @@ async fn transcribe_audio(node: &mesh::Node, current_model: &str) -> Value {
         Some(id) => id,
         None => {
             tracing::info!("virtual: no audio peer available");
-            return json!({ "action": "none" });
+            return no_virtual_action();
         }
     };
 
@@ -212,9 +244,23 @@ async fn get_peer_hint(
     let peers = consult::find_different_model_peers(node, current_model, 2).await;
     if peers.is_empty() {
         tracing::info!("virtual: no different model available");
-        return json!({ "action": "none" });
+        return no_virtual_action();
     }
 
+    log_peer_race(&peers);
+
+    match consult::race_second_opinion(node, &peers, messages, timeout).await {
+        Some((opinion, winner_id, winner_model)) => {
+            peer_hint_response(opinion, winner_id, winner_model)
+        }
+        None => {
+            tracing::warn!("virtual: all peers failed");
+            no_virtual_action()
+        }
+    }
+}
+
+fn log_peer_race(peers: &[(iroh::EndpointId, String)]) {
     let peer_names: Vec<_> = peers
         .iter()
         .map(|(id, m)| format!("{}={m}", id.fmt_short()))
@@ -224,35 +270,37 @@ async fn get_peer_hint(
         peers.len(),
         peer_names.join(", ")
     );
+}
 
-    match consult::race_second_opinion(node, &peers, messages, timeout).await {
-        Some((opinion, winner_id, winner_model)) => {
-            let trimmed = if opinion.len() > 512 {
-                let end = opinion
-                    .char_indices()
-                    .take_while(|(i, _)| *i < 512)
-                    .last()
-                    .map_or(0, |(i, c)| i + c.len_utf8());
-                format!("{}...", &opinion[..end])
-            } else {
-                opinion
-            };
-            tracing::info!(
-                "virtual: hint from {} ({}) ({} chars)",
-                winner_id.fmt_short(),
-                winner_model,
-                trimmed.len()
-            );
-            json!({
-                "action": "inject",
-                "text": format!("\n\nReference answer: {trimmed}\n\nUse the reference above to provide an accurate response.\n"),
-            })
-        }
-        None => {
-            tracing::warn!("virtual: all peers failed");
-            json!({ "action": "none" })
-        }
+fn peer_hint_response(opinion: String, winner_id: iroh::EndpointId, winner_model: String) -> Value {
+    let trimmed = trim_reference_opinion(opinion);
+    tracing::info!(
+        "virtual: hint from {} ({}) ({} chars)",
+        winner_id.fmt_short(),
+        winner_model,
+        trimmed.len()
+    );
+    json!({
+        "action": "inject",
+        "text": format!("\n\nReference answer: {trimmed}\n\nUse the reference above to provide an accurate response.\n"),
+    })
+}
+
+fn trim_reference_opinion(opinion: String) -> String {
+    if opinion.len() <= 512 {
+        return opinion;
     }
+
+    let end = opinion
+        .char_indices()
+        .take_while(|(i, _)| *i < 512)
+        .last()
+        .map_or(0, |(i, c)| i + c.len_utf8());
+    format!("{}...", &opinion[..end])
+}
+
+fn no_virtual_action() -> Value {
+    json!({ "action": "none" })
 }
 
 // ===========================================================================

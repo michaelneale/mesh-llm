@@ -80,6 +80,22 @@ function triggerMeshResize() {
   }
 }
 
+async function applyMeshVizInteraction(action: () => void) {
+  await act(async () => {
+    action()
+  })
+}
+
+async function triggerMeshResizeInAct() {
+  await applyMeshVizInteraction(triggerMeshResize)
+}
+
+async function fireWindowKeyDownInAct(init: KeyboardEventInit) {
+  await applyMeshVizInteraction(() => {
+    fireEvent.keyDown(window, init)
+  })
+}
+
 function setFullscreenElement(element: Element | null) {
   fullscreenElement = element
 }
@@ -495,20 +511,24 @@ describe('app surfaces', () => {
     const initialLeft = pixelValue(lemony29.style.left)
     const initialTop = pixelValue(lemony29.style.top)
 
-    fireEvent.wheel(canvas, { deltaY: 0, clientX: 240, clientY: 210 })
+    await applyMeshVizInteraction(() => {
+      fireEvent.wheel(canvas, { deltaY: 0, clientX: 240, clientY: 210 })
+    })
     expect(pixelValue(lemony29.style.left)).toBeCloseTo(initialLeft, 4)
     expect(pixelValue(lemony29.style.top)).toBeCloseTo(initialTop, 4)
 
-    fireEvent.pointerDown(canvas, { button: 0, pointerId: 1, clientX: 100, clientY: 100 })
-    fireEvent.pointerMove(canvas, { pointerId: 1, clientX: 150, clientY: 130 })
-    fireEvent.pointerUp(canvas, { pointerId: 1 })
+    await applyMeshVizInteraction(() => {
+      fireEvent.pointerDown(canvas, { button: 0, pointerId: 1, clientX: 100, clientY: 100 })
+      fireEvent.pointerMove(canvas, { pointerId: 1, clientX: 150, clientY: 130 })
+      fireEvent.pointerUp(canvas, { pointerId: 1 })
+    })
 
     await waitFor(() => expect(pixelValue(lemony29.style.left)).toBeCloseTo(initialLeft + 50, 1))
     expect(pixelValue(lemony29.style.top)).toBeGreaterThan(initialTop + 20)
     expect(pixelValue(lemony29.style.top)).toBeLessThanOrEqual(initialTop + 30)
 
     setMeshCanvasSize(801, 420)
-    triggerMeshResize()
+    await triggerMeshResizeInAct()
     await waitFor(() => expect(pixelValue(lemony29.style.left)).toBeGreaterThan(initialLeft + 40))
 
     await userEvent.click(screen.getByRole('button', { name: /reset view/i }))
@@ -1534,28 +1554,28 @@ describe('app surfaces', () => {
 
     expect(screen.queryByRole('button', { name: /view debug-/i })).not.toBeInTheDocument()
 
-    fireEvent.keyDown(window, { key: '1', ctrlKey: true })
+    await fireWindowKeyDownInAct({ key: '1', ctrlKey: true })
     expect(screen.getByText(/3 nodes \+ 1 debug/i)).toBeInTheDocument()
 
-    fireEvent.keyDown(window, { key: '2', ctrlKey: true })
+    await fireWindowKeyDownInAct({ key: '2', ctrlKey: true })
     expect(screen.getByText(/3 nodes \+ 2 debug/i)).toBeInTheDocument()
 
-    fireEvent.keyDown(window, { key: '3', ctrlKey: true })
+    await fireWindowKeyDownInAct({ key: '3', ctrlKey: true })
     expect(screen.getByText(/3 nodes \+ 3 debug/i)).toBeInTheDocument()
 
-    fireEvent.keyDown(window, { key: '!', code: 'Digit1', shiftKey: true })
+    await fireWindowKeyDownInAct({ key: '!', code: 'Digit1', shiftKey: true })
     expect(screen.getByText(/3 nodes \+ 2 debug/i)).toBeInTheDocument()
 
-    fireEvent.keyDown(window, { key: '@', code: 'Digit2', shiftKey: true })
+    await fireWindowKeyDownInAct({ key: '@', code: 'Digit2', shiftKey: true })
     expect(screen.getByText(/3 nodes \+ 1 debug/i)).toBeInTheDocument()
 
-    fireEvent.keyDown(window, { key: '#', code: 'Digit3', shiftKey: true })
+    await fireWindowKeyDownInAct({ key: '#', code: 'Digit3', shiftKey: true })
     expect(screen.queryByText(/3 nodes \+ \d debug/i)).not.toBeInTheDocument()
 
-    fireEvent.keyDown(window, { key: 'b', ctrlKey: true })
+    await fireWindowKeyDownInAct({ key: 'b', ctrlKey: true })
     expect(screen.getByTestId('mesh-centered-bounds-box')).toBeInTheDocument()
 
-    fireEvent.keyDown(window, { key: 'g', ctrlKey: true })
+    await fireWindowKeyDownInAct({ key: 'g', ctrlKey: true })
     expect(screen.queryByTestId('mesh-viz-line-grid')).not.toBeInTheDocument()
     expect(screen.getByTestId('mesh-viz-dot-grid')).toBeInTheDocument()
 
@@ -1567,17 +1587,23 @@ describe('app surfaces', () => {
     expect(screen.getByTestId('mesh-viz-accent-dot-grid')).toHaveAttribute('fill', 'oklch(0.74 0.12 190 / 12%)')
 
     const randomTrafficEvent = new KeyboardEvent('keydown', { key: 'z', bubbles: true, cancelable: true })
-    window.dispatchEvent(randomTrafficEvent)
+    await applyMeshVizInteraction(() => {
+      window.dispatchEvent(randomTrafficEvent)
+    })
     expect(randomTrafficEvent.defaultPrevented).toBe(true)
 
     const selfTrafficEvent = new KeyboardEvent('keydown', { key: 'x', bubbles: true, cancelable: true })
-    window.dispatchEvent(selfTrafficEvent)
+    await applyMeshVizInteraction(() => {
+      window.dispatchEvent(selfTrafficEvent)
+    })
     expect(selfTrafficEvent.defaultPrevented).toBe(true)
 
     const input = document.createElement('input')
     document.body.append(input)
     input.focus()
-    fireEvent.keyDown(input, { key: '1', ctrlKey: true })
+    await applyMeshVizInteraction(() => {
+      fireEvent.keyDown(input, { key: '1', ctrlKey: true })
+    })
     expect(screen.queryByText(/3 nodes \+ \d debug/i)).not.toBeInTheDocument()
     input.remove()
   })

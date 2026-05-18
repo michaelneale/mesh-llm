@@ -108,33 +108,15 @@ fn join_optional_csv(values: &[Option<String>]) -> Option<String> {
 fn local_owner_attestation_to_proto(
     attestation: &crate::crypto::SignedNodeOwnership,
 ) -> Option<crate::proto::node::SignedNodeOwnership> {
-    let owner_sign_public_key = match hex::decode(&attestation.claim.owner_sign_public_key) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            tracing::warn!(
-                "dropping local owner attestation from gossip: invalid owner_sign_public_key hex: {err}"
-            );
-            return None;
-        }
-    };
-    let node_endpoint_id = match hex::decode(&attestation.claim.node_endpoint_id) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            tracing::warn!(
-                "dropping local owner attestation from gossip: invalid node_endpoint_id hex: {err}"
-            );
-            return None;
-        }
-    };
-    let signature = match hex::decode(&attestation.signature) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            tracing::warn!(
-                "dropping local owner attestation from gossip: invalid signature hex: {err}"
-            );
-            return None;
-        }
-    };
+    let owner_sign_public_key = decode_local_owner_attestation_hex(
+        "owner_sign_public_key",
+        &attestation.claim.owner_sign_public_key,
+    )?;
+    let node_endpoint_id = decode_local_owner_attestation_hex(
+        "node_endpoint_id",
+        &attestation.claim.node_endpoint_id,
+    )?;
+    let signature = decode_local_owner_attestation_hex("signature", &attestation.signature)?;
     Some(crate::proto::node::SignedNodeOwnership {
         version: attestation.claim.version,
         cert_id: attestation.claim.cert_id.clone(),
@@ -147,6 +129,18 @@ fn local_owner_attestation_to_proto(
         hostname_hint: attestation.claim.hostname_hint.clone(),
         signature,
     })
+}
+
+fn decode_local_owner_attestation_hex(field_name: &str, value: &str) -> Option<Vec<u8>> {
+    match hex::decode(value) {
+        Ok(bytes) => Some(bytes),
+        Err(err) => {
+            tracing::warn!(
+                "dropping local owner attestation from gossip: invalid {field_name} hex: {err}"
+            );
+            None
+        }
+    }
 }
 
 fn proto_owner_attestation_to_local(

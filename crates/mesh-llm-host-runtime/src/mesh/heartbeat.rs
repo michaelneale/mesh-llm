@@ -186,6 +186,101 @@ pub(crate) fn resolve_peer_down(
 impl Node {
     const RTT_REFRESH_SECS: u64 = 15;
 
+    async fn relay_refresh_target(
+        &self,
+        peer_id: EndpointId,
+    ) -> Option<(EndpointAddr, Connection)> {
+        let state = self.state.lock().await;
+        let peer = state.peers.get(&peer_id).cloned()?;
+        let conn = state.connections.get(&peer_id).cloned()?;
+        Some((peer.addr, conn))
+    }
+
+    async fn dial_refreshed_peer_connection(
+        &self,
+        peer_id: EndpointId,
+        addr: EndpointAddr,
+    ) -> Option<Connection> {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            connect_mesh(&self.endpoint, addr),
+        )
+        .await
+        {
+            Ok(Ok(conn)) => Some(conn),
+            Ok(Err(err)) => {
+                tracing::debug!(
+                    "Relay health refresh dial to {} failed: {err}",
+                    peer_id.fmt_short()
+                );
+                None
+            }
+            Err(_) => {
+                tracing::debug!(
+                    "Relay health refresh dial to {} timed out",
+                    peer_id.fmt_short()
+                );
+                None
+            }
+        }
+    }
+
+    async fn refreshed_connection_completed_gossip(
+        &self,
+        peer_id: EndpointId,
+        conn: &Connection,
+    ) -> bool {
+        let gossip_ok = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            self.initiate_gossip_inner(conn.clone(), peer_id, false),
+        )
+        .await
+        .map(|result| result.is_ok())
+        .unwrap_or(false);
+        if !gossip_ok {
+            tracing::debug!(
+                "Relay health refresh gossip with {} failed",
+                peer_id.fmt_short()
+            );
+        }
+        gossip_ok
+    }
+
+    async fn install_refreshed_peer_connection(
+        &self,
+        peer_id: EndpointId,
+        existing_id: usize,
+        new_conn: Connection,
+    ) -> bool {
+        {
+            let mut state = self.state.lock().await;
+            if !should_remove_connection(
+                state.connections.get(&peer_id).map(|conn| conn.stable_id()),
+                existing_id,
+            ) {
+                tracing::debug!(
+                    "Relay health refresh for {} raced with another reconnect; keeping newer connection",
+                    peer_id.fmt_short()
+                );
+                drop(state);
+                new_conn.close(0u32.into(), b"relay-health-raced");
+                return false;
+            }
+            // Swap the tracked slot before closing the stale connection so its
+            // dispatcher sees the newer stable_id and exits without reconnecting.
+            state.connections.insert(peer_id, new_conn.clone());
+        }
+
+        let node_for_dispatch = self.clone();
+        let conn_for_dispatch = new_conn;
+        tokio::spawn(async move {
+            node_for_dispatch
+                .dispatch_streams(conn_for_dispatch, peer_id)
+                .await;
+        });
+        true
+    }
+
     pub fn start_rtt_refresh(&self) {
         let node = self.clone();
         tokio::spawn(async move {
@@ -653,16 +748,7 @@ impl Node {
         peer_id: EndpointId,
         reason: RelayReconnectReason,
     ) -> bool {
-        let (addr, existing_conn) = {
-            let state = self.state.lock().await;
-            let Some(peer) = state.peers.get(&peer_id).cloned() else {
-                return false;
-            };
-            let conn = state.connections.get(&peer_id).cloned();
-            (peer.addr, conn)
-        };
-
-        let Some(existing_conn) = existing_conn else {
+        let Some((addr, existing_conn)) = self.relay_refresh_target(peer_id).await else {
             return false;
         };
 
@@ -678,72 +764,24 @@ impl Node {
             reason.label()
         );
 
-        let new_conn = match tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            connect_mesh(&self.endpoint, addr.clone()),
-        )
-        .await
-        {
-            Ok(Ok(conn)) => conn,
-            Ok(Err(err)) => {
-                tracing::debug!(
-                    "Relay health refresh dial to {} failed: {err}",
-                    peer_id.fmt_short()
-                );
-                return false;
-            }
-            Err(_) => {
-                tracing::debug!(
-                    "Relay health refresh dial to {} timed out",
-                    peer_id.fmt_short()
-                );
-                return false;
-            }
+        let Some(new_conn) = self.dial_refreshed_peer_connection(peer_id, addr).await else {
+            return false;
         };
 
-        let gossip_ok = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            self.initiate_gossip_inner(new_conn.clone(), peer_id, false),
-        )
-        .await
-        .map(|result| result.is_ok())
-        .unwrap_or(false);
-
-        if !gossip_ok {
-            tracing::debug!(
-                "Relay health refresh gossip with {} failed",
-                peer_id.fmt_short()
-            );
+        if !self
+            .refreshed_connection_completed_gossip(peer_id, &new_conn)
+            .await
+        {
             new_conn.close(0u32.into(), b"relay-health-gossip-failed");
             return false;
         }
 
+        if !self
+            .install_refreshed_peer_connection(peer_id, existing_id, new_conn)
+            .await
         {
-            let mut state = self.state.lock().await;
-            if !should_remove_connection(
-                state.connections.get(&peer_id).map(|conn| conn.stable_id()),
-                existing_id,
-            ) {
-                tracing::debug!(
-                    "Relay health refresh for {} raced with another reconnect; keeping newer connection",
-                    peer_id.fmt_short()
-                );
-                drop(state);
-                new_conn.close(0u32.into(), b"relay-health-raced");
-                return false;
-            }
-            // Swap the tracked slot before closing the stale connection so its
-            // dispatcher sees the newer stable_id and exits without reconnecting.
-            state.connections.insert(peer_id, new_conn.clone());
+            return false;
         }
-
-        let node_for_dispatch = self.clone();
-        let conn_for_dispatch = new_conn.clone();
-        tokio::spawn(async move {
-            node_for_dispatch
-                .dispatch_streams(conn_for_dispatch, peer_id)
-                .await;
-        });
 
         existing_conn.close(0u32.into(), b"relay-health-refresh");
         let _ =

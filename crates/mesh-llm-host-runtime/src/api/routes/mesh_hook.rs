@@ -19,34 +19,55 @@ pub async fn handle(
     _path: &str,
     body: &str,
 ) -> anyhow::Result<()> {
-    if let Ok(addr) = stream.peer_addr() {
-        if !addr.ip().is_loopback() {
-            tracing::warn!("mesh hook: rejected non-loopback caller {addr}");
-            return http::respond_json(
-                stream,
-                403,
-                &serde_json::json!({"error": "mesh hooks only accept localhost connections"}),
-            )
-            .await;
-        }
+    if reject_non_loopback_caller(stream).await? {
+        return Ok(());
     }
 
-    let payload: Value = match serde_json::from_str(body) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!("mesh hook: invalid JSON: {e}");
-            return http::respond_json(stream, 400, &serde_json::json!({"error": "invalid JSON"}))
-                .await;
-        }
+    let Some(payload) = parse_hook_payload(stream, body).await? else {
+        return Ok(());
     };
 
+    let response = dispatch_hook(state, payload).await;
+    http::respond_json(stream, 200, &response).await
+}
+
+async fn reject_non_loopback_caller(stream: &mut TcpStream) -> anyhow::Result<bool> {
+    let Ok(addr) = stream.peer_addr() else {
+        return Ok(false);
+    };
+    if addr.ip().is_loopback() {
+        return Ok(false);
+    }
+
+    tracing::warn!("mesh hook: rejected non-loopback caller {addr}");
+    http::respond_json(
+        stream,
+        403,
+        &serde_json::json!({"error": "mesh hooks only accept localhost connections"}),
+    )
+    .await?;
+    Ok(true)
+}
+
+async fn parse_hook_payload(stream: &mut TcpStream, body: &str) -> anyhow::Result<Option<Value>> {
+    match serde_json::from_str(body) {
+        Ok(payload) => Ok(Some(payload)),
+        Err(e) => {
+            tracing::warn!("mesh hook: invalid JSON: {e}");
+            http::respond_json(stream, 400, &serde_json::json!({"error": "invalid JSON"})).await?;
+            Ok(None)
+        }
+    }
+}
+
+async fn dispatch_hook(state: &MeshApi, payload: Value) -> Value {
     let hook = payload["hook"].as_str().unwrap_or("unknown");
     let node = state.node().await;
 
     let model = payload["model"].as_str().unwrap_or("").to_string();
     let messages: Vec<Value> = payload["messages"].as_array().cloned().unwrap_or_default();
 
-    let response = match hook {
+    match hook {
         "pre_inference" => {
             let trigger = payload["trigger"].as_str().unwrap_or("unknown");
             let (image_url, user_text) = virtual_llm::extract_image(&payload);
@@ -71,7 +92,5 @@ pub async fn handle(
             tracing::warn!("mesh hook: unknown hook type: {hook}");
             serde_json::json!({ "action": "none" })
         }
-    };
-
-    http::respond_json(stream, 200, &response).await
+    }
 }

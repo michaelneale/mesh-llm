@@ -1067,40 +1067,19 @@ impl OutputEvent {
                 capacity_gb,
                 models_on_disk,
                 detail,
-            } => {
-                let prefix = if role == "client" { "📡" } else { "💤" };
-                let mut line = match status {
-                    RuntimeStatus::Ready => format!("{prefix} {role} ready"),
-                    _ => format!(
-                        "{prefix} {}",
-                        detail.clone().unwrap_or_else(|| format!("{role} active"))
-                    ),
-                };
-                if let Some(capacity_gb) = capacity_gb {
-                    line.push_str(&format!(" ({capacity_gb:.1}GB capacity)"));
-                }
-                if let Some(models_on_disk) = models_on_disk {
-                    if !models_on_disk.is_empty() {
-                        line.push_str(&format!(" models={}", models_on_disk.join(", ")));
-                    }
-                }
-                line
-            }
+            } => Self::passive_mode_summary(
+                role,
+                status,
+                *capacity_gb,
+                models_on_disk.as_deref(),
+                detail.as_deref(),
+            ),
             OutputEvent::HostElected {
                 model,
                 host,
                 role,
                 capacity_gb,
-            } => match (role, capacity_gb) {
-                (Some(role), Some(capacity)) => {
-                    format!("🗳 {model} elected {host} as {role} ({capacity:.1}GB capacity)")
-                }
-                (Some(role), None) => format!("🗳 {model} elected {host} as {role}"),
-                (None, Some(capacity)) => {
-                    format!("🗳 {model} elected {host} ({capacity:.1}GB capacity)")
-                }
-                (None, None) => format!("🗳 {model} elected {host}"),
-            },
+            } => Self::host_elected_summary(model, host, role.as_deref(), *capacity_gb),
             OutputEvent::PeerJoined { peer_id, label } => match label {
                 Some(label) => format!("🤝 Peer joined: {label} ({peer_id})"),
                 None => format!("🤝 Peer joined: {peer_id}"),
@@ -1109,24 +1088,7 @@ impl OutputEvent {
                 Some(reason) => format!("👋 Peer left: {peer_id} ({reason})"),
                 None => format!("👋 Peer left: {peer_id}"),
             },
-            OutputEvent::ModelLoaded { model, bytes } => {
-                let mut line = format!("📦 Model loaded: {model}");
-                if let Some(bytes) = bytes {
-                    line.push_str(&format!(
-                        " ({})",
-                        if *bytes >= 1_000_000_000 {
-                            format!("{:.1}GB", *bytes as f64 / 1e9)
-                        } else if *bytes >= 1_000_000 {
-                            format!("{:.0}MB", *bytes as f64 / 1e6)
-                        } else if *bytes >= 1_000 {
-                            format!("{:.0}KB", *bytes as f64 / 1e3)
-                        } else {
-                            format!("{bytes}B")
-                        }
-                    ));
-                }
-                line
-            }
+            OutputEvent::ModelLoaded { model, bytes } => Self::model_loaded_summary(model, *bytes),
             OutputEvent::ModelUnloading { model } => format!("📤 Unloading model: {model}"),
             OutputEvent::ModelUnloaded { model } => format!("✅ Model unloaded: {model}"),
             OutputEvent::RpcServerStarting { port, device, .. } => {
@@ -1145,16 +1107,7 @@ impl OutputEvent {
                 http_port,
                 ctx_size,
                 ..
-            } => {
-                let mut line = format!("🦙 llama-server starting: port={http_port}");
-                if let Some(model) = model {
-                    line.push_str(&format!(" model={model}"));
-                }
-                if let Some(ctx_size) = ctx_size {
-                    line.push_str(&format!(" ctx={ctx_size}"));
-                }
-                line
-            }
+            } => Self::llama_starting_summary(model.as_deref(), *http_port, *ctx_size),
             OutputEvent::LlamaReady { model, port, .. } => match model {
                 Some(model) => format!("✅ {model} ready on internal port {port}"),
                 None => format!("✅ llama-server ready on port {port}"),
@@ -1187,16 +1140,84 @@ impl OutputEvent {
                 *total_bytes,
                 status,
             ),
-            OutputEvent::Error { context, message } => match context {
-                Some(context) => format!("{context}: {}", strip_leading_severity_icon(message)),
-                None => strip_leading_severity_icon(message).to_string(),
-            },
-            OutputEvent::Warning { message, context } => match context {
-                Some(context) => format!("{context}: {}", strip_leading_severity_icon(message)),
-                None => strip_leading_severity_icon(message).to_string(),
-            },
+            OutputEvent::Error { context, message } | OutputEvent::Warning { message, context } => {
+                Self::contextual_summary(context.as_deref(), message)
+            }
             OutputEvent::LlamaNativeLog { message, .. } => message.clone(),
             _ => self.message().to_string(),
+        }
+    }
+
+    fn passive_mode_summary(
+        role: &str,
+        status: &RuntimeStatus,
+        capacity_gb: Option<f64>,
+        models_on_disk: Option<&[String]>,
+        detail: Option<&str>,
+    ) -> String {
+        let prefix = if role == "client" { "📡" } else { "💤" };
+        let mut line = match status {
+            RuntimeStatus::Ready => format!("{prefix} {role} ready"),
+            _ => format!(
+                "{prefix} {}",
+                detail
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format_role_active(role))
+            ),
+        };
+        if let Some(capacity_gb) = capacity_gb {
+            line.push_str(&format!(" ({capacity_gb:.1}GB capacity)"));
+        }
+        append_models_on_disk(&mut line, models_on_disk);
+        line
+    }
+
+    fn host_elected_summary(
+        model: &str,
+        host: &str,
+        role: Option<&str>,
+        capacity_gb: Option<f64>,
+    ) -> String {
+        match (role, capacity_gb) {
+            (Some(role), Some(capacity)) => {
+                format!("🗳 {model} elected {host} as {role} ({capacity:.1}GB capacity)")
+            }
+            (Some(role), None) => format!("🗳 {model} elected {host} as {role}"),
+            (None, Some(capacity)) => {
+                format!("🗳 {model} elected {host} ({capacity:.1}GB capacity)")
+            }
+            (None, None) => format!("🗳 {model} elected {host}"),
+        }
+    }
+
+    fn model_loaded_summary(model: &str, bytes: Option<u64>) -> String {
+        let mut line = format!("📦 Model loaded: {model}");
+        if let Some(bytes) = bytes {
+            line.push_str(&format!(" ({})", format_model_size(bytes)));
+        }
+        line
+    }
+
+    fn llama_starting_summary(
+        model: Option<&str>,
+        http_port: u16,
+        ctx_size: Option<u32>,
+    ) -> String {
+        let mut line = format!("🦙 llama-server starting: port={http_port}");
+        if let Some(model) = model {
+            line.push_str(&format!(" model={model}"));
+        }
+        if let Some(ctx_size) = ctx_size {
+            line.push_str(&format!(" ctx={ctx_size}"));
+        }
+        line
+    }
+
+    fn contextual_summary(context: Option<&str>, message: &str) -> String {
+        let message = strip_leading_severity_icon(message);
+        match context {
+            Some(context) => format!("{context}: {message}"),
+            None => message.to_string(),
         }
     }
 
@@ -1946,6 +1967,31 @@ impl Default for DashboardState {
         };
         state.apply_layout(panel_layout);
         state
+    }
+}
+
+fn format_role_active(role: &str) -> String {
+    format!("{role} active")
+}
+
+fn append_models_on_disk(line: &mut String, models_on_disk: Option<&[String]>) {
+    let Some(models_on_disk) = models_on_disk else {
+        return;
+    };
+    if !models_on_disk.is_empty() {
+        line.push_str(&format!(" models={}", models_on_disk.join(", ")));
+    }
+}
+
+fn format_model_size(bytes: u64) -> String {
+    if bytes >= 1_000_000_000 {
+        format!("{:.1}GB", bytes as f64 / 1e9)
+    } else if bytes >= 1_000_000 {
+        format!("{:.0}MB", bytes as f64 / 1e6)
+    } else if bytes >= 1_000 {
+        format!("{:.0}KB", bytes as f64 / 1e3)
+    } else {
+        format!("{bytes}B")
     }
 }
 
@@ -3697,213 +3743,252 @@ impl DashboardState {
     }
 
     fn apply_tui_event(&mut self, event: TuiEvent) -> TuiControlFlow {
+        if let Some(flow) = self.apply_resize_tui_event(event) {
+            return flow;
+        }
+        if let Some(flow) = self.apply_mouse_tui_event(event) {
+            return flow;
+        }
+        if let Some(flow) = self.apply_global_tui_key_event(event) {
+            return flow;
+        }
+        if let Some(flow) = self.apply_join_token_tui_key_event(event) {
+            return flow;
+        }
+        if let Some(flow) = self.apply_requests_tui_key_event(event) {
+            return flow;
+        }
+        if let Some(flow) = self.apply_events_scroll_tui_key_event(event) {
+            return flow;
+        }
+        if let Some(flow) = self.apply_panel_navigation_tui_key_event(event) {
+            return flow;
+        }
+        if let Some(flow) = self.apply_events_filter_tui_key_event(event) {
+            return flow;
+        }
+        TuiControlFlow::Continue
+    }
+
+    fn apply_resize_tui_event(&mut self, event: TuiEvent) -> Option<TuiControlFlow> {
+        let TuiEvent::Resize { columns, rows } = event else {
+            return None;
+        };
+        self.terminal_size = Some((columns, rows));
+        self.reduce(DashboardAction::Resize(dashboard_layout_for_terminal_size(
+            columns, rows,
+        )));
+        Some(TuiControlFlow::Continue)
+    }
+
+    fn apply_mouse_tui_event(&mut self, event: TuiEvent) -> Option<TuiControlFlow> {
+        let TuiEvent::MouseDown { column, row } = event else {
+            return None;
+        };
+        if self.join_token_copy_button_contains(column, row) {
+            self.panel_focus = DashboardPanel::JoinToken;
+            self.copy_join_token();
+            return Some(TuiControlFlow::Continue);
+        }
+        if self.join_token_panel_contains(column, row) {
+            self.panel_focus = DashboardPanel::JoinToken;
+            self.events_filter.editing = false;
+            return Some(TuiControlFlow::Continue);
+        }
+        None
+    }
+
+    fn apply_global_tui_key_event(&mut self, event: TuiEvent) -> Option<TuiControlFlow> {
         match event {
-            TuiEvent::Resize { columns, rows } => {
-                self.terminal_size = Some((columns, rows));
-                self.reduce(DashboardAction::Resize(dashboard_layout_for_terminal_size(
-                    columns, rows,
-                )));
-                TuiControlFlow::Continue
-            }
-            TuiEvent::MouseDown { column, row }
-                if self.join_token_copy_button_contains(column, row) =>
-            {
-                self.panel_focus = DashboardPanel::JoinToken;
-                self.copy_join_token();
-                TuiControlFlow::Continue
-            }
-            TuiEvent::MouseDown { column, row } if self.join_token_panel_contains(column, row) => {
-                self.panel_focus = DashboardPanel::JoinToken;
-                self.events_filter.editing = false;
-                TuiControlFlow::Continue
-            }
             TuiEvent::Key(TuiKeyEvent::Escape)
                 if !self.events_filter.editing && self.full_screen_panel.is_some() =>
             {
                 self.reduce(DashboardAction::ExitFullScreenPanel);
-                TuiControlFlow::Continue
+                Some(TuiControlFlow::Continue)
             }
             TuiEvent::Key(TuiKeyEvent::Interrupt) => {
                 self.mark_runtime_shutting_down();
-                TuiControlFlow::Quit
+                Some(TuiControlFlow::Quit)
             }
             TuiEvent::Key(TuiKeyEvent::Char('q')) if !self.events_filter.editing => {
                 self.mark_runtime_shutting_down();
-                TuiControlFlow::Quit
+                Some(TuiControlFlow::Quit)
             }
             TuiEvent::Key(TuiKeyEvent::Tab) => {
                 self.reduce(DashboardAction::FocusNextPanel);
-                TuiControlFlow::Continue
+                Some(TuiControlFlow::Continue)
             }
             TuiEvent::Key(TuiKeyEvent::BackTab) => {
                 self.reduce(DashboardAction::FocusPreviousPanel);
-                TuiControlFlow::Continue
+                Some(TuiControlFlow::Continue)
             }
             TuiEvent::Key(TuiKeyEvent::Enter) | TuiEvent::Key(TuiKeyEvent::Char('z'))
                 if !self.events_filter.editing =>
             {
                 self.reduce(DashboardAction::ToggleFullScreenPanel);
-                TuiControlFlow::Continue
+                Some(TuiControlFlow::Continue)
             }
             TuiEvent::Key(TuiKeyEvent::Char('/')) if !self.events_filter.editing => {
                 self.reduce(DashboardAction::StartEventsFilterEdit);
-                TuiControlFlow::Continue
+                Some(TuiControlFlow::Continue)
             }
             TuiEvent::Key(TuiKeyEvent::Char('f')) if !self.events_filter.editing => {
                 self.reduce(DashboardAction::ToggleEventsFollow);
-                TuiControlFlow::Continue
+                Some(TuiControlFlow::Continue)
             }
             TuiEvent::Key(TuiKeyEvent::Char('c')) if self.join_token_copy_shortcut_enabled() => {
                 self.copy_join_token();
-                TuiControlFlow::Continue
+                Some(TuiControlFlow::Continue)
             }
-            TuiEvent::Key(TuiKeyEvent::Left) | TuiEvent::Key(TuiKeyEvent::Char('h'))
-                if !self.events_filter.editing && self.panel_focus == DashboardPanel::JoinToken =>
-            {
+            _ => None,
+        }
+    }
+
+    fn apply_join_token_tui_key_event(&mut self, event: TuiEvent) -> Option<TuiControlFlow> {
+        if self.events_filter.editing || self.panel_focus != DashboardPanel::JoinToken {
+            return None;
+        }
+        match event {
+            TuiEvent::Key(TuiKeyEvent::Left) | TuiEvent::Key(TuiKeyEvent::Char('h')) => {
                 self.scroll_join_token_by(-1);
-                TuiControlFlow::Continue
+                Some(TuiControlFlow::Continue)
             }
-            TuiEvent::Key(TuiKeyEvent::Right) | TuiEvent::Key(TuiKeyEvent::Char('l'))
-                if !self.events_filter.editing && self.panel_focus == DashboardPanel::JoinToken =>
-            {
+            TuiEvent::Key(TuiKeyEvent::Right) | TuiEvent::Key(TuiKeyEvent::Char('l')) => {
                 self.scroll_join_token_by(1);
-                TuiControlFlow::Continue
+                Some(TuiControlFlow::Continue)
             }
-            TuiEvent::Key(TuiKeyEvent::Char('g'))
-                if !self.events_filter.editing && self.panel_focus == DashboardPanel::JoinToken =>
-            {
+            TuiEvent::Key(TuiKeyEvent::Char('g')) => {
                 self.jump_join_token_to_start();
-                TuiControlFlow::Continue
+                Some(TuiControlFlow::Continue)
             }
-            TuiEvent::Key(TuiKeyEvent::Char('G'))
-                if !self.events_filter.editing && self.panel_focus == DashboardPanel::JoinToken =>
-            {
+            TuiEvent::Key(TuiKeyEvent::Char('G')) => {
                 self.jump_join_token_to_end();
-                TuiControlFlow::Continue
+                Some(TuiControlFlow::Continue)
             }
             TuiEvent::Key(TuiKeyEvent::Up)
             | TuiEvent::Key(TuiKeyEvent::Char('k'))
             | TuiEvent::Key(TuiKeyEvent::Down)
             | TuiEvent::Key(TuiKeyEvent::Char('j'))
             | TuiEvent::Key(TuiKeyEvent::PageUp)
-            | TuiEvent::Key(TuiKeyEvent::PageDown)
-                if !self.events_filter.editing && self.panel_focus == DashboardPanel::JoinToken =>
-            {
-                TuiControlFlow::Continue
-            }
-            TuiEvent::Key(TuiKeyEvent::Up)
-                if !self.events_filter.editing && self.panel_focus == DashboardPanel::Requests =>
-            {
+            | TuiEvent::Key(TuiKeyEvent::PageDown) => Some(TuiControlFlow::Continue),
+            _ => None,
+        }
+    }
+
+    fn apply_requests_tui_key_event(&mut self, event: TuiEvent) -> Option<TuiControlFlow> {
+        if self.events_filter.editing || self.panel_focus != DashboardPanel::Requests {
+            return None;
+        }
+        match event {
+            TuiEvent::Key(TuiKeyEvent::Up) => {
                 self.reduce(DashboardAction::SelectPreviousRequestWindow);
-                TuiControlFlow::Continue
+                Some(TuiControlFlow::Continue)
             }
-            TuiEvent::Key(TuiKeyEvent::Down)
-                if !self.events_filter.editing && self.panel_focus == DashboardPanel::Requests =>
-            {
+            TuiEvent::Key(TuiKeyEvent::Down) => {
                 self.reduce(DashboardAction::SelectNextRequestWindow);
-                TuiControlFlow::Continue
+                Some(TuiControlFlow::Continue)
             }
-            TuiEvent::Key(TuiKeyEvent::Up) | TuiEvent::Key(TuiKeyEvent::Char('k'))
-                if !self.events_filter.editing
-                    && self.panel_focus == DashboardPanel::Events
-                    && TuiEventListRenderer::ACTIVE == TuiEventListRenderer::Scrollbar =>
-            {
+            _ => None,
+        }
+    }
+
+    fn apply_events_scroll_tui_key_event(&mut self, event: TuiEvent) -> Option<TuiControlFlow> {
+        if self.events_filter.editing
+            || self.panel_focus != DashboardPanel::Events
+            || TuiEventListRenderer::ACTIVE != TuiEventListRenderer::Scrollbar
+        {
+            return None;
+        }
+        match event {
+            TuiEvent::Key(TuiKeyEvent::Up) | TuiEvent::Key(TuiKeyEvent::Char('k')) => {
                 self.scroll_events_by(-1);
-                TuiControlFlow::Continue
+                Some(TuiControlFlow::Continue)
             }
-            TuiEvent::Key(TuiKeyEvent::Down) | TuiEvent::Key(TuiKeyEvent::Char('j'))
-                if !self.events_filter.editing
-                    && self.panel_focus == DashboardPanel::Events
-                    && TuiEventListRenderer::ACTIVE == TuiEventListRenderer::Scrollbar =>
-            {
+            TuiEvent::Key(TuiKeyEvent::Down) | TuiEvent::Key(TuiKeyEvent::Char('j')) => {
                 self.scroll_events_by(1);
-                TuiControlFlow::Continue
+                Some(TuiControlFlow::Continue)
             }
-            TuiEvent::Key(TuiKeyEvent::PageUp)
-                if !self.events_filter.editing
-                    && self.panel_focus == DashboardPanel::Events
-                    && TuiEventListRenderer::ACTIVE == TuiEventListRenderer::Scrollbar =>
-            {
+            TuiEvent::Key(TuiKeyEvent::PageUp) => {
                 self.page_events_by(-1);
-                TuiControlFlow::Continue
+                Some(TuiControlFlow::Continue)
             }
-            TuiEvent::Key(TuiKeyEvent::PageDown)
-                if !self.events_filter.editing
-                    && self.panel_focus == DashboardPanel::Events
-                    && TuiEventListRenderer::ACTIVE == TuiEventListRenderer::Scrollbar =>
-            {
+            TuiEvent::Key(TuiKeyEvent::PageDown) => {
                 self.page_events_by(1);
-                TuiControlFlow::Continue
+                Some(TuiControlFlow::Continue)
             }
-            TuiEvent::Key(TuiKeyEvent::Char('g'))
-                if !self.events_filter.editing
-                    && self.panel_focus == DashboardPanel::Events
-                    && TuiEventListRenderer::ACTIVE == TuiEventListRenderer::Scrollbar =>
-            {
+            TuiEvent::Key(TuiKeyEvent::Char('g')) => {
                 self.jump_events_to_start();
-                TuiControlFlow::Continue
+                Some(TuiControlFlow::Continue)
             }
-            TuiEvent::Key(TuiKeyEvent::Char('G'))
-                if !self.events_filter.editing
-                    && self.panel_focus == DashboardPanel::Events
-                    && TuiEventListRenderer::ACTIVE == TuiEventListRenderer::Scrollbar =>
-            {
+            TuiEvent::Key(TuiKeyEvent::Char('G')) => {
                 self.jump_events_to_end();
-                TuiControlFlow::Continue
+                Some(TuiControlFlow::Continue)
             }
+            _ => None,
+        }
+    }
+
+    fn apply_panel_navigation_tui_key_event(&mut self, event: TuiEvent) -> Option<TuiControlFlow> {
+        if self.events_filter.editing {
+            return None;
+        }
+        match event {
             TuiEvent::Key(TuiKeyEvent::Left)
             | TuiEvent::Key(TuiKeyEvent::Char('h'))
             | TuiEvent::Key(TuiKeyEvent::Up)
-            | TuiEvent::Key(TuiKeyEvent::Char('k'))
-                if !self.events_filter.editing =>
-            {
+            | TuiEvent::Key(TuiKeyEvent::Char('k')) => {
                 self.move_panel_selection(self.panel_focus, -1);
-                TuiControlFlow::Continue
+                Some(TuiControlFlow::Continue)
             }
             TuiEvent::Key(TuiKeyEvent::Right)
             | TuiEvent::Key(TuiKeyEvent::Char('l'))
             | TuiEvent::Key(TuiKeyEvent::Down)
-            | TuiEvent::Key(TuiKeyEvent::Char('j'))
-                if !self.events_filter.editing =>
-            {
+            | TuiEvent::Key(TuiKeyEvent::Char('j')) => {
                 self.move_panel_selection(self.panel_focus, 1);
-                TuiControlFlow::Continue
+                Some(TuiControlFlow::Continue)
             }
-            TuiEvent::Key(TuiKeyEvent::PageUp) if !self.events_filter.editing => {
+            TuiEvent::Key(TuiKeyEvent::PageUp) => {
                 self.page_panel_selection(self.panel_focus, -1);
-                TuiControlFlow::Continue
+                Some(TuiControlFlow::Continue)
             }
-            TuiEvent::Key(TuiKeyEvent::PageDown) if !self.events_filter.editing => {
+            TuiEvent::Key(TuiKeyEvent::PageDown) => {
                 self.page_panel_selection(self.panel_focus, 1);
-                TuiControlFlow::Continue
+                Some(TuiControlFlow::Continue)
             }
-            TuiEvent::Key(TuiKeyEvent::Char('g')) if !self.events_filter.editing => {
+            TuiEvent::Key(TuiKeyEvent::Char('g')) => {
                 self.jump_panel_selection_to_start(self.panel_focus);
-                TuiControlFlow::Continue
+                Some(TuiControlFlow::Continue)
             }
-            TuiEvent::Key(TuiKeyEvent::Char('G')) if !self.events_filter.editing => {
+            TuiEvent::Key(TuiKeyEvent::Char('G')) => {
                 self.jump_panel_selection_to_end(self.panel_focus);
-                TuiControlFlow::Continue
+                Some(TuiControlFlow::Continue)
             }
-            TuiEvent::Key(TuiKeyEvent::Backspace) if self.events_filter.editing => {
+            _ => None,
+        }
+    }
+
+    fn apply_events_filter_tui_key_event(&mut self, event: TuiEvent) -> Option<TuiControlFlow> {
+        if !self.events_filter.editing {
+            return None;
+        }
+        match event {
+            TuiEvent::Key(TuiKeyEvent::Backspace) => {
                 self.reduce(DashboardAction::BackspaceEventsFilter);
-                TuiControlFlow::Continue
+                Some(TuiControlFlow::Continue)
             }
-            TuiEvent::Key(TuiKeyEvent::Enter) if self.events_filter.editing => {
+            TuiEvent::Key(TuiKeyEvent::Enter) => {
                 self.reduce(DashboardAction::ConfirmEventsFilter);
-                TuiControlFlow::Continue
+                Some(TuiControlFlow::Continue)
             }
-            TuiEvent::Key(TuiKeyEvent::Escape) if self.events_filter.editing => {
+            TuiEvent::Key(TuiKeyEvent::Escape) => {
                 self.reduce(DashboardAction::CancelEventsFilter);
-                TuiControlFlow::Continue
+                Some(TuiControlFlow::Continue)
             }
-            TuiEvent::Key(TuiKeyEvent::Char(ch))
-                if self.events_filter.editing && !ch.is_control() =>
-            {
+            TuiEvent::Key(TuiKeyEvent::Char(ch)) if !ch.is_control() => {
                 self.reduce(DashboardAction::InsertEventsFilterChar(ch));
-                TuiControlFlow::Continue
+                Some(TuiControlFlow::Continue)
             }
-            _ => TuiControlFlow::Continue,
+            _ => None,
         }
     }
 }

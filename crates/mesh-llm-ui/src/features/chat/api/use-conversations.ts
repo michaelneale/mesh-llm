@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Conversation, ConversationGroup, ChatHarnessData, ThreadMessage } from '@/features/app-tabs/types'
 import {
   MAX_CHAT_CONVERSATIONS,
@@ -159,14 +159,33 @@ function reorderConversations(conversations: Conversation[], updatedConversation
 
 export function useConversations(fallback: ChatHarnessData, scope: ChatStorageScope) {
   const [state, setState] = useState<ResolvedChatState>(() => createFallbackState(fallback))
+  // Track the scope used for the most recently resolved state so that switching scopes
+  // can reset state to the fallback even when no persisted state exists for the new scope.
+  // A ref (not state) avoids extra renders when the scope is unchanged across renders.
+  const lastResolvedScopeRef = useRef<ChatStorageScope>(scope)
 
   useEffect(() => {
     let cancelled = false
+    const scopeChanged = lastResolvedScopeRef.current !== scope
+    lastResolvedScopeRef.current = scope
 
     loadChatState(scope).then((storedState) => {
       if (cancelled) return
 
-      setState(normalizeChatState(storedState, fallback))
+      if (storedState) {
+        setState(normalizeChatState(storedState, fallback))
+        return
+      }
+
+      // No persisted state for this scope. Reset state to the fallback only when the
+      // scope changed mid-life so we don't leave stale state from the previous scope.
+      // On initial mount (and on fallback-only changes), the current state is already
+      // `createFallbackState(fallback)` from the useState initializer, so skipping the
+      // setState here avoids a spurious async re-render that would fire outside the
+      // test's act() boundary and produce a noisy warning.
+      if (scopeChanged) {
+        setState(createFallbackState(fallback))
+      }
     })
 
     return () => {

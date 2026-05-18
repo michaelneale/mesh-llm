@@ -6,7 +6,7 @@ use super::split_planning::{format_aggregate_split_capacity_error, validate_spli
 use super::split_planning::{
     format_gb, plan_runtime_slice_topology_with_resources, split_participant_exclusion_labels,
     split_participant_labels, split_participants_for_stages, split_stage_plan_labels,
-    RuntimeSliceStagePlan, SplitTopologyResourceInputs,
+    PlannedRuntimeSliceTopology, RuntimeSliceStagePlan, SplitTopologyResourceInputs,
 };
 use crate::api;
 use crate::cli::output::{emit_event, OutputEvent};
@@ -586,72 +586,18 @@ pub(super) async fn start_runtime_split_model(
     spec: LocalRuntimeModelStartSpec<'_>,
     model_ref: &str,
 ) -> Result<SplitRuntimeStart> {
-    let model_path_str = spec.model_path.to_string_lossy().to_string();
-    let package = if skippy::is_layer_package_ref(&model_path_str) {
-        tokio::task::spawn_blocking(move || skippy::identity_from_layer_package(&model_path_str))
-            .await
-            .context("join identify skippy layer package task")??
-    } else {
-        skippy::synthetic_direct_gguf_package(model_ref, spec.model_path)?
-    };
-    let participant_snapshot = wait_for_split_participants(
-        spec.node,
-        model_ref,
-        model_ref,
-        &package,
-        spec.pinned_gpu.map(|gpu| gpu.vram_bytes),
-        Duration::from_secs(30),
-    )
-    .await?;
     let run_id = format!("mesh-split-{}", now_unix_nanos());
     let topology_id = format!("topology-{run_id}");
-    let compact_meta = {
-        let pkg = package.clone();
-        tokio::task::spawn_blocking(move || scan_layer_package_metadata(&pkg))
-            .await
-            .ok()
-            .flatten()
-    }
-    .context("split topology planning requires GGUF metadata")?;
-    let split_kv_policy = skippy::KvCachePolicy::for_model_size(package.source_model_bytes);
-    let kv_cache_quant =
-        if spec.cache_type_k_override.is_some() || spec.cache_type_v_override.is_some() {
-            let k = spec
-                .cache_type_k_override
-                .unwrap_or(split_kv_policy.cache_type_k());
-            let v = spec
-                .cache_type_v_override
-                .unwrap_or(split_kv_policy.cache_type_v());
-            models::gguf::GgufKvCacheQuant::from_llama_args(k, v).unwrap_or(
-                models::gguf::GgufKvCacheQuant::from_llama_args(
-                    split_kv_policy.cache_type_k(),
-                    split_kv_policy.cache_type_v(),
-                )
-                .unwrap_or(models::gguf::GgufKvCacheQuant::Q8_0),
-            )
-        } else {
-            models::gguf::GgufKvCacheQuant::from_llama_args(
-                split_kv_policy.cache_type_k(),
-                split_kv_policy.cache_type_v(),
-            )
-            .unwrap_or(models::gguf::GgufKvCacheQuant::Q8_0)
-        };
-    let kv_bytes_per_token = kv_cache_quant
-        .kv_cache_bytes_per_token(&compact_meta)
-        .context("split topology planning requires KV cache byte metadata")?;
-    let planned_topology = plan_runtime_slice_topology_with_resources(
-        &topology_id,
-        model_ref,
-        &package,
-        &participant_snapshot.participants,
-        &participant_snapshot.excluded,
-        SplitTopologyResourceInputs {
-            native_context_length: compact_meta.context_length,
-            kv_bytes_per_token,
-            ctx_size_override: spec.ctx_size_override,
-            parallel_override: spec.parallel_override,
-        },
-    )?;
+    let split_setup =
+        prepare_split_runtime_start(&spec, model_ref, &topology_id, Duration::from_secs(30))
+            .await?;
+    let SplitRuntimeStartPreparation {
+        package,
+        participant_snapshot,
+        compact_meta,
+        kv_bytes_per_token,
+        planned_topology,
+    } = split_setup;
     let stages = planned_topology.stages;
     let planned_participants =
         split_participants_for_stages(&participant_snapshot.participants, &stages);
@@ -675,18 +621,10 @@ pub(super) async fn start_runtime_split_model(
         excluded = ?split_participant_exclusion_labels(&participant_snapshot.excluded),
         "split topology planned; elected coordinator from stage 0"
     );
-    if stage0.node_id != spec.node.id() {
-        tracing::info!(
-            model_ref,
-            topology_id,
-            run_id,
-            local_node = %spec.node.id().fmt_short(),
-            elected_coordinator = %stage0.node_id.fmt_short(),
-            "split topology election selected a remote coordinator; local node entering standby"
-        );
-        return Ok(SplitRuntimeStart::Standby {
-            coordinator: stage0.node_id,
-        });
+    if let Some(standby) =
+        split_runtime_standby_start(spec.node, model_ref, &topology_id, &run_id, stage0)
+    {
+        return Ok(standby);
     }
     tracing::info!(
         model_ref,
@@ -760,6 +698,149 @@ pub(super) async fn start_runtime_split_model(
     }));
 
     Ok(SplitRuntimeStart::Started(Box::new(loaded)))
+}
+
+struct SplitRuntimeStartPreparation {
+    package: skippy::SkippyPackageIdentity,
+    participant_snapshot: SplitParticipantSnapshot,
+    compact_meta: models::gguf::GgufCompactMeta,
+    kv_bytes_per_token: u64,
+    planned_topology: PlannedRuntimeSliceTopology,
+}
+
+async fn prepare_split_runtime_start(
+    spec: &LocalRuntimeModelStartSpec<'_>,
+    model_ref: &str,
+    topology_id: &str,
+    timeout: Duration,
+) -> Result<SplitRuntimeStartPreparation> {
+    let package = resolve_split_runtime_package(spec.model_path, model_ref).await?;
+    let participant_snapshot = wait_for_split_participants(
+        spec.node,
+        model_ref,
+        model_ref,
+        &package,
+        spec.pinned_gpu.map(|gpu| gpu.vram_bytes),
+        timeout,
+    )
+    .await?;
+    let compact_meta = split_runtime_compact_meta(&package).await?;
+    let kv_bytes_per_token = split_runtime_kv_bytes_per_token(
+        &package,
+        &compact_meta,
+        spec.cache_type_k_override,
+        spec.cache_type_v_override,
+    )?;
+    let planned_topology = plan_runtime_slice_topology_with_resources(
+        topology_id,
+        model_ref,
+        &package,
+        &participant_snapshot.participants,
+        &participant_snapshot.excluded,
+        SplitTopologyResourceInputs {
+            native_context_length: compact_meta.context_length,
+            kv_bytes_per_token,
+            ctx_size_override: spec.ctx_size_override,
+            parallel_override: spec.parallel_override,
+        },
+    )?;
+    Ok(SplitRuntimeStartPreparation {
+        package,
+        participant_snapshot,
+        compact_meta,
+        kv_bytes_per_token,
+        planned_topology,
+    })
+}
+
+async fn split_runtime_compact_meta(
+    package: &skippy::SkippyPackageIdentity,
+) -> Result<models::gguf::GgufCompactMeta> {
+    let package = package.clone();
+    tokio::task::spawn_blocking(move || scan_layer_package_metadata(&package))
+        .await
+        .ok()
+        .flatten()
+        .context("split topology planning requires GGUF metadata")
+}
+
+fn split_runtime_kv_bytes_per_token(
+    package: &skippy::SkippyPackageIdentity,
+    compact_meta: &models::gguf::GgufCompactMeta,
+    cache_type_k_override: Option<&str>,
+    cache_type_v_override: Option<&str>,
+) -> Result<u64> {
+    let split_kv_policy = skippy::KvCachePolicy::for_model_size(package.source_model_bytes);
+    let kv_cache_quant = split_kv_cache_quant(
+        &split_kv_policy,
+        cache_type_k_override,
+        cache_type_v_override,
+    );
+    kv_cache_quant
+        .kv_cache_bytes_per_token(compact_meta)
+        .context("split topology planning requires KV cache byte metadata")
+}
+
+fn split_runtime_standby_start(
+    node: &mesh::Node,
+    model_ref: &str,
+    topology_id: &str,
+    run_id: &str,
+    stage0: &RuntimeSliceStagePlan,
+) -> Option<SplitRuntimeStart> {
+    if stage0.node_id == node.id() {
+        return None;
+    }
+    tracing::info!(
+        model_ref,
+        topology_id,
+        run_id,
+        local_node = %node.id().fmt_short(),
+        elected_coordinator = %stage0.node_id.fmt_short(),
+        "split topology election selected a remote coordinator; local node entering standby"
+    );
+    Some(SplitRuntimeStart::Standby {
+        coordinator: stage0.node_id,
+    })
+}
+
+async fn resolve_split_runtime_package(
+    model_path: &Path,
+    model_ref: &str,
+) -> Result<skippy::SkippyPackageIdentity> {
+    let model_path_str = model_path.to_string_lossy().to_string();
+    if skippy::is_layer_package_ref(&model_path_str) {
+        Ok(tokio::task::spawn_blocking(move || {
+            skippy::identity_from_layer_package(&model_path_str)
+        })
+        .await
+        .context("join identify skippy layer package task")??)
+    } else {
+        Ok(skippy::synthetic_direct_gguf_package(
+            model_ref, model_path,
+        )?)
+    }
+}
+
+fn split_kv_cache_quant(
+    split_kv_policy: &skippy::KvCachePolicy,
+    cache_type_k_override: Option<&str>,
+    cache_type_v_override: Option<&str>,
+) -> models::gguf::GgufKvCacheQuant {
+    let policy_quant = models::gguf::GgufKvCacheQuant::from_llama_args(
+        split_kv_policy.cache_type_k(),
+        split_kv_policy.cache_type_v(),
+    )
+    .unwrap_or(models::gguf::GgufKvCacheQuant::Q8_0);
+
+    match (cache_type_k_override, cache_type_v_override) {
+        (None, None) => policy_quant,
+        (k_override, v_override) => models::gguf::GgufKvCacheQuant::from_llama_args(
+            k_override.unwrap_or(split_kv_policy.cache_type_k()),
+            v_override.unwrap_or(split_kv_policy.cache_type_v()),
+        )
+        .unwrap_or(policy_quant),
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -909,6 +990,16 @@ struct SplitGenerationLoadSpec<'a> {
     skippy_telemetry: skippy::SkippyTelemetryOptions,
 }
 
+struct SplitGenerationLoadSettings<'a> {
+    stage0: &'a RuntimeSliceStagePlan,
+    kv_cache: skippy::KvCachePolicy,
+    effective_cache_type_k: String,
+    effective_cache_type_v: String,
+    resolved_flash_attn_type: FlashAttentionType,
+    load_mode: LoadMode,
+    activation_width: i32,
+}
+
 async fn load_split_runtime_generation(
     spec: SplitGenerationLoadSpec<'_>,
 ) -> Result<SplitRuntimeGenerationHandle> {
@@ -934,15 +1025,11 @@ async fn load_split_runtime_generation_inner(
     spec: &SplitGenerationLoadSpec<'_>,
     cleanup_on_error: &mut bool,
 ) -> Result<SplitRuntimeGenerationHandle> {
-    let stage0 = spec
-        .generation
-        .stages
-        .first()
-        .context("split topology did not produce stage 0")?;
+    let settings = split_generation_load_settings(spec)?;
     anyhow::ensure!(
-        stage0.node_id == spec.node.id(),
+        settings.stage0.node_id == spec.node.id(),
         "split topology stage 0 moved to {}; local coordinator is {}",
-        stage0.node_id.fmt_short(),
+        settings.stage0.node_id.fmt_short(),
         spec.node.id().fmt_short()
     );
 
@@ -950,32 +1037,9 @@ async fn load_split_runtime_generation_inner(
 
     let mut ready_by_stage: HashMap<String, skippy::StageStatusSnapshot> = HashMap::new();
     let mut downstream: Option<skippy::StagePeerDescriptor> = None;
-    let kv_cache = skippy::KvCachePolicy::for_model_size(spec.package.source_model_bytes);
     let family_policy = skippy::family_policy_for_model_path(spec.model_path, Some(spec.model_ref));
-    let effective_cache_type_k = spec
-        .cache_type_k_override
-        .unwrap_or(kv_cache.cache_type_k())
-        .to_string();
-    let effective_cache_type_v = spec
-        .cache_type_v_override
-        .unwrap_or(kv_cache.cache_type_v())
-        .to_string();
-    let resolved_flash_attn_type =
-        effective_flash_attention(spec.flash_attention_override, &effective_cache_type_v);
-    tracing::info!(model = spec.model_ref, "KV cache: {}", kv_cache.label());
 
-    // Use LayerPackage mode when we have an hf:// distributable package ref,
-    // otherwise fall back to RuntimeSlice (requires full GGUF on each node).
-    let use_layer_package = skippy::is_layer_package_ref(&spec.package.package_ref);
-    let load_mode = if use_layer_package {
-        LoadMode::LayerPackage
-    } else {
-        LoadMode::RuntimeSlice
-    };
-    let activation_width =
-        skippy_stage_activation_width(spec.package.activation_width, spec.model_ref)?;
-
-    if use_layer_package {
+    if settings.load_mode == LoadMode::LayerPackage {
         spec.node
             .record_stage_topology(split_stage_topology_instance(
                 &spec.generation.topology_id,
@@ -1002,7 +1066,7 @@ async fn load_split_runtime_generation_inner(
             layer_start: stage.layer_start,
             layer_end: stage.layer_end,
             model_path: Some(stage_load_model_path(
-                load_mode.clone(),
+                settings.load_mode.clone(),
                 &spec.package.package_ref,
                 spec.model_path,
             )),
@@ -1010,21 +1074,21 @@ async fn load_split_runtime_generation_inner(
             projector_path: spec.projector_path.clone(),
             selected_device: None,
             bind_addr: "127.0.0.1:0".to_string(),
-            activation_width,
+            activation_width: settings.activation_width,
             wire_dtype: family_policy.activation_wire_dtype,
             ctx_size: spec.ctx_size,
             lane_count: spec.slots as u32,
             n_batch: spec.n_batch_override,
             n_ubatch: spec.n_ubatch_override,
             n_gpu_layers: -1,
-            cache_type_k: effective_cache_type_k.clone(),
-            cache_type_v: effective_cache_type_v.clone(),
-            flash_attn_type: resolved_flash_attn_type,
+            cache_type_k: settings.effective_cache_type_k.clone(),
+            cache_type_v: settings.effective_cache_type_v.clone(),
+            flash_attn_type: settings.resolved_flash_attn_type,
             shutdown_generation: spec.generation.generation,
             coordinator_term: spec.generation.coordinator_term,
             coordinator_id: Some(spec.node.id()),
             lease_until_unix_ms: spec.generation.lease_until_unix_ms,
-            load_mode: load_mode.clone(),
+            load_mode: settings.load_mode.clone(),
             upstream: None,
             downstream: downstream.clone(),
         };
@@ -1101,21 +1165,21 @@ async fn load_split_runtime_generation_inner(
         spec.model_ref,
         spec.model_path,
         spec.package,
-        stage0,
+        settings.stage0,
         downstream.stage_id,
         downstream.stage_index,
         downstream_endpoint,
         spec.projector_path.clone(),
         spec.ctx_size,
         spec.slots as u32,
-        kv_cache,
+        settings.kv_cache,
         spec.cache_type_k_override,
         spec.cache_type_v_override,
         spec.n_batch_override,
         spec.n_ubatch_override,
         spec.flash_attention_override,
         spec.pinned_gpu,
-        load_mode.clone(),
+        settings.load_mode.clone(),
     );
     let slots = spec.slots;
     let node_for_hook = spec.node.clone();
@@ -1128,7 +1192,7 @@ async fn load_split_runtime_generation_inner(
     let handle = tokio::task::spawn_blocking(move || {
         skippy::SkippyModelHandle::load_stage0_config(
             config,
-            activation_width,
+            settings.activation_width,
             slots,
             skippy_server::CONTEXT_BUDGET_MAX_TOKENS,
             Some(skippy::MeshAutoHookPolicy::new(node_for_hook)),
@@ -1185,6 +1249,49 @@ async fn load_split_runtime_generation_inner(
     })
 }
 
+fn split_generation_load_settings<'a>(
+    spec: &'a SplitGenerationLoadSpec<'_>,
+) -> Result<SplitGenerationLoadSettings<'a>> {
+    let stage0 = spec
+        .generation
+        .stages
+        .first()
+        .context("split topology did not produce stage 0")?;
+    let kv_cache = skippy::KvCachePolicy::for_model_size(spec.package.source_model_bytes);
+    let effective_cache_type_k = spec
+        .cache_type_k_override
+        .unwrap_or(kv_cache.cache_type_k())
+        .to_string();
+    let effective_cache_type_v = spec
+        .cache_type_v_override
+        .unwrap_or(kv_cache.cache_type_v())
+        .to_string();
+    tracing::info!(model = spec.model_ref, "KV cache: {}", kv_cache.label());
+    Ok(SplitGenerationLoadSettings {
+        stage0,
+        kv_cache,
+        effective_cache_type_k,
+        effective_cache_type_v: effective_cache_type_v.clone(),
+        resolved_flash_attn_type: effective_flash_attention(
+            spec.flash_attention_override,
+            &effective_cache_type_v,
+        ),
+        load_mode: split_generation_load_mode(spec.package),
+        activation_width: skippy_stage_activation_width(
+            spec.package.activation_width,
+            spec.model_ref,
+        )?,
+    })
+}
+
+fn split_generation_load_mode(package: &skippy::SkippyPackageIdentity) -> LoadMode {
+    if skippy::is_layer_package_ref(&package.package_ref) {
+        LoadMode::LayerPackage
+    } else {
+        LoadMode::RuntimeSlice
+    }
+}
+
 async fn claim_split_coordinator_lease(
     node: &mesh::Node,
     model_ref: &str,
@@ -1211,73 +1318,15 @@ async fn claim_split_coordinator_lease(
     );
 
     for stage in &generation.stages {
-        let request = skippy::StageControlRequest::Claim(claim.clone());
-        let response = if stage.node_id == node.id() {
-            node.send_local_stage_control(request).await
-        } else {
-            node.send_stage_control(stage.node_id, request).await
-        };
-        match response {
-            Ok(skippy::StageControlResponse::ClaimAccepted(ack)) if ack.accepted => {
-                accepted += 1;
-                accepted_nodes.push(stage.node_id);
-                tracing::debug!(
-                    model_ref,
-                    topology_id = generation.topology_id,
-                    generation = generation.generation,
-                    stage_id = stage.stage_id,
-                    stage_node = %stage.node_id.fmt_short(),
-                    "split topology coordinator claim accepted by stage"
-                );
-            }
-            Ok(skippy::StageControlResponse::ClaimAccepted(ack)) => {
-                let error = ack.error.unwrap_or_else(|| "unknown rejection".to_string());
-                tracing::warn!(
-                    model_ref,
-                    topology_id = generation.topology_id,
-                    generation = generation.generation,
-                    stage_id = stage.stage_id,
-                    stage_node = %stage.node_id.fmt_short(),
-                    error = %error,
-                    "split topology coordinator claim rejected by stage"
-                );
-                errors.push(format!(
-                    "{} rejected claim: {}",
-                    stage.node_id.fmt_short(),
-                    error
-                ));
-            }
-            Ok(other) => {
-                tracing::warn!(
-                    model_ref,
-                    topology_id = generation.topology_id,
-                    generation = generation.generation,
-                    stage_id = stage.stage_id,
-                    stage_node = %stage.node_id.fmt_short(),
-                    response = ?other,
-                    "split topology coordinator claim returned unexpected response"
-                );
-                errors.push(format!(
-                    "{} returned unexpected claim response: {other:?}",
-                    stage.node_id.fmt_short()
-                ));
-            }
-            Err(err) => {
-                tracing::warn!(
-                    model_ref,
-                    topology_id = generation.topology_id,
-                    generation = generation.generation,
-                    stage_id = stage.stage_id,
-                    stage_node = %stage.node_id.fmt_short(),
-                    error = %err,
-                    "split topology coordinator claim failed for stage"
-                );
-                errors.push(format!(
-                    "{} claim failed: {err:#}",
-                    stage.node_id.fmt_short()
-                ));
-            }
-        }
+        record_split_coordinator_claim_result(
+            model_ref,
+            generation,
+            stage,
+            claim_split_coordinator_stage(node, stage, claim.clone()).await,
+            &mut accepted,
+            &mut accepted_nodes,
+            &mut errors,
+        );
     }
 
     anyhow::ensure!(
@@ -1298,6 +1347,149 @@ async fn claim_split_coordinator_lease(
         "split topology coordinator lease quorum reached"
     );
     Ok(())
+}
+
+enum SplitCoordinatorClaimResult {
+    Accepted,
+    Rejected(String),
+    Unexpected(Box<skippy::StageControlResponse>),
+    Failed(anyhow::Error),
+}
+
+fn record_split_coordinator_claim_result(
+    model_ref: &str,
+    generation: &SplitTopologyGeneration,
+    stage: &RuntimeSliceStagePlan,
+    result: SplitCoordinatorClaimResult,
+    accepted: &mut usize,
+    accepted_nodes: &mut Vec<iroh::EndpointId>,
+    errors: &mut Vec<String>,
+) {
+    match result {
+        SplitCoordinatorClaimResult::Accepted => {
+            record_claim_accepted(model_ref, generation, stage, accepted, accepted_nodes)
+        }
+        SplitCoordinatorClaimResult::Rejected(error) => {
+            record_claim_rejected(model_ref, generation, stage, error, errors)
+        }
+        SplitCoordinatorClaimResult::Unexpected(response) => {
+            record_claim_unexpected(model_ref, generation, stage, response, errors)
+        }
+        SplitCoordinatorClaimResult::Failed(err) => {
+            record_claim_failed(model_ref, generation, stage, err, errors)
+        }
+    }
+}
+
+fn record_claim_accepted(
+    model_ref: &str,
+    generation: &SplitTopologyGeneration,
+    stage: &RuntimeSliceStagePlan,
+    accepted: &mut usize,
+    accepted_nodes: &mut Vec<iroh::EndpointId>,
+) {
+    *accepted += 1;
+    accepted_nodes.push(stage.node_id);
+    tracing::debug!(
+        model_ref,
+        topology_id = generation.topology_id,
+        generation = generation.generation,
+        stage_id = stage.stage_id,
+        stage_node = %stage.node_id.fmt_short(),
+        "split topology coordinator claim accepted by stage"
+    );
+}
+
+fn record_claim_rejected(
+    model_ref: &str,
+    generation: &SplitTopologyGeneration,
+    stage: &RuntimeSliceStagePlan,
+    error: String,
+    errors: &mut Vec<String>,
+) {
+    tracing::warn!(
+        model_ref,
+        topology_id = generation.topology_id,
+        generation = generation.generation,
+        stage_id = stage.stage_id,
+        stage_node = %stage.node_id.fmt_short(),
+        error = %error,
+        "split topology coordinator claim rejected by stage"
+    );
+    errors.push(format!(
+        "{} rejected claim: {}",
+        stage.node_id.fmt_short(),
+        error
+    ));
+}
+
+fn record_claim_unexpected(
+    model_ref: &str,
+    generation: &SplitTopologyGeneration,
+    stage: &RuntimeSliceStagePlan,
+    response: Box<skippy::StageControlResponse>,
+    errors: &mut Vec<String>,
+) {
+    tracing::warn!(
+        model_ref,
+        topology_id = generation.topology_id,
+        generation = generation.generation,
+        stage_id = stage.stage_id,
+        stage_node = %stage.node_id.fmt_short(),
+        response = ?response,
+        "split topology coordinator claim returned unexpected response"
+    );
+    errors.push(format!(
+        "{} returned unexpected claim response: {response:?}",
+        stage.node_id.fmt_short()
+    ));
+}
+
+fn record_claim_failed(
+    model_ref: &str,
+    generation: &SplitTopologyGeneration,
+    stage: &RuntimeSliceStagePlan,
+    err: anyhow::Error,
+    errors: &mut Vec<String>,
+) {
+    tracing::warn!(
+        model_ref,
+        topology_id = generation.topology_id,
+        generation = generation.generation,
+        stage_id = stage.stage_id,
+        stage_node = %stage.node_id.fmt_short(),
+        error = %err,
+        "split topology coordinator claim failed for stage"
+    );
+    errors.push(format!(
+        "{} claim failed: {err:#}",
+        stage.node_id.fmt_short()
+    ));
+}
+
+async fn claim_split_coordinator_stage(
+    node: &mesh::Node,
+    stage: &RuntimeSliceStagePlan,
+    claim: skippy::StageCoordinatorClaim,
+) -> SplitCoordinatorClaimResult {
+    let request = skippy::StageControlRequest::Claim(claim);
+    let response = if stage.node_id == node.id() {
+        node.send_local_stage_control(request).await
+    } else {
+        node.send_stage_control(stage.node_id, request).await
+    };
+    match response {
+        Ok(skippy::StageControlResponse::ClaimAccepted(ack)) if ack.accepted => {
+            SplitCoordinatorClaimResult::Accepted
+        }
+        Ok(skippy::StageControlResponse::ClaimAccepted(ack)) => {
+            SplitCoordinatorClaimResult::Rejected(
+                ack.error.unwrap_or_else(|| "unknown rejection".to_string()),
+            )
+        }
+        Ok(other) => SplitCoordinatorClaimResult::Unexpected(Box::new(other)),
+        Err(err) => SplitCoordinatorClaimResult::Failed(err),
+    }
 }
 
 fn split_coordinator_claim(
@@ -1418,15 +1610,7 @@ impl SplitTopologyCoordinator {
         loop {
             tokio::select! {
                 changed = peer_rx.changed() => {
-                    if changed.is_err() {
-                        tracing::debug!(model_ref = self.model_ref, "split topology coordinator peer watch closed");
-                        break;
-                    }
-                    tokio::time::sleep(SPLIT_PARTICIPANT_STABLE_FOR).await;
-                    while peer_rx.has_changed().unwrap_or(false) {
-                        let _ = peer_rx.borrow_and_update();
-                    }
-                    if !self.evaluate_replan("membership_changed").await {
+                    if !self.handle_peer_change(&mut peer_rx, changed).await {
                         break;
                     }
                 }
@@ -1437,6 +1621,23 @@ impl SplitTopologyCoordinator {
                 }
             }
         }
+    }
+
+    async fn handle_peer_change<T>(
+        &mut self,
+        peer_rx: &mut tokio::sync::watch::Receiver<T>,
+        changed: Result<(), tokio::sync::watch::error::RecvError>,
+    ) -> bool {
+        if changed.is_err() {
+            tracing::debug!(
+                model_ref = self.model_ref,
+                "split topology coordinator peer watch closed"
+            );
+            return false;
+        }
+        tokio::time::sleep(SPLIT_PARTICIPANT_STABLE_FOR).await;
+        drain_split_peer_changes(peer_rx);
+        self.evaluate_replan("membership_changed").await
     }
 
     async fn evaluate_replan(&mut self, reason: &'static str) -> bool {
@@ -1459,170 +1660,206 @@ impl SplitTopologyCoordinator {
             &snapshot.participants,
             &runtime_statuses,
         );
-        let planned_participants =
-            split_recovery_candidate_participants(&snapshot.participants, &unavailable_stage_nodes);
-        let candidate = if split_participants_meet_minimum(&planned_participants) {
-            match self.plan_replan_candidate(&planned_participants) {
-                Ok(candidate) => {
-                    if candidate
-                        .stages
-                        .first()
-                        .is_none_or(|stage0| stage0.node_id != self.node.id())
-                    {
-                        tracing::debug!(
-                            model_ref = self.model_ref,
-                            reason,
-                            candidate_stages = ?split_stage_plan_labels(&candidate.stages),
-                            "split topology replan skipped; stage 0 would move to another node"
-                        );
-                        None
-                    } else {
-                        Some(candidate)
-                    }
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        model_ref = self.model_ref,
-                        reason,
-                        error = %err,
-                        participants = ?split_participant_labels(&planned_participants),
-                        excluded = ?split_participant_exclusion_labels(&snapshot.excluded),
-                        "split topology replan candidate failed"
-                    );
-                    None
-                }
-            }
-        } else {
-            tracing::debug!(
-                model_ref = self.model_ref,
-                reason,
-                participants = ?split_participant_labels(&snapshot.participants),
-                excluded = ?split_participant_exclusion_labels(&snapshot.excluded),
-                "split topology replan skipped; quorum not met"
-            );
-            None
-        };
+        let candidate = self.replan_candidate(reason, &snapshot, &unavailable_stage_nodes);
 
-        match split_loss_recovery_decision(
+        if let Some(should_continue) = self
+            .handle_loss_recovery(
+                reason,
+                &snapshot.participants,
+                &missing_stage_nodes,
+                &unavailable_stage_nodes,
+                candidate.as_ref(),
+            )
+            .await
+        {
+            return should_continue;
+        }
+
+        self.apply_replan_candidate(reason, snapshot.participants.len(), candidate)
+            .await
+    }
+
+    fn replan_candidate(
+        &self,
+        reason: &'static str,
+        snapshot: &SplitParticipantSnapshot,
+        unavailable_stage_nodes: &[iroh::EndpointId],
+    ) -> Option<SplitTopologyGeneration> {
+        let planned_participants =
+            split_recovery_candidate_participants(&snapshot.participants, unavailable_stage_nodes);
+        if !split_participants_meet_minimum(&planned_participants) {
+            log_split_replan_quorum_not_met(
+                &self.model_ref,
+                reason,
+                &snapshot.participants,
+                &snapshot.excluded,
+            );
+            return None;
+        }
+        self.try_build_local_replan_candidate(reason, &planned_participants, &snapshot.excluded)
+    }
+
+    fn try_build_local_replan_candidate(
+        &self,
+        reason: &'static str,
+        planned_participants: &[SplitParticipant],
+        excluded: &[SplitParticipantExclusion],
+    ) -> Option<SplitTopologyGeneration> {
+        match self.plan_replan_candidate(planned_participants) {
+            Ok(candidate) if split_candidate_stage0_is_local(self.node.id(), &candidate) => {
+                Some(candidate)
+            }
+            Ok(candidate) => {
+                tracing::debug!(
+                    model_ref = self.model_ref,
+                    reason,
+                    candidate_stages = ?split_stage_plan_labels(&candidate.stages),
+                    "split topology replan skipped; stage 0 would move to another node"
+                );
+                None
+            }
+            Err(err) => {
+                tracing::warn!(
+                    model_ref = self.model_ref,
+                    reason,
+                    error = %err,
+                    participants = ?split_participant_labels(planned_participants),
+                    excluded = ?split_participant_exclusion_labels(excluded),
+                    "split topology replan candidate failed"
+                );
+                None
+            }
+        }
+    }
+
+    async fn handle_loss_recovery(
+        &mut self,
+        reason: &'static str,
+        current_participants: &[SplitParticipant],
+        missing_stage_nodes: &[iroh::EndpointId],
+        unavailable_stage_nodes: &[iroh::EndpointId],
+        candidate: Option<&SplitTopologyGeneration>,
+    ) -> Option<bool> {
+        let decision = split_loss_recovery_decision(
             &self.active,
-            &snapshot.participants,
-            &unavailable_stage_nodes,
-            candidate.as_ref(),
+            current_participants,
+            unavailable_stage_nodes,
+            candidate,
             self.local_model_fits(),
-        ) {
-            SplitLossRecoveryDecision::NoActiveStageLoss => {}
+        );
+        match decision {
+            SplitLossRecoveryDecision::NoActiveStageLoss => None,
             SplitLossRecoveryDecision::ReplacementSplit => {
                 let candidate = candidate.expect("replacement split decision requires a candidate");
-                tracing::info!(
-                    model_ref = self.model_ref,
-                    reason,
-                    active_topology_id = self.active.topology_id,
-                    active_generation = self.active.generation,
-                    candidate_topology_id = candidate.topology_id,
-                    candidate_generation = candidate.generation,
-                    missing_stage_nodes = ?split_node_labels(&missing_stage_nodes),
-                    unavailable_stage_nodes = ?split_node_labels(&unavailable_stage_nodes),
-                    active_stages = ?split_stage_plan_labels(&self.active.stages),
-                    candidate_stages = ?split_stage_plan_labels(&candidate.stages),
-                    participants = ?split_participant_labels(&candidate.participants),
-                    "split topology lost an active stage peer; loading replacement split generation"
-                );
-                match self.load_and_publish_candidate(reason, candidate).await {
-                    Ok(()) => return true,
-                    Err(err) => {
-                        tracing::warn!(
-                            model_ref = self.model_ref,
-                            reason,
-                            error = %err,
-                            "split topology replacement failed during load-and-cutover"
-                        );
-                    }
-                }
-                if self.local_model_fits() {
-                    if let Err(err) = self
-                        .request_local_fallback(reason, unavailable_stage_nodes.clone())
-                        .await
-                    {
-                        tracing::warn!(
-                            model_ref = self.model_ref,
-                            reason,
-                            error = %err,
-                            "failed to publish split topology local fallback request"
-                        );
-                    } else {
-                        return false;
-                    }
-                }
-                if let Err(err) = self
-                    .withdraw_active_generation(reason, unavailable_stage_nodes.clone())
-                    .await
-                {
-                    tracing::warn!(
-                        model_ref = self.model_ref,
+                Some(
+                    self.handle_replacement_split_loss(
                         reason,
-                        error = %err,
-                        "failed to publish split topology withdrawal"
-                    );
-                } else {
-                    return false;
-                }
-                return true;
+                        candidate,
+                        missing_stage_nodes,
+                        unavailable_stage_nodes,
+                    )
+                    .await,
+                )
             }
-            SplitLossRecoveryDecision::LocalFallback => {
+            SplitLossRecoveryDecision::LocalFallback => Some(
+                self.handle_local_fallback_loss(
+                    reason,
+                    missing_stage_nodes,
+                    unavailable_stage_nodes,
+                )
+                .await,
+            ),
+            SplitLossRecoveryDecision::Withdraw => Some(
+                self.handle_withdraw_loss(reason, missing_stage_nodes, unavailable_stage_nodes)
+                    .await,
+            ),
+        }
+    }
+
+    async fn handle_replacement_split_loss(
+        &mut self,
+        reason: &'static str,
+        candidate: &SplitTopologyGeneration,
+        missing_stage_nodes: &[iroh::EndpointId],
+        unavailable_stage_nodes: &[iroh::EndpointId],
+    ) -> bool {
+        tracing::info!(
+            model_ref = self.model_ref,
+            reason,
+            active_topology_id = self.active.topology_id,
+            active_generation = self.active.generation,
+            candidate_topology_id = candidate.topology_id,
+            candidate_generation = candidate.generation,
+            missing_stage_nodes = ?split_node_labels(missing_stage_nodes),
+            unavailable_stage_nodes = ?split_node_labels(unavailable_stage_nodes),
+            active_stages = ?split_stage_plan_labels(&self.active.stages),
+            candidate_stages = ?split_stage_plan_labels(&candidate.stages),
+            participants = ?split_participant_labels(&candidate.participants),
+            "split topology lost an active stage peer; loading replacement split generation"
+        );
+        match self
+            .load_and_publish_candidate(reason, candidate.clone())
+            .await
+        {
+            Ok(()) => true,
+            Err(err) => {
                 tracing::warn!(
                     model_ref = self.model_ref,
                     reason,
-                    topology_id = self.active.topology_id,
-                    generation = self.active.generation,
-                    missing_stage_nodes = ?split_node_labels(&missing_stage_nodes),
-                    unavailable_stage_nodes = ?split_node_labels(&unavailable_stage_nodes),
-                    "split topology lost an active stage peer; requesting local runtime fallback"
+                    error = %err,
+                    "split topology replacement failed during load-and-cutover"
                 );
-                if let Err(err) = self
-                    .request_local_fallback(reason, unavailable_stage_nodes.clone())
+                self.publish_loss_fallback(reason, unavailable_stage_nodes.to_vec())
                     .await
-                {
-                    tracing::warn!(
-                        model_ref = self.model_ref,
-                        reason,
-                        error = %err,
-                        "failed to publish split topology local fallback request"
-                    );
-                } else {
-                    return false;
-                }
-            }
-            SplitLossRecoveryDecision::Withdraw => {
-                tracing::warn!(
-                    model_ref = self.model_ref,
-                    reason,
-                    topology_id = self.active.topology_id,
-                    generation = self.active.generation,
-                    missing_stage_nodes = ?split_node_labels(&missing_stage_nodes),
-                    unavailable_stage_nodes = ?split_node_labels(&unavailable_stage_nodes),
-                    "split topology lost an active stage peer and no replacement path is available; withdrawing active generation"
-                );
-                if let Err(err) = self
-                    .withdraw_active_generation(reason, unavailable_stage_nodes.clone())
-                    .await
-                {
-                    tracing::warn!(
-                        model_ref = self.model_ref,
-                        reason,
-                        error = %err,
-                        "failed to publish split topology withdrawal"
-                    );
-                } else {
-                    return false;
-                }
             }
         }
+    }
 
-        if snapshot.participants.len() < SPLIT_DEFAULT_MIN_PARTICIPANTS {
-            return true;
-        }
+    async fn handle_local_fallback_loss(
+        &mut self,
+        reason: &'static str,
+        missing_stage_nodes: &[iroh::EndpointId],
+        unavailable_stage_nodes: &[iroh::EndpointId],
+    ) -> bool {
+        tracing::warn!(
+            model_ref = self.model_ref,
+            reason,
+            topology_id = self.active.topology_id,
+            generation = self.active.generation,
+            missing_stage_nodes = ?split_node_labels(missing_stage_nodes),
+            unavailable_stage_nodes = ?split_node_labels(unavailable_stage_nodes),
+            "split topology lost an active stage peer; requesting local runtime fallback"
+        );
+        self.publish_local_fallback(reason, unavailable_stage_nodes.to_vec())
+            .await
+    }
 
-        let Some(candidate) = candidate else {
+    async fn handle_withdraw_loss(
+        &mut self,
+        reason: &'static str,
+        missing_stage_nodes: &[iroh::EndpointId],
+        unavailable_stage_nodes: &[iroh::EndpointId],
+    ) -> bool {
+        tracing::warn!(
+            model_ref = self.model_ref,
+            reason,
+            topology_id = self.active.topology_id,
+            generation = self.active.generation,
+            missing_stage_nodes = ?split_node_labels(missing_stage_nodes),
+            unavailable_stage_nodes = ?split_node_labels(unavailable_stage_nodes),
+            "split topology lost an active stage peer and no replacement path is available; withdrawing active generation"
+        );
+        self.publish_withdrawal(reason, unavailable_stage_nodes.to_vec())
+            .await
+    }
+
+    async fn apply_replan_candidate(
+        &mut self,
+        reason: &'static str,
+        participant_count: usize,
+        candidate: Option<SplitTopologyGeneration>,
+    ) -> bool {
+        let Some(candidate) = split_candidate_for_replan(participant_count, candidate) else {
             return true;
         };
 
@@ -1630,43 +1867,118 @@ impl SplitTopologyCoordinator {
             split_replan_decision_with_reason(&self.active, &candidate);
         match replan_decision {
             SplitReplanDecision::Keep => {
-                tracing::debug!(
-                    model_ref = self.model_ref,
-                    reason,
-                    decision_reason = replan_decision_reason,
-                    active_generation = self.active.generation,
-                    active_stages = self.active.stages.len(),
-                    candidate_stages = candidate.stages.len(),
-                    active_participants = self.active.participants.len(),
-                    candidate_participants = candidate.participants.len(),
-                    "split topology replan skipped; candidate is not materially better"
-                );
+                self.log_replan_keep(reason, &candidate, replan_decision_reason);
             }
             SplitReplanDecision::Candidate => {
-                tracing::info!(
-                    model_ref = self.model_ref,
-                    reason,
-                    decision_reason = replan_decision_reason,
-                    active_topology_id = self.active.topology_id,
-                    active_generation = self.active.generation,
-                    candidate_topology_id = candidate.topology_id,
-                    candidate_generation = candidate.generation,
-                    active_stages = ?split_stage_plan_labels(&self.active.stages),
-                    candidate_stages = ?split_stage_plan_labels(&candidate.stages),
-                    participants = ?split_participant_labels(&candidate.participants),
-                    "split topology replan candidate accepted; loading candidate generation"
-                );
-                if let Err(err) = self.load_and_publish_candidate(reason, candidate).await {
-                    tracing::warn!(
-                        model_ref = self.model_ref,
-                        reason,
-                        error = %err,
-                        "split topology replan candidate failed during load-and-cutover"
-                    );
-                }
+                self.apply_selected_replan_candidate(reason, candidate, replan_decision_reason)
+                    .await;
             }
         }
         true
+    }
+
+    fn log_replan_keep(
+        &self,
+        reason: &'static str,
+        candidate: &SplitTopologyGeneration,
+        decision_reason: &'static str,
+    ) {
+        tracing::debug!(
+            model_ref = self.model_ref,
+            reason,
+            decision_reason,
+            active_generation = self.active.generation,
+            active_stages = self.active.stages.len(),
+            candidate_stages = candidate.stages.len(),
+            active_participants = self.active.participants.len(),
+            candidate_participants = candidate.participants.len(),
+            "split topology replan skipped; candidate is not materially better"
+        );
+    }
+
+    async fn apply_selected_replan_candidate(
+        &mut self,
+        reason: &'static str,
+        candidate: SplitTopologyGeneration,
+        decision_reason: &'static str,
+    ) {
+        tracing::info!(
+            model_ref = self.model_ref,
+            reason,
+            decision_reason,
+            active_topology_id = self.active.topology_id,
+            active_generation = self.active.generation,
+            candidate_topology_id = candidate.topology_id,
+            candidate_generation = candidate.generation,
+            active_stages = ?split_stage_plan_labels(&self.active.stages),
+            candidate_stages = ?split_stage_plan_labels(&candidate.stages),
+            participants = ?split_participant_labels(&candidate.participants),
+            "split topology replan candidate accepted; loading candidate generation"
+        );
+        if let Err(err) = self.load_and_publish_candidate(reason, candidate).await {
+            tracing::warn!(
+                model_ref = self.model_ref,
+                reason,
+                error = %err,
+                "split topology replan candidate failed during load-and-cutover"
+            );
+        }
+    }
+
+    async fn publish_loss_fallback(
+        &mut self,
+        reason: &'static str,
+        unavailable_stage_nodes: Vec<iroh::EndpointId>,
+    ) -> bool {
+        if self.local_model_fits() {
+            return self
+                .publish_local_fallback(reason, unavailable_stage_nodes.clone())
+                .await;
+        }
+        self.publish_withdrawal(reason, unavailable_stage_nodes)
+            .await
+    }
+
+    async fn publish_local_fallback(
+        &mut self,
+        reason: &'static str,
+        unavailable_stage_nodes: Vec<iroh::EndpointId>,
+    ) -> bool {
+        if let Err(err) = self
+            .request_local_fallback(reason, unavailable_stage_nodes)
+            .await
+        {
+            tracing::warn!(
+                model_ref = self.model_ref,
+                reason,
+                error = %err,
+                "failed to publish split topology local fallback request"
+            );
+            true
+        } else {
+            false
+        }
+    }
+
+    async fn publish_withdrawal(
+        &mut self,
+        reason: &'static str,
+        unavailable_stage_nodes: Vec<iroh::EndpointId>,
+    ) -> bool {
+        if let Err(err) = self
+            .withdraw_active_generation(reason, unavailable_stage_nodes)
+            .await
+        {
+            tracing::warn!(
+                model_ref = self.model_ref,
+                reason,
+                error = %err,
+                "failed to publish split topology withdrawal"
+            );
+            true
+        } else {
+            false
+        }
     }
 
     fn plan_replan_candidate(
@@ -1922,6 +2234,31 @@ fn split_recovery_candidate_participants(
         .collect()
 }
 
+fn split_candidate_for_replan(
+    participant_count: usize,
+    candidate: Option<SplitTopologyGeneration>,
+) -> Option<SplitTopologyGeneration> {
+    if participant_count < SPLIT_DEFAULT_MIN_PARTICIPANTS {
+        return None;
+    }
+    candidate
+}
+
+fn log_split_replan_quorum_not_met(
+    model_ref: &str,
+    reason: &'static str,
+    participants: &[SplitParticipant],
+    excluded: &[SplitParticipantExclusion],
+) {
+    tracing::debug!(
+        model_ref,
+        reason,
+        participants = ?split_participant_labels(participants),
+        excluded = ?split_participant_exclusion_labels(excluded),
+        "split topology replan skipped; quorum not met"
+    );
+}
+
 fn split_participants_meet_minimum(participants: &[SplitParticipant]) -> bool {
     participants.len() >= SPLIT_DEFAULT_MIN_PARTICIPANTS
 }
@@ -2049,6 +2386,12 @@ fn split_stage_balance_score(stages: &[RuntimeSliceStagePlan]) -> u32 {
 
 type SplitParticipantSignature = Vec<(String, u64, u64, u64, Option<u32>, bool, u32)>;
 
+fn drain_split_peer_changes<T>(peer_rx: &mut tokio::sync::watch::Receiver<T>) {
+    while peer_rx.has_changed().unwrap_or(false) {
+        let _ = peer_rx.borrow_and_update();
+    }
+}
+
 async fn wait_for_split_participants(
     node: &mesh::Node,
     model_name: &str,
@@ -2068,25 +2411,18 @@ async fn wait_for_split_participants(
                 .await;
         let signature = split_participant_signature(&snapshot.participants);
         let now = tokio::time::Instant::now();
-        if signature != last_signature {
-            stable_since = now;
-            last_signature = signature;
-            tracing::info!(
-                model_ref,
-                included = ?split_participant_labels(&snapshot.participants),
-                excluded = ?split_participant_exclusion_labels(&snapshot.excluded),
-                "split topology participant set changed"
-            );
-        }
-        if snapshot.participants.len() >= best.len() {
-            best = snapshot.participants.clone();
-            best_excluded = snapshot.excluded.clone();
-        }
+        split_participant_signature_changed(
+            model_ref,
+            &snapshot,
+            &signature,
+            &mut last_signature,
+            &mut stable_since,
+            now,
+        );
+        record_best_split_participants(&snapshot, &mut best, &mut best_excluded);
 
         let stable_for = now.saturating_duration_since(stable_since);
-        if snapshot.participants.len() >= SPLIT_DEFAULT_MIN_PARTICIPANTS
-            && stable_for >= SPLIT_PARTICIPANT_STABLE_FOR
-        {
+        if split_participants_ready(&snapshot, stable_for) {
             tracing::info!(
                 model_ref,
                 stable_for_ms = stable_for.as_millis(),
@@ -2097,27 +2433,90 @@ async fn wait_for_split_participants(
         }
 
         if now >= deadline {
-            anyhow::ensure!(
-                best.len() >= SPLIT_DEFAULT_MIN_PARTICIPANTS,
-                "split runtime needs at least two participating nodes for {model_ref}; found {} eligible [{}]; excluded [{}]",
-                best.len(),
-                split_participant_labels(&best).join(", "),
-                split_participant_exclusion_labels(&best_excluded).join(", ")
-            );
+            ensure_split_participant_timeout_has_quorum(model_ref, &best, &best_excluded)?;
             tracing::warn!(
                 model_ref,
                 participants = ?split_participant_labels(&best),
                 excluded = ?split_participant_exclusion_labels(&best_excluded),
                 "split topology participant wait timed out; using best observed set"
             );
-            return Ok(SplitParticipantSnapshot {
-                participants: best,
-                excluded: best_excluded,
-            });
+            return Ok(best_split_participant_snapshot(best, best_excluded));
         }
 
         tokio::time::sleep(SPLIT_PARTICIPANT_POLL_INTERVAL).await;
     }
+}
+
+fn split_participant_signature_changed(
+    model_ref: &str,
+    snapshot: &SplitParticipantSnapshot,
+    signature: &SplitParticipantSignature,
+    last_signature: &mut SplitParticipantSignature,
+    stable_since: &mut tokio::time::Instant,
+    now: tokio::time::Instant,
+) {
+    if signature == last_signature {
+        return;
+    }
+    *stable_since = now;
+    *last_signature = signature.clone();
+    tracing::info!(
+        model_ref,
+        included = ?split_participant_labels(&snapshot.participants),
+        excluded = ?split_participant_exclusion_labels(&snapshot.excluded),
+        "split topology participant set changed"
+    );
+}
+
+fn record_best_split_participants(
+    snapshot: &SplitParticipantSnapshot,
+    best: &mut Vec<SplitParticipant>,
+    best_excluded: &mut Vec<SplitParticipantExclusion>,
+) {
+    if snapshot.participants.len() >= best.len() {
+        *best = snapshot.participants.clone();
+        *best_excluded = snapshot.excluded.clone();
+    }
+}
+
+fn split_participants_ready(snapshot: &SplitParticipantSnapshot, stable_for: Duration) -> bool {
+    snapshot.participants.len() >= SPLIT_DEFAULT_MIN_PARTICIPANTS
+        && stable_for >= SPLIT_PARTICIPANT_STABLE_FOR
+}
+
+fn ensure_split_participant_timeout_has_quorum(
+    model_ref: &str,
+    best: &[SplitParticipant],
+    best_excluded: &[SplitParticipantExclusion],
+) -> Result<()> {
+    anyhow::ensure!(
+        best.len() >= SPLIT_DEFAULT_MIN_PARTICIPANTS,
+        "split runtime needs at least two participating nodes for {model_ref}; found {} eligible [{}]; excluded [{}]",
+        best.len(),
+        split_participant_labels(best).join(", "),
+        split_participant_exclusion_labels(best_excluded).join(", ")
+    );
+    Ok(())
+}
+
+fn best_split_participant_snapshot(
+    participants: Vec<SplitParticipant>,
+    excluded: Vec<SplitParticipantExclusion>,
+) -> SplitParticipantSnapshot {
+    SplitParticipantSnapshot {
+        participants,
+        excluded,
+    }
+}
+
+fn split_candidate_stage0_is_local(
+    local_node_id: iroh::EndpointId,
+    candidate: &SplitTopologyGeneration,
+) -> bool {
+    candidate
+        .stages
+        .first()
+        .is_some_and(|stage0| stage0.node_id == local_node_id)
 }
 
 async fn collect_split_participants(

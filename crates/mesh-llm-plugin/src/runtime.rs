@@ -1334,238 +1334,318 @@ impl PluginRuntime {
     pub async fn run_with_stream<P: Plugin>(mut plugin: P, mut stream: LocalStream) -> Result<()> {
         loop {
             let envelope = read_envelope(&mut stream).await?;
-            let request_id = envelope.request_id;
-            let plugin_id = plugin.plugin_id().to_string();
-
-            match envelope.payload {
-                Some(proto::envelope::Payload::InitializeRequest(request)) => {
-                    let init_result = {
-                        let mut context = PluginContext {
-                            stream: &mut stream,
-                            plugin_id: &plugin_id,
-                        };
-                        plugin
-                            .initialize(PluginInitializeRequest::from(request), &mut context)
-                            .await
-                    };
-                    if let Err(err) = init_result {
-                        let response = proto::Envelope {
-                            protocol_version: PROTOCOL_VERSION,
-                            plugin_id: plugin_id.clone(),
-                            request_id,
-                            payload: Some(proto::envelope::Payload::ErrorResponse(
-                                err.into_error_response(),
-                            )),
-                        };
-                        write_envelope(&mut stream, &response).await?;
-                        break;
-                    }
-                    let response = proto::Envelope {
-                        protocol_version: PROTOCOL_VERSION,
-                        plugin_id: plugin_id.clone(),
-                        request_id,
-                        payload: Some(proto::envelope::Payload::InitializeResponse(
-                            proto::InitializeResponse {
-                                plugin_id: plugin_id.clone(),
-                                plugin_protocol_version: PROTOCOL_VERSION,
-                                plugin_version: plugin.plugin_version(),
-                                server_info_json: serde_json::to_string(&plugin.server_info())?,
-                                capabilities: plugin.capabilities(),
-                                manifest: plugin.manifest(),
-                            },
-                        )),
-                    };
-                    write_envelope(&mut stream, &response).await?;
-                    let mut context = PluginContext {
-                        stream: &mut stream,
-                        plugin_id: &plugin_id,
-                    };
-                    plugin.on_initialized(&mut context).await?;
-                }
-                Some(proto::envelope::Payload::HealthRequest(_)) => {
-                    let detail = {
-                        let mut context = PluginContext {
-                            stream: &mut stream,
-                            plugin_id: &plugin_id,
-                        };
-                        plugin.health(&mut context).await?
-                    };
-                    let response = proto::Envelope {
-                        protocol_version: PROTOCOL_VERSION,
-                        plugin_id: plugin_id.clone(),
-                        request_id,
-                        payload: Some(proto::envelope::Payload::HealthResponse(
-                            proto::HealthResponse {
-                                status: proto::health_response::Status::Ok as i32,
-                                detail,
-                            },
-                        )),
-                    };
-                    write_envelope(&mut stream, &response).await?;
-                }
-                Some(proto::envelope::Payload::ShutdownRequest(_)) => {
-                    let response = proto::Envelope {
-                        protocol_version: PROTOCOL_VERSION,
-                        plugin_id: plugin_id.clone(),
-                        request_id,
-                        payload: Some(proto::envelope::Payload::ShutdownResponse(
-                            proto::ShutdownResponse {},
-                        )),
-                    };
-                    write_envelope(&mut stream, &response).await?;
-                    break;
-                }
-                Some(proto::envelope::Payload::RpcRequest(request)) => {
-                    let payload = {
-                        let mut context = PluginContext {
-                            stream: &mut stream,
-                            plugin_id: &plugin_id,
-                        };
-                        match plugin.handle_rpc(request, &mut context).await {
-                            Ok(payload) => payload,
-                            Err(err) => {
-                                proto::envelope::Payload::ErrorResponse(err.into_error_response())
-                            }
-                        }
-                    };
-                    write_envelope(
-                        &mut stream,
-                        &proto::Envelope {
-                            protocol_version: PROTOCOL_VERSION,
-                            plugin_id: plugin_id.clone(),
-                            request_id,
-                            payload: Some(payload),
-                        },
-                    )
-                    .await?;
-                }
-                Some(proto::envelope::Payload::InvokeServiceRequest(request)) => {
-                    let payload = {
-                        let mut context = PluginContext {
-                            stream: &mut stream,
-                            plugin_id: &plugin_id,
-                        };
-                        match plugin.invoke_service(request, &mut context).await {
-                            Ok(Some(response)) => {
-                                proto::envelope::Payload::InvokeServiceResponse(response)
-                            }
-                            Ok(None) => proto::envelope::Payload::ErrorResponse(
-                                PluginError::method_not_found("Unsupported service invocation")
-                                    .into_error_response(),
-                            ),
-                            Err(err) => {
-                                proto::envelope::Payload::ErrorResponse(err.into_error_response())
-                            }
-                        }
-                    };
-                    write_envelope(
-                        &mut stream,
-                        &proto::Envelope {
-                            protocol_version: PROTOCOL_VERSION,
-                            plugin_id: plugin_id.clone(),
-                            request_id,
-                            payload: Some(payload),
-                        },
-                    )
-                    .await?;
-                }
-                Some(proto::envelope::Payload::RpcNotification(notification)) => {
-                    let mut context = PluginContext {
-                        stream: &mut stream,
-                        plugin_id: &plugin_id,
-                    };
-                    plugin
-                        .on_rpc_notification(notification, &mut context)
-                        .await?;
-                }
-                Some(proto::envelope::Payload::ChannelMessage(message)) => {
-                    let mut context = PluginContext {
-                        stream: &mut stream,
-                        plugin_id: &plugin_id,
-                    };
-                    plugin.on_channel_message(message, &mut context).await?;
-                }
-                Some(proto::envelope::Payload::BulkTransferMessage(message)) => {
-                    let mut context = PluginContext {
-                        stream: &mut stream,
-                        plugin_id: &plugin_id,
-                    };
-                    plugin
-                        .on_bulk_transfer_message(message, &mut context)
-                        .await?;
-                }
-                Some(proto::envelope::Payload::MeshEvent(event)) => {
-                    let mut context = PluginContext {
-                        stream: &mut stream,
-                        plugin_id: &plugin_id,
-                    };
-                    plugin.on_mesh_event(event, &mut context).await?;
-                }
-                Some(proto::envelope::Payload::OpenStreamRequest(request)) => {
-                    let payload = {
-                        let mut context = PluginContext {
-                            stream: &mut stream,
-                            plugin_id: &plugin_id,
-                        };
-                        match plugin.open_stream(request, &mut context).await {
-                            Ok(Some(response)) => {
-                                proto::envelope::Payload::OpenStreamResponse(response)
-                            }
-                            Ok(None) => proto::envelope::Payload::ErrorResponse(
-                                PluginError::method_not_found(
-                                    "Unsupported stream control message 'open_stream'",
-                                )
-                                .into_error_response(),
-                            ),
-                            Err(err) => {
-                                proto::envelope::Payload::ErrorResponse(err.into_error_response())
-                            }
-                        }
-                    };
-                    write_envelope(
-                        &mut stream,
-                        &proto::Envelope {
-                            protocol_version: PROTOCOL_VERSION,
-                            plugin_id: plugin_id.clone(),
-                            request_id,
-                            payload: Some(payload),
-                        },
-                    )
-                    .await?;
-                }
-                Some(proto::envelope::Payload::CancelStreamNotification(notification)) => {
-                    let mut context = PluginContext {
-                        stream: &mut stream,
-                        plugin_id: &plugin_id,
-                    };
-                    plugin.on_cancel_stream(notification, &mut context).await?;
-                }
-                Some(proto::envelope::Payload::CloseStreamNotification(notification)) => {
-                    let mut context = PluginContext {
-                        stream: &mut stream,
-                        plugin_id: &plugin_id,
-                    };
-                    plugin.on_close_stream(notification, &mut context).await?;
-                }
-                Some(proto::envelope::Payload::StreamError(error)) => {
-                    let mut context = PluginContext {
-                        stream: &mut stream,
-                        plugin_id: &plugin_id,
-                    };
-                    plugin.on_stream_error(error, &mut context).await?;
-                }
-                Some(proto::envelope::Payload::ErrorResponse(error)) => {
-                    let mut context = PluginContext {
-                        stream: &mut stream,
-                        plugin_id: &plugin_id,
-                    };
-                    plugin.on_host_error(error, &mut context).await?;
-                }
-                _ => {}
+            if !Self::handle_envelope(&mut plugin, &mut stream, envelope).await? {
+                break;
             }
         }
 
         Ok(())
+    }
+
+    async fn handle_envelope<P: Plugin>(
+        plugin: &mut P,
+        stream: &mut LocalStream,
+        envelope: proto::Envelope,
+    ) -> Result<bool> {
+        let request_id = envelope.request_id;
+        let plugin_id = plugin.plugin_id().to_string();
+        let Some(payload) = envelope.payload else {
+            return Ok(true);
+        };
+
+        match payload {
+            proto::envelope::Payload::InitializeRequest(request) => {
+                Self::handle_initialize(plugin, stream, &plugin_id, request_id, request).await
+            }
+            proto::envelope::Payload::HealthRequest(_) => {
+                Self::handle_health(plugin, stream, &plugin_id, request_id).await
+            }
+            proto::envelope::Payload::ShutdownRequest(_) => {
+                Self::write_payload(
+                    stream,
+                    &plugin_id,
+                    request_id,
+                    proto::envelope::Payload::ShutdownResponse(proto::ShutdownResponse {}),
+                )
+                .await?;
+                Ok(false)
+            }
+            proto::envelope::Payload::RpcRequest(request) => {
+                Self::handle_rpc(plugin, stream, &plugin_id, request_id, request).await
+            }
+            proto::envelope::Payload::InvokeServiceRequest(request) => {
+                Self::handle_invoke_service(plugin, stream, &plugin_id, request_id, request).await
+            }
+            proto::envelope::Payload::OpenStreamRequest(request) => {
+                Self::handle_open_stream(plugin, stream, &plugin_id, request_id, request).await
+            }
+            proto::envelope::Payload::RpcNotification(notification) => {
+                Self::handle_rpc_notification(plugin, stream, &plugin_id, notification).await
+            }
+            proto::envelope::Payload::ChannelMessage(message) => {
+                Self::handle_channel_message(plugin, stream, &plugin_id, message).await
+            }
+            proto::envelope::Payload::BulkTransferMessage(message) => {
+                Self::handle_bulk_transfer_message(plugin, stream, &plugin_id, message).await
+            }
+            proto::envelope::Payload::MeshEvent(event) => {
+                Self::handle_mesh_event(plugin, stream, &plugin_id, event).await
+            }
+            proto::envelope::Payload::CancelStreamNotification(notification) => {
+                Self::handle_cancel_stream(plugin, stream, &plugin_id, notification).await
+            }
+            proto::envelope::Payload::CloseStreamNotification(notification) => {
+                Self::handle_close_stream(plugin, stream, &plugin_id, notification).await
+            }
+            proto::envelope::Payload::StreamError(error) => {
+                Self::handle_stream_error(plugin, stream, &plugin_id, error).await
+            }
+            proto::envelope::Payload::ErrorResponse(error) => {
+                Self::handle_host_error(plugin, stream, &plugin_id, error).await
+            }
+            _ => Ok(true),
+        }
+    }
+
+    async fn handle_initialize<P: Plugin>(
+        plugin: &mut P,
+        stream: &mut LocalStream,
+        plugin_id: &str,
+        request_id: u64,
+        request: proto::InitializeRequest,
+    ) -> Result<bool> {
+        let init_result = {
+            let mut context = PluginContext { stream, plugin_id };
+            plugin
+                .initialize(PluginInitializeRequest::from(request), &mut context)
+                .await
+        };
+        if let Err(err) = init_result {
+            Self::write_payload(
+                stream,
+                plugin_id,
+                request_id,
+                proto::envelope::Payload::ErrorResponse(err.into_error_response()),
+            )
+            .await?;
+            return Ok(false);
+        }
+
+        Self::write_payload(
+            stream,
+            plugin_id,
+            request_id,
+            proto::envelope::Payload::InitializeResponse(proto::InitializeResponse {
+                plugin_id: plugin_id.to_string(),
+                plugin_protocol_version: PROTOCOL_VERSION,
+                plugin_version: plugin.plugin_version(),
+                server_info_json: serde_json::to_string(&plugin.server_info())?,
+                capabilities: plugin.capabilities(),
+                manifest: plugin.manifest(),
+            }),
+        )
+        .await?;
+
+        let mut context = PluginContext { stream, plugin_id };
+        plugin.on_initialized(&mut context).await?;
+        Ok(true)
+    }
+
+    async fn handle_health<P: Plugin>(
+        plugin: &mut P,
+        stream: &mut LocalStream,
+        plugin_id: &str,
+        request_id: u64,
+    ) -> Result<bool> {
+        let detail = {
+            let mut context = PluginContext { stream, plugin_id };
+            plugin.health(&mut context).await?
+        };
+        Self::write_payload(
+            stream,
+            plugin_id,
+            request_id,
+            proto::envelope::Payload::HealthResponse(proto::HealthResponse {
+                status: proto::health_response::Status::Ok as i32,
+                detail,
+            }),
+        )
+        .await?;
+        Ok(true)
+    }
+
+    async fn handle_rpc<P: Plugin>(
+        plugin: &mut P,
+        stream: &mut LocalStream,
+        plugin_id: &str,
+        request_id: u64,
+        request: proto::RpcRequest,
+    ) -> Result<bool> {
+        let payload = {
+            let mut context = PluginContext { stream, plugin_id };
+            match plugin.handle_rpc(request, &mut context).await {
+                Ok(payload) => payload,
+                Err(err) => proto::envelope::Payload::ErrorResponse(err.into_error_response()),
+            }
+        };
+        Self::write_payload(stream, plugin_id, request_id, payload).await?;
+        Ok(true)
+    }
+
+    async fn handle_invoke_service<P: Plugin>(
+        plugin: &mut P,
+        stream: &mut LocalStream,
+        plugin_id: &str,
+        request_id: u64,
+        request: proto::InvokeServiceRequest,
+    ) -> Result<bool> {
+        let payload = {
+            let mut context = PluginContext { stream, plugin_id };
+            match plugin.invoke_service(request, &mut context).await {
+                Ok(Some(response)) => proto::envelope::Payload::InvokeServiceResponse(response),
+                Ok(None) => proto::envelope::Payload::ErrorResponse(
+                    PluginError::method_not_found("Unsupported service invocation")
+                        .into_error_response(),
+                ),
+                Err(err) => proto::envelope::Payload::ErrorResponse(err.into_error_response()),
+            }
+        };
+        Self::write_payload(stream, plugin_id, request_id, payload).await?;
+        Ok(true)
+    }
+
+    async fn handle_open_stream<P: Plugin>(
+        plugin: &mut P,
+        stream: &mut LocalStream,
+        plugin_id: &str,
+        request_id: u64,
+        request: proto::OpenStreamRequest,
+    ) -> Result<bool> {
+        let payload = {
+            let mut context = PluginContext { stream, plugin_id };
+            match plugin.open_stream(request, &mut context).await {
+                Ok(Some(response)) => proto::envelope::Payload::OpenStreamResponse(response),
+                Ok(None) => proto::envelope::Payload::ErrorResponse(
+                    PluginError::method_not_found(
+                        "Unsupported stream control message 'open_stream'",
+                    )
+                    .into_error_response(),
+                ),
+                Err(err) => proto::envelope::Payload::ErrorResponse(err.into_error_response()),
+            }
+        };
+        Self::write_payload(stream, plugin_id, request_id, payload).await?;
+        Ok(true)
+    }
+
+    async fn handle_rpc_notification<P: Plugin>(
+        plugin: &mut P,
+        stream: &mut LocalStream,
+        plugin_id: &str,
+        notification: proto::RpcNotification,
+    ) -> Result<bool> {
+        let mut context = PluginContext { stream, plugin_id };
+        plugin
+            .on_rpc_notification(notification, &mut context)
+            .await?;
+        Ok(true)
+    }
+
+    async fn handle_channel_message<P: Plugin>(
+        plugin: &mut P,
+        stream: &mut LocalStream,
+        plugin_id: &str,
+        message: proto::ChannelMessage,
+    ) -> Result<bool> {
+        let mut context = PluginContext { stream, plugin_id };
+        plugin.on_channel_message(message, &mut context).await?;
+        Ok(true)
+    }
+
+    async fn handle_bulk_transfer_message<P: Plugin>(
+        plugin: &mut P,
+        stream: &mut LocalStream,
+        plugin_id: &str,
+        message: proto::BulkTransferMessage,
+    ) -> Result<bool> {
+        let mut context = PluginContext { stream, plugin_id };
+        plugin
+            .on_bulk_transfer_message(message, &mut context)
+            .await?;
+        Ok(true)
+    }
+
+    async fn handle_mesh_event<P: Plugin>(
+        plugin: &mut P,
+        stream: &mut LocalStream,
+        plugin_id: &str,
+        event: proto::MeshEvent,
+    ) -> Result<bool> {
+        let mut context = PluginContext { stream, plugin_id };
+        plugin.on_mesh_event(event, &mut context).await?;
+        Ok(true)
+    }
+
+    async fn handle_cancel_stream<P: Plugin>(
+        plugin: &mut P,
+        stream: &mut LocalStream,
+        plugin_id: &str,
+        notification: proto::CancelStreamNotification,
+    ) -> Result<bool> {
+        let mut context = PluginContext { stream, plugin_id };
+        plugin.on_cancel_stream(notification, &mut context).await?;
+        Ok(true)
+    }
+
+    async fn handle_close_stream<P: Plugin>(
+        plugin: &mut P,
+        stream: &mut LocalStream,
+        plugin_id: &str,
+        notification: proto::CloseStreamNotification,
+    ) -> Result<bool> {
+        let mut context = PluginContext { stream, plugin_id };
+        plugin.on_close_stream(notification, &mut context).await?;
+        Ok(true)
+    }
+
+    async fn handle_stream_error<P: Plugin>(
+        plugin: &mut P,
+        stream: &mut LocalStream,
+        plugin_id: &str,
+        error: proto::StreamError,
+    ) -> Result<bool> {
+        let mut context = PluginContext { stream, plugin_id };
+        plugin.on_stream_error(error, &mut context).await?;
+        Ok(true)
+    }
+
+    async fn handle_host_error<P: Plugin>(
+        plugin: &mut P,
+        stream: &mut LocalStream,
+        plugin_id: &str,
+        error: proto::ErrorResponse,
+    ) -> Result<bool> {
+        let mut context = PluginContext { stream, plugin_id };
+        plugin.on_host_error(error, &mut context).await?;
+        Ok(true)
+    }
+
+    async fn write_payload(
+        stream: &mut LocalStream,
+        plugin_id: &str,
+        request_id: u64,
+        payload: proto::envelope::Payload,
+    ) -> Result<()> {
+        write_envelope(
+            stream,
+            &proto::Envelope {
+                protocol_version: PROTOCOL_VERSION,
+                plugin_id: plugin_id.to_string(),
+                request_id,
+                payload: Some(payload),
+            },
+        )
+        .await
     }
 }
 

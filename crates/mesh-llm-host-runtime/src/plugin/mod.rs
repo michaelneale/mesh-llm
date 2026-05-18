@@ -244,79 +244,24 @@ impl PluginManager {
         host_mode: PluginHostMode,
         mesh_tx: mpsc::Sender<PluginMeshEvent>,
     ) -> Result<Self> {
-        if specs.externals.is_empty() {
-            tracing::info!("Plugin manager: no plugins enabled");
-        } else {
-            let names = specs
-                .externals
-                .iter()
-                .map(|spec| spec.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            tracing::info!(
-                "Plugin manager: loading {} plugin(s): {}",
-                specs.externals.len(),
-                names
-            );
-        }
+        Self::log_startup_plan(specs);
 
         let rpc_bridge = Arc::new(Mutex::new(None));
         let runtime_data = RuntimeDataCollector::new();
         let instance_id = make_instance_id();
-        let mut plugins = BTreeMap::new();
-        for spec in &specs.externals {
-            tracing::info!(
-                plugin = %spec.name,
-                command = %spec.command,
-                args = %format_args_for_log(&spec.args),
-                "Loading plugin"
-            );
-            let plugin = match ExternalPlugin::spawn(
-                spec,
-                instance_id.clone(),
-                host_mode,
-                mesh_tx.clone(),
-                rpc_bridge.clone(),
-                runtime_data.producer(RuntimeDataSource {
-                    scope: "plugin",
-                    plugin_data_key: Some(PluginDataKey {
-                        plugin_name: spec.name.clone(),
-                        data_key: "summary".into(),
-                    }),
-                    plugin_endpoint_key: None,
-                }),
-            )
-            .await
-            {
-                Ok(plugin) => plugin,
-                Err(err) => {
-                    tracing::error!(
-                        plugin = %spec.name,
-                        error = %err,
-                        "Plugin failed to load"
-                    );
-                    return Err(err);
-                }
-            };
-            let summary = plugin.summary().await;
-            tracing::info!(
-                plugin = %summary.name,
-                version = %summary.version.as_deref().unwrap_or("unknown"),
-                capabilities = %format_slice_for_log(&summary.capabilities),
-                tools = %format_tool_names_for_log(&summary.tools),
-                "Plugin loaded successfully"
-            );
-            plugins.insert(spec.name.clone(), plugin);
-        }
+        let plugins = Self::load_external_plugins(
+            specs,
+            host_mode,
+            mesh_tx,
+            instance_id,
+            rpc_bridge.clone(),
+            &runtime_data,
+        )
+        .await?;
         let manager = Self {
             inner: Arc::new(PluginManagerInner {
                 plugins,
-                inactive: specs
-                    .inactive
-                    .iter()
-                    .cloned()
-                    .map(|summary| (summary.name.clone(), summary))
-                    .collect(),
+                inactive: Self::inactive_plugins(specs),
                 endpoint_health: Arc::new(Mutex::new(BTreeMap::new())),
                 runtime_data,
                 rpc_bridge,
@@ -344,6 +289,112 @@ impl PluginManager {
         }
         manager.start_supervisor();
         Ok(manager)
+    }
+
+    fn log_startup_plan(specs: &ResolvedPlugins) {
+        if specs.externals.is_empty() {
+            tracing::info!("Plugin manager: no plugins enabled");
+            return;
+        }
+
+        let names = specs
+            .externals
+            .iter()
+            .map(|spec| spec.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        tracing::info!(
+            "Plugin manager: loading {} plugin(s): {}",
+            specs.externals.len(),
+            names
+        );
+    }
+
+    fn summary_runtime_source(plugin_name: String) -> RuntimeDataSource {
+        RuntimeDataSource {
+            scope: "plugin",
+            plugin_data_key: Some(PluginDataKey {
+                plugin_name,
+                data_key: "summary".into(),
+            }),
+            plugin_endpoint_key: None,
+        }
+    }
+
+    async fn load_external_plugins(
+        specs: &ResolvedPlugins,
+        host_mode: PluginHostMode,
+        mesh_tx: mpsc::Sender<PluginMeshEvent>,
+        instance_id: String,
+        rpc_bridge: Arc<Mutex<Option<Arc<dyn PluginRpcBridge>>>>,
+        runtime_data: &RuntimeDataCollector,
+    ) -> Result<BTreeMap<String, ExternalPlugin>> {
+        let mut plugins = BTreeMap::new();
+        for spec in &specs.externals {
+            let plugin = Self::load_external_plugin(
+                spec,
+                host_mode,
+                mesh_tx.clone(),
+                instance_id.clone(),
+                rpc_bridge.clone(),
+                runtime_data,
+            )
+            .await?;
+            plugins.insert(spec.name.clone(), plugin);
+        }
+        Ok(plugins)
+    }
+
+    async fn load_external_plugin(
+        spec: &ExternalPluginSpec,
+        host_mode: PluginHostMode,
+        mesh_tx: mpsc::Sender<PluginMeshEvent>,
+        instance_id: String,
+        rpc_bridge: Arc<Mutex<Option<Arc<dyn PluginRpcBridge>>>>,
+        runtime_data: &RuntimeDataCollector,
+    ) -> Result<ExternalPlugin> {
+        tracing::info!(
+            plugin = %spec.name,
+            command = %spec.command,
+            args = %format_args_for_log(&spec.args),
+            "Loading plugin"
+        );
+        let plugin = ExternalPlugin::spawn(
+            spec,
+            instance_id,
+            host_mode,
+            mesh_tx,
+            rpc_bridge,
+            runtime_data.producer(Self::summary_runtime_source(spec.name.clone())),
+        )
+        .await
+        .map_err(|err| {
+            tracing::error!(
+                plugin = %spec.name,
+                error = %err,
+                "Plugin failed to load"
+            );
+            err
+        })?;
+
+        let summary = plugin.summary().await;
+        tracing::info!(
+            plugin = %summary.name,
+            version = %summary.version.as_deref().unwrap_or("unknown"),
+            capabilities = %format_slice_for_log(&summary.capabilities),
+            tools = %format_tool_names_for_log(&summary.tools),
+            "Plugin loaded successfully"
+        );
+        Ok(plugin)
+    }
+
+    fn inactive_plugins(specs: &ResolvedPlugins) -> BTreeMap<String, PluginSummary> {
+        specs
+            .inactive
+            .iter()
+            .cloned()
+            .map(|summary| (summary.name.clone(), summary))
+            .collect()
     }
 
     #[cfg(test)]
