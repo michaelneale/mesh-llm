@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { useChat } from '@tanstack/ai-react'
 import type { UseChatReturn } from '@tanstack/ai-react'
 import type { ThreadMessage } from '@/features/app-tabs/types'
@@ -14,8 +14,8 @@ type UseMeshChatOptions = {
   onResponseMetadata?: (metadata: ChatResponseMetadata) => void
 }
 
-function createMutableStringSource() {
-  let current = ''
+function createMutableStringSource(initialValue: string) {
+  let current = initialValue
 
   return {
     get value() {
@@ -27,6 +27,18 @@ function createMutableStringSource() {
   }
 }
 
+type MutableStringSource = ReturnType<typeof createMutableStringSource>
+
+function useStableMutableStringSource(initialValue: string): MutableStringSource {
+  const sourceRef = useRef<MutableStringSource | null>(null)
+
+  if (sourceRef.current === null) {
+    sourceRef.current = createMutableStringSource(initialValue)
+  }
+
+  return sourceRef.current
+}
+
 export function useMeshChat({
   conversationId,
   model,
@@ -35,11 +47,13 @@ export function useMeshChat({
   onResponseMetadata
 }: UseMeshChatOptions): UseChatReturn {
   const previousConversationIdRef = useRef(conversationId)
-  const currentModel = useMemo(() => createMutableStringSource(), [])
-  const currentSystemPrompt = useMemo(() => createMutableStringSource(), [])
+  const currentModel = useStableMutableStringSource(model)
+  const currentSystemPrompt = useStableMutableStringSource(systemPrompt)
 
-  currentModel.setValue(model)
-  currentSystemPrompt.setValue(systemPrompt)
+  useLayoutEffect(() => {
+    currentModel.setValue(model)
+    currentSystemPrompt.setValue(systemPrompt)
+  }, [currentModel, currentSystemPrompt, model, systemPrompt])
 
   const connection = useMemo(
     () => createMeshConnectionAdapter(currentModel, onResponseMetadata, currentSystemPrompt),

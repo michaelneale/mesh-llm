@@ -234,6 +234,29 @@ mod tests {
     use serial_test::serial;
     use std::io::{BufRead, BufReader};
 
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn capture(key: &'static str) -> Self {
+            Self {
+                key,
+                previous: std::env::var_os(key),
+            }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
     #[cfg(unix)]
     use std::os::unix::fs::{symlink, PermissionsExt};
 
@@ -270,12 +293,12 @@ mod tests {
     #[test]
     #[serial]
     fn empty_env_disables_capture() {
+        let _env_guard = EnvVarGuard::capture(SWARM_CAPTURE_ENV);
         std::env::set_var(SWARM_CAPTURE_ENV, "");
 
         let recorder = SwarmCaptureRecorder::from_cli_or_env(None).expect("env resolution");
 
         assert!(recorder.is_none());
-        std::env::remove_var(SWARM_CAPTURE_ENV);
     }
 
     #[test]
@@ -319,6 +342,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let env_dir = temp.path().join("env_dir");
         let cli_dir = temp.path().join("cli_dir");
+        let _env_guard = EnvVarGuard::capture(SWARM_CAPTURE_ENV);
         std::env::set_var(SWARM_CAPTURE_ENV, env_dir.to_str().unwrap());
 
         let recorder =
@@ -326,7 +350,6 @@ mod tests {
 
         assert!(recorder.is_some());
         assert!(recorder.unwrap().path().starts_with(&cli_dir));
-        std::env::remove_var(SWARM_CAPTURE_ENV);
     }
 
     #[cfg(unix)]
