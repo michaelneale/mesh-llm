@@ -59,6 +59,29 @@ pub(super) fn version_allowed_for_rebroadcast(version: Option<&str>) -> bool {
     minor >= MIN_REBROADCAST_VERSION_MINOR
 }
 
+/// Returns `true` if the announcement describes a peer the mesh has no
+/// observable use for via transitive gossip: a `Client`-role peer that
+/// isn't asking for, serving, or hosting any model.
+///
+/// Such a peer contributes nothing through transitive propagation — they
+/// can't be routed to (no model), they can't be dialed (clients don't
+/// dial clients), they carry no demand signal (empty `requested_models`),
+/// and they aren't relaying anything for us (purely transitive means
+/// there's no connection through which they could relay).
+///
+/// Direct ingest in `add_peer` ignores this check — a client we actually
+/// connect to is admitted normally regardless of what they advertise.
+pub(super) fn peer_is_idle_transitive_client(ann: &PeerAnnouncement) -> bool {
+    matches!(ann.role, NodeRole::Client)
+        && ann.requested_models.is_empty()
+        && ann.serving_models.is_empty()
+        && ann
+            .hosted_models
+            .as_ref()
+            .map(|h| h.is_empty())
+            .unwrap_or(true)
+}
+
 pub fn backfill_legacy_descriptors(ann: &mut PeerAnnouncement) {
     if ann.served_model_descriptors.is_empty() {
         let primary_model_name = ann
@@ -654,6 +677,24 @@ impl Node {
             }
             return;
         }
+        // Refuse transitive ingest of idle clients — clients that aren't
+        // asking for any model, aren't serving anything, and aren't hosting
+        // anything. They contribute nothing the mesh can use:
+        //   - not routable to (no model to serve)
+        //   - not findable (clients-don't-dial-clients by design)
+        //   - no demand signal (empty requested_models)
+        //   - not relaying for us (no connection — purely transitive)
+        // The moment any of those become non-empty, this filter stops firing
+        // and the peer is admitted normally. Direct connections (`add_peer`)
+        // are never affected — a client that actually contacts us still
+        // gets in.
+        if peer_is_idle_transitive_client(ann) {
+            let mut state = self.state.lock().await;
+            if state.peers.remove(&id).is_some() {
+                let _ = self.peer_change_tx.send(state.peers.len());
+            }
+            return;
+        }
         let trust_store = self.trust_store.lock().await.clone();
         let owner_summary = verify_node_ownership(
             ann.owner_attestation.as_ref(),
@@ -1204,6 +1245,10 @@ mod tests {
         new_ann.addr = new_addr.clone();
         new_ann.role = NodeRole::Client;
         new_ann.version = Some("0.65.0".to_string());
+        // Give the v0.65.0 client a demand signal so the idle-transitive-
+        // client filter (a separate gate) doesn't drop it — this test
+        // exercises the version floor specifically.
+        new_ann.requested_models = vec!["Qwen3-8B-Q4_K_M".to_string()];
 
         let bridge = test_endpoint_id(0xBB);
         node.update_transitive_peer(old_id, &old_addr, &old_ann, bridge)
@@ -1234,6 +1279,120 @@ mod tests {
         assert!(
             announcements.iter().any(|a| a.addr.id == new_id),
             "v0.65.0 peer should appear in outbound gossip"
+        );
+    }
+
+    #[test]
+    fn peer_is_idle_transitive_client_basic_shapes() {
+        // Idle client → caught.
+        let mut ann = test_announcement(None);
+        ann.role = NodeRole::Client;
+        assert!(peer_is_idle_transitive_client(&ann));
+
+        // Client asking for a model → not caught (demand signal matters).
+        let mut ann = test_announcement(None);
+        ann.role = NodeRole::Client;
+        ann.requested_models = vec!["Qwen3-8B-Q4_K_M".to_string()];
+        assert!(!peer_is_idle_transitive_client(&ann));
+
+        // Client somehow advertising serving → not caught.
+        let mut ann = test_announcement(None);
+        ann.role = NodeRole::Client;
+        ann.serving_models = vec!["Qwen3-8B-Q4_K_M".to_string()];
+        assert!(!peer_is_idle_transitive_client(&ann));
+
+        // Client advertising hosted → not caught.
+        let mut ann = test_announcement(None);
+        ann.role = NodeRole::Client;
+        ann.hosted_models = Some(vec!["Qwen3-8B-Q4_K_M".to_string()]);
+        assert!(!peer_is_idle_transitive_client(&ann));
+
+        // Host → never caught regardless of other fields.
+        let mut ann = test_announcement(None);
+        ann.role = NodeRole::Host { http_port: 9337 };
+        assert!(!peer_is_idle_transitive_client(&ann));
+
+        // Worker → never caught.
+        let mut ann = test_announcement(None);
+        ann.role = NodeRole::Worker;
+        assert!(!peer_is_idle_transitive_client(&ann));
+    }
+
+    #[tokio::test]
+    async fn transitive_ingest_drops_idle_clients_but_keeps_clients_with_demand() {
+        let node = Node::new_for_tests(NodeRole::Worker).await.unwrap();
+
+        let idle_addr = test_addr(0xC1);
+        let demand_addr = test_addr(0xC2);
+        let host_addr = test_addr(0xC3);
+        let idle_id = idle_addr.id;
+        let demand_id = demand_addr.id;
+        let host_id = host_addr.id;
+
+        // Idle client — should be dropped at transitive ingest.
+        let mut idle = test_announcement(None);
+        idle.addr = idle_addr.clone();
+        idle.role = NodeRole::Client;
+        idle.version = Some("0.65.1".to_string());
+
+        // Client asking for a model — must be kept (demand signal).
+        let mut with_demand = test_announcement(None);
+        with_demand.addr = demand_addr.clone();
+        with_demand.role = NodeRole::Client;
+        with_demand.version = Some("0.65.1".to_string());
+        with_demand.requested_models = vec!["Qwen3-8B-Q4_K_M".to_string()];
+
+        // Host — must be kept (real compute).
+        let mut host = test_announcement(None);
+        host.addr = host_addr.clone();
+        host.role = NodeRole::Host { http_port: 9337 };
+        host.version = Some("0.65.1".to_string());
+        host.serving_models = vec!["Qwen3-8B-Q4_K_M".to_string()];
+
+        let bridge = test_endpoint_id(0xBB);
+        node.update_transitive_peer(idle_id, &idle_addr, &idle, bridge)
+            .await;
+        node.update_transitive_peer(demand_id, &demand_addr, &with_demand, bridge)
+            .await;
+        node.update_transitive_peer(host_id, &host_addr, &host, bridge)
+            .await;
+
+        let state = node.state.lock().await;
+        assert!(
+            !state.peers.contains_key(&idle_id),
+            "idle transitive client must be rejected"
+        );
+        assert!(
+            state.peers.contains_key(&demand_id),
+            "client with requested_models must be kept (demand signal)"
+        );
+        assert!(
+            state.peers.contains_key(&host_id),
+            "host must be kept (real compute)"
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_add_peer_admits_idle_clients() {
+        // Idle clients we actually directly contact are still admitted.
+        // The predicate is for transitive ingest only — a direct connection
+        // is proof of life and the peer is observable.
+        let node = Node::new_for_tests(NodeRole::Worker).await.unwrap();
+        let addr = test_addr(0xC4);
+        let id = addr.id;
+
+        let mut ann = test_announcement(None);
+        ann.addr = addr.clone();
+        ann.role = NodeRole::Client;
+        ann.version = Some("0.65.1".to_string());
+        // No requested, no serving, no hosted — pure idle client.
+
+        node.add_peer(id, addr, &ann).await;
+
+        let state = node.state.lock().await;
+        assert!(
+            state.peers.contains_key(&id),
+            "direct idle client must be admitted (direct contact is proof of life)"
         );
     }
 
