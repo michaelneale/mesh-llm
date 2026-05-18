@@ -489,6 +489,13 @@ fn handle_binary_connection(
                 json!(drop_stats.reset_session),
             );
             reset_attrs.insert(
+                "llama_stage.lane_discarded".to_string(),
+                json!(drop_stats.lane_discarded),
+            );
+            if let Some(reason) = drop_stats.lane_discard_reason.as_deref() {
+                reset_attrs.insert("llama_stage.lane_discard_reason".to_string(), json!(reason));
+            }
+            reset_attrs.insert(
                 "llama_stage.elapsed_ms".to_string(),
                 json!(elapsed_ms(reset_timer)),
             );
