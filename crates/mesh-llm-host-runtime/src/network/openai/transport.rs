@@ -3405,9 +3405,11 @@ pub async fn send_json_ok_with_headers(
     let body = data.to_string();
     let mut headers = String::from("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n");
     for (name, value) in extra_headers {
+        // Strip CR/LF defensively against header-injection bugs creeping in later.
+        let safe_value: String = value.chars().filter(|c| *c != '\r' && *c != '\n').collect();
         headers.push_str(name);
         headers.push_str(": ");
-        headers.push_str(value);
+        headers.push_str(&safe_value);
         headers.push_str("\r\n");
     }
     headers.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));

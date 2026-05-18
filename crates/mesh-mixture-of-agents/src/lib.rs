@@ -56,6 +56,7 @@ use session::Session;
 use std::time::{Duration, Instant};
 use tool_guard::enforce_allowed_tools;
 use worker::WorkerRole;
+pub use worker::{strip_thinking, truncate_chars};
 
 /// The virtual model name that triggers MoA routing.
 pub const VIRTUAL_MODEL_NAME: &str = "mesh";
@@ -305,22 +306,23 @@ async fn handle_tool_result(
     .await;
 
     let mut last_err: Option<String> = None;
-    let mut attempts: u32 = 0;
-    let chosen: Option<(String, normalize::WorkerOutput)> = match hedge_result {
+    let (attempts, chosen): (u32, Option<(String, normalize::WorkerOutput)>) = match hedge_result {
         Ok(reducer::HedgedReducerOk {
             winner,
             text,
             attempts: spawned,
         }) => {
-            attempts = spawned;
             let mut reduced =
                 normalize::normalize_worker_output(&text, &winner, WorkerRole::Reducer, 0);
             enforce_allowed_tools(&mut reduced, allowed_tools, &winner);
-            Some((winner, reduced))
+            (spawned, Some((winner, reduced)))
         }
-        Err(e) => {
-            last_err = Some(e);
-            None
+        Err(reducer::HedgedReducerErr {
+            err,
+            attempts: spawned,
+        }) => {
+            last_err = Some(err);
+            (spawned, None)
         }
     };
 
@@ -400,20 +402,21 @@ async fn resolve_decision(
             )
             .await;
 
-            let mut attempts: u32 = 0;
-            let chosen: Option<normalize::WorkerOutput> = match hedge_result {
+            let (attempts, chosen): (u32, Option<normalize::WorkerOutput>) = match hedge_result {
                 Ok(reducer::HedgedReducerOk {
                     winner,
                     text,
                     attempts: spawned,
                 }) => {
-                    attempts = spawned;
                     let mut reduced =
                         normalize::normalize_worker_output(&text, &winner, WorkerRole::Reducer, 0);
                     enforce_allowed_tools(&mut reduced, allowed_tools, &winner);
-                    Some(reduced)
+                    (spawned, Some(reduced))
                 }
-                Err(_) => None,
+                Err(reducer::HedgedReducerErr {
+                    err: _,
+                    attempts: spawned,
+                }) => (spawned, None),
             };
 
             match chosen {

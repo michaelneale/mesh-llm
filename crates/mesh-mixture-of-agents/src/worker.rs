@@ -145,6 +145,19 @@ pub(crate) fn is_single_digit_b_name(name: &str) -> bool {
     false
 }
 
+/// Truncate `text` so the returned slice is at most `max_bytes` long,
+/// honouring UTF-8 char boundaries (never panics, unlike `&text[..N]`).
+pub fn truncate_chars(text: &str, max_bytes: usize) -> &str {
+    if text.len() <= max_bytes {
+        return text;
+    }
+    let mut idx = max_bytes;
+    while idx > 0 && !text.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    &text[..idx]
+}
+
 /// Strip `<think>...</think>` tags, return the remaining content.
 pub fn strip_thinking(text: &str) -> String {
     let mut result = text.to_string();
@@ -179,6 +192,39 @@ pub fn extract_thinking(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn truncate_chars_shorter_than_limit_is_passthrough() {
+        assert_eq!(truncate_chars("hello", 100), "hello");
+    }
+
+    #[test]
+    fn truncate_chars_exact_limit_is_passthrough() {
+        assert_eq!(truncate_chars("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_chars_respects_utf8_boundary() {
+        // "café!" is 6 bytes: c a f 0xC3 0xA9 !  (é is 2 bytes).
+        let s = "café!";
+        assert_eq!(s.len(), 6);
+        // Byte 4 is mid-codepoint (between 0xC3 and 0xA9). Naive `&s[..4]`
+        // would panic; truncate_chars must walk back to byte 3 ("caf").
+        assert_eq!(truncate_chars(s, 4), "caf");
+        // Byte 5 IS a valid boundary (between é and !).
+        assert_eq!(truncate_chars(s, 5), "café");
+        // Within limit ⇒ passthrough.
+        assert_eq!(truncate_chars(s, 6), "café!");
+    }
+
+    #[test]
+    fn truncate_chars_handles_multibyte_only() {
+        let s = "日本語"; // each char is 3 bytes ⇒ 9 bytes total
+                          // Byte 4 lands mid-char ⇒ walks back to 3 (first char only).
+        assert_eq!(truncate_chars(s, 4), "日");
+        // Byte 0 is always safe.
+        assert_eq!(truncate_chars(s, 0), "");
+    }
 
     #[test]
     fn assign_two_models() {

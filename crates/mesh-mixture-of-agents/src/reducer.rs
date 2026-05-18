@@ -34,9 +34,9 @@ pub(crate) fn reducer_candidates(config: &GatewayConfig) -> Vec<(String, usize)>
         }
     }
     big.extend(small);
-    if big.is_empty() {
-        big.push(("unknown".into(), 0));
-    }
+    // Intentionally allow returning empty: hedged_reducer_call's empty-input
+    // path surfaces the right error. A fake ("unknown", 0) entry would call
+    // backend_index=0 with a bogus model name and mask real bugs.
     big
 }
 
@@ -49,6 +49,18 @@ pub(crate) fn reducer_candidates(config: &GatewayConfig) -> Vec<(String, usize)>
 pub(crate) struct HedgedReducerOk {
     pub winner: String,
     pub text: String,
+    pub attempts: u32,
+}
+
+/// Failure outcome from the hedged-reducer ladder.
+///
+/// Carries `attempts` so observability ("we tried N times and all failed")
+/// stays accurate even on the all-fail path. Without this the caller
+/// reports `attempts=0` even when 2+ candidates actually ran, which is
+/// what bit us in the live goose test.
+#[derive(Debug)]
+pub(crate) struct HedgedReducerErr {
+    pub err: String,
     pub attempts: u32,
 }
 
@@ -76,11 +88,14 @@ pub(crate) async fn hedged_reducer_call(
     tools: Option<Value>,
     timeout: Duration,
     hedge_delay: Duration,
-) -> Result<HedgedReducerOk, String> {
+) -> Result<HedgedReducerOk, HedgedReducerErr> {
     use tokio::task::JoinSet;
 
     if candidates.is_empty() {
-        return Err("no reducer candidates".into());
+        return Err(HedgedReducerErr {
+            err: "no reducer candidates".into(),
+            attempts: 0,
+        });
     }
 
     let mut join_set: JoinSet<(String, Result<String, String>)> = JoinSet::new();
@@ -207,7 +222,10 @@ pub(crate) async fn hedged_reducer_call(
         }
     }
 
-    Err(last_err.unwrap_or_else(|| "all reducer candidates failed".into()))
+    Err(HedgedReducerErr {
+        err: last_err.unwrap_or_else(|| "all reducer candidates failed".into()),
+        attempts,
+    })
 }
 
 #[cfg(test)]
@@ -409,9 +427,11 @@ mod tests {
 
         let err = res.expect_err("all-fail returns Err");
         assert!(
-            err.contains("boom"),
-            "should surface a backend error: {err}"
+            err.err.contains("boom"),
+            "should surface a backend error: {}",
+            err.err
         );
+        assert_eq!(err.attempts, 2, "all-fail still reports attempts spawned");
         assert_eq!(fake.calls(), 2);
     }
 }

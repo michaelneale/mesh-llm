@@ -84,11 +84,15 @@ pub async fn try_handle_moa(
     ];
 
     if was_streaming {
-        let _ = send_moa_as_sse(tcp_stream, &moa_result.response_body, &extra_headers).await;
-    } else {
-        let _ =
-            proxy::send_json_ok_with_headers(tcp_stream, &moa_result.response_body, &extra_headers)
-                .await;
+        if let Err(e) = send_moa_as_sse(tcp_stream, &moa_result.response_body, &extra_headers).await
+        {
+            tracing::warn!("MoA: SSE write failed: {e}");
+        }
+    } else if let Err(e) =
+        proxy::send_json_ok_with_headers(tcp_stream, &moa_result.response_body, &extra_headers)
+            .await
+    {
+        tracing::warn!("MoA: JSON write failed: {e}");
     }
     None
 }
@@ -277,7 +281,10 @@ impl moa::ModelBackend for LocalModelBackend {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            return Err(format!("HTTP {status}: {}", &text[..text.len().min(200)]));
+            return Err(format!(
+                "HTTP {status}: {}",
+                moa::truncate_chars(&text, 200)
+            ));
         }
         resp.json::<serde_json::Value>()
             .await
@@ -339,7 +346,7 @@ impl moa::ModelBackend for RemoteModelBackend {
                 .map_err(|e| format!("send: {e}"))?;
             send.finish().map_err(|e| format!("finish: {e}"))?;
             let response = recv
-                .read_to_end(256 * 1024)
+                .read_to_end(4 * 1024 * 1024)
                 .await
                 .map_err(|e| format!("recv: {e}"))?;
             parse_quic_http_response(&response)
@@ -362,7 +369,7 @@ fn parse_quic_http_response(response: &[u8]) -> Result<serde_json::Value, String
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
     if status != 200 {
-        return Err(format!("HTTP {status}: {}", &s[..s.len().min(200)]));
+        return Err(format!("HTTP {status}: {}", moa::truncate_chars(&s, 200)));
     }
     let body = &s[header_end + 4..];
     serde_json::from_str(body).map_err(|e| format!("parse: {e}"))
@@ -383,9 +390,11 @@ async fn send_moa_as_sse(
         "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nCache-Control: no-cache\r\nConnection: close\r\n",
     );
     for (name, value) in extra_headers {
+        // Strip CR/LF defensively against header-injection bugs creeping in later.
+        let safe_value: String = value.chars().filter(|c| *c != '\r' && *c != '\n').collect();
         header.push_str(name);
         header.push_str(": ");
-        header.push_str(value);
+        header.push_str(&safe_value);
         header.push_str("\r\n");
     }
     header.push_str("\r\n");
@@ -470,22 +479,9 @@ async fn send_moa_as_sse(
 }
 
 /// Strip `<think>...</think>` tags and orphan `</think>` from content.
+/// Thin wrapper over the canonical implementation in moa::worker.
 fn strip_think_from_content(text: &str) -> String {
-    let mut result = text.to_string();
-    while let Some(start) = result.find("<think>") {
-        if let Some(end) = result[start..].find("</think>") {
-            result = format!(
-                "{}{}",
-                &result[..start],
-                &result[start + end + "</think>".len()..]
-            );
-        } else {
-            result = result[..start].to_string();
-            break;
-        }
-    }
-    result = result.replace("</think>", "");
-    result.trim().to_string()
+    moa::strip_thinking(text)
 }
 
 #[cfg(test)]

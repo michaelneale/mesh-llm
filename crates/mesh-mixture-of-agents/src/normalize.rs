@@ -505,26 +505,9 @@ pub fn strip_passthrough_content(text: &str) -> String {
 }
 
 /// Strip `<think>...</think>` tags that reasoning models emit.
-/// Also removes orphan `</think>` tags.
+/// Thin wrapper over the canonical implementation in `worker`.
 fn strip_thinking_tags(text: &str) -> String {
-    let mut result = text.to_string();
-    // Remove <think>...</think> blocks (greedy)
-    while let Some(start) = result.find("<think>") {
-        if let Some(end) = result[start..].find("</think>") {
-            result = format!(
-                "{}{}",
-                &result[..start],
-                &result[start + end + "</think>".len()..]
-            );
-        } else {
-            // Unclosed think tag — remove from <think> to end
-            result = result[..start].to_string();
-            break;
-        }
-    }
-    // Remove any orphan </think> tags
-    result = result.replace("</think>", "");
-    result.trim().to_string()
+    crate::worker::strip_thinking(text)
 }
 
 #[cfg(test)]
