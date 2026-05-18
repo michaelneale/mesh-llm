@@ -1,0 +1,128 @@
+From 781ef5a22509847a636b0d99110144a7f64b0fbf Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Fri, 15 May 2026 15:51:41 +1000
+Subject: [PATCH 81/81] Expose per-position token signal and logprob ABI
+
+Add two new ABI functions for reading per-position logit data after
+a batched verify pass:
+
+- skippy_session_token_signal_at(): compute full token signal (entropy,
+  margin, top/second token+logprob) at a specific batch position
+- skippy_session_token_logprob_at(): compute log-probability of a
+  specific token at a specific batch position
+
+These enable probability-threshold acceptance for speculative prefill
+verification, where a draft token is accepted if the target assigns
+sufficient probability to it rather than requiring exact argmax match.
+This tolerates batch-vs-sequential float precision drift.
+---
+ include/skippy-signals.h | 20 +++++++++++++
+ src/skippy.cpp           | 61 ++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 81 insertions(+)
+
+diff --git a/include/skippy-signals.h b/include/skippy-signals.h
+index a19aab8b..fff4d356 100644
+--- a/include/skippy-signals.h
++++ b/include/skippy-signals.h
+@@ -37,6 +37,26 @@ LLAMA_API enum skippy_status skippy_session_signal_window(
+         struct skippy_generation_signal_window * out_window,
+         struct skippy_error ** out_error);
+ 
++// Compute the token signal at a specific batch logits position.
++// Typically used after skippy_verify_tokens() where logits are
++// populated at every position in the batch.
++// logits_index is 0-based within the batch (not the session).
++LLAMA_API enum skippy_status skippy_session_token_signal_at(
++        struct skippy_session * session,
++        int32_t logits_index,
++        struct skippy_token_signal * out_signal,
++        struct skippy_error ** out_error);
++
++// Compute the log-probability of a specific token at a given
++// batch logits position. Used to check how likely the target
++// model considers a draft token at that position.
++LLAMA_API enum skippy_status skippy_session_token_logprob_at(
++        struct skippy_session * session,
++        int32_t logits_index,
++        int32_t token_id,
++        float * out_logprob,
++        struct skippy_error ** out_error);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index f25da57e..b18a38dc 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -2491,6 +2491,67 @@ enum skippy_status skippy_session_signal_window(
+     return skippy_success(out_error);
+ }
+ 
++enum skippy_status skippy_session_token_signal_at(
++        struct skippy_session * session,
++        int32_t logits_index,
++        struct skippy_token_signal * out_signal,
++        struct skippy_error ** out_error) {
++    if (session == nullptr || out_signal == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "session and out_signal are required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if (!skippy_compute_token_signal(session, logits_index, out_signal)) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "could not compute token signal at given index");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    return skippy_success(out_error);
++}
++
++enum skippy_status skippy_session_token_logprob_at(
++        struct skippy_session * session,
++        int32_t logits_index,
++        int32_t token_id,
++        float * out_logprob,
++        struct skippy_error ** out_error) {
++    if (session == nullptr || out_logprob == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "session and out_logprob are required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if (session->ctx == nullptr || session->stage_model == nullptr || session->stage_model->model == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "session is not properly initialized");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    const llama_vocab * vocab = llama_model_get_vocab(session->stage_model->model);
++    const int32_t n_vocab = llama_vocab_n_tokens(vocab);
++    if (token_id < 0 || token_id >= n_vocab) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "token_id is out of vocabulary range");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    const float * logits = llama_get_logits_ith(session->ctx, logits_index);
++    if (logits == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "logits not available at given index");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    // Compute log-sum-exp for normalization
++    float max_logit = -std::numeric_limits<float>::infinity();
++    for (int32_t i = 0; i < n_vocab; ++i) {
++        if (logits[i] > max_logit) {
++            max_logit = logits[i];
++        }
++    }
++    double sum_exp = 0.0;
++    for (int32_t i = 0; i < n_vocab; ++i) {
++        sum_exp += std::exp(static_cast<double>(logits[i] - max_logit));
++    }
++    if (sum_exp <= 0.0 || !std::isfinite(sum_exp)) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "logits normalization failed");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    const double log_sum_exp = static_cast<double>(max_logit) + std::log(sum_exp);
++    *out_logprob = static_cast<float>(static_cast<double>(logits[token_id]) - log_sum_exp);
++    return skippy_success(out_error);
++}
++
+ enum skippy_status skippy_prefill_chunk(
+         struct skippy_session * session,
+         const llama_token * token_ids,
+-- 
+2.54.0
+

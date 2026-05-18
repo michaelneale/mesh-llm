@@ -96,29 +96,33 @@ impl StageOpenAiBackend {
                 downstream_wire_condition,
                 prefill_reply_credit_limit,
                 lane_pool,
-            } => self.generate_embedded_stage_zero_tokens(
-                EmbeddedStageZeroGeneration {
-                    config: &config,
-                    wire_dtype,
-                    prefill_chunk_policy: &prefill_chunk_policy,
-                    activation_width,
-                    downstream_wire_condition,
-                    prefill_reply_credit_limit,
-                    lane_pool,
-                    draft: self.draft.clone(),
-                    speculative_window: self.speculative_window,
-                    adaptive_speculative_window: self.adaptive_speculative_window,
-                    prompt_token_ids: &prompt_token_ids,
-                    max_tokens,
-                    sampling: &sampling,
-                    chat_sampling_metadata,
-                    hook_request,
-                    hook_runtime,
-                    cancellation,
-                    ids: &ids,
-                },
-                |token| collector.push_token(token),
-            )?,
+            } => {
+                let draft_response = hook_request.as_ref().and_then(|r| r.draft_response.clone());
+                self.generate_embedded_stage_zero_tokens(
+                    EmbeddedStageZeroGeneration {
+                        config: &config,
+                        wire_dtype,
+                        prefill_chunk_policy: &prefill_chunk_policy,
+                        activation_width,
+                        downstream_wire_condition,
+                        prefill_reply_credit_limit,
+                        lane_pool,
+                        draft: self.draft.clone(),
+                        speculative_window: self.speculative_window,
+                        adaptive_speculative_window: self.adaptive_speculative_window,
+                        prompt_token_ids: &prompt_token_ids,
+                        max_tokens,
+                        sampling: &sampling,
+                        chat_sampling_metadata,
+                        hook_request,
+                        hook_runtime,
+                        cancellation,
+                        ids: &ids,
+                        draft_response,
+                    },
+                    |token| collector.push_token(token),
+                )?
+            }
         };
 
         let output = collector.finish(prompt_token_ids.len(), cache_stats)?;

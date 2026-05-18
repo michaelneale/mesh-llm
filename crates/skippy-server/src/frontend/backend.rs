@@ -59,8 +59,12 @@ impl OpenAiBackend for StageOpenAiBackend {
             chat_parse_metadata.as_deref(),
             false,
         )?;
-        let response =
-            chat_response_from_generated_text(request.model.clone(), &output, parsed_message);
+        let response = chat_response_from_generated_text(
+            request.model.clone(),
+            &output,
+            parsed_message,
+            request.return_token_ids,
+        );
         let mut response_attrs = self.openai_attrs(&ids);
         response_attrs.insert(
             "llama_stage.openai_operation".to_string(),

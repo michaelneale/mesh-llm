@@ -1,7 +1,7 @@
-From 2c999c27b013177a6303fee4ad34defbc6110bfb Mon Sep 17 00:00:00 2001
+From a2f43b51f71d88df4b8c73a9b4a90f38ddb93904 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Thu, 7 May 2026 18:34:54 +1000
-Subject: [PATCH 74/80] Pad activation frame decode batches to native input
+Subject: [PATCH 74/81] Pad activation frame decode batches to native input
  width
 
 ---
@@ -9,7 +9,7 @@ Subject: [PATCH 74/80] Pad activation frame decode batches to native input
  1 file changed, 12 insertions(+), 2 deletions(-)
 
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index a91fbc2b..9b01eda1 100644
+index 091d0c8c..be8e5719 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -1469,10 +1469,20 @@ static enum skippy_status skippy_decode_activation_frame(
@@ -36,5 +36,5 @@ index a91fbc2b..9b01eda1 100644
      for (int32_t i = 0; i < n_tokens; ++i) {
          batch.pos[i] = session->n_past + i;
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 

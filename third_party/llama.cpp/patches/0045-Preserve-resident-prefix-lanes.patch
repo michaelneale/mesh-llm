@@ -1,14 +1,14 @@
-From a28e2a6b9bced5d1233cbc34245d7d28f4146f76 Mon Sep 17 00:00:00 2001
+From 17e5e1a4726016ec683cb8217034eaf6a39ed00c Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Tue, 5 May 2026 22:05:49 +1000
-Subject: [PATCH 45/80] Preserve resident prefix lanes
+Subject: [PATCH 45/81] Preserve resident prefix lanes
 
 ---
  src/skippy.cpp | 65 ++++++++++++++++++++++++++++++++++++++++++++------
  1 file changed, 58 insertions(+), 7 deletions(-)
 
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 4c65dbc4..4486ad78 100644
+index 5a5b123c..c3de4c89 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -16,6 +16,7 @@
@@ -44,7 +44,7 @@ index 4c65dbc4..4486ad78 100644
  
      *out_model = stage_model;
      return skippy_success(out_error);
-@@ -1695,6 +1700,12 @@ enum skippy_status skippy_session_create(
+@@ -1701,6 +1706,12 @@ enum skippy_status skippy_session_create(
      session->checkpoint_valid = false;
      session->checkpoint_n_past = 0;
      *out_session = session;
@@ -57,7 +57,7 @@ index 4c65dbc4..4486ad78 100644
      return skippy_success(out_error);
  }
  
-@@ -1837,7 +1848,26 @@ enum skippy_status skippy_session_free(
+@@ -1843,7 +1854,26 @@ enum skippy_status skippy_session_free(
          struct skippy_error ** out_error) {
      if (session != nullptr) {
          if (session->ctx != nullptr) {
@@ -85,7 +85,7 @@ index 4c65dbc4..4486ad78 100644
          }
          if (!session->borrowed_sequence && session->stage_model != nullptr && session->seq_id >= 0) {
              const size_t lane = static_cast<size_t>(session->seq_id);
-@@ -2865,6 +2895,18 @@ enum skippy_status skippy_session_save_prefix(
+@@ -2871,6 +2901,18 @@ enum skippy_status skippy_session_save_prefix(
      if (token_count > 0) {
          llama_memory_seq_cp(memory, session->seq_id, cache_seq_id, 0, static_cast<llama_pos>(token_count));
      }
@@ -104,7 +104,7 @@ index 4c65dbc4..4486ad78 100644
      session->ctx->synchronize();
      return skippy_success(out_error);
  }
-@@ -2982,13 +3024,22 @@ enum skippy_status skippy_session_create_from_resident_prefix(
+@@ -2988,13 +3030,22 @@ enum skippy_status skippy_session_create_from_resident_prefix(
              return SKIPPY_STATUS_INVALID_ARGUMENT;
          }
      }
@@ -134,5 +134,5 @@ index 4c65dbc4..4486ad78 100644
      if (!llama_memory_seq_rm(memory, seq_id, static_cast<llama_pos>(token_count), -1)) {
          skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to trim borrowed execution lane");
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 

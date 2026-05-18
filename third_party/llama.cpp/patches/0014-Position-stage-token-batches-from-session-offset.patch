@@ -1,7 +1,7 @@
-From b8b5899d1db1a7a448ffea51e5801cc542feab66 Mon Sep 17 00:00:00 2001
+From 757234753a273f8b204cf5f22b640983c5e08fd0 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 09:05:00 +1000
-Subject: [PATCH 14/80] Position stage token batches from session offset
+Subject: [PATCH 14/81] Position stage token batches from session offset
 
 ---
  src/skippy.cpp | 17 +++++++++++++----
@@ -37,5 +37,5 @@ index 12c1f646..16d77e25 100644
  
  static llama_token skippy_greedy_sample(skippy_session * session) {
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 

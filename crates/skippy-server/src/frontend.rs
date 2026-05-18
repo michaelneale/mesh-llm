@@ -75,6 +75,7 @@ mod prefill;
 mod prefix_cache;
 mod prompting;
 mod request;
+mod spec_prefill;
 mod speculative;
 mod util;
 mod wire_messages;
@@ -1190,7 +1191,14 @@ fn chat_response_from_generated_text(
     model: String,
     output: &GeneratedText,
     parsed_message: Option<ParsedChatMessage>,
+    return_token_ids: bool,
 ) -> ChatCompletionResponse {
+    let token_ids = if return_token_ids {
+        Some(output.token_ids.clone())
+    } else {
+        None
+    };
+
     if let Some(parsed) = parsed_message {
         let finish_reason = if parsed.tool_calls.is_some() {
             FinishReason::ToolCalls
@@ -1214,15 +1222,18 @@ fn chat_response_from_generated_text(
                 finish_reason: Some(finish_reason),
             }],
             usage: output.usage(),
+            completion_token_ids: token_ids,
         };
     }
 
-    ChatCompletionResponse::new_with_reason(
+    let mut resp = ChatCompletionResponse::new_with_reason(
         model,
         output.text.clone(),
         output.usage(),
         output.finish_reason,
-    )
+    );
+    resp.completion_token_ids = token_ids;
+    resp
 }
 
 fn parsed_chat_message_from_json(
@@ -1432,6 +1443,11 @@ struct EmbeddedStageZeroGeneration<'a> {
     hook_runtime: Option<tokio::runtime::Handle>,
     cancellation: Option<&'a openai_frontend::CancellationToken>,
     ids: &'a OpenAiGenerationIds,
+    /// When set, the draft text is tokenized and verified against the target
+    /// in a single prefill pass before decode begins. Accepted prefix tokens
+    /// are emitted immediately; only the tail after divergence is decoded.
+    #[allow(dead_code)] // will be used when embedded stage 0 supports spec prefill
+    draft_response: Option<String>,
 }
 
 struct SplitMultimodalGeneration<'a> {
@@ -1775,6 +1791,7 @@ where
             suffix_prefill_tokens: cache_stats.suffix_prefill_tokens,
             cache_hit_kind: cache_stats.hit_kind,
             text: self.text,
+            token_ids: self.generated_text_tokens,
             finish_reason: self.finish_reason,
             detokenize_ms: self.metrics.detokenize_ms,
             text_emit_ms: self.metrics.text_emit_ms,
@@ -1791,6 +1808,7 @@ struct GeneratedText {
     suffix_prefill_tokens: u32,
     cache_hit_kind: Option<&'static str>,
     text: String,
+    token_ids: Vec<i32>,
     finish_reason: FinishReason,
     detokenize_ms: f64,
     text_emit_ms: f64,

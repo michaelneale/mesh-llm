@@ -134,6 +134,8 @@ pub(crate) struct SkippyModelLoadOptions {
     pub(crate) package_identity: Option<SkippyPackageIdentity>,
     pub(crate) projector_path: Option<PathBuf>,
     pub(crate) telemetry: SkippyTelemetryOptions,
+    pub(crate) draft_model_path: Option<PathBuf>,
+    pub(crate) draft_max: u16,
 }
 
 #[derive(Clone, Debug)]
@@ -183,6 +185,8 @@ impl SkippyModelLoadOptions {
             package_identity: None,
             projector_path: None,
             telemetry: SkippyTelemetryOptions::off(),
+            draft_model_path: None,
+            draft_max: 10,
         }
     }
 
@@ -236,6 +240,12 @@ impl SkippyModelLoadOptions {
     #[cfg(test)]
     pub(crate) fn with_package_identity(mut self, package_identity: SkippyPackageIdentity) -> Self {
         self.package_identity = Some(package_identity);
+        self
+    }
+
+    pub(crate) fn with_draft_model(mut self, draft_path: PathBuf, draft_max: u16) -> Self {
+        self.draft_model_path = Some(draft_path);
+        self.draft_max = draft_max;
         self
     }
 }
@@ -317,8 +327,12 @@ impl SkippyModelHandle {
             prefill_adaptive_start: 64,
             prefill_adaptive_step: 64,
             prefill_adaptive_max: 512,
-            draft_model_path: None,
-            speculative_window: 0,
+            draft_model_path: options.draft_model_path.clone(),
+            speculative_window: if options.draft_model_path.is_some() {
+                options.draft_max as usize
+            } else {
+                0
+            },
             adaptive_speculative_window: false,
             draft_n_gpu_layers: None,
             activation_width: 0,

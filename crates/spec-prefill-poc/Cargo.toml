@@ -1,0 +1,14 @@
+[package]
+name = "spec-prefill-poc"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "spec-prefill-poc"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+skippy-runtime = { path = "../skippy-runtime" }
+skippy-ffi = { path = "../skippy-ffi" }

@@ -376,6 +376,7 @@ fn chat_response_from_parsed_message_separates_reasoning_content() {
         suffix_prefill_tokens: 0,
         cache_hit_kind: None,
         text: "Checked facts first.</think>Final answer.".to_string(),
+        token_ids: Vec::new(),
         finish_reason: FinishReason::Stop,
         detokenize_ms: 0.0,
         text_emit_ms: 0.0,
@@ -387,7 +388,8 @@ fn chat_response_from_parsed_message_separates_reasoning_content() {
         tool_calls: None,
     };
 
-    let response = chat_response_from_generated_text("qwen".to_string(), &output, Some(parsed));
+    let response =
+        chat_response_from_generated_text("qwen".to_string(), &output, Some(parsed), false);
 
     let message = &response.choices[0].message;
     assert_eq!(message.content.as_deref(), Some("Final answer."));

@@ -156,6 +156,8 @@ pub(super) struct LocalRuntimeModelStartSpec<'a> {
     pub(super) flash_attention_override: FlashAttentionType,
     pub(super) parallel_override: Option<usize>,
     pub(super) skippy_telemetry: skippy::SkippyTelemetryOptions,
+    pub(super) draft_model_path: Option<PathBuf>,
+    pub(super) draft_max: u16,
 }
 
 pub(super) enum SplitRuntimeStart {
@@ -2699,6 +2701,9 @@ async fn start_runtime_skippy_model(
     }
     if let Some(projector_path) = projector_path {
         options = options.with_projector_path(projector_path);
+    }
+    if let Some(draft_path) = spec.draft_model_path.clone() {
+        options = options.with_draft_model(draft_path, spec.draft_max);
     }
     if let Some(gpu) = spec.pinned_gpu {
         options = options.with_selected_device(skippy::SkippyDeviceDescriptor {

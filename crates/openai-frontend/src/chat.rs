@@ -40,6 +40,26 @@ pub struct ChatCompletionRequest {
     pub prompt_cache_key: Option<String>,
     pub prompt_cache_retention: Option<PromptCacheRetention>,
     pub stream_options: Option<StreamOptions>,
+    /// When set, the backend tokenizes this draft text and verifies it
+    /// against the target model in a single prefill pass. Accepted tokens
+    /// are committed without decode; only the tail after the first
+    /// divergence is decoded normally. This is the speculative prefill
+    /// optimization — the proxy generates the draft via a fast model and
+    /// injects it here so the target can verify cheaply.
+    pub draft_response: Option<String>,
+    /// Pre-tokenized draft token IDs. When set, these are used directly
+    /// for verification instead of retokenizing `draft_response`. This
+    /// avoids the tokenizer round-trip problem where
+    /// `tokenize(detokenize(tokens)) != tokens` for some sequences.
+    /// Mutually exclusive with `draft_response` — if both are set,
+    /// `draft_tokens` takes priority.
+    pub draft_tokens: Option<Vec<i32>>,
+    /// When true, the response includes `completion_token_ids` — the
+    /// raw token IDs produced during generation. Callers can pass these
+    /// as `draft_tokens` to a target model for spec prefill verification
+    /// without the tokenizer round-trip problem.
+    #[serde(default)]
+    pub return_token_ids: bool,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -174,6 +194,12 @@ pub struct ChatCompletionResponse {
     pub model: String,
     pub choices: Vec<ChatCompletionChoice>,
     pub usage: Usage,
+    /// When the request set `return_token_ids: true`, this contains the
+    /// completion token IDs produced by the model. Enables spec prefill
+    /// without the tokenizer round-trip problem — the caller can pass
+    /// these directly as `draft_tokens` to a target model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completion_token_ids: Option<Vec<i32>>,
 }
 
 impl ChatCompletionResponse {
@@ -204,6 +230,7 @@ impl ChatCompletionResponse {
                 finish_reason: Some(finish_reason),
             }],
             usage,
+            completion_token_ids: None,
         }
     }
 }

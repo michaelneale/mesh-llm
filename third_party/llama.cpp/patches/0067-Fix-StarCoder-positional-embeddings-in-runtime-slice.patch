@@ -1,7 +1,7 @@
-From 7be2cbd7ce0c257c12ef59723ae9a8b0494761df Mon Sep 17 00:00:00 2001
+From c316fa19132b18460efcb3fc9aba2691dbd7a02e Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Thu, 7 May 2026 07:07:08 +1000
-Subject: [PATCH 67/80] Fix StarCoder positional embeddings in runtime slices
+Subject: [PATCH 67/81] Fix StarCoder positional embeddings in runtime slices
 
 ---
  src/models/starcoder.cpp | 16 +++++++++-------
@@ -38,5 +38,5 @@ index 7d5c32e7..22483964 100644
      ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
  
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 

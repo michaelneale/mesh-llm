@@ -1,7 +1,7 @@
-From bd284f5e74a76e5662638092db1ada38c3a5c096 Mon Sep 17 00:00:00 2001
+From 400d57630e12da9fee0557e77e24e049295e6bea Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Wed, 29 Apr 2026 11:45:50 +1000
-Subject: [PATCH 28/80] Load stage models from ordered GGUF parts
+Subject: [PATCH 28/81] Load stage models from ordered GGUF parts
 
 ---
  include/llama.h            |   7 ++
@@ -416,5 +416,5 @@ index 5abc8776..ab5a147c 100644
          struct skippy_model * model,
          struct skippy_error ** out_error) {
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 

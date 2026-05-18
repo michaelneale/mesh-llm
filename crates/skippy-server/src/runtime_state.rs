@@ -234,6 +234,78 @@ impl RuntimeState {
         Ok(output)
     }
 
+    /// Verify draft tokens locally (no activation frames). Returns the
+    /// model's greedy prediction at each position.
+    pub fn verify_tokens(&mut self, session_id: &str, token_ids: &[i32]) -> Result<Vec<i32>> {
+        let session = self.session(session_id)?;
+        let predicted = session.verify_tokens(token_ids)?;
+        self.add_session_tokens(session_id, token_ids.len() as u64);
+        Ok(predicted)
+    }
+
+    /// Verify draft tokens in chunks. Each chunk is verified as a
+    /// separate batch, building on the KV cache from prior chunks.
+    /// This is more numerically similar to sequential decode than
+    /// verifying all tokens in one large batch.
+    ///
+    /// Returns `(predicted_tokens, per_position_logprobs)` where
+    /// `per_position_logprobs[i]` is the logprob of `draft_token_ids[i+1]`
+    /// at position `i` (how likely the target model considers the next
+    /// draft token). The last position has no "next" token so its
+    /// logprob is 0.0.
+    pub fn verify_tokens_chunked(
+        &mut self,
+        session_id: &str,
+        draft_token_ids: &[i32],
+        chunk_size: usize,
+    ) -> Result<(Vec<i32>, Vec<f32>)> {
+        let chunk_size = chunk_size.max(1);
+        let total = draft_token_ids.len();
+        let mut all_predicted = Vec::with_capacity(total);
+        let mut all_logprobs = Vec::with_capacity(total);
+
+        for chunk_start in (0..total).step_by(chunk_size) {
+            let chunk_end = (chunk_start + chunk_size).min(total);
+            let chunk = &draft_token_ids[chunk_start..chunk_end];
+
+            // Verify this chunk
+            let session = self.session(session_id)?;
+            let predicted = session.verify_tokens(chunk)?;
+
+            // Get logprob of next draft token at each position
+            let chunk_len = chunk.len();
+            for i in 0..chunk_len {
+                all_predicted.push(predicted[i]);
+
+                // For each position, get the logprob of the NEXT draft token
+                let logprob = if chunk_start + i + 1 < total {
+                    let next_draft = draft_token_ids[chunk_start + i + 1];
+                    session
+                        .token_logprob_at(i as i32, next_draft)
+                        .unwrap_or(f32::NEG_INFINITY)
+                } else {
+                    0.0 // Last position has no next token to compare
+                };
+                all_logprobs.push(logprob);
+            }
+        }
+
+        self.add_session_tokens(session_id, total as u64);
+        Ok((all_predicted, all_logprobs))
+    }
+
+    /// Get the log-probability of a specific token at a batch logits position.
+    /// Call after `verify_tokens` while the logits buffer is still populated.
+    pub fn token_logprob_at(
+        &mut self,
+        session_id: &str,
+        logits_index: i32,
+        token_id: i32,
+    ) -> Result<f32> {
+        let session = self.session(session_id)?;
+        session.token_logprob_at(logits_index, token_id)
+    }
+
     pub fn checkpoint_session(&mut self, session_id: &str) -> Result<()> {
         let checkpoint = self.session(session_id)?.checkpoint()?;
         self.session_checkpoints

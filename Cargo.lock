@@ -6977,6 +6977,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea06cc588e43c632923a55450401b8f25e628131571d4e1baea1bdfdb2b5ed06"
 
 [[package]]
+name = "spec-prefill-poc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "skippy-ffi",
+ "skippy-runtime",
+]
+
+[[package]]
 name = "spez"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

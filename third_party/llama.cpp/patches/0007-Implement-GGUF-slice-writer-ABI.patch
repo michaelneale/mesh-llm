@@ -1,7 +1,7 @@
-From 775c6a15d64a4463490c5cbe68385a1dfd3a2682 Mon Sep 17 00:00:00 2001
+From 1a0deb88568e0fb46e46b1c2a0cdb1f9625613e2 Mon Sep 17 00:00:00 2001
 From: James Dumay <jameswdumay@gmail.com>
 Date: Sat, 25 Apr 2026 14:39:10 +1000
-Subject: [PATCH 07/80] Implement GGUF slice writer ABI
+Subject: [PATCH 07/81] Implement GGUF slice writer ABI
 
 ---
  src/skippy.cpp | 413 +++++++++++++++++++++++++++++++++++++++++++++++++
@@ -470,5 +470,5 @@ index 732a1a15..2b54a7db 100644
 +
  }
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 

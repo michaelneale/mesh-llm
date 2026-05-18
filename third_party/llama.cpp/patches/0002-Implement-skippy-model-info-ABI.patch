@@ -1,7 +1,7 @@
-From e280676463678fb39fb23c8d8850fb7b0a65f30f Mon Sep 17 00:00:00 2001
+From 1565fe3be89074db2598876570465df109f61966 Mon Sep 17 00:00:00 2001
 From: James Dumay <jameswdumay@gmail.com>
 Date: Sat, 25 Apr 2026 10:28:54 +1000
-Subject: [PATCH 02/80] Implement skippy model info ABI
+Subject: [PATCH 02/81] Implement skippy model info ABI
 
 ---
  CMakeLists.txt     |   1 +
@@ -260,5 +260,5 @@ index 00000000..bd94fa37
 +
 +}
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 

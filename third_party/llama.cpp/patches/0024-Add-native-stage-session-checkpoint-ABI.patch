@@ -1,7 +1,7 @@
-From ae069d2d04187153874ef6da76851b43f12c8095 Mon Sep 17 00:00:00 2001
+From 37434f4ae659972b477d3ac002675d251bd88a88 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 15:57:39 +1000
-Subject: [PATCH 24/80] Add native stage session checkpoint ABI
+Subject: [PATCH 24/81] Add native stage session checkpoint ABI
 
 ---
  include/skippy.h | 13 ++++++-
@@ -198,5 +198,5 @@ index 5f5d33b4..5abd16aa 100644
          skippy_session * session,
          skippy_error ** out_error) {
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 

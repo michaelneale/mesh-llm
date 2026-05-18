@@ -46,6 +46,7 @@ WORKSPACE_MEMBERS=(
   "llama-spec-bench"
   "skippy-bench"
   "skippy-prompt"
+  "spec-prefill-poc"
   "xtask"
 )
 

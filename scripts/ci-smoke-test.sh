@@ -42,7 +42,6 @@ ARGS=(
     --log-format json
     serve
     --model "$MODEL"
-    --no-draft
     --device CPU
     --ctx-size "${MESH_CI_CTX_SIZE:-256}"
     --port "$API_PORT"
@@ -182,7 +181,6 @@ HEADLESS_ARGS=(
     --log-format json
     serve
     --model "$MODEL"
-    --no-draft
     --device CPU
     --ctx-size "${MESH_CI_CTX_SIZE:-256}"
     --port "$HEADLESS_API_PORT"

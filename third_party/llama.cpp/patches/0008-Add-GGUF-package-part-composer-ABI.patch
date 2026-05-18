@@ -1,7 +1,7 @@
-From 02e30a1fd9d208bb2906d4a83ef955324f44bd26 Mon Sep 17 00:00:00 2001
+From f16c4d6a1a7195327204dca2ec3e5074b158d607 Mon Sep 17 00:00:00 2001
 From: James Dumay <jameswdumay@gmail.com>
 Date: Sat, 25 Apr 2026 14:51:18 +1000
-Subject: [PATCH 08/80] Add GGUF package part composer ABI
+Subject: [PATCH 08/81] Add GGUF package part composer ABI
 
 ---
  include/skippy.h |   6 +
@@ -434,5 +434,5 @@ index 2b54a7db..26169320 100644
  
      return skippy_success(out_error);
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 

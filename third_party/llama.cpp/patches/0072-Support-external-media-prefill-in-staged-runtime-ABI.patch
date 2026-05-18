@@ -1,7 +1,7 @@
-From c8bcb97e61e9b36657bc2e2647b183e58feaa0a9 Mon Sep 17 00:00:00 2001
+From 6475ade5e81779c1cd96125ac42589b94ae4e2a1 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Thu, 7 May 2026 18:18:58 +1000
-Subject: [PATCH 72/80] Support external media prefill in staged runtime ABI
+Subject: [PATCH 72/81] Support external media prefill in staged runtime ABI
 
 ---
  include/skippy.h | 14 ++++++++++
@@ -34,10 +34,10 @@ index c48bc240..c588c862 100644
          struct skippy_session * session,
          llama_token token_id,
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 93b756a0..34be30f7 100644
+index 055eae0e..f81d8fc7 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
-@@ -2313,17 +2313,23 @@ enum skippy_status skippy_verify_tokens(
+@@ -2319,17 +2319,23 @@ enum skippy_status skippy_verify_tokens(
      return status;
  }
  
@@ -62,7 +62,7 @@ index 93b756a0..34be30f7 100644
      if (token_count == 0) {
          skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "token_count must be greater than zero");
          return SKIPPY_STATUS_INVALID_ARGUMENT;
-@@ -2357,17 +2363,78 @@ enum skippy_status skippy_prefill_chunk_frame(
+@@ -2363,17 +2369,78 @@ enum skippy_status skippy_prefill_chunk_frame(
      }
  
      if (skippy_is_filtered(session) && session->stage_model->config.layer_start > 0) {
@@ -144,5 +144,5 @@ index 93b756a0..34be30f7 100644
          struct skippy_session * session,
          llama_token token_id,
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 

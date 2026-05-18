@@ -1,7 +1,7 @@
-From 426fbd309fcf3b6d9b22115cccda7fe1d995e3af Mon Sep 17 00:00:00 2001
+From 44139a1d477495e9bfd37ec66f891351cbdfc39b Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 21:35:20 +1000
-Subject: [PATCH 25/80] Fix staged verification activation handoff
+Subject: [PATCH 25/81] Fix staged verification activation handoff
 
 ---
  src/skippy.cpp | 2 +-
@@ -21,5 +21,5 @@ index 5abd16aa..36e8826d 100644
          status = session->stage_model->config.include_output ?
                  skippy_verify_token_batch(session, token_ids, token_count, out_error) :
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 
