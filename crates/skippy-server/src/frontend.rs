@@ -83,7 +83,21 @@ use self::{prefill::*, request::*, speculative::*, util::*, wire_messages::*};
 
 static OPENAI_GENERATION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+/// Sentinel meaning "no caller-specified max completion length; let the
+/// request consume the entire remaining context window when the client
+/// also omits max_tokens".
+///
+/// This is opt-in and should only be wired in by callers that have made
+/// a deliberate decision to allow unbounded chat completions. The
+/// embedded mesh-llm wiring uses [`DEFAULT_EMBEDDED_MAX_TOKENS`] instead.
 pub const CONTEXT_BUDGET_MAX_TOKENS: u32 = u32::MAX;
+
+/// Default max completion tokens for embedded mesh-llm chat serving when
+/// the client omits max_tokens. Bounded so that an adversarial or
+/// non-terminating generation cannot run for the full context window.
+/// Clients can still request more by sending max_tokens explicitly, up
+/// to the remaining context budget.
+pub const DEFAULT_EMBEDDED_MAX_TOKENS: u32 = 8192;
 const GENERATION_ADMISSION_TIMEOUT: Duration = Duration::from_secs(10);
 const GENERATION_RETRY_AFTER_SECS: u64 = 1;
 
