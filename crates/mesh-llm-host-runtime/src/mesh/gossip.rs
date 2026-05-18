@@ -3,6 +3,61 @@
 
 use super::*;
 
+/// Minimum peer version we accept into the local mesh table and re-broadcast.
+///
+/// Peers below this floor are rejected at ingest in both `add_peer`
+/// (direct gossip exchange) and `update_transitive_peer` (gossip relayed
+/// by a bridge peer). They do not appear in `/api/status`, do not appear
+/// in the UI, and are not included in outbound gossip. A peer that updates
+/// and re-announces with a version at or above the floor is accepted on
+/// the next exchange.
+///
+/// v0.60.0 is the cut where the on-wire `hardware` block landed; peers
+/// older than that predate several gossip fields the current mesh relies
+/// on. Peers that don't advertise a version at all (some legacy nodes
+/// leave the field unset) are conservatively accepted, on the theory that
+/// a missing version is more likely to be a legitimate old node than a
+/// targeted bypass.
+const MIN_REBROADCAST_VERSION_MAJOR: u64 = 0;
+const MIN_REBROADCAST_VERSION_MINOR: u64 = 60;
+
+/// Returns `true` if `version` is recent enough to include in outbound
+/// gossip. `None` (no advertised version) returns `true` for back-compat.
+/// Build metadata after `+` is stripped before parsing.
+pub(super) fn version_allowed_for_rebroadcast(version: Option<&str>) -> bool {
+    let Some(raw) = version else {
+        return true;
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    // Strip build metadata ("0.65.1+skippy.20260504.kv.2" → "0.65.1") and
+    // pre-release tag ("0.63.0-rc5" → "0.63.0") so the comparison is
+    // purely on the major.minor numeric pair.
+    let core = trimmed
+        .split('+')
+        .next()
+        .unwrap_or(trimmed)
+        .split('-')
+        .next()
+        .unwrap_or(trimmed);
+    let mut parts = core.split('.');
+    let Some(major) = parts.next().and_then(|s| s.parse::<u64>().ok()) else {
+        return true; // Unparseable — don't penalise; conservative default.
+    };
+    let Some(minor) = parts.next().and_then(|s| s.parse::<u64>().ok()) else {
+        return true;
+    };
+    if major > MIN_REBROADCAST_VERSION_MAJOR {
+        return true;
+    }
+    if major < MIN_REBROADCAST_VERSION_MAJOR {
+        return false;
+    }
+    minor >= MIN_REBROADCAST_VERSION_MINOR
+}
+
 pub fn backfill_legacy_descriptors(ann: &mut PeerAnnouncement) {
     if ann.served_model_descriptors.is_empty() {
         let primary_model_name = ann
@@ -404,6 +459,22 @@ impl Node {
         addr: EndpointAddr,
         ann: &PeerAnnouncement,
     ) {
+        // Reject ingest from peers below the supported version floor. They
+        // are not added to local state, do not appear in /api/status, and
+        // are not re-broadcast. A peer that updates and re-announces will
+        // be accepted on the next exchange.
+        if !version_allowed_for_rebroadcast(ann.version.as_deref()) {
+            tracing::debug!(
+                "Refusing direct peer {} below version floor (advertised {:?})",
+                id.fmt_short(),
+                ann.version
+            );
+            let mut state = self.state.lock().await;
+            if state.peers.remove(&id).is_some() {
+                let _ = self.peer_change_tx.send(state.peers.len());
+            }
+            return;
+        }
         let trust_store = self.trust_store.lock().await.clone();
         let owner_summary = verify_node_ownership(
             ann.owner_attestation.as_ref(),
@@ -572,6 +643,16 @@ impl Node {
         ann: &PeerAnnouncement,
         bridge_id: EndpointId,
     ) {
+        // Refuse transitive ingest from peers below the supported version
+        // floor. Keeps the local table free of pre-floor gossip filler;
+        // /api/status, the UI, and routing all stop seeing them.
+        if !version_allowed_for_rebroadcast(ann.version.as_deref()) {
+            let mut state = self.state.lock().await;
+            if state.peers.remove(&id).is_some() {
+                let _ = self.peer_change_tx.send(state.peers.len());
+            }
+            return;
+        }
         let trust_store = self.trust_store.lock().await.clone();
         let owner_summary = verify_node_ownership(
             ann.owner_attestation.as_ref(),
@@ -675,12 +756,23 @@ impl Node {
         // on the hot gossip path.
         let my_model_metadata: Vec<_> = Vec::new();
         let my_model_sizes: HashMap<_, _> = HashMap::new();
+        let mut filtered_old_version: usize = 0;
         let mut announcements: Vec<PeerAnnouncement> = {
             let state = self.state.lock().await;
             state
                 .peers
                 .values()
                 .filter(|p| p.last_seen >= stale_cutoff || p.last_mentioned >= stale_cutoff)
+                .filter(|p| {
+                    // Belt-and-braces: ingest gates already reject below-floor
+                    // peers, but if one slipped through (e.g. version mutated
+                    // after ingest), still exclude from outbound gossip.
+                    let allowed = version_allowed_for_rebroadcast(p.version.as_deref());
+                    if !allowed {
+                        filtered_old_version += 1;
+                    }
+                    allowed
+                })
                 .map(|p| {
                     let latency = p.display_latency();
                     PeerAnnouncement {
@@ -732,6 +824,15 @@ impl Node {
                 })
                 .collect()
         };
+        if filtered_old_version > 0 {
+            tracing::debug!(
+                filtered = filtered_old_version,
+                "gossip: omitting {} peer(s) below v{}.{}.0 from outbound rebroadcast",
+                filtered_old_version,
+                MIN_REBROADCAST_VERSION_MAJOR,
+                MIN_REBROADCAST_VERSION_MINOR,
+            );
+        }
         let my_first_joined_mesh_ts = *self.first_joined_mesh_ts.lock().await;
         announcements.push(PeerAnnouncement {
             addr: self.endpoint_addr_for_advertisement(),
@@ -1043,6 +1144,116 @@ mod tests {
         assert_eq!(
             self_announcement.explicit_model_interests,
             vec!["Qwen/Qwen3-Coder-Next-GGUF@main:Q4_K_M".to_string()]
+        );
+    }
+
+    #[test]
+    fn version_allowed_for_rebroadcast_handles_floor() {
+        // At or above the floor — allowed.
+        assert!(version_allowed_for_rebroadcast(Some("0.60.0")));
+        assert!(version_allowed_for_rebroadcast(Some("0.60.2")));
+        assert!(version_allowed_for_rebroadcast(Some("0.64.0")));
+        assert!(version_allowed_for_rebroadcast(Some("0.65.1")));
+        assert!(version_allowed_for_rebroadcast(Some("1.0.0")));
+        // Below the floor — refused.
+        assert!(!version_allowed_for_rebroadcast(Some("0.57.0")));
+        assert!(!version_allowed_for_rebroadcast(Some("0.55.1")));
+        assert!(!version_allowed_for_rebroadcast(Some("0.58.0")));
+        assert!(!version_allowed_for_rebroadcast(Some("0.59.99")));
+    }
+
+    #[test]
+    fn version_allowed_for_rebroadcast_handles_metadata_and_prerelease() {
+        // Build metadata is stripped.
+        assert!(version_allowed_for_rebroadcast(Some(
+            "0.65.1+skippy.20260504.kv.2"
+        )));
+        assert!(!version_allowed_for_rebroadcast(Some("0.57.0+anything")));
+        // Pre-release tags are stripped — 0.63.0-rc5 still passes.
+        assert!(version_allowed_for_rebroadcast(Some("0.63.0-rc5")));
+        assert!(!version_allowed_for_rebroadcast(Some("0.58.0-beta")));
+    }
+
+    #[test]
+    fn version_allowed_for_rebroadcast_is_conservative_on_unknown() {
+        // Unparseable / missing / empty — preserved (don't drop legacy nodes
+        // that never advertised a version).
+        assert!(version_allowed_for_rebroadcast(None));
+        assert!(version_allowed_for_rebroadcast(Some("")));
+        assert!(version_allowed_for_rebroadcast(Some("   ")));
+        assert!(version_allowed_for_rebroadcast(Some("garbage")));
+        assert!(version_allowed_for_rebroadcast(Some("0")));
+        assert!(version_allowed_for_rebroadcast(Some("0.x")));
+    }
+
+    #[tokio::test]
+    async fn transitive_ingest_rejects_below_version_floor() {
+        let node = Node::new_for_tests(NodeRole::Worker).await.unwrap();
+
+        let old_addr = test_addr(0x57);
+        let new_addr = test_addr(0x65);
+        let old_id = old_addr.id;
+        let new_id = new_addr.id;
+
+        let mut old_ann = test_announcement(None);
+        old_ann.addr = old_addr.clone();
+        old_ann.role = NodeRole::Client;
+        old_ann.version = Some("0.57.0".to_string());
+        let mut new_ann = test_announcement(None);
+        new_ann.addr = new_addr.clone();
+        new_ann.role = NodeRole::Client;
+        new_ann.version = Some("0.65.0".to_string());
+
+        let bridge = test_endpoint_id(0xBB);
+        node.update_transitive_peer(old_id, &old_addr, &old_ann, bridge)
+            .await;
+        node.update_transitive_peer(new_id, &new_addr, &new_ann, bridge)
+            .await;
+
+        // Old peer must NOT be in local state — it was rejected at ingest.
+        // New peer must be present.
+        {
+            let state = node.state.lock().await;
+            assert!(
+                !state.peers.contains_key(&old_id),
+                "v0.57.0 peer must be rejected at ingest, not appear in local state"
+            );
+            assert!(
+                state.peers.contains_key(&new_id),
+                "v0.65.0 peer should be added to local state"
+            );
+        }
+
+        // Outbound gossip must also exclude the old peer.
+        let announcements = node.collect_announcements().await;
+        assert!(
+            !announcements.iter().any(|a| a.addr.id == old_id),
+            "v0.57.0 peer must not appear in outbound gossip"
+        );
+        assert!(
+            announcements.iter().any(|a| a.addr.id == new_id),
+            "v0.65.0 peer should appear in outbound gossip"
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_add_peer_rejects_below_version_floor() {
+        let node = Node::new_for_tests(NodeRole::Worker).await.unwrap();
+
+        let addr = test_addr(0x57);
+        let id = addr.id;
+
+        let mut ann = test_announcement(None);
+        ann.addr = addr.clone();
+        ann.role = NodeRole::Client;
+        ann.version = Some("0.57.0".to_string());
+
+        node.add_peer(id, addr, &ann).await;
+
+        let state = node.state.lock().await;
+        assert!(
+            !state.peers.contains_key(&id),
+            "direct add of v0.57.0 peer must be rejected (no local state entry)"
         );
     }
 }
