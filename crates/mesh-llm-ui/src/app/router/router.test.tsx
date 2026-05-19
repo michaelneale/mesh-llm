@@ -18,6 +18,7 @@ import { ChatPageContent } from '@/features/chat/pages/ChatPage'
 import { DeveloperPlaygroundPage } from '@/features/developer/pages/DeveloperPlaygroundPage'
 import { DashboardPageSurface } from '@/features/network/pages/DashboardPage'
 import { parseDeveloperPlaygroundSearch } from '@/features/developer/playground/developer-playground-tabs'
+import { ReservesPageContent } from '@/features/reserves/pages/ReservesPage'
 import { statusKeys } from '@/lib/query/query-keys'
 
 const routeCacheProbe = vi.hoisted(() => ({
@@ -101,6 +102,12 @@ const chatRoute = createRoute({
   head: () => ({ meta: [{ title: 'MeshLLM - Chat' }] }),
   component: ChatPageContent
 })
+const reservesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/reserves',
+  head: () => ({ meta: [{ title: 'MeshLLM - Reserves' }] }),
+  component: ReservesPageContent
+})
 const configurationRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/configuration',
@@ -122,6 +129,7 @@ const developerPlaygroundRoute = createRoute({
 })
 const testRouteTree = rootRoute.addChildren([
   indexRoute,
+  reservesRoute,
   chatRoute,
   configurationRoute,
   configurationTabRoute,

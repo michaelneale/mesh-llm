@@ -89,13 +89,7 @@ vi.mock('@/components/ui/select', async () => {
 
 import { defaultQueryClient } from '@/lib/query/query-client'
 import { DATA_MODE_STORAGE_KEY } from '@/lib/data-mode'
-import {
-  App,
-  attachmentForMessage,
-  ChatPage,
-  describeImageAttachmentForPrompt,
-  describeRenderedPagesAsText
-} from '@/App'
+import { attachmentForMessage, ChatPage, describeImageAttachmentForPrompt, describeRenderedPagesAsText } from '@/App'
 import type { StatusPayload } from '@/features/app-shell/lib/status-types'
 
 function buildProps(overrides: Partial<Parameters<typeof ChatPage>[0]> = {}): Parameters<typeof ChatPage>[0] {
@@ -242,19 +236,27 @@ function setPath(path: string) {
   window.history.replaceState({}, '', path)
 }
 
-function renderAppRoute(path: string) {
+type RenderAppRouteOptions = {
+  initialDataMode?: 'harness' | 'live'
+  persistDataMode?: boolean
+}
+
+function renderAppRoute(
+  path: string,
+  { initialDataMode = 'live', persistDataMode = false }: RenderAppRouteOptions = {}
+) {
   const testRouter = createRouter({
     history: createMemoryHistory({ initialEntries: [path] }),
     routeTree
   })
 
-  render(
-    <AppProviders initialDataMode="live" persistDataMode={false} queryClient={defaultQueryClient}>
+  const result = render(
+    <AppProviders initialDataMode={initialDataMode} persistDataMode={persistDataMode} queryClient={defaultQueryClient}>
       <RouterProvider router={testRouter} />
     </AppProviders>
   )
 
-  return testRouter
+  return Object.assign(testRouter, result)
 }
 
 class MockEventSource {
@@ -497,8 +499,7 @@ describe('ChatPage', () => {
 
 describe('App routing and status', () => {
   it('persists the development data source selection across remounts', async () => {
-    setPath('/dashboard')
-    const { unmount } = render(<App />)
+    const { unmount } = renderAppRoute('/dashboard', { initialDataMode: 'harness', persistDataMode: true })
 
     fireEvent.click(await screen.findByRole('button', { name: 'Open interface preferences' }))
     expect(await screen.findByRole('radio', { name: 'Harness' })).toHaveAttribute('aria-checked', 'true')
@@ -508,7 +509,7 @@ describe('App routing and status', () => {
 
     unmount()
 
-    const rerenderedLiveApp = render(<App />)
+    const rerenderedLiveApp = renderAppRoute('/dashboard', { initialDataMode: 'harness', persistDataMode: true })
     fireEvent.click(await screen.findByRole('button', { name: 'Open interface preferences' }))
 
     expect(await screen.findByRole('radio', { name: 'Live API' })).toHaveAttribute('aria-checked', 'true')
@@ -518,7 +519,7 @@ describe('App routing and status', () => {
 
     rerenderedLiveApp.unmount()
 
-    render(<App />)
+    renderAppRoute('/dashboard', { initialDataMode: 'harness', persistDataMode: true })
     fireEvent.click(await screen.findByRole('button', { name: 'Open interface preferences' }))
 
     expect(await screen.findByRole('radio', { name: 'Harness' })).toHaveAttribute('aria-checked', 'true')
@@ -686,9 +687,7 @@ describe('App routing and status', () => {
       hosted_models: [],
       serving_models: []
     }
-    setPath('/chat')
-    window.localStorage.setItem(DATA_MODE_STORAGE_KEY, 'live')
-    render(<App />)
+    renderAppRoute('/chat')
 
     const input = await screen.findByTestId('chat-input')
     await waitFor(() => expect(mockFetch.mock.calls.some((call) => call[0] === '/api/models')).toBe(true))
@@ -710,9 +709,7 @@ describe('App routing and status', () => {
       hosted_models: [],
       serving_models: ['unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_XL']
     }
-    setPath('/chat')
-    window.localStorage.setItem(DATA_MODE_STORAGE_KEY, 'live')
-    render(<App />)
+    renderAppRoute('/chat')
 
     const input = await screen.findByTestId('chat-input')
     await waitFor(() => expect(input).not.toBeDisabled())
