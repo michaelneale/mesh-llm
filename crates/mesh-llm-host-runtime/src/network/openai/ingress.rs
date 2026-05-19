@@ -263,14 +263,26 @@ pub(crate) async fn api_proxy(
                     // directly on a skippy port; everything else goes over
                     // QUIC.
                     if effective_model.as_deref() == Some(moa::VIRTUAL_MODEL_NAME) {
-                        let _ = crate::network::openai::moa_gateway::try_handle_moa(
-                            &node,
-                            tcp_stream,
-                            &mut request,
-                            effective_model.as_deref(),
-                            Some(&targets),
-                        )
-                        .await;
+                        // try_handle_moa returns Some(stream) only if the
+                        // outer model-name check disagrees with its own
+                        // internal check — i.e. never, given we just
+                        // confirmed effective_model == "mesh". If it does
+                        // happen, we leak the stream rather than respond
+                        // twice. Log loudly so the bug is visible.
+                        if let Some(_unused_stream) =
+                            crate::network::openai::moa_gateway::try_handle_moa(
+                                &node,
+                                tcp_stream,
+                                &mut request,
+                                effective_model.as_deref(),
+                                Some(&targets),
+                            )
+                            .await
+                        {
+                            tracing::error!(
+                                "moa: try_handle_moa returned unused stream despite outer model gate"
+                            );
+                        }
                         return;
                     }
                     // ── end MoA ──────────────────────────────────────

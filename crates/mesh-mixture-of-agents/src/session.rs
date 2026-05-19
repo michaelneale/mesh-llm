@@ -338,7 +338,7 @@ impl Session {
                             .unwrap_or("");
                         let first_line = desc.lines().next().unwrap_or(desc);
                         let truncated = if first_line.len() > 80 {
-                            format!("{}...", &first_line[..77])
+                            format!("{}...", crate::worker::truncate_chars(first_line, 77))
                         } else {
                             first_line.to_string()
                         };

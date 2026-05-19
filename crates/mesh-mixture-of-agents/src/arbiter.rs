@@ -238,20 +238,24 @@ pub fn try_early_decision(
         .filter(|o| o.kind == OutputKind::ToolProposal)
         .collect();
 
-    // All agree on an answer — no need to wait for stragglers
+    // Workers agree on an answer — but agreement means the *content*
+    // overlaps, not just that they all produced an Answer-kind output.
+    // Two workers saying "Paris" and "Berlin" must not be treated as
+    // consensus. Find the largest cluster of content-similar answers
+    // and only early-exit if it's ≥2 workers AND a majority of answers.
     if answers.len() >= 2 && tool_proposals.is_empty() {
-        let best = answers
-            .iter()
-            .max_by(|a, b| a.confidence.total_cmp(&b.confidence))
-            .unwrap();
-        if best.confidence >= 0.5 {
-            tracing::info!(
-                "moa: early exit — {} workers agree on answer (conf={:.2}), {} still pending",
-                answers.len(),
-                best.confidence,
-                remaining,
-            );
-            return Some(Decision::Answer(best.payload.clone()));
+        if let Some((cluster_size, best)) = largest_agreeing_cluster(&answers) {
+            let majority = cluster_size * 2 >= answers.len();
+            if majority && best.confidence >= 0.5 {
+                tracing::info!(
+                    "moa: early exit — {}/{} workers agree on answer (conf={:.2}), {} still pending",
+                    cluster_size,
+                    answers.len(),
+                    best.confidence,
+                    remaining,
+                );
+                return Some(Decision::Answer(best.payload.clone()));
+            }
         }
     }
 
@@ -299,6 +303,136 @@ pub fn try_early_decision(
 
     // Not enough signal yet — keep waiting
     None
+}
+
+/// Tokens that flip meaning. Always preserved as content (even if they'd
+/// fail the length / stopword filters), AND a leftover negation in either
+/// side of a comparison blocks clustering regardless of subset relation.
+const NEGATION_TOKENS: &[&str] = &[
+    "no", "not", "never", "none", "nor", "dont", "doesnt", "didnt", "wont", "wouldnt", "cant",
+    "cannot", "shouldnt", "isnt", "arent", "wasnt", "werent", "without", "neither",
+];
+
+/// Content-bearing tokens extracted from an answer payload.
+///
+/// Pipeline:
+/// 1. Lowercase the text and replace non-alphanumeric chars with spaces.
+/// 2. Split on whitespace.
+/// 3. Drop stopwords and tokens shorter than 3 chars — UNLESS they're
+///    in `NEGATION_TOKENS` (always kept, because they flip meaning) or
+///    pure digits (kept so "42" survives).
+///
+/// The output is a deduplicated set: token *presence* matters, not
+/// frequency. That matches how the subset-containment rule below
+/// reasons about agreement.
+fn content_tokens(text: &str) -> std::collections::HashSet<String> {
+    // Common English stopwords. Intentionally small — scaffolding words
+    // we don't want to dominate the comparison.
+    const STOPWORDS: &[&str] = &[
+        "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from", "in", "into", "is",
+        "it", "its", "of", "on", "or", "out", "so", "that", "the", "their", "them", "then",
+        "there", "these", "they", "this", "those", "to", "was", "were", "will", "with",
+    ];
+
+    text.to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .filter(|tok| {
+            if NEGATION_TOKENS.contains(tok) {
+                return true;
+            }
+            if STOPWORDS.contains(tok) {
+                return false;
+            }
+            // Keep digit-only tokens regardless of length (so "42" survives).
+            if tok.chars().all(|c| c.is_ascii_digit()) {
+                return true;
+            }
+            tok.len() >= 3
+        })
+        .map(|t| t.to_string())
+        .collect()
+}
+
+/// Does the symmetric difference between `a` and `b` contain any
+/// negation token? If yes, one side has a negation the other lacks,
+/// and the two answers must not cluster even when subset would hold.
+fn has_negation_mismatch(
+    a: &std::collections::HashSet<String>,
+    b: &std::collections::HashSet<String>,
+) -> bool {
+    a.symmetric_difference(b)
+        .any(|tok| NEGATION_TOKENS.contains(&tok.as_str()))
+}
+
+/// Find the largest cluster of answers that agree on content.
+///
+/// Two answers agree iff:
+/// - the smaller content-token set is a subset of the larger, AND
+/// - their symmetric difference contains no negation tokens
+///
+/// Rationale: a terse answer ("Paris") and a verbose one ("Paris is
+/// the capital of France") share all of the short answer's content
+/// tokens, so the terse one is a subset of the verbose one. Two
+/// genuinely conflicting answers ("…is Paris" vs "…is Berlin") each
+/// have a leftover content token the other lacks. And an answer that
+/// adds a negation ("use grep" vs "do not use grep") is rejected by
+/// the negation-mismatch guard even when subset would otherwise hold.
+///
+/// Returns the cluster size and the highest-confidence member, or `None`
+/// if no cluster has ≥ 2 members. The chosen representative is the
+/// member with the *largest* content-token set (preferring the more
+/// complete answer), tie-broken by confidence.
+///
+/// Greedy single-pass clustering — fine for the N ≤ ~8 worker case
+/// MoA actually sees.
+fn largest_agreeing_cluster<'a>(answers: &[&'a WorkerOutput]) -> Option<(usize, &'a WorkerOutput)> {
+    let token_sets: Vec<_> = answers.iter().map(|o| content_tokens(&o.payload)).collect();
+    let mut best: Option<(usize, &WorkerOutput)> = None;
+
+    for (i, anchor_tokens) in token_sets.iter().enumerate() {
+        // Build cluster anchored at i: include j if i's tokens ⊆ j's
+        // tokens OR j's tokens ⊆ i's tokens.
+        let mut members: Vec<&WorkerOutput> = vec![answers[i]];
+        let mut member_token_counts: Vec<usize> = vec![anchor_tokens.len()];
+        for (j, other_tokens) in token_sets.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            // Negation mismatch in either direction blocks clustering
+            // even when subset would otherwise hold: "use grep" is a
+            // subset of "do not use grep" by tokens, but they obviously
+            // disagree.
+            if has_negation_mismatch(anchor_tokens, other_tokens) {
+                continue;
+            }
+            if other_tokens.is_subset(anchor_tokens) || anchor_tokens.is_subset(other_tokens) {
+                members.push(answers[j]);
+                member_token_counts.push(other_tokens.len());
+            }
+        }
+        if members.len() < 2 {
+            continue;
+        }
+        // Representative = member with the most content tokens (most
+        // complete answer); tie-break on confidence.
+        let representative = members
+            .iter()
+            .zip(member_token_counts.iter())
+            .max_by(|(a, a_n), (b, b_n)| {
+                a_n.cmp(b_n)
+                    .then_with(|| a.confidence.total_cmp(&b.confidence))
+            })
+            .map(|(o, _)| *o)
+            .unwrap();
+        match best {
+            Some((size, _)) if size >= members.len() => {}
+            _ => best = Some((members.len(), representative)),
+        }
+    }
+    best
 }
 
 fn single_output_decision(output: &WorkerOutput, has_tools: bool) -> Decision {
@@ -445,6 +579,126 @@ mod tests {
         match try_early_decision(&outputs, 3, outputs.len(), true) {
             Some(Decision::NeedsReducer { .. }) => {}
             other => panic!("expected early NeedsReducer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn early_decision_requires_content_agreement() {
+        // Two high-confidence answers that disagree on the answer noun.
+        // The old code wrongly early-exited on the highest-confidence
+        // one. The new subset rule sees `{paris}` and `{berlin}` as
+        // distinct leftovers, so neither side is a subset of the other.
+        let outputs = vec![
+            make_output(OutputKind::Answer, 0.9, "The capital of France is Paris"),
+            make_output(OutputKind::Answer, 0.8, "The capital of France is Berlin"),
+        ];
+        let res = try_early_decision(&outputs, 3, outputs.len(), false);
+        assert!(
+            res.is_none(),
+            "disagreeing answers should not trigger early-exit, got {res:?}"
+        );
+    }
+
+    #[test]
+    fn early_decision_agrees_on_terse_vs_verbose() {
+        // The most common real-world agreement pattern: one worker is
+        // terse, another is verbose, both correct. Terse content tokens
+        // ⊆ verbose content tokens → cluster.
+        let outputs = vec![
+            make_output(OutputKind::Answer, 0.7, "Paris"),
+            make_output(OutputKind::Answer, 0.9, "Paris is the capital of France"),
+        ];
+        match try_early_decision(&outputs, 3, outputs.len(), false) {
+            // Representative picks the most complete (most tokens) member.
+            Some(Decision::Answer(text)) => {
+                let lower = text.to_lowercase();
+                assert!(lower.contains("paris"), "expected Paris, got {text:?}");
+                assert!(
+                    lower.contains("capital") || lower == "paris",
+                    "expected verbose representative or single 'paris', got {text:?}"
+                );
+            }
+            other => panic!("expected agreement on terse-vs-verbose, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn early_decision_majority_cluster_wins() {
+        // Two agreeing answers + one outlier. Cluster of 2 is a majority
+        // of 3 finished answers → early-exit fires.
+        let outputs = vec![
+            make_output(OutputKind::Answer, 0.9, "Paris"),
+            make_output(OutputKind::Answer, 0.8, "Paris is the capital"),
+            make_output(OutputKind::Answer, 0.6, "I think it's Lyon"),
+        ];
+        match try_early_decision(&outputs, 4, outputs.len(), false) {
+            Some(Decision::Answer(text)) => assert!(
+                text.to_lowercase().contains("paris"),
+                "should pick from the agreeing cluster, got {text:?}"
+            ),
+            other => panic!("expected early Answer on majority cluster, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn early_decision_disagreement_with_shared_scaffolding_still_blocks() {
+        // High token overlap from shared scaffolding ("the capital of
+        // France is X") used to false-positive a similarity check.
+        // With subset containment, each answer has a distinct leftover
+        // (paris, berlin, madrid) so no cluster forms.
+        let outputs = vec![
+            make_output(OutputKind::Answer, 0.9, "The capital of France is Paris"),
+            make_output(OutputKind::Answer, 0.9, "The capital of France is Berlin"),
+            make_output(OutputKind::Answer, 0.5, "The capital of France is Madrid"),
+        ];
+        let res = try_early_decision(&outputs, 4, outputs.len(), false);
+        assert!(
+            res.is_none(),
+            "three disagreeing answers should not early-exit, got {res:?}"
+        );
+    }
+
+    #[test]
+    fn early_decision_negation_blocks_agreement() {
+        // The negation guard keeps "not" / "dont" etc. as content tokens,
+        // so an answer with negation is not a subset of the affirmative
+        // version even when all other tokens match.
+        let outputs = vec![
+            make_output(OutputKind::Answer, 0.9, "You should use grep"),
+            make_output(OutputKind::Answer, 0.8, "You should not use grep"),
+        ];
+        let res = try_early_decision(&outputs, 3, outputs.len(), false);
+        assert!(
+            res.is_none(),
+            "affirmative vs negated answer should not cluster, got {res:?}"
+        );
+    }
+
+    #[test]
+    fn early_decision_dont_blocks_agreement() {
+        // Same idea with a contraction. After punctuation stripping
+        // "don't" → "dont", which is in NEGATION_TOKENS.
+        let outputs = vec![
+            make_output(OutputKind::Answer, 0.9, "Do that"),
+            make_output(OutputKind::Answer, 0.8, "Don't do that"),
+        ];
+        let res = try_early_decision(&outputs, 3, outputs.len(), false);
+        assert!(
+            res.is_none(),
+            "affirmative vs negated should not cluster, got {res:?}"
+        );
+    }
+
+    #[test]
+    fn early_decision_numeric_answers_cluster() {
+        // Numeric answers survive the length filter and cluster cleanly.
+        let outputs = vec![
+            make_output(OutputKind::Answer, 0.9, "42"),
+            make_output(OutputKind::Answer, 0.8, "The answer is 42"),
+        ];
+        match try_early_decision(&outputs, 3, outputs.len(), false) {
+            Some(Decision::Answer(text)) => assert!(text.contains("42")),
+            other => panic!("expected numeric agreement, got {other:?}"),
         }
     }
 
