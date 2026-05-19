@@ -1004,7 +1004,11 @@ async fn load_split_runtime_generation(
     spec: SplitGenerationLoadSpec<'_>,
 ) -> Result<SplitRuntimeGenerationHandle> {
     let mut cleanup_on_error = false;
-    let result = load_split_runtime_generation_inner(&spec, &mut cleanup_on_error).await;
+    let result = Box::pin(load_split_runtime_generation_inner(
+        &spec,
+        &mut cleanup_on_error,
+    ))
+    .await;
     if let Err(error) = &result {
         if cleanup_on_error {
             tracing::warn!(
@@ -1052,99 +1056,15 @@ async fn load_split_runtime_generation_inner(
             .await;
     }
 
-    for stage in spec.generation.stages.iter().skip(1).rev() {
-        *cleanup_on_error = true;
-        let load = skippy::StageLoadRequest {
-            topology_id: spec.generation.topology_id.clone(),
-            run_id: spec.generation.run_id.clone(),
-            model_id: spec.model_ref.to_string(),
-            backend: "skippy".to_string(),
-            package_ref: spec.package.package_ref.clone(),
-            manifest_sha256: spec.package.manifest_sha256.clone(),
-            stage_id: stage.stage_id.clone(),
-            stage_index: stage.stage_index,
-            layer_start: stage.layer_start,
-            layer_end: stage.layer_end,
-            model_path: Some(stage_load_model_path(
-                settings.load_mode.clone(),
-                &spec.package.package_ref,
-                spec.model_path,
-            )),
-            source_model_bytes: Some(spec.package.source_model_bytes),
-            projector_path: spec.projector_path.clone(),
-            selected_device: None,
-            bind_addr: "127.0.0.1:0".to_string(),
-            activation_width: settings.activation_width,
-            wire_dtype: family_policy.activation_wire_dtype,
-            ctx_size: spec.ctx_size,
-            lane_count: spec.slots as u32,
-            n_batch: spec.n_batch_override,
-            n_ubatch: spec.n_ubatch_override,
-            n_gpu_layers: -1,
-            cache_type_k: settings.effective_cache_type_k.clone(),
-            cache_type_v: settings.effective_cache_type_v.clone(),
-            flash_attn_type: settings.resolved_flash_attn_type,
-            shutdown_generation: spec.generation.generation,
-            coordinator_term: spec.generation.coordinator_term,
-            coordinator_id: Some(spec.node.id()),
-            lease_until_unix_ms: spec.generation.lease_until_unix_ms,
-            load_mode: settings.load_mode.clone(),
-            upstream: None,
-            downstream: downstream.clone(),
-        };
-        prepare_split_stage(spec.node, stage.node_id, load.clone()).await?;
-        wait_for_split_stage_source(
-            spec.node,
-            stage.node_id,
-            &load,
-            Duration::from_secs(30 * 60),
-        )
-        .await
-        .with_context(|| {
-            format!(
-                "prepare split stage {} on {}",
-                stage.stage_id,
-                stage.node_id.fmt_short()
-            )
-        })?;
-        let response = if stage.node_id == spec.node.id() {
-            spec.node
-                .send_local_stage_control(skippy::StageControlRequest::Load(load))
-                .await
-        } else {
-            spec.node
-                .send_stage_control(stage.node_id, skippy::StageControlRequest::Load(load))
-                .await
-        }
-        .with_context(|| {
-            format!(
-                "load split stage {} on {}",
-                stage.stage_id,
-                stage.node_id.fmt_short()
-            )
-        })?;
-        let skippy::StageControlResponse::Ready(ready) = response else {
-            anyhow::bail!(
-                "unexpected status response while loading {}",
-                stage.stage_id
-            );
-        };
-        anyhow::ensure!(
-            ready.accepted,
-            "stage {} rejected load: {}",
-            stage.stage_id,
-            ready.error.unwrap_or_else(|| "unknown error".to_string())
-        );
-        downstream = Some(skippy::StagePeerDescriptor {
-            stage_id: stage.stage_id.clone(),
-            stage_index: stage.stage_index,
-            endpoint: ready.status.bind_addr.clone(),
-            node_id: Some(stage.node_id),
-        });
-        ready_by_stage.insert(stage.stage_id.clone(), ready.status);
-    }
-
-    let downstream = downstream.context("split topology missing downstream stage")?;
+    let downstream = Box::pin(load_downstream_split_runtime_stages(
+        spec,
+        &settings,
+        family_policy.activation_wire_dtype,
+        cleanup_on_error,
+        &mut ready_by_stage,
+        &mut downstream,
+    ))
+    .await?;
     let downstream_endpoint = if downstream.node_id == Some(spec.node.id()) {
         downstream.endpoint
     } else {
@@ -1247,6 +1167,127 @@ async fn load_split_runtime_generation_inner(
         coordinator_rx: None,
         coordinator_task: None,
     })
+}
+
+async fn load_downstream_split_runtime_stages(
+    spec: &SplitGenerationLoadSpec<'_>,
+    settings: &SplitGenerationLoadSettings<'_>,
+    activation_wire_dtype: skippy::StageWireDType,
+    cleanup_on_error: &mut bool,
+    ready_by_stage: &mut HashMap<String, skippy::StageStatusSnapshot>,
+    downstream: &mut Option<skippy::StagePeerDescriptor>,
+) -> Result<skippy::StagePeerDescriptor> {
+    for stage in spec.generation.stages.iter().skip(1).rev() {
+        *cleanup_on_error = true;
+        let load = split_runtime_stage_load_request(
+            spec,
+            settings,
+            activation_wire_dtype,
+            stage,
+            downstream.clone(),
+        );
+        prepare_split_stage(spec.node, stage.node_id, load.clone()).await?;
+        wait_for_split_stage_source(
+            spec.node,
+            stage.node_id,
+            &load,
+            Duration::from_secs(30 * 60),
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "prepare split stage {} on {}",
+                stage.stage_id,
+                stage.node_id.fmt_short()
+            )
+        })?;
+        let response = if stage.node_id == spec.node.id() {
+            spec.node
+                .send_local_stage_control(skippy::StageControlRequest::Load(load))
+                .await
+        } else {
+            spec.node
+                .send_stage_control(stage.node_id, skippy::StageControlRequest::Load(load))
+                .await
+        }
+        .with_context(|| {
+            format!(
+                "load split stage {} on {}",
+                stage.stage_id,
+                stage.node_id.fmt_short()
+            )
+        })?;
+        let skippy::StageControlResponse::Ready(ready) = response else {
+            anyhow::bail!(
+                "unexpected status response while loading {}",
+                stage.stage_id
+            );
+        };
+        anyhow::ensure!(
+            ready.accepted,
+            "stage {} rejected load: {}",
+            stage.stage_id,
+            ready.error.unwrap_or_else(|| "unknown error".to_string())
+        );
+        *downstream = Some(skippy::StagePeerDescriptor {
+            stage_id: stage.stage_id.clone(),
+            stage_index: stage.stage_index,
+            endpoint: ready.status.bind_addr.clone(),
+            node_id: Some(stage.node_id),
+        });
+        ready_by_stage.insert(stage.stage_id.clone(), ready.status);
+    }
+
+    downstream
+        .clone()
+        .context("split topology missing downstream stage")
+}
+
+fn split_runtime_stage_load_request(
+    spec: &SplitGenerationLoadSpec<'_>,
+    settings: &SplitGenerationLoadSettings<'_>,
+    activation_wire_dtype: skippy::StageWireDType,
+    stage: &RuntimeSliceStagePlan,
+    downstream: Option<skippy::StagePeerDescriptor>,
+) -> skippy::StageLoadRequest {
+    skippy::StageLoadRequest {
+        topology_id: spec.generation.topology_id.clone(),
+        run_id: spec.generation.run_id.clone(),
+        model_id: spec.model_ref.to_string(),
+        backend: "skippy".to_string(),
+        package_ref: spec.package.package_ref.clone(),
+        manifest_sha256: spec.package.manifest_sha256.clone(),
+        stage_id: stage.stage_id.clone(),
+        stage_index: stage.stage_index,
+        layer_start: stage.layer_start,
+        layer_end: stage.layer_end,
+        model_path: Some(stage_load_model_path(
+            settings.load_mode.clone(),
+            &spec.package.package_ref,
+            spec.model_path,
+        )),
+        source_model_bytes: Some(spec.package.source_model_bytes),
+        projector_path: spec.projector_path.clone(),
+        selected_device: None,
+        bind_addr: "127.0.0.1:0".to_string(),
+        activation_width: settings.activation_width,
+        wire_dtype: activation_wire_dtype,
+        ctx_size: spec.ctx_size,
+        lane_count: spec.slots as u32,
+        n_batch: spec.n_batch_override,
+        n_ubatch: spec.n_ubatch_override,
+        n_gpu_layers: -1,
+        cache_type_k: settings.effective_cache_type_k.clone(),
+        cache_type_v: settings.effective_cache_type_v.clone(),
+        flash_attn_type: settings.resolved_flash_attn_type,
+        shutdown_generation: spec.generation.generation,
+        coordinator_term: spec.generation.coordinator_term,
+        coordinator_id: Some(spec.node.id()),
+        lease_until_unix_ms: spec.generation.lease_until_unix_ms,
+        load_mode: settings.load_mode.clone(),
+        upstream: None,
+        downstream,
+    }
 }
 
 fn split_generation_load_settings<'a>(

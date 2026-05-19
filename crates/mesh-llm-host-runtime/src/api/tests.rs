@@ -1745,11 +1745,7 @@ async fn build_collector_backed_plugin_manager() -> plugin::PluginManager {
     plugin_manager
 }
 
-#[tokio::test]
-async fn runtime_data_api_routes_remain_payload_stable() {
-    let plugin_manager = build_collector_backed_plugin_manager().await;
-    let state = build_test_mesh_api_with_plugin_manager(3131, plugin_manager).await;
-
+async fn seed_runtime_data_api_state(state: &MeshApi) {
     {
         let mut inner = state.inner.lock().await;
         inner.primary_backend = Some("legacy-backend".into());
@@ -1873,15 +1869,24 @@ async fn runtime_data_api_routes_remain_payload_stable() {
         },
     )
     .await;
+}
 
-    let (status_addr, status_handle) = spawn_management_test_server(state.clone()).await;
-    let status_response = send_management_request(
-        status_addr,
-        "GET /api/status HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
+async fn request_management_json(state: MeshApi, path: &str) -> serde_json::Value {
+    let (addr, handle) = spawn_management_test_server(state).await;
+    let response = send_management_request(
+        addr,
+        format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n"),
     )
     .await;
-    assert!(status_response.starts_with("HTTP/1.1 200"));
-    let status_body = json_body(&status_response);
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "unexpected response for {path}: {response}"
+    );
+    handle.abort();
+    json_body(&response)
+}
+
+fn assert_runtime_status_payload(status_body: &serde_json::Value) {
     assert_eq!(status_body["model_name"], json!("collector-model"));
     assert_eq!(status_body["llama_ready"], json!(true));
     assert_eq!(
@@ -1925,68 +1930,9 @@ async fn runtime_data_api_routes_remain_payload_stable() {
         json!("Metal0")
     );
     assert!(status_body.get("mesh_models").is_none());
-    status_handle.abort();
+}
 
-    let (models_addr, models_handle) = spawn_management_test_server(state.clone()).await;
-    let models_response = send_management_request(
-        models_addr,
-        "GET /api/models HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
-    )
-    .await;
-    assert!(models_response.starts_with("HTTP/1.1 200"));
-    let models_body = json_body(&models_response);
-    assert!(models_body["mesh_models"].is_array());
-    models_handle.abort();
-
-    let (runtime_addr, runtime_handle) = spawn_management_test_server(state.clone()).await;
-    let runtime_response = send_management_request(
-        runtime_addr,
-        "GET /api/runtime HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
-    )
-    .await;
-    assert!(runtime_response.starts_with("HTTP/1.1 200"));
-    let runtime_body = json_body(&runtime_response);
-    assert_eq!(runtime_body["models"][0]["name"], json!("collector-model"));
-    assert_eq!(runtime_body["models"][0]["instance_id"], json!("runtime-1"));
-    assert_eq!(
-        runtime_body["models"][0]["backend"],
-        json!("collector-backend")
-    );
-    assert_eq!(runtime_body["models"][0]["port"], json!(9337));
-    runtime_handle.abort();
-
-    let (processes_addr, processes_handle) = spawn_management_test_server(state.clone()).await;
-    let processes_response = send_management_request(
-        processes_addr,
-        "GET /api/runtime/processes HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
-    )
-    .await;
-    assert!(processes_response.starts_with("HTTP/1.1 200"));
-    let processes_body = json_body(&processes_response);
-    assert_eq!(
-        processes_body["processes"][0]["name"],
-        json!("collector-model")
-    );
-    assert_eq!(
-        processes_body["processes"][0]["instance_id"],
-        json!("runtime-1")
-    );
-    assert_eq!(
-        processes_body["processes"][0]["backend"],
-        json!("collector-backend")
-    );
-    assert_eq!(processes_body["processes"][0]["port"], json!(9337));
-    assert_eq!(processes_body["processes"][0]["pid"], json!(777));
-    processes_handle.abort();
-
-    let (llama_addr, llama_handle) = spawn_management_test_server(state.clone()).await;
-    let llama_response = send_management_request(
-        llama_addr,
-        "GET /api/runtime/llama HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
-    )
-    .await;
-    assert!(llama_response.starts_with("HTTP/1.1 200"));
-    let llama_body = json_body(&llama_response);
+fn assert_runtime_llama_payload(llama_body: &serde_json::Value) {
     assert_eq!(llama_body["metrics"]["status"], json!("ready"));
     assert_eq!(
         llama_body["metrics"]["samples"][0]["name"],
@@ -2023,16 +1969,49 @@ async fn runtime_data_api_routes_remain_payload_stable() {
         json!("ready")
     );
     assert_eq!(llama_body["instances"][0]["items"]["slots_busy"], json!(1));
-    llama_handle.abort();
+}
 
-    let (endpoints_addr, endpoints_handle) = spawn_management_test_server(state.clone()).await;
-    let endpoints_response = send_management_request(
-        endpoints_addr,
-        "GET /api/runtime/endpoints HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
-    )
-    .await;
-    assert!(endpoints_response.starts_with("HTTP/1.1 200"));
-    let endpoints_body = json_body(&endpoints_response);
+#[tokio::test]
+async fn runtime_data_api_routes_remain_payload_stable() {
+    let plugin_manager = build_collector_backed_plugin_manager().await;
+    let state = build_test_mesh_api_with_plugin_manager(3131, plugin_manager).await;
+    seed_runtime_data_api_state(&state).await;
+
+    let status_body = request_management_json(state.clone(), "/api/status").await;
+    assert_runtime_status_payload(&status_body);
+
+    let models_body = request_management_json(state.clone(), "/api/models").await;
+    assert!(models_body["mesh_models"].is_array());
+
+    let runtime_body = request_management_json(state.clone(), "/api/runtime").await;
+    assert_eq!(runtime_body["models"][0]["name"], json!("collector-model"));
+    assert_eq!(runtime_body["models"][0]["instance_id"], json!("runtime-1"));
+    assert_eq!(
+        runtime_body["models"][0]["backend"],
+        json!("collector-backend")
+    );
+    assert_eq!(runtime_body["models"][0]["port"], json!(9337));
+
+    let processes_body = request_management_json(state.clone(), "/api/runtime/processes").await;
+    assert_eq!(
+        processes_body["processes"][0]["name"],
+        json!("collector-model")
+    );
+    assert_eq!(
+        processes_body["processes"][0]["instance_id"],
+        json!("runtime-1")
+    );
+    assert_eq!(
+        processes_body["processes"][0]["backend"],
+        json!("collector-backend")
+    );
+    assert_eq!(processes_body["processes"][0]["port"], json!(9337));
+    assert_eq!(processes_body["processes"][0]["pid"], json!(777));
+
+    let llama_body = request_management_json(state.clone(), "/api/runtime/llama").await;
+    assert_runtime_llama_payload(&llama_body);
+
+    let endpoints_body = request_management_json(state.clone(), "/api/runtime/endpoints").await;
     assert_eq!(
         endpoints_body["endpoints"].as_array().map(Vec::len),
         Some(1)
@@ -2045,21 +2024,11 @@ async fn runtime_data_api_routes_remain_payload_stable() {
         endpoints_body["endpoints"][0]["endpoint_id"],
         json!("chat-http")
     );
-    endpoints_handle.abort();
-
-    let (plugins_addr, plugins_handle) = spawn_management_test_server(state).await;
-    let plugins_response = send_management_request(
-        plugins_addr,
-        "GET /api/plugins HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
-    )
-    .await;
-    assert!(plugins_response.starts_with("HTTP/1.1 200"));
-    let plugins_body = json_body(&plugins_response);
+    let plugins_body = request_management_json(state, "/api/plugins").await;
     assert_eq!(plugins_body.as_array().map(Vec::len), Some(1));
     assert_eq!(plugins_body[0]["name"], json!("collector-plugin"));
     assert_eq!(plugins_body[0]["status"], json!("running"));
     assert_eq!(plugins_body[0]["capabilities"], json!(["chat"]));
-    plugins_handle.abort();
 
     let state = build_test_mesh_api_with_plugin_manager(
         3131,
@@ -2067,62 +2036,31 @@ async fn runtime_data_api_routes_remain_payload_stable() {
     )
     .await;
 
-    let (plugin_endpoints_addr, plugin_endpoints_handle) =
-        spawn_management_test_server(state.clone()).await;
-    let plugin_endpoints_response = send_management_request(
-        plugin_endpoints_addr,
-        "GET /api/plugins/endpoints HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
-    )
-    .await;
-    assert!(plugin_endpoints_response.starts_with("HTTP/1.1 200"));
-    let plugin_endpoints_body = json_body(&plugin_endpoints_response);
+    let plugin_endpoints_body =
+        request_management_json(state.clone(), "/api/plugins/endpoints").await;
     assert_eq!(plugin_endpoints_body.as_array().map(Vec::len), Some(1));
     assert_eq!(
         plugin_endpoints_body[0]["plugin_name"],
         json!("collector-plugin")
     );
     assert_eq!(plugin_endpoints_body[0]["endpoint_id"], json!("chat-http"));
-    plugin_endpoints_handle.abort();
 
-    let (providers_addr, providers_handle) = spawn_management_test_server(state.clone()).await;
-    let providers_response = send_management_request(
-        providers_addr,
-        "GET /api/plugins/providers HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
-    )
-    .await;
-    assert!(providers_response.starts_with("HTTP/1.1 200"));
-    let providers_body = json_body(&providers_response);
+    let providers_body = request_management_json(state.clone(), "/api/plugins/providers").await;
     assert!(providers_body.as_array().is_some());
     assert!(providers_body
         .as_array()
         .unwrap()
         .iter()
         .any(|provider| provider["capability"] == json!("chat")));
-    providers_handle.abort();
 
-    let (provider_addr, provider_handle) = spawn_management_test_server(state.clone()).await;
-    let provider_response = send_management_request(
-        provider_addr,
-        "GET /api/plugins/providers/chat HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
-    )
-    .await;
-    assert!(provider_response.starts_with("HTTP/1.1 200"));
-    let provider_body = json_body(&provider_response);
+    let provider_body = request_management_json(state.clone(), "/api/plugins/providers/chat").await;
     assert_eq!(provider_body["capability"], json!("chat"));
     assert_eq!(provider_body["plugin_name"], json!("collector-plugin"));
-    provider_handle.abort();
 
-    let (manifest_addr, manifest_handle) = spawn_management_test_server(state).await;
-    let manifest_response = send_management_request(
-        manifest_addr,
-        "GET /api/plugins/collector-plugin/manifest HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
-    )
-    .await;
-    assert!(manifest_response.starts_with("HTTP/1.1 200"));
-    let manifest_body = json_body(&manifest_response);
+    let manifest_body =
+        request_management_json(state, "/api/plugins/collector-plugin/manifest").await;
     assert_eq!(manifest_body["capabilities"], json!(["chat"]));
     assert_eq!(manifest_body["endpoints"].as_array().map(Vec::len), Some(1));
-    manifest_handle.abort();
 }
 
 #[tokio::test]

@@ -1229,6 +1229,13 @@ struct StartupLoopState {
     survey_exited_unexpectedly: bool,
 }
 
+struct StartupLoopEventContext<'a> {
+    context_usage_tick: &'a mut tokio::time::Interval,
+    stop_rx: &'a mut tokio::sync::watch::Receiver<bool>,
+    local_capacity: u64,
+    model_bytes: u64,
+}
+
 enum StartupLoopControl {
     Continue,
     Break,
@@ -2302,33 +2309,7 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         api_port,
         runtime_data_producer: runtime_data_producer.as_ref(),
     };
-    let payload = startup_register_loaded_runtime(&ctx, &loaded_name, &handle).await;
-    node.set_role(NodeRole::Host {
-        http_port: api_port,
-    })
-    .await;
-    refresh_dashboard_context_usage(&dashboard_context_usage, &loaded_name, &handle).await;
-    publish_runtime_llama_slots(
-        runtime_data_producer.as_ref(),
-        &loaded_name,
-        Some(&instance_id),
-        &handle,
-    );
-    if let Some(ref cs) = console_state {
-        cs.upsert_local_process(payload).await;
-        cs.update(true, true).await;
-    }
-    update_pi_models_json(&loaded_name, api_port);
-    startup_ready_reporter.mark_ready_and_maybe_emit(&loaded_name);
-    let _ = emit_event(OutputEvent::ModelReady {
-        model: loaded_name.clone(),
-        internal_port: Some(handle.port),
-        role: Some(handle.backend.clone()),
-    });
-    let _ = emit_event(OutputEvent::Info {
-        message: format!("Startup-loaded model '{}' on :{}", loaded_name, handle.port),
-        context: None,
-    });
+    startup_publish_loaded_runtime(&ctx, &loaded_name, &handle, &startup_ready_reporter).await;
 
     maybe_spawn_startup_interactive_handler(
         input_handler_enabled,
@@ -2352,28 +2333,88 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
     let mut context_usage_tick = tokio::time::interval(DASHBOARD_CONTEXT_USAGE_REFRESH_INTERVAL);
     context_usage_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    if !startup_run_local_model_event_loop(
+        &ctx,
+        &mut state,
+        StartupLoopEventContext {
+            context_usage_tick: &mut context_usage_tick,
+            stop_rx: &mut stop_rx,
+            local_capacity,
+            model_bytes,
+        },
+    )
+    .await
+    {
+        return;
+    }
+
+    startup_shutdown_local_model_loop(&ctx, &mut state, &mut coordinator_task).await;
+}
+
+async fn startup_publish_loaded_runtime(
+    ctx: &StartupLoopContext<'_>,
+    loaded_name: &str,
+    handle: &LocalRuntimeModelHandle,
+    startup_ready_reporter: &StartupReadyReporter,
+) {
+    let payload = startup_register_loaded_runtime(ctx, loaded_name, handle).await;
+    ctx.node
+        .set_role(NodeRole::Host {
+            http_port: ctx.api_port,
+        })
+        .await;
+    refresh_dashboard_context_usage(ctx.dashboard_context_usage, loaded_name, handle).await;
+    publish_runtime_llama_slots(
+        ctx.runtime_data_producer,
+        loaded_name,
+        Some(ctx.instance_id),
+        handle,
+    );
+    if let Some(cs) = ctx.console_state {
+        cs.upsert_local_process(payload).await;
+        cs.update(true, true).await;
+    }
+    update_pi_models_json(loaded_name, ctx.api_port);
+    startup_ready_reporter.mark_ready_and_maybe_emit(loaded_name);
+    let _ = emit_event(OutputEvent::ModelReady {
+        model: loaded_name.to_string(),
+        internal_port: Some(handle.port),
+        role: Some(handle.backend.clone()),
+    });
+    let _ = emit_event(OutputEvent::Info {
+        message: format!("Startup-loaded model '{}' on :{}", loaded_name, handle.port),
+        context: None,
+    });
+}
+
+async fn startup_run_local_model_event_loop(
+    ctx: &StartupLoopContext<'_>,
+    state: &mut StartupLoopState,
+    event_ctx: StartupLoopEventContext<'_>,
+) -> bool {
+    let StartupLoopEventContext {
+        context_usage_tick,
+        stop_rx,
+        local_capacity,
+        model_bytes,
+    } = event_ctx;
     loop {
         tokio::select! {
             _ = context_usage_tick.tick() => {
                 if let Some(handle) = state.handle.as_ref() {
-                    refresh_dashboard_context_usage(&dashboard_context_usage, &state.loaded_name, handle).await;
-                    publish_runtime_llama_slots(
-                        runtime_data_producer.as_ref(),
-                        &state.loaded_name,
-                        Some(&instance_id),
-                        handle,
-                    );
+                    refresh_dashboard_context_usage(ctx.dashboard_context_usage, &state.loaded_name, handle).await;
+                    publish_runtime_llama_slots(ctx.runtime_data_producer, &state.loaded_name, Some(ctx.instance_id), handle);
                 }
             }
             _ = &mut state.death_rx => {
                 state.survey_exited_unexpectedly = true;
-                survey_telemetry.record_unexpected_exit(&state.survey_loaded_model);
+                ctx.survey_telemetry.record_unexpected_exit(&state.survey_loaded_model);
                 let port = state.handle.as_ref().map(|handle| handle.port).unwrap_or_default();
                 let _ = emit_event(OutputEvent::Warning {
                     message: format!("Startup model '{}' exited unexpectedly", state.loaded_name),
                     context: Some(format!("model={} port={port}", state.loaded_name)),
                 });
-                break;
+                return true;
             }
             event = async {
                 if let Some(rx) = state.split_event_rx.as_mut() {
@@ -2386,20 +2427,18 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                     state.split_event_rx = None;
                     continue;
                 };
-                match startup_handle_split_event(&ctx, &mut state, event, local_capacity, model_bytes).await {
+                match startup_handle_split_event(ctx, state, event, local_capacity, model_bytes).await {
                     StartupLoopControl::Continue => continue,
-                    StartupLoopControl::Break => break,
-                    StartupLoopControl::Return => return,
+                    StartupLoopControl::Break => return true,
+                    StartupLoopControl::Return => return false,
                 }
             }
             res = stop_rx.changed() => {
                 let _ = res;
-                break;
+                return true;
             }
         }
     }
-
-    startup_shutdown_local_model_loop(&ctx, &mut state, &mut coordinator_task).await;
 }
 
 fn update_startup_target(
@@ -5548,6 +5587,27 @@ struct RunAutoShutdownContext<'a> {
     runtime: Option<std::sync::Arc<crate::runtime::instance::InstanceRuntime>>,
 }
 
+struct RunAutoRuntimeLifecycleContext<'a> {
+    cli: &'a Cli,
+    config: &'a plugin::MeshConfig,
+    node: &'a mesh::Node,
+    primary_model_name: &'a str,
+    target_tx: &'a Arc<tokio::sync::watch::Sender<election::ModelTargets>>,
+    control_rx: &'a mut tokio::sync::mpsc::UnboundedReceiver<api::RuntimeControlRequest>,
+    runtime_event_rx: &'a mut tokio::sync::mpsc::UnboundedReceiver<RuntimeEvent>,
+    runtime_state: &'a mut RunAutoRuntimeState,
+    console_state: Option<&'a api::MeshApi>,
+    runtime_data_producer: Option<&'a crate::runtime_data::RuntimeDataProducer>,
+    runtime_event_tx: &'a tokio::sync::mpsc::UnboundedSender<RuntimeEvent>,
+    survey_telemetry: &'a survey::SurveyTelemetry,
+    startup_ready_reporter: &'a StartupReadyReporter,
+    plugin_manager: &'a plugin::PluginManager,
+    api_proxy_handle: tokio::task::JoinHandle<()>,
+    console_server_handle: Option<tokio::task::JoinHandle<()>>,
+    discovery_publisher: Option<tokio::task::JoinHandle<()>>,
+    runtime: Option<std::sync::Arc<crate::runtime::instance::InstanceRuntime>>,
+}
+
 struct PassiveConsoleRuntime {
     control_rx: tokio::sync::mpsc::UnboundedReceiver<api::RuntimeControlRequest>,
     console_server_handle: Option<tokio::task::JoinHandle<()>>,
@@ -5642,6 +5702,253 @@ struct RunAutoRuntimeLoopContext<'a> {
     runtime_event_tx: &'a tokio::sync::mpsc::UnboundedSender<RuntimeEvent>,
     survey_telemetry: &'a survey::SurveyTelemetry,
     startup_ready_reporter: &'a StartupReadyReporter,
+}
+
+struct RunAutoRuntimeState {
+    runtime_models: HashMap<String, RuntimeModelHandleEntry>,
+    runtime_survey_models: HashMap<String, survey::SurveyLoadedModel>,
+    managed_models: HashMap<String, ManagedModelController>,
+    runtime_instance_registry: RuntimeInstanceRegistry,
+    runtime_capacity_ledger: RuntimeCapacityLedger,
+    next_runtime_instance_sequence: u64,
+    dashboard_processes: Arc<tokio::sync::Mutex<Vec<api::RuntimeProcessPayload>>>,
+    dashboard_context_usage: DashboardContextUsage,
+    input_handler_enabled: bool,
+}
+
+struct RunAutoStartupTasksContext<'a> {
+    cli: &'a Cli,
+    config: &'a plugin::MeshConfig,
+    node: &'a mesh::Node,
+    tunnel_mgr: &'a tunnel::Manager,
+    startup_models: &'a [StartupModelPlan],
+    primary_startup_model: Option<&'a StartupModelPlan>,
+    model_name: &'a str,
+    model_path: &'a Path,
+    api_ready_url: String,
+    ready_console_url: Option<String>,
+    ready_api_port: u16,
+    ready_console_port: Option<u16>,
+    target_tx: &'a Arc<tokio::sync::watch::Sender<election::ModelTargets>>,
+    runtime_state: &'a mut RunAutoRuntimeState,
+    console_state: Option<&'a api::MeshApi>,
+    control_tx: &'a tokio::sync::mpsc::UnboundedSender<api::RuntimeControlRequest>,
+    survey_telemetry: &'a survey::SurveyTelemetry,
+    skippy_telemetry: &'a skippy::SkippyTelemetryOptions,
+    api_port: u16,
+    interactive_started: Arc<AtomicBool>,
+}
+
+fn initialize_run_auto_runtime_state() -> RunAutoRuntimeState {
+    RunAutoRuntimeState {
+        runtime_models: HashMap::new(),
+        runtime_survey_models: HashMap::new(),
+        managed_models: HashMap::new(),
+        runtime_instance_registry: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        runtime_capacity_ledger: RuntimeCapacityLedger::default(),
+        next_runtime_instance_sequence: 1_u64,
+        dashboard_processes: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        dashboard_context_usage: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        input_handler_enabled: crate::cli::output::OutputManager::global()
+            .console_session_mode()
+            .is_some(),
+    }
+}
+
+async fn spawn_run_auto_startup_model_tasks(
+    ctx: RunAutoStartupTasksContext<'_>,
+) -> StartupReadyReporter {
+    let RunAutoStartupTasksContext {
+        cli,
+        config,
+        node,
+        tunnel_mgr,
+        startup_models,
+        primary_startup_model,
+        model_name,
+        model_path,
+        api_ready_url,
+        ready_console_url,
+        ready_api_port,
+        ready_console_port,
+        target_tx,
+        runtime_state,
+        console_state,
+        control_tx,
+        survey_telemetry,
+        skippy_telemetry,
+        api_port,
+        interactive_started,
+    } = ctx;
+
+    let startup_model_names: Vec<String> = startup_models
+        .iter()
+        .map(|model| model.declared_ref.clone())
+        .collect();
+    let startup_ready_reporter = StartupReadyReporter::new(
+        &startup_model_names,
+        model_name.to_string(),
+        api_ready_url,
+        ready_console_url,
+        ready_api_port,
+        ready_console_port,
+    );
+    let startup_load_gate = Arc::new(tokio::sync::Mutex::new(()));
+    let primary_parallel_override = primary_startup_model
+        .and_then(|m| m.parallel)
+        .or(config.gpu.parallel);
+    let console_state_for_election = console_state.cloned();
+    let interactive_console_state = console_state.cloned();
+    let primary_mmproj = primary_startup_model.and_then(|model| model.mmproj_path.clone());
+    let primary_ctx_size = primary_startup_model.and_then(|model| model.ctx_size);
+    let primary_pinned_gpu = primary_startup_model.and_then(|model| model.pinned_gpu.clone());
+    let primary_cache_type_k = primary_startup_model.and_then(|model| model.cache_type_k.clone());
+    let primary_cache_type_v = primary_startup_model.and_then(|model| model.cache_type_v.clone());
+    let primary_n_batch = primary_startup_model.and_then(|model| model.n_batch);
+    let primary_n_ubatch = primary_startup_model.and_then(|model| model.n_ubatch);
+    let primary_flash_attention = primary_startup_model
+        .map(|model| model.flash_attention)
+        .unwrap_or(FlashAttentionType::Auto);
+    let primary_model_ref = primary_startup_model
+        .map(|model| model.declared_ref.clone())
+        .unwrap_or_else(|| model_name.to_string());
+    let (primary_stop_tx, primary_stop_rx) = tokio::sync::watch::channel(false);
+    let primary_instance_id =
+        next_runtime_instance_id(&mut runtime_state.next_runtime_instance_sequence);
+    let primary_task = tokio::spawn(Box::pin(startup_local_model_loop(StartupLocalModelTask {
+        node: node.clone(),
+        tunnel_mgr: tunnel_mgr.clone(),
+        target_tx: target_tx.clone(),
+        model_path: model_path.to_path_buf(),
+        model_ref: primary_model_ref,
+        model_name: model_name.to_string(),
+        instance_id: primary_instance_id.clone(),
+        primary_model_name: model_name.to_string(),
+        mmproj_path: primary_mmproj,
+        ctx_size: primary_ctx_size,
+        pinned_gpu: primary_pinned_gpu,
+        runtime_capacity_ledger: runtime_state.runtime_capacity_ledger.clone(),
+        cache_type_k: primary_cache_type_k,
+        cache_type_v: primary_cache_type_v,
+        n_batch: primary_n_batch,
+        n_ubatch: primary_n_ubatch,
+        flash_attention: primary_flash_attention,
+        parallel_override: primary_parallel_override,
+        split: cli.split,
+        skippy_telemetry: skippy_telemetry.clone(),
+        survey_telemetry: survey_telemetry.clone(),
+        survey_launch_kind: survey::SurveyLaunchKind::Startup,
+        stop_rx: primary_stop_rx,
+        dashboard_processes: runtime_state.dashboard_processes.clone(),
+        dashboard_context_usage: runtime_state.dashboard_context_usage.clone(),
+        runtime_instance_registry: runtime_state.runtime_instance_registry.clone(),
+        console_state: console_state_for_election,
+        api_port,
+        startup_ready_reporter: startup_ready_reporter.clone(),
+        startup_load_gate: startup_load_gate.clone(),
+        input_handler_enabled: runtime_state.input_handler_enabled,
+        interactive_started,
+        interactive_control_tx: control_tx.clone(),
+        interactive_console_state,
+    })));
+    runtime_state.managed_models.insert(
+        primary_instance_id,
+        ManagedModelController {
+            model_name: model_name.to_string(),
+            stop_tx: primary_stop_tx,
+            task: primary_task,
+        },
+    );
+
+    spawn_run_auto_additional_model_tasks(RunAutoAdditionalModelsContext {
+        cli,
+        config,
+        node,
+        tunnel_mgr,
+        startup_models,
+        primary_model_name: model_name,
+        target_tx,
+        managed_models: &mut runtime_state.managed_models,
+        next_runtime_instance_sequence: &mut runtime_state.next_runtime_instance_sequence,
+        dashboard_processes: &runtime_state.dashboard_processes,
+        dashboard_context_usage: &runtime_state.dashboard_context_usage,
+        runtime_instance_registry: &runtime_state.runtime_instance_registry,
+        runtime_capacity_ledger: &runtime_state.runtime_capacity_ledger,
+        console_state,
+        startup_ready_reporter: &startup_ready_reporter,
+        startup_load_gate: &startup_load_gate,
+        control_tx,
+        survey_telemetry,
+        skippy_telemetry,
+    })
+    .await;
+
+    startup_ready_reporter
+}
+
+async fn run_auto_runtime_loop_and_shutdown(ctx: RunAutoRuntimeLifecycleContext<'_>) {
+    let RunAutoRuntimeLifecycleContext {
+        cli,
+        config,
+        node,
+        primary_model_name,
+        target_tx,
+        control_rx,
+        runtime_event_rx,
+        runtime_state,
+        console_state,
+        runtime_data_producer,
+        runtime_event_tx,
+        survey_telemetry,
+        startup_ready_reporter,
+        plugin_manager,
+        api_proxy_handle,
+        console_server_handle,
+        discovery_publisher,
+        runtime,
+    } = ctx;
+    let mut loop_ctx = RunAutoRuntimeLoopContext {
+        cli,
+        config,
+        node,
+        primary_model_name,
+        target_tx,
+        runtime_models: &mut runtime_state.runtime_models,
+        runtime_survey_models: &mut runtime_state.runtime_survey_models,
+        managed_models: &mut runtime_state.managed_models,
+        runtime_capacity_ledger: &runtime_state.runtime_capacity_ledger,
+        next_runtime_instance_sequence: &mut runtime_state.next_runtime_instance_sequence,
+        runtime_instance_registry: &runtime_state.runtime_instance_registry,
+        dashboard_processes: &runtime_state.dashboard_processes,
+        dashboard_context_usage: &runtime_state.dashboard_context_usage,
+        console_state,
+        runtime_data_producer,
+        runtime_event_tx,
+        survey_telemetry,
+        startup_ready_reporter,
+    };
+    run_auto_runtime_event_loop(&mut loop_ctx, control_rx, runtime_event_rx).await;
+
+    shutdown_run_auto_runtime(RunAutoShutdownContext {
+        cli,
+        node,
+        plugin_manager,
+        api_proxy_handle,
+        console_server_handle,
+        discovery_publisher,
+        runtime_models: &mut runtime_state.runtime_models,
+        runtime_survey_models: &mut runtime_state.runtime_survey_models,
+        managed_models: &mut runtime_state.managed_models,
+        survey_telemetry,
+        dashboard_processes: &runtime_state.dashboard_processes,
+        console_state,
+        target_tx,
+        runtime_instance_registry: &runtime_state.runtime_instance_registry,
+        runtime_data_producer,
+        dashboard_context_usage: &runtime_state.dashboard_context_usage,
+        runtime,
+    })
+    .await;
 }
 
 async fn shutdown_run_auto_runtime(ctx: RunAutoShutdownContext<'_>) {
@@ -6720,18 +7027,7 @@ async fn run_auto(
         tokio::sync::mpsc::unbounded_channel::<api::RuntimeControlRequest>();
     let (runtime_event_tx, mut runtime_event_rx) =
         tokio::sync::mpsc::unbounded_channel::<RuntimeEvent>();
-    let mut runtime_models: HashMap<String, RuntimeModelHandleEntry> = HashMap::new();
-    let mut runtime_survey_models: HashMap<String, survey::SurveyLoadedModel> = HashMap::new();
-    let mut managed_models: HashMap<String, ManagedModelController> = HashMap::new();
-    let runtime_instance_registry: RuntimeInstanceRegistry =
-        Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-    let runtime_capacity_ledger = RuntimeCapacityLedger::default();
-    let mut next_runtime_instance_sequence = 1_u64;
-    let dashboard_processes = Arc::new(tokio::sync::Mutex::new(Vec::new()));
-    let dashboard_context_usage = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-    let input_handler_enabled = crate::cli::output::OutputManager::global()
-        .console_session_mode()
-        .is_some();
+    let mut runtime_state = initialize_run_auto_runtime_state();
 
     let model_name_for_console = model_name.clone();
     let runtime_owner_key_path = resolve_runtime_owner_key_path(&cli)?;
@@ -6752,8 +7048,8 @@ async fn run_auto(
     crate::cli::output::OutputManager::global().register_dashboard_snapshot_provider(Arc::new(
         RuntimeDashboardSnapshotProvider::new(
             node.clone(),
-            dashboard_processes.clone(),
-            dashboard_context_usage.clone(),
+            runtime_state.dashboard_processes.clone(),
+            runtime_state.dashboard_context_usage.clone(),
             Some(plugin_manager.clone()),
             api_port,
             console_port,
@@ -6791,7 +7087,7 @@ async fn run_auto(
         control_tx: &control_tx,
         affinity_router: &affinity_router,
         bootstrap_listener_tx,
-        input_handler_enabled,
+        input_handler_enabled: runtime_state.input_handler_enabled,
         interactive_started: &interactive_started,
         console_state: console_state.as_ref(),
         model_name_for_console: &model_name_for_console,
@@ -6799,138 +7095,27 @@ async fn run_auto(
     .await?;
 
     tracing::info!("Starting embedded runtime for model: {model_name}");
-    let node2 = node.clone();
-    let tunnel_mgr2 = tunnel_mgr.clone();
-    let model2 = model.clone();
-    let primary_parallel_override = primary_startup_model
-        .as_ref()
-        .and_then(|m| m.parallel)
-        .or(config.gpu.parallel);
-    let model_name_for_election = model_name.clone();
-    let primary_target_tx = target_tx.clone();
-    let console_state_for_election = console_state.clone();
-    let interactive_console_state = console_state.clone();
-    let interactive_control_tx = control_tx.clone();
-    let survey_telemetry_for_primary = survey_telemetry.clone();
-
-    let primary_model_name_for_advertise = model_name.clone();
-    let startup_model_names: Vec<String> = startup_models
-        .iter()
-        .map(|model| model.declared_ref.clone())
-        .collect();
-    let startup_ready_reporter = StartupReadyReporter::new(
-        &startup_model_names,
-        model_name.clone(),
-        api_ready_url,
-        ready_console_url,
-        ready_api_port,
-        ready_console_port,
-    );
-    let startup_load_gate = Arc::new(tokio::sync::Mutex::new(()));
-    let primary_startup_ready_reporter = startup_ready_reporter.clone();
-    let primary_mmproj = primary_startup_model
-        .as_ref()
-        .and_then(|model| model.mmproj_path.clone());
-    let primary_ctx_size = primary_startup_model
-        .as_ref()
-        .and_then(|model| model.ctx_size);
-    let primary_pinned_gpu = primary_startup_model
-        .as_ref()
-        .and_then(|model| model.pinned_gpu.clone());
-    let primary_cache_type_k = primary_startup_model
-        .as_ref()
-        .and_then(|model| model.cache_type_k.clone());
-    let primary_cache_type_v = primary_startup_model
-        .as_ref()
-        .and_then(|model| model.cache_type_v.clone());
-    let primary_n_batch = primary_startup_model
-        .as_ref()
-        .and_then(|model| model.n_batch);
-    let primary_n_ubatch = primary_startup_model
-        .as_ref()
-        .and_then(|model| model.n_ubatch);
-    let primary_flash_attention = primary_startup_model
-        .as_ref()
-        .map(|model| model.flash_attention)
-        .unwrap_or(FlashAttentionType::Auto);
-    let primary_model_ref = primary_startup_model
-        .as_ref()
-        .map(|model| model.declared_ref.clone())
-        .unwrap_or_else(|| model_name.clone());
-    let startup_split = cli.split;
-    let (primary_stop_tx, primary_stop_rx) = tokio::sync::watch::channel(false);
-    let primary_instance_id = next_runtime_instance_id(&mut next_runtime_instance_sequence);
-    let primary_task_instance_id = primary_instance_id.clone();
-    let dashboard_processes_for_primary_task = dashboard_processes.clone();
-    let dashboard_context_usage_for_primary_task = dashboard_context_usage.clone();
-    let runtime_instance_registry_for_primary_task = runtime_instance_registry.clone();
-    let runtime_capacity_ledger_for_primary_task = runtime_capacity_ledger.clone();
-    let primary_startup_load_gate = startup_load_gate.clone();
-    let primary_task = tokio::spawn(Box::pin(startup_local_model_loop(StartupLocalModelTask {
-        node: node2,
-        tunnel_mgr: tunnel_mgr2,
-        target_tx: primary_target_tx,
-        model_path: model2,
-        model_ref: primary_model_ref,
-        model_name: model_name_for_election,
-        instance_id: primary_task_instance_id,
-        primary_model_name: primary_model_name_for_advertise,
-        mmproj_path: primary_mmproj,
-        ctx_size: primary_ctx_size,
-        pinned_gpu: primary_pinned_gpu,
-        runtime_capacity_ledger: runtime_capacity_ledger_for_primary_task,
-        cache_type_k: primary_cache_type_k,
-        cache_type_v: primary_cache_type_v,
-        n_batch: primary_n_batch,
-        n_ubatch: primary_n_ubatch,
-        flash_attention: primary_flash_attention,
-        parallel_override: primary_parallel_override,
-        split: startup_split,
-        skippy_telemetry: skippy_telemetry.clone(),
-        survey_telemetry: survey_telemetry_for_primary,
-        survey_launch_kind: survey::SurveyLaunchKind::Startup,
-        stop_rx: primary_stop_rx,
-        dashboard_processes: dashboard_processes_for_primary_task,
-        dashboard_context_usage: dashboard_context_usage_for_primary_task,
-        runtime_instance_registry: runtime_instance_registry_for_primary_task,
-        console_state: console_state_for_election,
-        api_port,
-        startup_ready_reporter: primary_startup_ready_reporter,
-        startup_load_gate: primary_startup_load_gate,
-        input_handler_enabled,
-        interactive_started,
-        interactive_control_tx,
-        interactive_console_state,
-    })));
-    managed_models.insert(
-        primary_instance_id,
-        ManagedModelController {
-            model_name: model_name.clone(),
-            stop_tx: primary_stop_tx,
-            task: primary_task,
-        },
-    );
-
-    spawn_run_auto_additional_model_tasks(RunAutoAdditionalModelsContext {
+    let startup_ready_reporter = spawn_run_auto_startup_model_tasks(RunAutoStartupTasksContext {
         cli: &cli,
         config: &config,
         node: &node,
         tunnel_mgr: &tunnel_mgr,
         startup_models: &startup_models,
-        primary_model_name: &model_name,
+        primary_startup_model: primary_startup_model.as_ref(),
+        model_name: &model_name,
+        model_path: &model,
+        api_ready_url,
+        ready_console_url,
+        ready_api_port,
+        ready_console_port,
         target_tx: &target_tx,
-        managed_models: &mut managed_models,
-        next_runtime_instance_sequence: &mut next_runtime_instance_sequence,
-        dashboard_processes: &dashboard_processes,
-        dashboard_context_usage: &dashboard_context_usage,
-        runtime_instance_registry: &runtime_instance_registry,
-        runtime_capacity_ledger: &runtime_capacity_ledger,
+        runtime_state: &mut runtime_state,
         console_state: console_state.as_ref(),
-        startup_ready_reporter: &startup_ready_reporter,
-        startup_load_gate: &startup_load_gate,
         control_tx: &control_tx,
         survey_telemetry: &survey_telemetry,
         skippy_telemetry: &skippy_telemetry,
+        api_port,
+        interactive_started,
     })
     .await;
 
@@ -6939,50 +7124,24 @@ async fn run_auto(
         spawn_run_auto_discovery_publisher(&cli, &node, console_state.as_ref()).await;
 
     let runtime_data_producer = runtime_data_producer_for_console(console_state.as_ref()).await;
-
-    // Wait for SIGINT/SIGTERM or runtime model control commands.
-    let primary_model_name = model_name.clone();
-    {
-        let mut loop_ctx = RunAutoRuntimeLoopContext {
-            cli: &cli,
-            config: &config,
-            node: &node,
-            primary_model_name: &primary_model_name,
-            target_tx: &target_tx,
-            runtime_models: &mut runtime_models,
-            runtime_survey_models: &mut runtime_survey_models,
-            managed_models: &mut managed_models,
-            runtime_capacity_ledger: &runtime_capacity_ledger,
-            next_runtime_instance_sequence: &mut next_runtime_instance_sequence,
-            runtime_instance_registry: &runtime_instance_registry,
-            dashboard_processes: &dashboard_processes,
-            dashboard_context_usage: &dashboard_context_usage,
-            console_state: console_state.as_ref(),
-            runtime_data_producer: runtime_data_producer.as_ref(),
-            runtime_event_tx: &runtime_event_tx,
-            survey_telemetry: &survey_telemetry,
-            startup_ready_reporter: &startup_ready_reporter,
-        };
-        run_auto_runtime_event_loop(&mut loop_ctx, &mut control_rx, &mut runtime_event_rx).await;
-    }
-
-    shutdown_run_auto_runtime(RunAutoShutdownContext {
+    run_auto_runtime_loop_and_shutdown(RunAutoRuntimeLifecycleContext {
         cli: &cli,
+        config: &config,
         node: &node,
+        primary_model_name: &model_name,
+        target_tx: &target_tx,
+        control_rx: &mut control_rx,
+        runtime_event_rx: &mut runtime_event_rx,
+        runtime_state: &mut runtime_state,
+        console_state: console_state.as_ref(),
+        runtime_data_producer: runtime_data_producer.as_ref(),
+        runtime_event_tx: &runtime_event_tx,
+        survey_telemetry: &survey_telemetry,
+        startup_ready_reporter: &startup_ready_reporter,
         plugin_manager: &plugin_manager,
         api_proxy_handle,
         console_server_handle,
         discovery_publisher,
-        runtime_models: &mut runtime_models,
-        runtime_survey_models: &mut runtime_survey_models,
-        managed_models: &mut managed_models,
-        survey_telemetry: &survey_telemetry,
-        dashboard_processes: &dashboard_processes,
-        console_state: console_state.as_ref(),
-        target_tx: &target_tx,
-        runtime_instance_registry: &runtime_instance_registry,
-        runtime_data_producer: runtime_data_producer.as_ref(),
-        dashboard_context_usage: &dashboard_context_usage,
         runtime,
     })
     .await;
