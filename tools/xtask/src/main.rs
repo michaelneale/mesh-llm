@@ -114,6 +114,7 @@ fn run() -> DynResult<()> {
         [command, scope] if command == "repo-consistency" && scope == "ci-crate-lists" => {
             let repo_root = repo_root()?;
             check_ci_script_workspace_members(&repo_root)?;
+            check_attestation_default_version(&repo_root)?;
             println!("repo consistency checks passed: ci-crate-lists");
             Ok(())
         }
@@ -388,10 +389,38 @@ fn check_release_targets() -> DynResult<()> {
     }
     check_windows_name_invariance(&fixture_rows, &fixture_version)?;
     check_ci_script_workspace_members(&repo_root)?;
+    check_attestation_default_version(&repo_root)?;
     check_docs_and_workflow_invariants(&repo_root)?;
 
     println!("repo consistency checks passed: release-targets");
     Ok(())
+}
+
+fn check_attestation_default_version(repo_root: &Path) -> DynResult<()> {
+    let runtime_lib = repo_root
+        .join("crates")
+        .join("mesh-llm-host-runtime")
+        .join("src")
+        .join("lib.rs");
+    let contents = fs::read_to_string(runtime_lib)?;
+    let runtime_version = extract_runtime_version(&contents)?;
+    ensure_eq(
+        runtime_version,
+        DEFAULT_NODE_VERSION,
+        "xtask release-attestation default node version",
+    )
+}
+
+fn extract_runtime_version(contents: &str) -> DynResult<&str> {
+    const PREFIX: &str = "pub const VERSION: &str = \"";
+    for line in contents.lines().map(str::trim) {
+        if let Some(rest) = line.strip_prefix(PREFIX) {
+            return rest
+                .strip_suffix("\";")
+                .ok_or_else(|| "malformed mesh-llm-host-runtime VERSION constant".into());
+        }
+    }
+    Err("missing mesh-llm-host-runtime VERSION constant".into())
 }
 
 fn host_supports_shell_parity_checks() -> bool {

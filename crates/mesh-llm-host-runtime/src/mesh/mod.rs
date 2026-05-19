@@ -3429,6 +3429,44 @@ fn direct_admission_attestation_hash(
         .unwrap_or_else(|| "missing-release-attestation".to_string())
 }
 
+fn signed_policy_matches_owner(
+    signed_policy: &crate::SignedMeshGenesisPolicy,
+    policy: &crate::MeshGenesisPolicy,
+    owner: &crate::crypto::OwnerKeypair,
+) -> bool {
+    signed_policy.policy == *policy
+        && signed_policy.origin_sign_public_key.as_slice() == owner.verifying_key().as_bytes()
+}
+
+fn sign_requirement_bootstrap_token(
+    addr: &EndpointAddr,
+    policy: &crate::MeshGenesisPolicy,
+    signed_policy: Option<&crate::SignedMeshGenesisPolicy>,
+    owner: &crate::crypto::OwnerKeypair,
+) -> Result<(crate::SignedMeshGenesisPolicy, crate::SignedBootstrapToken)> {
+    let signed_policy = if let Some(signed) =
+        signed_policy.filter(|signed| signed_policy_matches_owner(signed, policy, owner))
+    {
+        signed.clone()
+    } else {
+        crate::SignedMeshGenesisPolicy::sign(policy.clone(), owner)
+            .map_err(|reason| anyhow::anyhow!("failed to sign genesis policy: {reason:?}"))?
+    };
+    let token = crate::SignedBootstrapToken::sign(
+        vec![serde_json::to_vec(addr).expect("serializable endpoint addr")],
+        &signed_policy,
+        Some(current_time_unix_ms() + SIGNED_BOOTSTRAP_TOKEN_LIFETIME_MS),
+        owner,
+    )
+    .map_err(|reason| anyhow::anyhow!("failed to sign bootstrap token: {reason:?}"))?;
+    Ok((signed_policy, token))
+}
+
+fn encode_signed_bootstrap_token(token: &crate::SignedBootstrapToken) -> String {
+    let json = serde_json::to_vec(token).expect("serializable bootstrap token");
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json)
+}
+
 impl Node {
     pub async fn initialize_mesh_identity_as_originator(
         &self,
@@ -3477,56 +3515,76 @@ impl Node {
         let cached_token = self.bootstrap_token.lock().await.clone();
 
         if let (Some(mesh_id), Some(policy_hash), Some(policy)) = (mesh_id, policy_hash, policy) {
-            let origin_key = self.owner_keypair.as_ref().filter(|owner| {
-                signed_policy_guard.as_ref().is_some_and(|signed| {
-                    owner.verifying_key().as_bytes() == signed.origin_sign_public_key.as_slice()
-                }) || policy.origin_owner_id == owner.owner_id()
-            });
-            if let Some(owner) = origin_key {
-                let signed_policy = signed_policy_guard.clone().unwrap_or_else(|| {
-                    crate::SignedMeshGenesisPolicy::sign(policy.clone(), owner)
-                        .expect("active requirement-aware mesh policy should sign")
-                });
-                let token = crate::SignedBootstrapToken::sign(
-                    vec![serde_json::to_vec(&addr).expect("serializable endpoint addr")],
-                    &signed_policy,
-                    Some(current_time_unix_ms() + SIGNED_BOOTSTRAP_TOKEN_LIFETIME_MS),
-                    owner,
+            return self
+                .requirement_aware_invite_token(
+                    &addr,
+                    mesh_id,
+                    policy_hash,
+                    policy,
+                    signed_policy_guard,
+                    cached_token,
                 )
-                .expect("active requirement-aware bootstrap token should sign");
-                if let Ok(mut guard) = self.signed_genesis_policy.try_lock() {
-                    *guard = Some(signed_policy);
-                }
-                if let Ok(mut guard) = self.bootstrap_token.try_lock() {
-                    *guard = Some(token.clone());
-                }
-                debug_assert_eq!(mesh_id, token.mesh_id);
-                debug_assert_eq!(policy_hash, token.policy_hash);
-                let json = serde_json::to_vec(&token).expect("serializable bootstrap token");
-                return base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json);
-            }
-
-            if let Some(token) = cached_token {
-                if token.verify_at(current_time_unix_ms()).is_ok() {
-                    let json = serde_json::to_vec(&token).expect("serializable bootstrap token");
-                    return base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json);
-                }
-                *self.bootstrap_token.lock().await = None;
-            }
-
-            tracing::warn!(
-                "requirement-aware mesh has no valid signed bootstrap token; refusing to emit legacy invite token"
-            );
-            return String::new();
+                .await;
         }
 
-        if let Some(token) =
-            cached_token.filter(|token| token.verify_at(current_time_unix_ms()).is_ok())
-        {
-            let json = serde_json::to_vec(&token).expect("serializable bootstrap token");
-            return base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json);
+        if let Some(token) = self.valid_cached_bootstrap_token(cached_token).await {
+            return encode_signed_bootstrap_token(&token);
         }
         encode_endpoint_addr_token(&addr)
+    }
+
+    async fn requirement_aware_invite_token(
+        &self,
+        addr: &EndpointAddr,
+        mesh_id: String,
+        policy_hash: String,
+        policy: crate::MeshGenesisPolicy,
+        signed_policy: Option<crate::SignedMeshGenesisPolicy>,
+        cached_token: Option<crate::SignedBootstrapToken>,
+    ) -> String {
+        if let Some(owner) = self.requirement_origin_owner(&policy, signed_policy.as_ref()) {
+            let (signed_policy, token) =
+                sign_requirement_bootstrap_token(addr, &policy, signed_policy.as_ref(), owner)
+                    .expect("active requirement-aware bootstrap token should sign");
+            *self.signed_genesis_policy.lock().await = Some(signed_policy);
+            *self.bootstrap_token.lock().await = Some(token.clone());
+            debug_assert_eq!(mesh_id, token.mesh_id);
+            debug_assert_eq!(policy_hash, token.policy_hash);
+            return encode_signed_bootstrap_token(&token);
+        }
+
+        if let Some(token) = self.valid_cached_bootstrap_token(cached_token).await {
+            return encode_signed_bootstrap_token(&token);
+        }
+
+        tracing::warn!(
+            "requirement-aware mesh has no valid signed bootstrap token; refusing to emit legacy invite token"
+        );
+        String::new()
+    }
+
+    async fn valid_cached_bootstrap_token(
+        &self,
+        cached_token: Option<crate::SignedBootstrapToken>,
+    ) -> Option<crate::SignedBootstrapToken> {
+        if let Some(token) = cached_token {
+            if token.verify_at(current_time_unix_ms()).is_ok() {
+                return Some(token);
+            }
+            *self.bootstrap_token.lock().await = None;
+        }
+        None
+    }
+
+    fn requirement_origin_owner(
+        &self,
+        policy: &crate::MeshGenesisPolicy,
+        signed_policy: Option<&crate::SignedMeshGenesisPolicy>,
+    ) -> Option<&crate::crypto::OwnerKeypair> {
+        self.owner_keypair.as_ref().filter(|owner| {
+            signed_policy.is_some_and(|signed| signed_policy_matches_owner(signed, policy, owner))
+                || policy.origin_owner_id == owner.owner_id()
+        })
     }
 
     fn endpoint_addr_for_advertisement(&self) -> EndpointAddr {

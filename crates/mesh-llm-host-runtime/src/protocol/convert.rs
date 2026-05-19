@@ -799,45 +799,6 @@ pub(crate) fn routing_table_to_proto(table: &RoutingTable) -> crate::proto::node
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::mesh::requirements::peer_release_attestation_status;
-
-    #[test]
-    fn proto_ann_to_local_preserves_malformed_release_attestation_for_later_rejection() {
-        let proto = crate::proto::node::PeerAnnouncement {
-            endpoint_id: vec![1; 32],
-            role: crate::proto::node::NodeRole::Worker as i32,
-            release_attestation: Some(crate::proto::node::ReleaseBuildAttestation {
-                version: 0,
-                node_version: String::new(),
-                build_id: String::new(),
-                commit: String::new(),
-                target_triple: String::new(),
-                supported_protocol_generation_min: None,
-                supported_protocol_generation_max: None,
-                artifact_digest: None,
-                signer_key_id: String::new(),
-                signature_algorithm: String::new(),
-                signature: vec![],
-            }),
-            ..Default::default()
-        };
-
-        let (_addr, ann) = proto_ann_to_local(&proto).expect("announcement should decode");
-        let attestation = ann
-            .release_attestation
-            .as_ref()
-            .expect("malformed attestation should still be preserved");
-
-        assert_eq!(
-            peer_release_attestation_status(Some(attestation)),
-            crate::PeerReleaseAttestationStatus::Invalid
-        );
-    }
-}
-
 pub(crate) fn mesh_config_to_proto(
     config: &crate::plugin::MeshConfig,
 ) -> crate::proto::node::NodeConfigSnapshot {
@@ -993,5 +954,44 @@ pub(crate) fn proto_route_table_to_local(table: &crate::proto::node::RouteTable)
     RoutingTable {
         hosts,
         mesh_id: table.mesh_id.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mesh::requirements::peer_release_attestation_status;
+
+    #[test]
+    fn proto_ann_to_local_preserves_malformed_release_attestation_for_later_rejection() {
+        let proto = crate::proto::node::PeerAnnouncement {
+            endpoint_id: vec![1; 32],
+            role: crate::proto::node::NodeRole::Worker as i32,
+            release_attestation: Some(crate::proto::node::ReleaseBuildAttestation {
+                version: 0,
+                node_version: String::new(),
+                build_id: String::new(),
+                commit: String::new(),
+                target_triple: String::new(),
+                supported_protocol_generation_min: None,
+                supported_protocol_generation_max: None,
+                artifact_digest: None,
+                signer_key_id: String::new(),
+                signature_algorithm: String::new(),
+                signature: vec![],
+            }),
+            ..Default::default()
+        };
+
+        let (_addr, ann) = proto_ann_to_local(&proto).expect("announcement should decode");
+        let attestation = ann
+            .release_attestation
+            .as_ref()
+            .expect("malformed attestation should still be preserved");
+
+        assert_eq!(
+            peer_release_attestation_status(Some(attestation)),
+            crate::PeerReleaseAttestationStatus::Invalid
+        );
     }
 }

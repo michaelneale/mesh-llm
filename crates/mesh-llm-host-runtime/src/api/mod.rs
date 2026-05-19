@@ -845,33 +845,8 @@ impl MeshApi {
         runtime.stages = build_runtime_stage_payloads(node.stage_runtime_statuses().await);
 
         let wakeable_nodes = wakeable_inventory.status_snapshot().await;
-        let bw_str = {
-            let bw = node.gpu_mem_bandwidth_gbps.lock().await;
-            bw.as_ref().map(|v| {
-                v.iter()
-                    .map(|f| f.to_string())
-                    .collect::<Vec<_>>()
-                    .join(",")
-            })
-        };
-        let tf32_str = {
-            let tf32 = node.gpu_compute_tflops_fp32.lock().await;
-            tf32.as_ref().map(|v| {
-                v.iter()
-                    .map(|f| f.to_string())
-                    .collect::<Vec<_>>()
-                    .join(",")
-            })
-        };
-        let tf16_str = {
-            let tf16 = node.gpu_compute_tflops_fp16.lock().await;
-            tf16.as_ref().map(|v| {
-                v.iter()
-                    .map(|f| f.to_string())
-                    .collect::<Vec<_>>()
-                    .join(",")
-            })
-        };
+        let hardware = runtime_data_collector
+            .build_hardware_view(node_hardware_input(&node, my_vram_gb, model_size_bytes).await);
 
         let mut payload = runtime_data::status_payload(runtime_data_collector.build_status_view(
             runtime_data::StatusViewInput {
@@ -900,21 +875,7 @@ impl MeshApi {
                 peers: node.peers().await,
                 wakeable_nodes,
                 routing_affinity,
-                hardware: runtime_data_collector.build_hardware_view(
-                    runtime_data::HardwareViewInput {
-                        gpu_name: node.gpu_name.clone(),
-                        gpu_vram: node.gpu_vram.clone(),
-                        gpu_reserved_bytes: node.gpu_reserved_bytes.clone(),
-                        gpu_mem_bandwidth_gbps: bw_str,
-                        gpu_compute_tflops_fp32: tf32_str,
-                        gpu_compute_tflops_fp16: tf16_str,
-                        my_hostname: node.hostname.clone(),
-                        my_is_soc: node.is_soc,
-                        my_vram_gb,
-                        model_size_gb: model_size_bytes as f64 / 1e9,
-                        first_joined_mesh_ts: node.first_joined_mesh_ts().await,
-                    },
-                ),
+                hardware,
             },
         ));
         payload.runtime = runtime;
@@ -933,6 +894,36 @@ impl MeshApi {
 
 fn runtime_process_payload_identity(process: &RuntimeProcessPayload) -> &str {
     process.instance_id.as_deref().unwrap_or(&process.name)
+}
+
+async fn node_hardware_input(
+    node: &mesh::Node,
+    my_vram_gb: f64,
+    model_size_bytes: u64,
+) -> runtime_data::HardwareViewInput {
+    runtime_data::HardwareViewInput {
+        gpu_name: node.gpu_name.clone(),
+        gpu_vram: node.gpu_vram.clone(),
+        gpu_reserved_bytes: node.gpu_reserved_bytes.clone(),
+        gpu_mem_bandwidth_gbps: node_metric_csv(&node.gpu_mem_bandwidth_gbps).await,
+        gpu_compute_tflops_fp32: node_metric_csv(&node.gpu_compute_tflops_fp32).await,
+        gpu_compute_tflops_fp16: node_metric_csv(&node.gpu_compute_tflops_fp16).await,
+        my_hostname: node.hostname.clone(),
+        my_is_soc: node.is_soc,
+        my_vram_gb,
+        model_size_gb: model_size_bytes as f64 / 1e9,
+        first_joined_mesh_ts: node.first_joined_mesh_ts().await,
+    }
+}
+
+async fn node_metric_csv(metric: &Arc<Mutex<Option<Vec<f64>>>>) -> Option<String> {
+    metric.lock().await.as_ref().map(|values| {
+        values
+            .iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    })
 }
 
 fn current_unix_secs() -> u64 {
