@@ -5,6 +5,7 @@ mod discovery;
 pub mod instance;
 mod interactive;
 mod local;
+mod model_target_reconciliation;
 mod proxy;
 mod split_planning;
 mod survey;
@@ -26,6 +27,11 @@ use self::local::{
     withdraw_advertised_model, LocalRuntimeModelHandle, LocalRuntimeModelStartSpec,
     ManagedModelController, RuntimeEvent, SplitCoordinatorAck, SplitCoordinatorEvent,
     SplitRuntimeReason, SplitRuntimeStart, StartupRuntimePlan,
+};
+use self::model_target_reconciliation::{
+    plan_model_target_reconciliation, ModelTargetReconciliationCandidate,
+    ModelTargetReconciliationCapacityState, ModelTargetReconciliationInput,
+    ModelTargetReconciliationPolicy, ModelTargetReconciliationState,
 };
 use self::proxy::{api_proxy, bootstrap_proxy};
 use crate::api;
@@ -51,14 +57,14 @@ use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser};
 use skippy_protocol::FlashAttentionType;
 use std::cell::Cell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing_subscriber::fmt::MakeWriter;
 use zeroize::Zeroizing;
 
@@ -66,6 +72,7 @@ const PRETTY_DASHBOARD_INVENTORY_CACHE_TTL: Duration = Duration::from_secs(5);
 const DASHBOARD_CONTEXT_USAGE_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 const DASHBOARD_FIRST_PAINT_TIMEOUT: Duration = Duration::from_secs(2);
 const SPLIT_STANDBY_RETRY_INTERVAL: Duration = Duration::from_secs(30);
+const MODEL_TARGET_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(15);
 
 type DashboardContextUsage =
     Arc<tokio::sync::Mutex<HashMap<String, HashMap<DashboardContextUsageSource, u64>>>>;
@@ -3242,6 +3249,181 @@ async fn resolve_model(input: &std::path::Path) -> Result<PathBuf> {
     models::resolve_model_spec(input).await
 }
 
+fn model_target_reconciliation_policy(
+    config: &plugin::MeshConfig,
+) -> ModelTargetReconciliationPolicy {
+    ModelTargetReconciliationPolicy {
+        enabled: config.runtime.reconcile_model_targets,
+        ..ModelTargetReconciliationPolicy::default()
+    }
+}
+
+struct ReconcileModelTargetsContext<'a> {
+    policy: &'a ModelTargetReconciliationPolicy,
+    state: &'a mut ModelTargetReconciliationState,
+    node: &'a mesh::Node,
+    console_state: Option<&'a api::MeshApi>,
+    runtime_models: &'a HashMap<String, RuntimeModelHandleEntry>,
+    managed_models: &'a HashMap<String, ManagedModelController>,
+    control_tx: &'a tokio::sync::mpsc::UnboundedSender<api::RuntimeControlRequest>,
+    runtime_event_tx: &'a tokio::sync::mpsc::UnboundedSender<RuntimeEvent>,
+}
+
+async fn reconcile_model_targets_once(ctx: ReconcileModelTargetsContext<'_>) {
+    let ReconcileModelTargetsContext {
+        policy,
+        state,
+        node,
+        console_state,
+        runtime_models,
+        managed_models,
+        control_tx,
+        runtime_event_tx,
+    } = ctx;
+    if !policy.enabled {
+        return;
+    }
+    let Some(console_state) = console_state else {
+        return;
+    };
+    let local_interest_model_refs = node
+        .explicit_model_interests()
+        .await
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    if local_interest_model_refs.is_empty() {
+        state.prune_expired(runtime_unix_secs());
+        return;
+    }
+
+    let target_lookup = console_state.model_target_lookup().await;
+    let loaded_model_refs = runtime_loaded_model_refs(runtime_models, managed_models);
+    let local_vram_bytes = node.vram_bytes();
+    let targets = target_lookup
+        .targets
+        .into_iter()
+        .map(|target| {
+            let local_path = if target.wanted
+                && target.serving_node_count == 0
+                && local_interest_model_refs.contains(&target.model_ref)
+                && target.capacity_advice.state
+                    == api::status::ModelTargetCapacityAdviceState::SingleNodeFit
+                && model_target_reconciliation_local_fit(&target, local_vram_bytes)
+            {
+                local_model_path_for_reconciliation_target(&target)
+            } else {
+                None
+            };
+            ModelTargetReconciliationCandidate {
+                model_ref: target.model_ref,
+                model_name: target.model_name,
+                wanted: target.wanted,
+                serving_node_count: target.serving_node_count,
+                capacity_state: ModelTargetReconciliationCapacityState::from(
+                    target.capacity_advice.state,
+                ),
+                local_path,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let now_secs = runtime_unix_secs();
+    let actions = plan_model_target_reconciliation(
+        policy,
+        state,
+        ModelTargetReconciliationInput {
+            now_secs,
+            local_role: node.role().await,
+            local_interest_model_refs: &local_interest_model_refs,
+            loaded_model_refs: &loaded_model_refs,
+            targets: &targets,
+        },
+    );
+
+    for action in actions {
+        let load_spec = action.load_spec.to_string_lossy().to_string();
+        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+        if control_tx
+            .send(api::RuntimeControlRequest::Load {
+                spec: load_spec.clone(),
+                resp: resp_tx,
+            })
+            .is_err()
+        {
+            state.record_load_failure(&action.model_ref, now_secs, policy);
+            let _ = emit_event(OutputEvent::Warning {
+                message: format!(
+                    "Model target reconciliation could not queue '{}'",
+                    action.model_ref
+                ),
+                context: Some("runtime control channel closed".to_string()),
+            });
+            continue;
+        }
+
+        state.mark_load_started(&action.model_ref);
+        let event_tx = runtime_event_tx.clone();
+        let model_ref = action.model_ref.clone();
+        tokio::spawn(async move {
+            let result = match resp_rx.await {
+                Ok(result) => result.map_err(|err| err.to_string()),
+                Err(err) => Err(format!("runtime load response channel closed: {err}")),
+            };
+            let _ = event_tx
+                .send(RuntimeEvent::ModelTargetReconciliationLoadFinished { model_ref, result });
+        });
+        let _ = emit_event(OutputEvent::Info {
+            message: format!("Model target reconciliation loading '{}'", action.model_ref),
+            context: Some(format!("path={load_spec}")),
+        });
+    }
+}
+
+fn runtime_loaded_model_refs(
+    runtime_models: &HashMap<String, RuntimeModelHandleEntry>,
+    managed_models: &HashMap<String, ManagedModelController>,
+) -> BTreeSet<String> {
+    runtime_models
+        .values()
+        .map(|entry| entry.model_name.clone())
+        .chain(
+            managed_models
+                .values()
+                .map(|controller| controller.model_name.clone()),
+        )
+        .collect()
+}
+
+fn local_model_path_for_reconciliation_target(
+    target: &api::status::ModelTargetPayload,
+) -> Option<PathBuf> {
+    [
+        Some(target.model_ref.as_str()),
+        target.model_name.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(models::find_model_path)
+    .find(|path| path.exists())
+}
+
+fn model_target_reconciliation_local_fit(
+    target: &api::status::ModelTargetPayload,
+    local_vram_bytes: u64,
+) -> bool {
+    target
+        .capacity_advice
+        .required_bytes
+        .is_some_and(|required| local_vram_bytes >= required)
+}
+
+fn runtime_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
+}
+
 fn cli_has_explicit_models(cli: &Cli) -> bool {
     !cli.model.is_empty() || !cli.gguf.is_empty()
 }
@@ -5625,6 +5807,7 @@ struct RunAutoRuntimeLifecycleContext<'a> {
     primary_model_name: &'a str,
     target_tx: &'a Arc<tokio::sync::watch::Sender<election::ModelTargets>>,
     control_rx: &'a mut tokio::sync::mpsc::UnboundedReceiver<api::RuntimeControlRequest>,
+    control_tx: &'a tokio::sync::mpsc::UnboundedSender<api::RuntimeControlRequest>,
     runtime_event_rx: &'a mut tokio::sync::mpsc::UnboundedReceiver<RuntimeEvent>,
     runtime_state: &'a mut RunAutoRuntimeState,
     console_state: Option<&'a api::MeshApi>,
@@ -5720,6 +5903,7 @@ struct RunAutoRuntimeLoopContext<'a> {
     node: &'a mesh::Node,
     primary_model_name: &'a str,
     target_tx: &'a Arc<tokio::sync::watch::Sender<election::ModelTargets>>,
+    control_tx: &'a tokio::sync::mpsc::UnboundedSender<api::RuntimeControlRequest>,
     runtime_models: &'a mut HashMap<String, RuntimeModelHandleEntry>,
     runtime_survey_models: &'a mut HashMap<String, survey::SurveyLoadedModel>,
     managed_models: &'a mut HashMap<String, ManagedModelController>,
@@ -5733,6 +5917,8 @@ struct RunAutoRuntimeLoopContext<'a> {
     runtime_event_tx: &'a tokio::sync::mpsc::UnboundedSender<RuntimeEvent>,
     survey_telemetry: &'a survey::SurveyTelemetry,
     startup_ready_reporter: &'a StartupReadyReporter,
+    model_target_reconciliation_policy: ModelTargetReconciliationPolicy,
+    model_target_reconciliation_state: ModelTargetReconciliationState,
 }
 
 struct RunAutoRuntimeState {
@@ -5925,6 +6111,7 @@ async fn run_auto_runtime_loop_and_shutdown(ctx: RunAutoRuntimeLifecycleContext<
         primary_model_name,
         target_tx,
         control_rx,
+        control_tx,
         runtime_event_rx,
         runtime_state,
         console_state,
@@ -5944,6 +6131,7 @@ async fn run_auto_runtime_loop_and_shutdown(ctx: RunAutoRuntimeLifecycleContext<
         node,
         primary_model_name,
         target_tx,
+        control_tx,
         runtime_models: &mut runtime_state.runtime_models,
         runtime_survey_models: &mut runtime_state.runtime_survey_models,
         managed_models: &mut runtime_state.managed_models,
@@ -5957,6 +6145,8 @@ async fn run_auto_runtime_loop_and_shutdown(ctx: RunAutoRuntimeLifecycleContext<
         runtime_event_tx,
         survey_telemetry,
         startup_ready_reporter,
+        model_target_reconciliation_policy: model_target_reconciliation_policy(config),
+        model_target_reconciliation_state: ModelTargetReconciliationState::default(),
     };
     run_auto_runtime_event_loop(&mut loop_ctx, control_rx, runtime_event_rx).await;
 
@@ -6135,7 +6325,7 @@ async fn run_auto_load_runtime_model(
         ctx.node.vram_bytes(),
         model_bytes,
     )?;
-    add_serving_assignment(ctx.node, ctx.primary_model_name, &requested_model).await;
+    add_serving_assignment(ctx.node, ctx.primary_model_name, &runtime_model_name).await;
     let launch_started = Instant::now();
     let capacity_budget_bytes = capacity_reservation.capacity_budget_bytes();
     let (loaded_name, handle, death_rx) = match start_runtime_local_model(
@@ -6164,7 +6354,7 @@ async fn run_auto_load_runtime_model(
         Ok(result) => result,
         Err(err) => {
             drop(capacity_reservation);
-            remove_serving_assignment(ctx.node, &requested_model).await;
+            remove_serving_assignment(ctx.node, &runtime_model_name).await;
             ctx.survey_telemetry.record_launch_failure(
                 survey::SurveyModelSpec {
                     model: &requested_model,
@@ -6440,6 +6630,74 @@ async fn run_auto_handle_runtime_exit(
     });
 }
 
+async fn run_auto_reconcile_model_targets(ctx: &mut RunAutoRuntimeLoopContext<'_>) {
+    reconcile_model_targets_once(ReconcileModelTargetsContext {
+        policy: &ctx.model_target_reconciliation_policy,
+        state: &mut ctx.model_target_reconciliation_state,
+        node: ctx.node,
+        console_state: ctx.console_state,
+        runtime_models: ctx.runtime_models,
+        managed_models: ctx.managed_models,
+        control_tx: ctx.control_tx,
+        runtime_event_tx: ctx.runtime_event_tx,
+    })
+    .await;
+}
+
+fn run_auto_record_model_target_manual_unload(
+    ctx: &mut RunAutoRuntimeLoopContext<'_>,
+    requested_target: &str,
+    result: &Result<api::RuntimeUnloadResponse>,
+) {
+    let Ok(response) = result else {
+        return;
+    };
+    let now_secs = runtime_unix_secs();
+    ctx.model_target_reconciliation_state.record_manual_unload(
+        requested_target,
+        now_secs,
+        &ctx.model_target_reconciliation_policy,
+    );
+    if response.model != requested_target {
+        ctx.model_target_reconciliation_state.record_manual_unload(
+            &response.model,
+            now_secs,
+            &ctx.model_target_reconciliation_policy,
+        );
+    }
+}
+
+fn run_auto_handle_model_target_reconciliation_result(
+    ctx: &mut RunAutoRuntimeLoopContext<'_>,
+    model_ref: String,
+    result: std::result::Result<api::RuntimeLoadResponse, String>,
+) {
+    match result {
+        Ok(response) => {
+            ctx.model_target_reconciliation_state
+                .record_load_success(&model_ref);
+            let _ = emit_event(OutputEvent::Info {
+                message: format!("Model target reconciliation loaded '{}'", response.model),
+                context: Some(format!(
+                    "model_ref={} instance={}",
+                    model_ref, response.instance_id
+                )),
+            });
+        }
+        Err(error) => {
+            ctx.model_target_reconciliation_state.record_load_failure(
+                &model_ref,
+                runtime_unix_secs(),
+                &ctx.model_target_reconciliation_policy,
+            );
+            let _ = emit_event(OutputEvent::Warning {
+                message: format!("Model target reconciliation failed for '{model_ref}'"),
+                context: Some(error),
+            });
+        }
+    }
+}
+
 async fn run_auto_handle_control_request(
     ctx: &mut RunAutoRuntimeLoopContext<'_>,
     cmd: api::RuntimeControlRequest,
@@ -6451,7 +6709,8 @@ async fn run_auto_handle_control_request(
             false
         }
         api::RuntimeControlRequest::Unload { target, resp } => {
-            let result = run_auto_unload_runtime_model(ctx, target).await;
+            let result = run_auto_unload_runtime_model(ctx, target.clone()).await;
+            run_auto_record_model_target_manual_unload(ctx, &target, &result);
             let _ = resp.send(result);
             false
         }
@@ -6473,6 +6732,10 @@ async fn run_auto_runtime_event_loop(
     let mut dashboard_context_usage_tick =
         tokio::time::interval(DASHBOARD_CONTEXT_USAGE_REFRESH_INTERVAL);
     dashboard_context_usage_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut model_target_reconciliation_tick =
+        tokio::time::interval(MODEL_TARGET_RECONCILIATION_INTERVAL);
+    model_target_reconciliation_tick
+        .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
             _ = dashboard_context_usage_tick.tick() => {
@@ -6494,6 +6757,9 @@ async fn run_auto_runtime_event_loop(
                     .collect();
                 refresh_dashboard_context_usage_batch(ctx.dashboard_context_usage, updates).await;
             }
+            _ = model_target_reconciliation_tick.tick() => {
+                run_auto_reconcile_model_targets(ctx).await;
+            }
             signal = wait_shutdown_signal() => {
                 let _ = emit_event(OutputEvent::ShutdownRequested { signal });
                 ctx.startup_ready_reporter.mark_shutdown_requested();
@@ -6508,6 +6774,9 @@ async fn run_auto_runtime_event_loop(
             }
             Some(event) = runtime_event_rx.recv() => {
                 match event {
+                    RuntimeEvent::ModelTargetReconciliationLoadFinished { model_ref, result } => {
+                        run_auto_handle_model_target_reconciliation_result(ctx, model_ref, result);
+                    }
                     RuntimeEvent::Exited { instance_id, model, port } => {
                         run_auto_handle_runtime_exit(ctx, instance_id, model, port).await;
                     }
@@ -7167,6 +7436,7 @@ async fn run_auto(
         primary_model_name: &model_name,
         target_tx: &target_tx,
         control_rx: &mut control_rx,
+        control_tx: &control_tx,
         runtime_event_rx: &mut runtime_event_rx,
         runtime_state: &mut runtime_state,
         console_state: console_state.as_ref(),
@@ -7786,6 +8056,51 @@ mod tests {
         } else {
             std::env::remove_var(key);
         }
+    }
+
+    fn reconciliation_target_with_required_bytes(
+        required_bytes: Option<u64>,
+    ) -> api::status::ModelTargetPayload {
+        api::status::ModelTargetPayload {
+            rank: 1,
+            model_ref: "org/model@main:model.gguf".to_string(),
+            display_name: "Model".to_string(),
+            model_name: Some("Model".to_string()),
+            explicit_interest_count: 1,
+            request_count: 0,
+            last_active_secs_ago: None,
+            serving_node_count: 0,
+            requested: false,
+            wanted: true,
+            wanted_reason: Some("explicit_interest"),
+            capacity_advice: api::status::ModelTargetCapacityAdvicePayload {
+                state: api::status::ModelTargetCapacityAdviceState::SingleNodeFit,
+                reason: "single_node_capacity_available",
+                required_bytes,
+                best_single_node_capacity_bytes: required_bytes,
+                aggregate_capacity_bytes: required_bytes.unwrap_or_default(),
+                shortfall_bytes: None,
+                eligible_node_count: 1,
+                missing_capacity_node_count: 0,
+                excluded_client_node_count: 0,
+                split_capable: false,
+            },
+        }
+    }
+
+    #[test]
+    fn model_target_reconciliation_local_fit_requires_current_node_capacity() {
+        let target = reconciliation_target_with_required_bytes(Some(10));
+
+        assert!(model_target_reconciliation_local_fit(&target, 10));
+        assert!(!model_target_reconciliation_local_fit(&target, 9));
+    }
+
+    #[test]
+    fn model_target_reconciliation_local_fit_rejects_unknown_required_bytes() {
+        let target = reconciliation_target_with_required_bytes(None);
+
+        assert!(!model_target_reconciliation_local_fit(&target, u64::MAX));
     }
 
     fn remote_catalog_layer_entry(

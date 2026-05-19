@@ -228,6 +228,12 @@ visibility; it does not launch, unload, or auto-assign models by itself. Entries
 should use canonical refs such as `org/repo@rev:variant`. Mesh management works
 without the HTML via curl/scripts.
 
+Runtime reconciliation is opt-in. When `[runtime] reconcile_model_targets = true`
+is set, the local runtime may load an already-present local GGUF for a locally
+registered explicit interest, but only when `/api/model-targets` says the target
+is wanted, unserved, and a single-node capacity fit for the current node. It
+does not download models, start split serving, or act on peer-only interest.
+
 `/api/model-targets` keeps raw inputs and computed hints separate. Each target
 reports `signals` from observed mesh state (`explicit_interest_count`,
 `request_count`, `last_active_secs_ago`, `serving_node_count`, and `requested`)

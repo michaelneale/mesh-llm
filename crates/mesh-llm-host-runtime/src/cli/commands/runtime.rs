@@ -478,6 +478,7 @@ mod tests {
             plugins: Vec::new(),
             owner_control: Default::default(),
             telemetry: Default::default(),
+            runtime: Default::default(),
         };
 
         assert_eq!(
