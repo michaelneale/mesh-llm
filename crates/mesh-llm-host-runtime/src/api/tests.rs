@@ -924,7 +924,7 @@ pub(crate) fn assert_mesh_requirements_rejection_events_do_not_expose_tokens() {
             .unwrap();
             let mut token = crate::SignedBootstrapToken::sign(
                 vec![serde_json::to_vec(
-                    &mesh::Node::decode_invite_token(&node.invite_token()).unwrap(),
+                    &mesh::Node::decode_invite_token(&node.invite_token().await).unwrap(),
                 )
                 .unwrap()],
                 &signed_policy,

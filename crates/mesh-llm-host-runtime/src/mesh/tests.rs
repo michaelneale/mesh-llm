@@ -190,6 +190,7 @@ async fn make_test_node(role: super::NodeRole) -> Result<Node> {
             seen_plugin_messages: HashMap::new(),
             seen_plugin_message_order: VecDeque::new(),
             policy_rejected_peers: HashMap::new(),
+            requirement_rejected_peers: HashSet::new(),
             recent_mesh_rejections: VecDeque::new(),
         })),
         role: Arc::new(Mutex::new(role)),
@@ -5060,6 +5061,10 @@ fn test_owner_keypair(signing_seed: u8, encryption_seed: u8) -> crate::crypto::O
         .expect("test owner keypair must be valid")
 }
 
+fn requirement_policy_owner() -> crate::crypto::OwnerKeypair {
+    test_owner_keypair(0xb1, 0xb2)
+}
+
 fn proto_signed_node_ownership(
     ownership: &crate::crypto::SignedNodeOwnership,
 ) -> crate::proto::node::SignedNodeOwnership {
@@ -5191,7 +5196,7 @@ async fn wait_for_peer(node: &Node, target: EndpointId) {
 
 fn requirement_policy(trusted_signer: &str) -> crate::MeshGenesisPolicy {
     crate::MeshGenesisPolicy::new(
-        "owner-test",
+        requirement_policy_owner().owner_id(),
         1_717_171_717_000,
         crate::MeshRequirements {
             node_version: crate::NodeVersionBounds::default(),
@@ -5210,7 +5215,7 @@ fn requirement_policy(trusted_signer: &str) -> crate::MeshGenesisPolicy {
 
 fn requirement_policy_without_release_attestation() -> crate::MeshGenesisPolicy {
     crate::MeshGenesisPolicy::new(
-        "owner-test",
+        requirement_policy_owner().owner_id(),
         1_717_171_717_000,
         crate::MeshRequirements {
             node_version: crate::NodeVersionBounds::default(),
@@ -5335,8 +5340,24 @@ async fn install_requirement_policy(node: &Node, policy: &crate::MeshGenesisPoli
     let policy_hash = policy
         .canonical_hash_hex()
         .map_err(|reason| anyhow::anyhow!("invalid test policy hash: {reason:?}"))?;
-    node.install_requirement_aware_mesh_state(mesh_id, policy_hash, policy.clone(), None, None)
-        .await
+    let owner = requirement_policy_owner();
+    let signed_policy = crate::SignedMeshGenesisPolicy::sign(policy.clone(), &owner)
+        .map_err(|reason| anyhow::anyhow!("invalid test signed policy: {reason:?}"))?;
+    let token = crate::SignedBootstrapToken::sign(
+        vec![serde_json::to_vec(&node.endpoint_addr_for_advertisement())?],
+        &signed_policy,
+        Some(current_time_unix_ms() + SIGNED_BOOTSTRAP_TOKEN_LIFETIME_MS),
+        &owner,
+    )
+    .map_err(|reason| anyhow::anyhow!("invalid test bootstrap token: {reason:?}"))?;
+    node.install_requirement_aware_mesh_state(
+        mesh_id,
+        policy_hash,
+        policy.clone(),
+        Some(signed_policy),
+        Some(token),
+    )
+    .await
 }
 
 async fn configure_requirement_node(
@@ -5392,6 +5413,7 @@ fn requirement_peer_announcement(
         release_attestation,
         direct_admission_proof,
         artifact_transfer_supported: true,
+        stage_protocol_generation_supported: true,
         stage_status_list_supported: true,
         latency_ms: None,
         latency_source: None,
@@ -5454,7 +5476,7 @@ pub(crate) fn assert_mesh_requirements_outbound_admits_compliant_peer_after_requ
         host.start_accepting();
         joiner.start_accepting();
         joiner
-            .join(&host.invite_token())
+            .join(&host.invite_token().await)
             .await
             .expect("join should succeed");
 
@@ -5486,7 +5508,7 @@ pub(crate) fn assert_mesh_requirements_inbound_rejects_before_topology_announcem
         joiner.start_accepting();
 
         let _error = joiner
-            .join(&host.invite_token())
+            .join(&host.invite_token().await)
             .await
             .expect_err("join should fail");
         assert!(
@@ -5938,6 +5960,7 @@ pub(crate) fn assert_mesh_requirements_add_peer_rejects_untrusted_release_signer
                 Some(&test_release_attestation_with_seed(10)),
             )),
             artifact_transfer_supported: true,
+            stage_protocol_generation_supported: true,
             stage_status_list_supported: true,
             latency_ms: None,
             latency_source: None,
@@ -6025,6 +6048,7 @@ pub(crate) fn assert_mesh_requirements_add_peer_rejects_invalid_release_attestat
             release_attestation: Some(invalid_attestation),
             direct_admission_proof: Some(invalid_direct_proof),
             artifact_transfer_supported: true,
+            stage_protocol_generation_supported: true,
             stage_status_list_supported: true,
             latency_ms: None,
             latency_source: None,
@@ -6109,6 +6133,7 @@ pub(crate) fn assert_mesh_requirements_add_peer_rejects_wrong_mesh_id() {
                 Some(&test_release_attestation(&test_release_signer_key_id(9))),
             )),
             artifact_transfer_supported: true,
+            stage_protocol_generation_supported: true,
             stage_status_list_supported: true,
             latency_ms: None,
             latency_source: None,
@@ -6241,13 +6266,13 @@ pub(crate) fn assert_mesh_requirements_rejected_peer_messages_have_no_mesh_effec
         rejected.start_accepting();
 
         bridge
-            .join(&host.invite_token())
+            .join(&host.invite_token().await)
             .await
             .expect("bridge joins host");
         wait_for_peer(&host, bridge.id()).await;
 
         rejected
-            .join(&host.invite_token())
+            .join(&host.invite_token().await)
             .await
             .expect_err("rejected peer should fail admission");
         expect_no_route_table_response(&rejected, &host)
@@ -6330,7 +6355,7 @@ pub(crate) fn assert_mesh_requirements_unrestricted_legacy_mesh_join_stays_compa
         host.start_accepting();
         joiner.start_accepting();
         joiner
-            .join(&host.invite_token())
+            .join(&host.invite_token().await)
             .await
             .expect("legacy unrestricted meshes should remain join-compatible");
 

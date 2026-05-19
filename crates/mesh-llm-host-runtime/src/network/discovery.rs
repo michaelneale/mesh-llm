@@ -520,7 +520,7 @@ async fn build_local_mesh_listing(
     let node_count = lan_serving_node_count(&peers);
 
     nostr::MeshListing {
-        invite_token: node.invite_token(),
+        invite_token: node.invite_token().await,
         serving: actually_serving,
         wanted,
         on_disk: available,

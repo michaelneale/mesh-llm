@@ -19,7 +19,7 @@ Security model:
 - support revocation at both the owner and node-certificate level
 
 This owner-identity attestation is separate from release attestation.
-certified-build admission is not remote runtime attestation: it proves that a
+Certified-build admission is not remote runtime attestation: it proves that a
 release attestation was signed by a trusted release signer, not that the remote
 machine is running unmodified official code with trusted hardware or OS state.
 Mesh requirements are also immutable on the wire: changing mesh requirements creates a new mesh, because the requirement-aware mesh id is derived from the canonical hash of the signed genesis policy.

@@ -313,6 +313,11 @@ impl Node {
                     reason.clone(),
                 )
                 .await;
+                self.state
+                    .lock()
+                    .await
+                    .requirement_rejected_peers
+                    .insert(remote);
                 anyhow::bail!(
                     "peer {} rejected by mesh requirements: {}",
                     remote.fmt_short(),
@@ -1011,6 +1016,11 @@ impl Node {
                 reason.clone(),
             )
             .await;
+            self.state
+                .lock()
+                .await
+                .requirement_rejected_peers
+                .insert(remote);
             anyhow::bail!(
                 "peer {} rejected by mesh requirements: {}",
                 remote.fmt_short(),
@@ -1107,6 +1117,7 @@ impl Node {
                 reason.code()
             );
             let mut state = self.state.lock().await;
+            state.requirement_rejected_peers.insert(id);
             if state.peers.remove(&id).is_some() {
                 let admitted_count = state
                     .peers
@@ -1123,6 +1134,7 @@ impl Node {
         }
         let mut state = self.state.lock().await;
         state.policy_rejected_peers.remove(&id);
+        state.requirement_rejected_peers.remove(&id);
         if id == self.endpoint.id() {
             return;
         }

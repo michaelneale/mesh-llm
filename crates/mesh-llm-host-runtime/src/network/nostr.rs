@@ -362,7 +362,7 @@ pub async fn publish_loop(node: crate::mesh::Node, keys: Keys, config: PublishLo
             continue;
         }
 
-        let invite_token = node.invite_token();
+        let invite_token = node.invite_token().await;
         let listing = build_publish_listing(
             &node,
             &peers,

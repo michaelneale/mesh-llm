@@ -5535,7 +5535,7 @@ async fn spawn_run_auto_post_join_tasks(cli: &Cli, node: &mesh::Node) {
         .await
         .unwrap_or_else(|| "pending".to_string());
     let _ = emit_event(OutputEvent::InviteToken {
-        token: node.invite_token(),
+        token: node.invite_token().await,
         mesh_id,
         mesh_name: cli.mesh_name.clone(),
     });
@@ -5585,7 +5585,7 @@ async fn run_auto_start_new_mesh(cli: &Cli, node: &mesh::Node) -> Result<()> {
     mesh::save_last_mesh_id(&mesh_id);
     tracing::info!("Mesh ID: {mesh_id}");
     let _ = emit_event(OutputEvent::InviteToken {
-        token: node.invite_token(),
+        token: node.invite_token().await,
         mesh_id: mesh_id.clone(),
         mesh_name: cli.mesh_name.clone(),
     });

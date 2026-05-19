@@ -795,7 +795,6 @@ impl MeshApi {
             runtime_data_collector,
             node,
             node_id,
-            token,
             my_vram_gb,
             inflight_requests,
             routing_affinity,
@@ -814,7 +813,6 @@ impl MeshApi {
                 inner.runtime_data_collector.clone(),
                 inner.node.clone(),
                 inner.node.id().fmt_short().to_string(),
-                inner.node.invite_token(),
                 inner.node.vram_bytes() as f64 / 1e9,
                 inner.node.inflight_requests(),
                 inner.affinity_router.stats_snapshot(),
@@ -829,6 +827,7 @@ impl MeshApi {
                 inner.wakeable_inventory.clone(),
             )
         };
+        let token = node.invite_token().await;
         let runtime_status = runtime_data_collector.runtime_status_snapshot();
         let model_name = runtime_status.primary_model.clone().unwrap_or_default();
         let local_processes =

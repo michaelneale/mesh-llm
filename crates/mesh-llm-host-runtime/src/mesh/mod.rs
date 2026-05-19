@@ -17,7 +17,7 @@ use iroh::endpoint::Connection;
 use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey, TransportAddr};
 use prost::Message;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
@@ -1848,6 +1848,9 @@ struct MeshState {
     /// Last policy-rejection status per peer — used to suppress duplicate log lines.
     /// Only logs when the status transitions (first rejection or status change).
     policy_rejected_peers: HashMap<EndpointId, OwnershipStatus>,
+    /// Peers rejected by immutable mesh requirements. Used to keep pre-admission
+    /// streams from disclosing topology after a deterministic requirement reject.
+    requirement_rejected_peers: HashSet<EndpointId>,
     recent_mesh_rejections: VecDeque<MeshRequirementRejectionEvent>,
 }
 
@@ -2753,6 +2756,7 @@ impl Node {
                 seen_plugin_messages: HashMap::new(),
                 seen_plugin_message_order: VecDeque::new(),
                 policy_rejected_peers: HashMap::new(),
+                requirement_rejected_peers: HashSet::new(),
                 recent_mesh_rejections: VecDeque::new(),
             })),
             role: Arc::new(Mutex::new(role)),
@@ -2907,6 +2911,7 @@ impl Node {
                 seen_plugin_messages: HashMap::new(),
                 seen_plugin_message_order: VecDeque::new(),
                 policy_rejected_peers: HashMap::new(),
+                requirement_rejected_peers: HashSet::new(),
                 recent_mesh_rejections: VecDeque::new(),
             })),
             role: Arc::new(Mutex::new(role)),
@@ -3456,7 +3461,7 @@ impl Node {
         Ok(mesh_id)
     }
 
-    pub fn invite_token(&self) -> String {
+    pub async fn invite_token(&self) -> String {
         let mut addr = self.endpoint_addr_for_advertisement();
         // Inject STUN-discovered public address if relay STUN didn't provide one.
         if let Some(pub_addr) = self.public_addr {
@@ -3465,33 +3470,17 @@ impl Node {
             }
         }
         addr = filter_endpoint_addr_for_bind_ip(addr, self.quic_bind.ip);
-        let mesh_id = self.mesh_id.try_lock().ok().and_then(|guard| guard.clone());
-        let policy_hash = self
-            .mesh_policy_hash
-            .try_lock()
-            .ok()
-            .and_then(|guard| guard.clone());
-        let policy = self
-            .genesis_policy
-            .try_lock()
-            .ok()
-            .and_then(|guard| guard.clone());
-        let signed_policy_guard = self
-            .signed_genesis_policy
-            .try_lock()
-            .ok()
-            .and_then(|guard| guard.clone());
-        let cached_token = self
-            .bootstrap_token
-            .try_lock()
-            .ok()
-            .and_then(|guard| guard.clone());
+        let mesh_id = self.mesh_id.lock().await.clone();
+        let policy_hash = self.mesh_policy_hash.lock().await.clone();
+        let policy = self.genesis_policy.lock().await.clone();
+        let signed_policy_guard = self.signed_genesis_policy.lock().await.clone();
+        let cached_token = self.bootstrap_token.lock().await.clone();
 
         if let (Some(mesh_id), Some(policy_hash), Some(policy)) = (mesh_id, policy_hash, policy) {
             let origin_key = self.owner_keypair.as_ref().filter(|owner| {
                 signed_policy_guard.as_ref().is_some_and(|signed| {
                     owner.verifying_key().as_bytes() == signed.origin_sign_public_key.as_slice()
-                })
+                }) || policy.origin_owner_id == owner.owner_id()
             });
             if let Some(owner) = origin_key {
                 let signed_policy = signed_policy_guard.clone().unwrap_or_else(|| {
@@ -3516,9 +3505,24 @@ impl Node {
                 let json = serde_json::to_vec(&token).expect("serializable bootstrap token");
                 return base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json);
             }
+
+            if let Some(token) = cached_token {
+                if token.verify_at(current_time_unix_ms()).is_ok() {
+                    let json = serde_json::to_vec(&token).expect("serializable bootstrap token");
+                    return base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json);
+                }
+                *self.bootstrap_token.lock().await = None;
+            }
+
+            tracing::warn!(
+                "requirement-aware mesh has no valid signed bootstrap token; refusing to emit legacy invite token"
+            );
+            return String::new();
         }
 
-        if let Some(token) = cached_token {
+        if let Some(token) =
+            cached_token.filter(|token| token.verify_at(current_time_unix_ms()).is_ok())
+        {
             let json = serde_json::to_vec(&token).expect("serializable bootstrap token");
             return base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json);
         }
@@ -5513,6 +5517,7 @@ impl Node {
 
     fn spawn_route_request_stream(
         &self,
+        remote: EndpointId,
         protocol: ControlProtocol,
         send: iroh::endpoint::SendStream,
         mut recv: iroh::endpoint::RecvStream,
@@ -5541,6 +5546,19 @@ impl Node {
                     tracing::warn!("Route request: frame validation failed — rejecting: {error}");
                     return;
                 }
+            }
+            if node
+                .state
+                .lock()
+                .await
+                .requirement_rejected_peers
+                .contains(&remote)
+            {
+                tracing::warn!(
+                    "Route request: refusing topology disclosure to requirement-rejected peer {}",
+                    remote.fmt_short()
+                );
+                return;
             }
             use prost::Message as _;
             let mut send = send;
@@ -5855,7 +5873,7 @@ impl Node {
         match stream_type {
             STREAM_GOSSIP => self.spawn_gossip_stream(remote, protocol, send, recv),
             STREAM_TUNNEL_MAP => self.spawn_tunnel_map_stream(remote, protocol, recv),
-            STREAM_ROUTE_REQUEST => self.spawn_route_request_stream(protocol, send, recv),
+            STREAM_ROUTE_REQUEST => self.spawn_route_request_stream(remote, protocol, send, recv),
             STREAM_PEER_DOWN => self.spawn_peer_down_stream(remote, recv),
             STREAM_PEER_LEAVING => self.spawn_peer_leaving_stream(remote, recv),
             STREAM_PLUGIN_CHANNEL => self.spawn_plugin_channel_stream(remote, send, recv),

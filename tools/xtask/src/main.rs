@@ -1,15 +1,102 @@
 use ed25519_dalek::{Signer, SigningKey};
-use mesh_llm_host_runtime::ReleaseBuildAttestation;
 use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::error::Error;
-use std::fs;
+use std::fs::{self, File};
+use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 type DynError = Box<dyn Error>;
 type DynResult<T> = Result<T, DynError>;
+
+const RELEASE_BUILD_ATTESTATION_VERSION: u32 = 1;
+const RELEASE_BUILD_ATTESTATION_DOMAIN_TAG: &[u8] = b"mesh-llm-release-attestation-v1:";
+const ED25519_SIGNATURE_ALGORITHM: &str = "ed25519";
+const DEFAULT_NODE_VERSION: &str = "0.65.1+skippy.20260504.kv.2";
+
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+struct ReleaseBuildAttestation {
+    version: u32,
+    node_version: String,
+    build_id: String,
+    commit: String,
+    target_triple: String,
+    supported_protocol_generation_min: Option<u32>,
+    supported_protocol_generation_max: Option<u32>,
+    artifact_digest: Option<String>,
+    signer_key_id: String,
+    signature_algorithm: String,
+    signature: Vec<u8>,
+}
+
+impl ReleaseBuildAttestation {
+    fn validate(&self) -> DynResult<()> {
+        if self.version != RELEASE_BUILD_ATTESTATION_VERSION
+            || self.node_version.trim().is_empty()
+            || self.build_id.trim().is_empty()
+            || self.commit.trim().is_empty()
+            || self.target_triple.trim().is_empty()
+            || self.signer_key_id.trim().is_empty()
+            || self.signature_algorithm.trim().is_empty()
+            || self.signature.is_empty()
+        {
+            return Err("invalid release build attestation shape".into());
+        }
+        if let (Some(min), Some(max)) = (
+            self.supported_protocol_generation_min,
+            self.supported_protocol_generation_max,
+        ) {
+            if min > max {
+                return Err("invalid release build attestation protocol bounds".into());
+            }
+        }
+        Ok(())
+    }
+
+    fn canonical_bytes(&self) -> DynResult<Vec<u8>> {
+        self.validate()?;
+        let mut buf = Vec::with_capacity(256);
+        buf.extend_from_slice(RELEASE_BUILD_ATTESTATION_DOMAIN_TAG);
+        buf.extend_from_slice(&self.version.to_le_bytes());
+        write_string(&mut buf, self.node_version.trim());
+        write_string(&mut buf, self.build_id.trim());
+        write_string(&mut buf, self.commit.trim());
+        write_string(&mut buf, self.target_triple.trim());
+        write_optional_u32(&mut buf, self.supported_protocol_generation_min);
+        write_optional_u32(&mut buf, self.supported_protocol_generation_max);
+        write_optional_string(&mut buf, self.artifact_digest.as_deref());
+        write_string(&mut buf, self.signer_key_id.trim());
+        write_string(&mut buf, self.signature_algorithm.trim());
+        Ok(buf)
+    }
+
+    fn canonical_hash_hex(&self) -> DynResult<String> {
+        use sha2::{Digest, Sha256};
+
+        Ok(hex::encode(Sha256::digest(self.canonical_bytes()?)))
+    }
+
+    fn verify(&self) -> DynResult<()> {
+        self.validate()?;
+        if self.signature_algorithm.trim() != ED25519_SIGNATURE_ALGORITHM
+            || self.signature.len() != 64
+        {
+            return Err("invalid release build attestation signature shape".into());
+        }
+        let signer_public_key = parse_release_signer_public_key(self.signer_key_id.trim())?;
+        let signature = ed25519_dalek::Signature::from_bytes(
+            &self
+                .signature
+                .as_slice()
+                .try_into()
+                .map_err(|_| "invalid release build attestation signature length")?,
+        );
+        signer_public_key.verify_strict(&self.canonical_bytes()?, &signature)?;
+        Ok(())
+    }
+}
 
 fn main() {
     if let Err(error) = run() {
@@ -83,7 +170,7 @@ fn stamp_release_attestation(args: &[String]) -> DynResult<()> {
         version: 1,
         node_version: parsed
             .node_version
-            .unwrap_or_else(|| mesh_llm_host_runtime::VERSION.to_string()),
+            .unwrap_or_else(|| DEFAULT_NODE_VERSION.to_string()),
         build_id: parsed
             .build_id
             .unwrap_or_else(|| default_build_id(&binary, &artifact_digest)),
@@ -215,8 +302,58 @@ fn signing_key_from_seed_hex(seed_hex: &str) -> DynResult<SigningKey> {
 fn sha256_file(path: &Path) -> DynResult<String> {
     use sha2::{Digest, Sha256};
 
-    let bytes = fs::read(path)?;
-    Ok(hex::encode(Sha256::digest(bytes)))
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let len = reader.read(&mut buf)?;
+        if len == 0 {
+            break;
+        }
+        hasher.update(&buf[..len]);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn parse_release_signer_public_key(signer_key_id: &str) -> DynResult<ed25519_dalek::VerifyingKey> {
+    let encoded = signer_key_id
+        .strip_prefix("ed25519:")
+        .ok_or("release signer key id must start with ed25519:")?;
+    let bytes = hex::decode(encoded)?;
+    let bytes: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| "release signer key id must contain a 32-byte public key")?;
+    Ok(ed25519_dalek::VerifyingKey::from_bytes(&bytes)?)
+}
+
+fn write_string(buf: &mut Vec<u8>, value: &str) {
+    write_bytes(buf, value.as_bytes());
+}
+
+fn write_optional_string(buf: &mut Vec<u8>, value: Option<&str>) {
+    match value {
+        Some(value) => {
+            buf.push(1);
+            write_string(buf, value.trim());
+        }
+        None => buf.push(0),
+    }
+}
+
+fn write_optional_u32(buf: &mut Vec<u8>, value: Option<u32>) {
+    match value {
+        Some(value) => {
+            buf.push(1);
+            buf.extend_from_slice(&value.to_le_bytes());
+        }
+        None => buf.push(0),
+    }
+}
+
+fn write_bytes(buf: &mut Vec<u8>, bytes: &[u8]) {
+    buf.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+    buf.extend_from_slice(bytes);
 }
 
 fn default_build_id(binary: &Path, artifact_digest: &str) -> String {
