@@ -3562,29 +3562,29 @@ impl Node {
         cached_token: Option<crate::SignedBootstrapToken>,
     ) -> String {
         if let Some(token) = self
-            .valid_cached_bootstrap_token(cached_token.clone())
-            .await
-        {
-            if signed_bootstrap_token_matches_invite_context(
-                &token,
+            .matching_cached_invite_token(
+                cached_token.clone(),
                 addr,
                 &mesh_id,
                 &policy_hash,
                 &policy,
-            ) {
-                return encode_signed_bootstrap_token(&token);
-            }
+            )
+            .await
+        {
+            return encode_signed_bootstrap_token(&token);
         }
 
-        if let Some(owner) = self.requirement_origin_owner(&policy, signed_policy.as_ref()) {
-            let (signed_policy, token) =
-                sign_requirement_bootstrap_token(addr, &policy, signed_policy.as_ref(), owner)
-                    .expect("active requirement-aware bootstrap token should sign");
-            *self.signed_genesis_policy.lock().await = Some(signed_policy);
-            *self.bootstrap_token.lock().await = Some(token.clone());
-            debug_assert_eq!(mesh_id, token.mesh_id);
-            debug_assert_eq!(policy_hash, token.policy_hash);
-            return encode_signed_bootstrap_token(&token);
+        if let Some(invite_token) = self
+            .sign_requirement_invite_token(
+                addr,
+                &mesh_id,
+                &policy_hash,
+                &policy,
+                signed_policy.as_ref(),
+            )
+            .await
+        {
+            return invite_token;
         }
 
         if let Some(token) = self.valid_cached_bootstrap_token(cached_token).await {
@@ -3595,6 +3595,46 @@ impl Node {
             "requirement-aware mesh has no valid signed bootstrap token; refusing to emit legacy invite token"
         );
         String::new()
+    }
+
+    async fn matching_cached_invite_token(
+        &self,
+        cached_token: Option<crate::SignedBootstrapToken>,
+        addr: &EndpointAddr,
+        mesh_id: &str,
+        policy_hash: &str,
+        policy: &crate::MeshGenesisPolicy,
+    ) -> Option<crate::SignedBootstrapToken> {
+        let token = self.valid_cached_bootstrap_token(cached_token).await?;
+        signed_bootstrap_token_matches_invite_context(&token, addr, mesh_id, policy_hash, policy)
+            .then_some(token)
+    }
+
+    async fn sign_requirement_invite_token(
+        &self,
+        addr: &EndpointAddr,
+        mesh_id: &str,
+        policy_hash: &str,
+        policy: &crate::MeshGenesisPolicy,
+        signed_policy: Option<&crate::SignedMeshGenesisPolicy>,
+    ) -> Option<String> {
+        let owner = self.requirement_origin_owner(policy, signed_policy)?;
+        match sign_requirement_bootstrap_token(addr, policy, signed_policy, owner) {
+            Ok((signed_policy, token)) => {
+                *self.signed_genesis_policy.lock().await = Some(signed_policy);
+                *self.bootstrap_token.lock().await = Some(token.clone());
+                debug_assert_eq!(mesh_id, token.mesh_id);
+                debug_assert_eq!(policy_hash, token.policy_hash);
+                Some(encode_signed_bootstrap_token(&token))
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "failed to sign requirement-aware bootstrap token; refusing to emit legacy invite token"
+                );
+                Some(String::new())
+            }
+        }
     }
 
     async fn valid_cached_bootstrap_token(
