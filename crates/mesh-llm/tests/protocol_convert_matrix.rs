@@ -492,6 +492,7 @@ fn mesh_requirements_release_attestation_accepts_trusted_signer() {
         requirements.evaluate(&MeshRequirementEvaluationInput {
             release_attestation: PeerReleaseAttestationStatus::Present {
                 signer_key: Some("trusted-signer".into()),
+                attested_version: None,
             },
             ..Default::default()
         }),
@@ -510,7 +511,10 @@ fn mesh_requirements_release_attestation_rejects_missing_signer_metadata() {
     };
     assert_eq!(
         requirements.evaluate(&MeshRequirementEvaluationInput {
-            release_attestation: PeerReleaseAttestationStatus::Present { signer_key: None },
+            release_attestation: PeerReleaseAttestationStatus::Present {
+                signer_key: None,
+                attested_version: None,
+            },
             ..Default::default()
         }),
         MeshRequirementDecision::Rejected(MeshRequirementRejectReason::BuildProofMissing)
@@ -548,6 +552,7 @@ fn mesh_requirements_release_attestation_rejects_untrusted_signer() {
         requirements.evaluate(&MeshRequirementEvaluationInput {
             release_attestation: PeerReleaseAttestationStatus::Present {
                 signer_key: Some("evil-signer".into()),
+                attested_version: None,
             },
             ..Default::default()
         }),
@@ -564,6 +569,7 @@ fn mesh_requirements_release_attestation_rejects_mismatched_policy_hash() {
             policy_hash: Some("deadbeef".into()),
             release_attestation: PeerReleaseAttestationStatus::Present {
                 signer_key: Some("signer-a".into()),
+                attested_version: None,
             },
             ..stable_requirement_input()
         }),

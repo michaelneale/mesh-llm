@@ -353,7 +353,7 @@ fn write_optional_u32(buf: &mut Vec<u8>, value: Option<u32>) {
 }
 
 fn write_bytes(buf: &mut Vec<u8>, bytes: &[u8]) {
-    buf.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
     buf.extend_from_slice(bytes);
 }
 

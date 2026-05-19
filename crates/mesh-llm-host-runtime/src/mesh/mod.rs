@@ -3262,10 +3262,15 @@ impl Node {
         token: &crate::SignedBootstrapToken,
     ) -> std::result::Result<Vec<EndpointAddr>, MeshRequirementRejectReason> {
         token.verify()?;
-        if !self.local_mesh_requirements.is_unrestricted()
-            && self.local_mesh_requirements != token.genesis_policy.requirements
-        {
-            return Err(MeshRequirementRejectReason::MeshPolicyMismatch);
+        if !self.local_mesh_requirements.is_unrestricted() {
+            let local_hash = self.mesh_policy_hash.lock().await.clone();
+            let token_hash = token
+                .genesis_policy
+                .canonical_hash_hex()
+                .map_err(|_| MeshRequirementRejectReason::MeshPolicyMismatch)?;
+            if local_hash.as_deref() != Some(&token_hash) {
+                return Err(MeshRequirementRejectReason::MeshPolicyMismatch);
+            }
         }
         decode_signed_bootstrap_addrs(token)
             .map_err(|_| MeshRequirementRejectReason::BootstrapTokenInvalid)
@@ -5688,6 +5693,20 @@ impl Node {
             {
                 tracing::warn!(
                     "Route request: refusing topology disclosure to requirement-rejected peer {}",
+                    remote.fmt_short()
+                );
+                return;
+            }
+            let is_admitted = node
+                .state
+                .lock()
+                .await
+                .peers
+                .get(&remote)
+                .is_some_and(PeerInfo::is_admitted);
+            if !is_admitted {
+                tracing::warn!(
+                    "Route request: refusing topology disclosure to unadmitted peer {}",
                     remote.fmt_short()
                 );
                 return;

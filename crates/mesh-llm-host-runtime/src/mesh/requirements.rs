@@ -289,6 +289,7 @@ pub enum PeerReleaseAttestationStatus {
     Unsigned,
     Present {
         signer_key: Option<String>,
+        attested_version: Option<String>,
     },
     Invalid,
 }
@@ -557,7 +558,17 @@ impl MeshRequirements {
                         MeshRequirementRejectReason::BuildProofInvalid,
                     );
                 }
-                PeerReleaseAttestationStatus::Present { signer_key } => {
+                PeerReleaseAttestationStatus::Present {
+                    signer_key,
+                    attested_version,
+                } => {
+                    if let Some(attested) = attested_version.as_deref() {
+                        if attested != crate::VERSION {
+                            return MeshRequirementDecision::Rejected(
+                                MeshRequirementRejectReason::BuildProofInvalid,
+                            );
+                        }
+                    }
                     if !normalized_release_attestation
                         .allowed_signer_keys
                         .is_empty()
@@ -625,6 +636,7 @@ pub fn peer_release_attestation_status(
         Some(attestation) => match attestation.verify() {
             Ok(()) => PeerReleaseAttestationStatus::Present {
                 signer_key: Some(attestation.signer_key_id.trim().to_string()),
+                attested_version: Some(attestation.node_version.clone()),
             },
             Err(_) => PeerReleaseAttestationStatus::Invalid,
         },
@@ -1693,6 +1705,7 @@ pub(crate) mod tests {
             constrained.evaluate(&MeshRequirementEvaluationInput {
                 release_attestation: PeerReleaseAttestationStatus::Present {
                     signer_key: Some("untrusted-signer".into()),
+                    attested_version: Some(crate::VERSION.to_string()),
                 },
                 ..Default::default()
             }),
@@ -1702,6 +1715,7 @@ pub(crate) mod tests {
             constrained.evaluate(&MeshRequirementEvaluationInput {
                 release_attestation: PeerReleaseAttestationStatus::Present {
                     signer_key: Some("trusted-signer".into()),
+                    attested_version: Some(crate::VERSION.to_string()),
                 },
                 ..Default::default()
             }),
