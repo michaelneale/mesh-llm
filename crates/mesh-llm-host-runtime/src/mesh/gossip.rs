@@ -690,7 +690,6 @@ impl Node {
             state
                 .peers
                 .values()
-                .filter(|peer| peer.is_admitted())
                 .filter(|peer| {
                     peer.last_seen >= stale_cutoff || peer.last_mentioned >= stale_cutoff
                 })
