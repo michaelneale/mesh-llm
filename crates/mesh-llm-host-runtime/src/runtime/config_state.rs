@@ -244,6 +244,7 @@ mod tests {
                 assignment: GpuAssignment::Auto,
                 parallel: None,
             },
+            mesh_requirements: Default::default(),
             owner_control: Default::default(),
             telemetry: Default::default(),
             models: vec![],
@@ -364,6 +365,7 @@ mod tests {
                 assignment: GpuAssignment::Auto,
                 parallel: None,
             },
+            mesh_requirements: Default::default(),
             owner_control: Default::default(),
             telemetry: Default::default(),
             models: vec![crate::plugin::ModelConfigEntry {
@@ -405,6 +407,7 @@ mod tests {
                 assignment: GpuAssignment::Auto,
                 parallel: None,
             },
+            mesh_requirements: Default::default(),
             owner_control: Default::default(),
             telemetry: Default::default(),
             models: vec![crate::plugin::ModelConfigEntry {
@@ -453,6 +456,7 @@ mod tests {
                 assignment: GpuAssignment::Auto,
                 parallel: None,
             },
+            mesh_requirements: Default::default(),
             owner_control: Default::default(),
             telemetry: Default::default(),
             models: vec![crate::plugin::ModelConfigEntry {

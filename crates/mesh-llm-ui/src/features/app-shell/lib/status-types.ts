@@ -179,6 +179,23 @@ export type RuntimeInfo = {
   stages?: RuntimeStage[]
 }
 
+export type MeshRequirementsSummary = {
+  policy_hash: string
+  requirements: {
+    node_version: { min?: string; max?: string }
+    protocol_generation: { min?: number; max?: number }
+    release_attestation: { required: boolean; allowed_signer_keys: string[] }
+  }
+}
+
+export type MeshRequirementRejection = {
+  observed_at_unix_ms: number
+  source: 'join' | 'gossip' | 'topology_disclosure'
+  reason: string
+  message: string
+  peer_id?: string
+}
+
 export type StatusPayload = {
   version?: string
   latest_version?: string | null
@@ -214,6 +231,8 @@ export type StatusPayload = {
   my_is_soc?: boolean
   gpus?: { name: string; vram_bytes: number; bandwidth_gbps?: number }[]
   first_joined_mesh_ts?: number
+  mesh_requirements?: MeshRequirementsSummary
+  recent_mesh_rejections?: MeshRequirementRejection[]
 }
 
 export type ModelServingStat = {

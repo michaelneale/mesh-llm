@@ -66,6 +66,8 @@ pub(crate) fn status_payload(snapshot: StatusViewSnapshot) -> StatusPayload {
         routing_affinity: snapshot.routing_affinity,
         routing_metrics: snapshot.routing_metrics,
         first_joined_mesh_ts: snapshot.hardware.first_joined_mesh_ts,
+        mesh_requirements: None,
+        recent_mesh_rejections: vec![],
     }
 }
 
@@ -200,6 +202,8 @@ mod tests {
             routing_affinity: crate::network::affinity::AffinityStatsSnapshot::default(),
             routing_metrics: crate::network::metrics::RoutingMetricsStatusSnapshot::default(),
             first_joined_mesh_ts: Some(123),
+            mesh_requirements: None,
+            recent_mesh_rejections: vec![],
         };
 
         assert_eq!(

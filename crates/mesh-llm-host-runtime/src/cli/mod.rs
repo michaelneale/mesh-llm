@@ -315,6 +315,30 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) region: Option<String>,
 
+    /// Minimum mesh-llm node version required when creating a new mesh.
+    #[arg(long)]
+    pub(crate) min_node_version: Option<String>,
+
+    /// Maximum mesh-llm node version allowed when creating a new mesh.
+    #[arg(long)]
+    pub(crate) max_node_version: Option<String>,
+
+    /// Minimum protocol generation required when creating a new mesh.
+    #[arg(long)]
+    pub(crate) min_protocol_version: Option<u32>,
+
+    /// Maximum protocol generation allowed when creating a new mesh.
+    #[arg(long)]
+    pub(crate) max_protocol_version: Option<u32>,
+
+    /// Require release attestation when creating a new mesh.
+    #[arg(long)]
+    pub(crate) require_release_attestation: bool,
+
+    /// Allowed release signer key for mesh creation-time attestation policy (repeatable).
+    #[arg(long = "release-signer-key")]
+    pub(crate) release_signer_key: Vec<String>,
+
     /// Enable blackboard on public meshes (on by default for private meshes).
     #[arg(long)]
     pub(crate) blackboard: bool,
@@ -952,6 +976,9 @@ pub(crate) fn assert_mesh_requirements_docs_examples_parse() {
         "--model",
         "Qwen3-8B-Q4_K_M",
         "--publish",
+        "--require-release-attestation",
+        "--release-signer-key",
+        "ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "--owner-key",
         "~/.mesh-llm/owner-keystore.json",
         "--owner-required",
@@ -964,6 +991,13 @@ pub(crate) fn assert_mesh_requirements_docs_examples_parse() {
     assert!(signed_public.command.is_none());
     assert_eq!(signed_public.model, vec![PathBuf::from("Qwen3-8B-Q4_K_M")]);
     assert!(signed_public.publish);
+    assert!(signed_public.require_release_attestation);
+    assert_eq!(
+        signed_public.release_signer_key,
+        vec![
+            "ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string()
+        ]
+    );
     assert_eq!(
         signed_public.owner_key,
         Some(PathBuf::from("~/.mesh-llm/owner-keystore.json"))

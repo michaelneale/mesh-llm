@@ -442,6 +442,8 @@ mod tests {
             routing_affinity: crate::network::affinity::AffinityStatsSnapshot::default(),
             routing_metrics: crate::network::metrics::RoutingMetricsStatusSnapshot::default(),
             first_joined_mesh_ts: Some(123),
+            mesh_requirements: None,
+            recent_mesh_rejections: vec![],
         };
 
         assert_eq!(

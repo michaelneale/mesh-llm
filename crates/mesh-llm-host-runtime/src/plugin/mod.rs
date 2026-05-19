@@ -30,13 +30,21 @@ use url::Url;
 
 #[allow(unused_imports)]
 pub use self::config::ExternalPluginSpec;
+#[cfg(test)]
+pub(crate) use self::config::{
+    assert_mesh_requirements_config_accepts_unset_min_only_max_only_and_full_ranges,
+    assert_mesh_requirements_config_rejects_non_ed25519_signer_key,
+    assert_mesh_requirements_config_rejects_required_attestation_without_signer_keys,
+};
 #[allow(unused_imports)]
 pub use self::config::{
     config_path, load_config, resolve_plugins, GpuAssignment, GpuConfig, MeshConfig,
-    ModelConfigEntry, PluginConfigEntry, PluginHostMode, ResolvedPlugins, TelemetryConfig,
-    TelemetryMetricsConfig,
+    MeshRequirementsConfig, ModelConfigEntry, OwnerControlConfig, PluginConfigEntry,
+    PluginHostMode, ResolvedPlugins, TelemetryConfig, TelemetryMetricsConfig,
 };
-pub(crate) use self::config::{telemetry_plugin_enabled, validate_config};
+pub(crate) use self::config::{
+    mesh_requirements_validation_error, telemetry_plugin_enabled, validate_config,
+};
 use self::runtime::ExternalPlugin;
 pub(crate) use self::support::parse_optional_json;
 use self::support::{format_args_for_log, format_slice_for_log, format_tool_names_for_log};

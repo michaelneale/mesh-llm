@@ -18,6 +18,12 @@ Security model:
 - verify full attestations locally anywhere trust matters
 - support revocation at both the owner and node-certificate level
 
+This owner-identity attestation is separate from release attestation.
+certified-build admission is not remote runtime attestation: it proves that a
+release attestation was signed by a trusted release signer, not that the remote
+machine is running unmodified official code with trusted hardware or OS state.
+Mesh requirements are also immutable on the wire: changing mesh requirements creates a new mesh, because the requirement-aware mesh id is derived from the canonical hash of the signed genesis policy.
+
 Today mesh-llm has two separate identity concepts:
 
 - **Node identity**: the QUIC/iroh endpoint key used on the wire
@@ -432,6 +438,10 @@ Default behavior stays permissive:
 
 However, nodes should emit a visible warning when a previously verified local
 owner configuration falls back to unattributed or invalid state.
+
+Release attestation stays separate from owner trust policy and runtime
+attestation. When mesh requirements change, the operator is creating a new mesh,
+not tightening the old one in place.
 
 ### Strict policy
 

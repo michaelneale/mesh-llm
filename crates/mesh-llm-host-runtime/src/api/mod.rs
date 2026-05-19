@@ -920,6 +920,8 @@ impl MeshApi {
         ));
         payload.runtime = runtime;
         payload.wanted_model_refs = self.wanted_model_refs().await;
+        payload.mesh_requirements = node.mesh_requirement_policy_summary().await;
+        payload.recent_mesh_rejections = node.recent_mesh_requirement_rejections().await;
         payload
     }
 
@@ -942,4 +944,4 @@ fn current_unix_secs() -> u64 {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

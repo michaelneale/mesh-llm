@@ -1,7 +1,7 @@
 //! Publish and discover mesh-llm meshes via Nostr relays.
 //!
 //! A running mesh publishes a replaceable event (kind 31990, d-tag "mesh-llm")
-//! containing its invite token, served models, VRAM, node count, etc.
+//! containing bootstrap metadata, a join token, served models, VRAM, node count, etc.
 //! Other nodes can discover available meshes and auto-join.
 
 use anyhow::Result;
@@ -33,7 +33,11 @@ pub struct PublishLoopConfig {
 /// What we publish about a mesh.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeshListing {
-    /// Base64 invite token (others use this to --join)
+    /// Base64 join token.
+    ///
+    /// Legacy meshes publish an endpoint-only invite token. Requirement-aware
+    /// meshes publish an origin-signed bootstrap token that carries only the
+    /// endpoint bootstrap material plus canonical genesis-policy metadata.
     pub invite_token: String,
     /// Models currently loaded and serving inference
     pub serving: Vec<String>,

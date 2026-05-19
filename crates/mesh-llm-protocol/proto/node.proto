@@ -51,12 +51,89 @@ message PeerAnnouncement {
   optional LatencySource latency_source = 41;
   optional uint32 latency_age_ms = 42;
   optional bytes latency_observer_id = 43;
+  optional string mesh_policy_hash = 44;
+  optional SignedMeshGenesisPolicy genesis_policy = 45;
+  optional ReleaseBuildAttestation release_attestation = 46;
+  optional DirectNodeAdmissionProof direct_admission_proof = 47;
 
 enum LatencySource {
   LATENCY_SOURCE_UNSPECIFIED = 0;
   LATENCY_SOURCE_DIRECT = 1;       // Measured directly by this node
   LATENCY_SOURCE_ESTIMATED = 2;    // Estimated via transitive gossip
   LATENCY_SOURCE_UNKNOWN = 3;      // Unknown source (e.g. propagated with no origin)
+}
+
+message SignedMeshGenesisPolicy {
+  uint32 version = 1;
+  MeshGenesisPolicy policy = 2;
+  bytes origin_sign_public_key = 3; // 32 bytes
+  string signature_algorithm = 4;
+  bytes signature = 5;              // Ed25519 signature over canonical proof bytes
+}
+
+message MeshGenesisPolicy {
+  uint32 version = 1;
+  string origin_owner_id = 2;
+  uint64 created_at_unix_ms = 3;
+  MeshRequirements requirements = 4;
+}
+
+message MeshRequirements {
+  NodeVersionBounds node_version = 1;
+  ProtocolGenerationBounds protocol_generation = 2;
+  ReleaseAttestationRequirement release_attestation = 3;
+}
+
+message NodeVersionBounds {
+  optional string min = 1;
+  optional string max = 2;
+}
+
+message ProtocolGenerationBounds {
+  optional uint32 min = 1;
+  optional uint32 max = 2;
+}
+
+message ReleaseAttestationRequirement {
+  optional bool required = 1;
+  repeated string allowed_signer_keys = 2;
+}
+
+message SignedBootstrapToken {
+  uint32 version = 1;
+  repeated bytes serialized_addrs = 2; // JSON-serialized EndpointAddr entries
+  string mesh_id = 3;
+  string policy_hash = 4;
+  MeshGenesisPolicy genesis_policy = 5;
+  optional uint64 expires_at_unix_ms = 6;
+  bytes origin_sign_public_key = 7; // 32 bytes
+  string signature_algorithm = 8;
+  bytes signature = 9;              // Ed25519 signature over canonical token bytes
+}
+
+message ReleaseBuildAttestation {
+  uint32 version = 1;
+  string node_version = 2;
+  string build_id = 3;
+  string commit = 4;
+  string target_triple = 5;
+  optional uint32 supported_protocol_generation_min = 6;
+  optional uint32 supported_protocol_generation_max = 7;
+  optional string artifact_digest = 8;
+  string signer_key_id = 9;
+  string signature_algorithm = 10;
+  bytes signature = 11;            // Detached release signature over canonical attestation bytes
+}
+
+message DirectNodeAdmissionProof {
+  uint32 version = 1;
+  bytes sender_id = 2;             // exactly 32 bytes; must match the live direct sender identity
+  string mesh_id = 3;
+  string policy_hash = 4;
+  string attestation_hash = 5;
+  uint64 timestamp_unix_ms = 6;
+  string signature_algorithm = 7;
+  bytes signature = 8;             // Ed25519 signature over sender_id + mesh_id + policy_hash + attestation_hash + timestamp
 }
 }
 
@@ -263,6 +340,10 @@ message NodeConfigSnapshot {
   NodeGpuConfig gpu = 2;
   repeated NodeModelEntry models = 3;
   repeated NodePluginEntry plugins = 4;
+  // Optional, additive: mesh admission requirements snapshot.
+  // Older nodes ignore this field. Owner-control config get/apply must
+  // round-trip this so [mesh_requirements] is not silently dropped.
+  MeshRequirements mesh_requirements = 5;
 }
 
 enum GpuAssignment {
