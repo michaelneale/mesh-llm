@@ -154,11 +154,10 @@ mod tests {
         });
 
         let initial = collector.subscription_state();
-        assert_eq!(initial.version, RuntimeDataVersion::default());
-        assert!(initial.dirty.is_empty());
+        assert_runtime_data_state_contains_dirty(&initial, 0, &[]);
 
         let status_state = producer.mark_status_dirty();
-        assert_eq!(status_state.version.get(), 1);
+        assert_runtime_data_state_contains_dirty(&status_state, 1, &[RuntimeDataDirty::STATUS]);
         assert_eq!(status_state.dirty, RuntimeDataDirty::STATUS);
 
         let processes_changed = producer.publish_local_processes(|local_processes| {
@@ -180,35 +179,46 @@ mod tests {
         assert!(processes_changed);
 
         let processes_state = collector.subscription_state();
-        assert_eq!(processes_state.version.get(), 2);
-        assert!(processes_state.dirty.contains(RuntimeDataDirty::STATUS));
-        assert!(processes_state.dirty.contains(RuntimeDataDirty::PROCESSES));
+        assert_runtime_data_state_contains_dirty(
+            &processes_state,
+            2,
+            &[RuntimeDataDirty::STATUS, RuntimeDataDirty::PROCESSES],
+        );
 
         let no_change = producer.publish_local_processes(|_| false);
         assert!(!no_change);
         assert_eq!(collector.subscription_state(), processes_state);
 
         let models_state = producer.mark_models_dirty();
-        assert_eq!(models_state.version.get(), 3);
-        assert!(models_state.dirty.contains(RuntimeDataDirty::STATUS));
-        assert!(models_state.dirty.contains(RuntimeDataDirty::PROCESSES));
-        assert!(models_state.dirty.contains(RuntimeDataDirty::MODELS));
+        assert_runtime_data_state_contains_dirty(
+            &models_state,
+            3,
+            &[
+                RuntimeDataDirty::STATUS,
+                RuntimeDataDirty::PROCESSES,
+                RuntimeDataDirty::MODELS,
+            ],
+        );
 
         let routing_state = producer.mark_routing_dirty();
-        assert_eq!(routing_state.version.get(), 4);
-        assert!(routing_state.dirty.contains(RuntimeDataDirty::ROUTING));
+        assert_runtime_data_state_contains_dirty(&routing_state, 4, &[RuntimeDataDirty::ROUTING]);
 
         let processes_state = producer.mark_processes_dirty();
-        assert_eq!(processes_state.version.get(), 5);
-        assert!(processes_state.dirty.contains(RuntimeDataDirty::PROCESSES));
+        assert_runtime_data_state_contains_dirty(
+            &processes_state,
+            5,
+            &[RuntimeDataDirty::PROCESSES],
+        );
 
         let inventory_state = producer.mark_inventory_dirty();
-        assert_eq!(inventory_state.version.get(), 6);
-        assert!(inventory_state.dirty.contains(RuntimeDataDirty::INVENTORY));
+        assert_runtime_data_state_contains_dirty(
+            &inventory_state,
+            6,
+            &[RuntimeDataDirty::INVENTORY],
+        );
 
         let plugins_state = producer.mark_plugins_dirty();
-        assert_eq!(plugins_state.version.get(), 7);
-        assert!(plugins_state.dirty.contains(RuntimeDataDirty::PLUGINS));
+        assert_runtime_data_state_contains_dirty(&plugins_state, 7, &[RuntimeDataDirty::PLUGINS]);
 
         let runtime_status_changed = producer.publish_runtime_status(|runtime_status| {
             runtime_status.primary_backend = Some("metal".into());
@@ -217,8 +227,28 @@ mod tests {
         assert!(runtime_status_changed);
 
         let final_state = collector.subscription_state();
-        assert_eq!(final_state.version.get(), 8);
-        assert!(final_state.dirty.contains(RuntimeDataDirty::STATUS));
+        assert_runtime_data_state_contains_dirty(&final_state, 8, &[RuntimeDataDirty::STATUS]);
+    }
+
+    fn assert_runtime_data_state_contains_dirty(
+        state: &super::subscriptions::RuntimeDataSubscriptionState,
+        expected_version: u64,
+        expected_dirty: &[RuntimeDataDirty],
+    ) {
+        if expected_version == 0 {
+            assert_eq!(state.version, RuntimeDataVersion::default());
+        } else {
+            assert_eq!(state.version.get(), expected_version);
+        }
+
+        if expected_dirty.is_empty() {
+            assert!(state.dirty.is_empty());
+            return;
+        }
+
+        for dirty in expected_dirty {
+            assert!(state.dirty.contains(*dirty));
+        }
     }
 
     #[tokio::test]

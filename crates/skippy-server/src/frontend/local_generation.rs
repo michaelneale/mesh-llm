@@ -538,6 +538,13 @@ impl StageOpenAiBackend {
                     "llama_stage.session_reset".to_string(),
                     json!(drop_stats.reset_session),
                 );
+                attrs.insert(
+                    "llama_stage.lane_discarded".to_string(),
+                    json!(drop_stats.lane_discarded),
+                );
+                if let Some(reason) = drop_stats.lane_discard_reason.as_deref() {
+                    attrs.insert("llama_stage.lane_discard_reason".to_string(), json!(reason));
+                }
                 Self::insert_runtime_session_stats(
                     &mut attrs,
                     "llama_stage.runtime_sessions_after",

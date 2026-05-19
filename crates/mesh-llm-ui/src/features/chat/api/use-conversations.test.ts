@@ -127,6 +127,32 @@ describe('useConversations', () => {
     expect(fallback).toEqual(snapshot)
   })
 
+  it('resets to updated fallback data when the scope stays unchanged without persisted state', async () => {
+    const fallback = cloneHarness()
+    const updatedFallback = cloneHarness()
+    updatedFallback.conversations[0] = {
+      ...updatedFallback.conversations[0],
+      title: 'Updated fallback conversation'
+    }
+
+    const { result, rerender } = renderHook(({ data }) => useConversations(data, 'harness'), {
+      initialProps: { data: fallback }
+    })
+
+    await waitFor(() => {
+      expect(result.current.conversations[0]?.title).toBe(fallback.conversations[0]?.title)
+      expect(loadChatState).toHaveBeenCalledWith('harness')
+    })
+
+    act(() => {
+      rerender({ data: updatedFallback })
+    })
+
+    await waitFor(() => {
+      expect(result.current.conversations[0]?.title).toBe('Updated fallback conversation')
+    })
+  })
+
   it('derives titles from the first user line and moves updated conversations to the front', async () => {
     vi.mocked(loadChatState).mockResolvedValue({
       conversations: cloneHarness().conversations,

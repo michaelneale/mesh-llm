@@ -312,48 +312,71 @@ pub async fn race_second_opinion(
     }
 
     if peers.len() == 1 {
-        let (id, model) = &peers[0];
-        return match second_opinion(node, *id, model, messages, timeout).await {
-            Ok(text) => Some((text, *id, model.clone())),
-            Err(e) => {
-                tracing::warn!(
-                    "virtual: second opinion from {} failed: {e}",
-                    id.fmt_short()
-                );
-                None
-            }
-        };
+        return single_second_opinion(node, &peers[0], messages, timeout).await;
     }
 
+    let mut set = spawn_second_opinion_race(node, peers, messages, timeout);
+    await_first_second_opinion(&mut set).await
+}
+
+async fn single_second_opinion(
+    node: &mesh::Node,
+    peer: &(EndpointId, String),
+    messages: &[Value],
+    timeout: std::time::Duration,
+) -> Option<(String, EndpointId, String)> {
+    let (id, model) = peer;
+    match second_opinion(node, *id, model, messages, timeout).await {
+        Ok(text) => Some((text, *id, model.clone())),
+        Err(e) => {
+            tracing::warn!(
+                "virtual: second opinion from {} failed: {e}",
+                id.fmt_short()
+            );
+            None
+        }
+    }
+}
+
+fn spawn_second_opinion_race(
+    node: &mesh::Node,
+    peers: &[(EndpointId, String)],
+    messages: &[Value],
+    timeout: std::time::Duration,
+) -> tokio::task::JoinSet<anyhow::Result<(String, EndpointId, String)>> {
     // Race two peers — fire both via JoinSet, take first Ok, abort the rest.
     let mut set = tokio::task::JoinSet::new();
 
-    for (id, model) in peers.iter().skip(1).take(1) {
-        let node = node.clone();
-        let msgs = messages.to_vec();
-        let id = *id;
-        let model = model.clone();
-        let t = timeout;
-        set.spawn(async move {
-            second_opinion(&node, id, &model, &msgs, t)
-                .await
-                .map(|text| (text, id, model))
-        });
-    }
-    // Spawn the best peer last so it appears in the set too
-    {
-        let node = node.clone();
-        let msgs = messages.to_vec();
-        let id = peers[0].0;
-        let model = peers[0].1.clone();
-        let t = timeout;
-        set.spawn(async move {
-            second_opinion(&node, id, &model, &msgs, t)
-                .await
-                .map(|text| (text, id, model))
-        });
+    for peer in peers.iter().skip(1).take(1) {
+        spawn_second_opinion_call(&mut set, node, peer, messages, timeout);
     }
 
+    // Spawn the best peer last so it appears in the set too.
+    spawn_second_opinion_call(&mut set, node, &peers[0], messages, timeout);
+    set
+}
+
+fn spawn_second_opinion_call(
+    set: &mut tokio::task::JoinSet<anyhow::Result<(String, EndpointId, String)>>,
+    node: &mesh::Node,
+    peer: &(EndpointId, String),
+    messages: &[Value],
+    timeout: std::time::Duration,
+) {
+    let node = node.clone();
+    let msgs = messages.to_vec();
+    let id = peer.0;
+    let model = peer.1.clone();
+    set.spawn(async move {
+        second_opinion(&node, id, &model, &msgs, timeout)
+            .await
+            .map(|text| (text, id, model))
+    });
+}
+
+async fn await_first_second_opinion(
+    set: &mut tokio::task::JoinSet<anyhow::Result<(String, EndpointId, String)>>,
+) -> Option<(String, EndpointId, String)> {
     while let Some(result) = set.join_next().await {
         if let Ok(Ok((text, id, model))) = result {
             tracing::info!("virtual: peer {} ({model}) won the race", id.fmt_short());

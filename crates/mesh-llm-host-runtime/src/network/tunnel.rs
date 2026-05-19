@@ -193,21 +193,30 @@ pub async fn relay_bidirectional(
     //   - quic→tcp finishes when the QUIC side closes (e.g. request fully delivered)
     // In both cases, wait for the other direction to complete so the full
     // HTTP exchange can finish.
-    let result = tokio::select! {
-        r1 = &mut t1 => {
-            let res = r1?;
-            tracing::debug!("relay_bidirectional: tcp→quic finished, waiting for quic→tcp");
-            let r2 = t2.await?;
-            res.and(r2)
-        }
-        r2 = &mut t2 => {
-            let res = r2?;
-            tracing::debug!("relay_bidirectional: quic→tcp finished, waiting for tcp→quic");
-            let r1 = t1.await?;
-            res.and(r1)
-        }
-    };
-    result
+    tokio::select! {
+        r1 = &mut t1 => finish_relay_pair(r1, t2, "tcp→quic", "quic→tcp").await,
+        r2 = &mut t2 => finish_relay_pair(r2, t1, "quic→tcp", "tcp→quic").await,
+    }
+}
+
+fn join_relay_task(
+    join_result: std::result::Result<Result<()>, tokio::task::JoinError>,
+) -> Result<()> {
+    join_result?
+}
+
+async fn finish_relay_pair(
+    first_result: std::result::Result<Result<()>, tokio::task::JoinError>,
+    remaining_task: tokio::task::JoinHandle<Result<()>>,
+    finished_label: &str,
+    waiting_for_label: &str,
+) -> Result<()> {
+    let first = join_relay_task(first_result);
+    tracing::debug!(
+        "relay_bidirectional: {finished_label} finished, waiting for {waiting_for_label}"
+    );
+    let second = join_relay_task(remaining_task.await);
+    first.and(second)
 }
 
 async fn relay_tcp_to_quic(
@@ -258,50 +267,79 @@ where
 
     // First-byte timeout: allow enough time for remote prefill on real prompts.
     // After first byte arrives, no timeout (streaming responses can take minutes).
-    let first_read = tokio::time::timeout(first_byte_timeout, reader.read(&mut buf)).await;
-    match first_read {
-        Err(_) => {
-            anyhow::bail!(
-                "QUIC→TCP: no response within {:.3}s — host likely dead or still prefill-bound",
-                first_byte_timeout.as_secs_f64()
-            );
+    match read_first_relay_chunk(&mut reader, &mut writer, &mut buf, first_byte_timeout).await? {
+        Some(first_bytes) => {
+            total += first_bytes as u64;
+            BYTES_TRANSFERRED.fetch_add(first_bytes as u64, Ordering::Relaxed);
+            tracing::debug!("QUIC→TCP: first read {first_bytes} bytes");
         }
-        Ok(Ok(0)) => {
-            tracing::info!("QUIC→TCP: stream end immediately (0 bytes)");
-            return Ok(());
-        }
-        Ok(Ok(n)) => {
-            writer.write_all(&buf[..n]).await?;
-            total += n as u64;
-            BYTES_TRANSFERRED.fetch_add(n as u64, Ordering::Relaxed);
-            tracing::debug!("QUIC→TCP: first read {n} bytes");
-        }
-        Ok(Err(e)) => {
-            tracing::warn!("QUIC→TCP: error on first read: {e}");
-            return Err(e.into());
-        }
+        None => return Ok(()),
     }
 
     // After first byte, relay without timeout
-    loop {
-        match reader.read(&mut buf).await {
-            Ok(0) => {
-                tracing::info!("QUIC→TCP: stream end after {total} bytes");
-                break;
-            }
-            Ok(n) => {
-                writer.write_all(&buf[..n]).await?;
-                total += n as u64;
-                BYTES_TRANSFERRED.fetch_add(n as u64, Ordering::Relaxed);
-                tracing::debug!("QUIC→TCP: wrote {n} bytes (total: {total})");
-            }
-            Err(e) => {
-                tracing::warn!("QUIC→TCP: error after {total} bytes: {e}");
-                return Err(e.into());
-            }
+    relay_remaining_chunks(&mut reader, &mut writer, &mut buf, &mut total).await?;
+    Ok(())
+}
+
+async fn read_first_relay_chunk<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    buf: &mut [u8],
+    first_byte_timeout: Duration,
+) -> Result<Option<usize>>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    match tokio::time::timeout(first_byte_timeout, reader.read(buf)).await {
+        Err(_) => anyhow::bail!(
+            "QUIC→TCP: no response within {:.3}s — host likely dead or still prefill-bound",
+            first_byte_timeout.as_secs_f64()
+        ),
+        Ok(Ok(0)) => {
+            tracing::info!("QUIC→TCP: stream end immediately (0 bytes)");
+            Ok(None)
+        }
+        Ok(Ok(n)) => {
+            writer.write_all(&buf[..n]).await?;
+            Ok(Some(n))
+        }
+        Ok(Err(e)) => {
+            tracing::warn!("QUIC→TCP: error on first read: {e}");
+            Err(e.into())
         }
     }
-    Ok(())
+}
+
+async fn relay_remaining_chunks<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    buf: &mut [u8],
+    total: &mut u64,
+) -> Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    loop {
+        let n = match reader.read(buf).await {
+            Ok(0) => {
+                tracing::info!("QUIC→TCP: stream end after {total} bytes");
+                return Ok(());
+            }
+            Ok(n) => n,
+            Err(e) => return relay_remaining_chunks_error(*total, e),
+        };
+        writer.write_all(&buf[..n]).await?;
+        *total += n as u64;
+        BYTES_TRANSFERRED.fetch_add(n as u64, Ordering::Relaxed);
+        tracing::debug!("QUIC→TCP: wrote {n} bytes (total: {total})");
+    }
+}
+
+fn relay_remaining_chunks_error(total: u64, err: std::io::Error) -> Result<()> {
+    tracing::warn!("QUIC→TCP: error after {total} bytes: {err}");
+    Err(err.into())
 }
 
 #[cfg(test)]

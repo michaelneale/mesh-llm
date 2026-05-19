@@ -110,6 +110,11 @@ export function useLlamaRuntime(enabled: boolean) {
     const connectRuntimeEvents = () => {
       if (cancelled || runtimeEvents) return
 
+      if (typeof EventSource === 'undefined') {
+        ensureFallbackPolling()
+        return
+      }
+
       let source: EventSource
       try {
         source = new EventSource('/api/runtime/events')

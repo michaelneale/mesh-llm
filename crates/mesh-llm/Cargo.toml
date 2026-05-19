@@ -8,6 +8,9 @@ gpu-bench-cuda = ["mesh-llm-host-runtime/gpu-bench-cuda"]
 gpu-bench-hip = ["mesh-llm-host-runtime/gpu-bench-hip"]
 gpu-bench-intel = ["mesh-llm-host-runtime/gpu-bench-intel"]
 
+[lints]
+workspace = true
+
 [dependencies]
 mesh-llm-host-runtime = { path = "../mesh-llm-host-runtime" }
 tokio = { version = "1", features = ["full"] }

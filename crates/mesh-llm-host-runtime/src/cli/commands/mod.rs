@@ -30,6 +30,20 @@ pub(crate) async fn dispatch(cli: &Cli) -> Result<bool> {
     let Some(cmd) = cli.command.as_ref() else {
         return Ok(false);
     };
+    dispatch_command(cli, cmd).await?;
+    Ok(true)
+}
+
+async fn dispatch_command(cli: &Cli, cmd: &Command) -> Result<()> {
+    match cmd {
+        Command::Auth { command } => dispatch_auth_command(command),
+        Command::ModelPrepare { .. } => dispatch_model_prepare(cmd).await,
+        Command::Blackboard { .. } => dispatch_blackboard_command(cli, cmd).await,
+        _ => dispatch_general_command(cli, cmd).await,
+    }
+}
+
+async fn dispatch_general_command(cli: &Cli, cmd: &Command) -> Result<()> {
     match cmd {
         Command::Models { command } => {
             dispatch_models_command(command).await?;
@@ -73,174 +87,191 @@ pub(crate) async fn dispatch(cli: &Cli) -> Result<bool> {
         Command::Claude { model, port } => run_claude(model.clone(), *port).await,
         Command::Pi { model, host, write } => run_pi(model.clone(), host, *write).await,
         Command::Opencode { model, host, write } => run_opencode(model.clone(), host, *write).await,
-        Command::Blackboard {
-            text,
-            search,
-            from,
-            since,
-            limit,
-            port,
-            mcp,
-        } => {
-            if *mcp {
-                crate::runtime::run_plugin_mcp(cli).await
-            } else if text.as_deref() == Some("install-skill") {
-                install_skill()
-            } else {
-                run_blackboard(
-                    text.clone(),
-                    search.clone(),
-                    from.clone(),
-                    *since,
-                    *limit,
-                    *port,
-                )
-                .await
-            }
-        }
+        Command::Blackboard { .. } => dispatch_blackboard_command(cli, cmd).await,
         Command::Plugin { command } => run_plugin_command(command, cli).await,
         Command::Benchmark { command } => dispatch_benchmark_command(command).await,
-        Command::ModelPrepare {
-            source_repo,
-            quant,
-            target,
-            model_id,
-            flavor,
-            timeout,
-            mesh_llm_ref,
-            dry_run,
-            confirm,
-            follow,
-            json,
-            status,
-            logs,
-            cancel,
-            list,
-            update_script,
-        } => {
-            model_package::dispatch_model_package(model_package::ModelPrepareArgs {
-                source_repo: source_repo.as_deref(),
-                quant: quant.as_deref(),
-                target: target.as_deref(),
-                model_id: model_id.as_deref(),
-                flavor,
-                timeout,
-                mesh_llm_ref,
-                dry_run: *dry_run,
-                confirm: *confirm,
-                follow: *follow,
-                json: *json,
-                status: status.as_deref(),
-                logs: logs.as_deref(),
-                cancel: cancel.as_deref(),
-                list: *list,
-                update_script: *update_script,
-            })
-            .await
-        }
-        Command::Auth { command } => match command {
-            AuthCommand::Init {
-                owner_key,
-                force,
-                no_passphrase,
-                keychain,
-            } => auth::run_init(owner_key.clone(), *force, *no_passphrase, *keychain),
-            AuthCommand::Status {
-                owner_key,
-                node_key,
-                node_ownership,
-                trust_store,
-            } => auth::run_status(
-                owner_key.clone(),
-                node_key.clone(),
-                node_ownership.clone(),
-                trust_store.clone(),
-            ),
-            AuthCommand::SignNode {
-                owner_key,
-                node_key,
-                out,
-                hostname_hint,
-                node_label,
-                expires_in_hours,
-            } => auth::run_sign_node(
-                owner_key.clone(),
-                node_key.clone(),
-                out.clone(),
-                node_label.clone(),
-                hostname_hint.clone(),
-                *expires_in_hours,
-            ),
-            AuthCommand::RenewNode {
-                owner_key,
-                node_key,
-                out,
-                hostname_hint,
-                node_label,
-                expires_in_hours,
-            } => auth::run_renew_node(
-                owner_key.clone(),
-                node_key.clone(),
-                out.clone(),
-                node_label.clone(),
-                hostname_hint.clone(),
-                *expires_in_hours,
-            ),
-            AuthCommand::VerifyNode {
-                file,
-                node_id,
-                trust_store,
-                trust_policy,
-            } => auth::run_verify_node(
-                file.clone(),
-                node_id.clone(),
-                trust_store.clone(),
-                *trust_policy,
-            ),
-            AuthCommand::RotateNode {
-                owner_key,
-                node_key,
-                out,
-                hostname_hint,
-                node_label,
-                expires_in_hours,
-                revoke_current,
-                reason,
-                trust_store,
-            } => auth::run_rotate_node(
-                owner_key.clone(),
-                node_key.clone(),
-                out.clone(),
-                node_label.clone(),
-                hostname_hint.clone(),
-                *expires_in_hours,
-                *revoke_current,
-                reason.clone(),
-                trust_store.clone(),
-            ),
-            AuthCommand::RevokeOwner {
-                owner_id,
-                reason,
-                trust_store,
-            } => auth::run_revoke_owner(owner_id.clone(), reason.clone(), trust_store.clone()),
-            AuthCommand::RevokeNode {
-                cert_id,
-                node_id,
-                reason,
-                trust_store,
-            } => auth::run_revoke_node(
-                cert_id.clone(),
-                node_id.clone(),
-                reason.clone(),
-                trust_store.clone(),
-            ),
-            AuthCommand::RotateOwner {
-                owner_key,
-                no_passphrase,
-                force,
-            } => auth::run_rotate_owner(owner_key.clone(), *no_passphrase, *force),
-            AuthCommand::Trust { command } => auth::run_trust_command(command),
-        },
-    }?;
-    Ok(true)
+        Command::ModelPrepare { .. } => dispatch_model_prepare(cmd).await,
+        Command::Auth { command } => dispatch_auth_command(command),
+    }
+}
+
+async fn dispatch_blackboard_command(cli: &Cli, cmd: &Command) -> Result<()> {
+    let Command::Blackboard {
+        text,
+        search,
+        from,
+        since,
+        limit,
+        port,
+        mcp,
+    } = cmd
+    else {
+        unreachable!("dispatch_blackboard_command called for non-blackboard command");
+    };
+
+    if *mcp {
+        return crate::runtime::run_plugin_mcp(cli).await;
+    }
+    if text.as_deref() == Some("install-skill") {
+        return install_skill();
+    }
+    run_blackboard(
+        text.clone(),
+        search.clone(),
+        from.clone(),
+        *since,
+        *limit,
+        *port,
+    )
+    .await
+}
+
+async fn dispatch_model_prepare(cmd: &Command) -> Result<()> {
+    let Command::ModelPrepare {
+        source_repo,
+        quant,
+        target,
+        model_id,
+        flavor,
+        timeout,
+        mesh_llm_ref,
+        dry_run,
+        confirm,
+        follow,
+        json,
+        status,
+        logs,
+        cancel,
+        list,
+        update_script,
+    } = cmd
+    else {
+        unreachable!("dispatch_model_prepare called for non-model-prepare command");
+    };
+
+    model_package::dispatch_model_package(model_package::ModelPrepareArgs {
+        source_repo: source_repo.as_deref(),
+        quant: quant.as_deref(),
+        target: target.as_deref(),
+        model_id: model_id.as_deref(),
+        flavor,
+        timeout,
+        mesh_llm_ref,
+        dry_run: *dry_run,
+        confirm: *confirm,
+        follow: *follow,
+        json: *json,
+        status: status.as_deref(),
+        logs: logs.as_deref(),
+        cancel: cancel.as_deref(),
+        list: *list,
+        update_script: *update_script,
+    })
+    .await
+}
+
+fn dispatch_auth_command(command: &AuthCommand) -> Result<()> {
+    match command {
+        AuthCommand::Init {
+            owner_key,
+            force,
+            no_passphrase,
+            keychain,
+        } => auth::run_init(owner_key.clone(), *force, *no_passphrase, *keychain),
+        AuthCommand::Status {
+            owner_key,
+            node_key,
+            node_ownership,
+            trust_store,
+        } => auth::run_status(
+            owner_key.clone(),
+            node_key.clone(),
+            node_ownership.clone(),
+            trust_store.clone(),
+        ),
+        AuthCommand::SignNode {
+            owner_key,
+            node_key,
+            out,
+            hostname_hint,
+            node_label,
+            expires_in_hours,
+        } => auth::run_sign_node(
+            owner_key.clone(),
+            node_key.clone(),
+            out.clone(),
+            node_label.clone(),
+            hostname_hint.clone(),
+            *expires_in_hours,
+        ),
+        AuthCommand::RenewNode {
+            owner_key,
+            node_key,
+            out,
+            hostname_hint,
+            node_label,
+            expires_in_hours,
+        } => auth::run_renew_node(
+            owner_key.clone(),
+            node_key.clone(),
+            out.clone(),
+            node_label.clone(),
+            hostname_hint.clone(),
+            *expires_in_hours,
+        ),
+        AuthCommand::VerifyNode {
+            file,
+            node_id,
+            trust_store,
+            trust_policy,
+        } => auth::run_verify_node(
+            file.clone(),
+            node_id.clone(),
+            trust_store.clone(),
+            *trust_policy,
+        ),
+        AuthCommand::RotateNode {
+            owner_key,
+            node_key,
+            out,
+            hostname_hint,
+            node_label,
+            expires_in_hours,
+            revoke_current,
+            reason,
+            trust_store,
+        } => auth::run_rotate_node(
+            owner_key.clone(),
+            node_key.clone(),
+            out.clone(),
+            node_label.clone(),
+            hostname_hint.clone(),
+            *expires_in_hours,
+            *revoke_current,
+            reason.clone(),
+            trust_store.clone(),
+        ),
+        AuthCommand::RevokeOwner {
+            owner_id,
+            reason,
+            trust_store,
+        } => auth::run_revoke_owner(owner_id.clone(), reason.clone(), trust_store.clone()),
+        AuthCommand::RevokeNode {
+            cert_id,
+            node_id,
+            reason,
+            trust_store,
+        } => auth::run_revoke_node(
+            cert_id.clone(),
+            node_id.clone(),
+            reason.clone(),
+            trust_store.clone(),
+        ),
+        AuthCommand::RotateOwner {
+            owner_key,
+            no_passphrase,
+            force,
+        } => auth::run_rotate_owner(owner_key.clone(), *no_passphrase, *force),
+        AuthCommand::Trust { command } => auth::run_trust_command(command),
+    }
 }

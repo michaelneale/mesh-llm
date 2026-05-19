@@ -131,31 +131,47 @@ pub(super) fn plan_runtime_slice_topology_with_resources(
         "planning resource-aware split runtime topology"
     );
 
-    let participant_by_id = participants
-        .iter()
-        .copied()
-        .map(|participant| (participant.node_id.to_string(), participant))
-        .collect::<HashMap<_, _>>();
-    let plan_input = SplitTopologyPlanInput {
-        native_context_length: resources.native_context_length,
-        layer_count: package.layer_count,
-        model_weight_bytes: package.source_model_bytes,
-        kv_bytes_per_token: resources.kv_bytes_per_token,
-        context_length_override: resources.ctx_size_override,
-        parallel_lanes_override: resources.parallel_override,
-        minimum_nodes: super::local::SPLIT_DEFAULT_MIN_PARTICIPANTS,
-        nodes: participants
-            .iter()
-            .map(|participant| SplitTopologyPlanNode {
-                node_id: participant.node_id.to_string(),
-                detected_vram_bytes: participant.vram_bytes,
-                max_vram_bytes: Some(participant.vram_bytes),
-                runtime_headroom_bytes: default_runtime_headroom_bytes(participant.vram_bytes),
-            })
-            .collect(),
-    };
-    let plan = match plan_split_topology(plan_input) {
-        Ok(plan) => plan,
+    let participant_by_id = participant_index_by_id(participants);
+    let plan_input = runtime_slice_plan_input(package, participants, resources);
+    let plan = plan_runtime_slice_topology_result(
+        topology_id,
+        model_ref,
+        package,
+        participants,
+        excluded,
+        resources,
+        plan_input,
+    )?;
+
+    let mut stages = map_runtime_slice_stages(plan.stages, &participant_by_id)?;
+    stages.sort_by_key(|stage| stage.stage_index);
+    validate_split_capacity(model_ref, package, participants, &stages, excluded)?;
+    tracing::info!(
+        topology_id,
+        model_ref,
+        context_length = plan.context_length,
+        slots = plan.parallel_lanes,
+        stages = ?split_stage_plan_labels(&stages),
+        "planned resource-aware split runtime topology"
+    );
+    Ok(PlannedRuntimeSliceTopology {
+        stages,
+        context_length: plan.context_length,
+        slots: plan.parallel_lanes,
+    })
+}
+
+fn plan_runtime_slice_topology_result(
+    topology_id: &str,
+    model_ref: &str,
+    package: &skippy::SkippyPackageIdentity,
+    participants: &[SplitParticipant],
+    excluded: &[SplitParticipantExclusion],
+    resources: SplitTopologyResourceInputs,
+    plan_input: SplitTopologyPlanInput,
+) -> Result<SplitTopologyPlan> {
+    match plan_split_topology(plan_input) {
+        Ok(plan) => Ok(plan),
         Err(err) => {
             let reason = split_topology_failure_reason(
                 model_ref,
@@ -173,12 +189,49 @@ pub(super) fn plan_runtime_slice_topology_with_resources(
                 excluded = ?split_participant_exclusion_labels(excluded),
                 "failed to plan resource-aware split runtime topology"
             );
-            return Err(err.context(reason));
+            Err(err.context(reason))
         }
-    };
+    }
+}
 
-    let mut stages = plan
-        .stages
+fn participant_index_by_id(participants: &[SplitParticipant]) -> HashMap<String, SplitParticipant> {
+    participants
+        .iter()
+        .copied()
+        .map(|participant| (participant.node_id.to_string(), participant))
+        .collect()
+}
+
+fn runtime_slice_plan_input(
+    package: &skippy::SkippyPackageIdentity,
+    participants: &[SplitParticipant],
+    resources: SplitTopologyResourceInputs,
+) -> SplitTopologyPlanInput {
+    SplitTopologyPlanInput {
+        native_context_length: resources.native_context_length,
+        layer_count: package.layer_count,
+        model_weight_bytes: package.source_model_bytes,
+        kv_bytes_per_token: resources.kv_bytes_per_token,
+        context_length_override: resources.ctx_size_override,
+        parallel_lanes_override: resources.parallel_override,
+        minimum_nodes: super::local::SPLIT_DEFAULT_MIN_PARTICIPANTS,
+        nodes: participants
+            .iter()
+            .map(|participant| SplitTopologyPlanNode {
+                node_id: participant.node_id.to_string(),
+                detected_vram_bytes: participant.vram_bytes,
+                max_vram_bytes: Some(participant.vram_bytes),
+                runtime_headroom_bytes: default_runtime_headroom_bytes(participant.vram_bytes),
+            })
+            .collect(),
+    }
+}
+
+fn map_runtime_slice_stages(
+    stages: Vec<TopologyStagePlan>,
+    participant_by_id: &HashMap<String, SplitParticipant>,
+) -> Result<Vec<RuntimeSliceStagePlan>> {
+    stages
         .into_iter()
         .map(|stage| {
             let participant = participant_by_id.get(&stage.node_id).ok_or_else(|| {
@@ -193,22 +246,7 @@ pub(super) fn plan_runtime_slice_topology_with_resources(
                 parameter_bytes: stage.parameter_bytes,
             })
         })
-        .collect::<Result<Vec<_>>>()?;
-    stages.sort_by_key(|stage| stage.stage_index);
-    validate_split_capacity(model_ref, package, participants, &stages, excluded)?;
-    tracing::info!(
-        topology_id,
-        model_ref,
-        context_length = plan.context_length,
-        slots = plan.parallel_lanes,
-        stages = ?split_stage_plan_labels(&stages),
-        "planned resource-aware split runtime topology"
-    );
-    Ok(PlannedRuntimeSliceTopology {
-        stages,
-        context_length: plan.context_length,
-        slots: plan.parallel_lanes,
-    })
+        .collect()
 }
 
 fn split_topology_failure_reason(

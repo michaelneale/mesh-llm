@@ -831,6 +831,7 @@ mod tests {
             served_model_runtime: vec![],
             owner_attestation: None,
             artifact_transfer_supported: false,
+            stage_protocol_generation_supported: false,
             stage_status_list_supported: false,
             owner_summary: OwnershipSummary::default(),
             display_rtt: None,
@@ -1264,6 +1265,7 @@ mod tests {
                 signature: "33".repeat(64),
             }),
             artifact_transfer_supported: true,
+            stage_protocol_generation_supported: true,
             stage_status_list_supported: true,
             latency_ms: None,
             latency_source: None,
@@ -1288,6 +1290,8 @@ mod tests {
             .features
             .iter()
             .any(|feature| feature == skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STATUS_LIST));
+        assert!(skippy.features.iter().any(|feature| feature
+            == skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STAGE_PROTOCOL_GENERATION_V2));
         assert_eq!(
             proto_pa
                 .owner_attestation
@@ -1300,12 +1304,58 @@ mod tests {
             proto_ann_to_local(&proto_pa).expect("proto_ann_to_local must succeed");
         assert!(roundtripped.artifact_transfer_supported);
         assert!(roundtripped.stage_status_list_supported);
+        assert!(roundtripped.stage_protocol_generation_supported);
         let roundtripped = roundtripped
             .owner_attestation
             .expect("owner attestation must round-trip");
         assert_eq!(roundtripped.claim.owner_id, "owner-abc");
         assert_eq!(roundtripped.claim.cert_id, "cert-123");
         assert_eq!(roundtripped.claim.node_label.as_deref(), Some("studio"));
+    }
+
+    #[test]
+    fn proto_announcement_without_current_stage_generation_is_not_stage_compatible() {
+        let peer_id = EndpointId::from(SecretKey::from_bytes(&[0xCD; 32]).public());
+        let proto_pa = crate::proto::node::PeerAnnouncement {
+            endpoint_id: peer_id.as_bytes().to_vec(),
+            role: crate::proto::node::NodeRole::Worker as i32,
+            subprotocols: vec![crate::proto::node::MeshSubprotocol {
+                name: skippy_protocol::STAGE_SUBPROTOCOL_NAME.to_string(),
+                major: skippy_protocol::STAGE_SUBPROTOCOL_MAJOR,
+                features: vec![
+                    skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STAGE_CONTROL.to_string(),
+                    skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STATUS_LIST.to_string(),
+                ],
+            }],
+            ..Default::default()
+        };
+
+        let (_, ann) = proto_ann_to_local(&proto_pa).expect("proto announcement should decode");
+
+        assert!(!ann.stage_protocol_generation_supported);
+        assert!(ann.stage_status_list_supported);
+    }
+
+    #[test]
+    fn proto_announcement_without_stage_control_is_not_stage_compatible() {
+        let peer_id = EndpointId::from(SecretKey::from_bytes(&[0xCE; 32]).public());
+        let proto_pa = crate::proto::node::PeerAnnouncement {
+            endpoint_id: peer_id.as_bytes().to_vec(),
+            role: crate::proto::node::NodeRole::Worker as i32,
+            subprotocols: vec![crate::proto::node::MeshSubprotocol {
+                name: skippy_protocol::STAGE_SUBPROTOCOL_NAME.to_string(),
+                major: skippy_protocol::STAGE_SUBPROTOCOL_MAJOR,
+                features: vec![
+                    skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STAGE_PROTOCOL_GENERATION_V2
+                        .to_string(),
+                ],
+            }],
+            ..Default::default()
+        };
+
+        let (_, ann) = proto_ann_to_local(&proto_pa).expect("proto announcement should decode");
+
+        assert!(!ann.stage_protocol_generation_supported);
     }
 
     #[test]
@@ -1344,6 +1394,7 @@ mod tests {
             served_model_runtime: vec![],
             owner_attestation: None,
             artifact_transfer_supported: true,
+            stage_protocol_generation_supported: true,
             stage_status_list_supported: true,
             latency_ms: None,
             latency_source: None,
@@ -1498,6 +1549,13 @@ mod tests {
     fn mesh_config_proto_roundtrip() {
         let snapshot = make_config_snapshot();
         let config = proto_config_to_mesh(&snapshot);
+        assert_mesh_config_from_proto(&config);
+
+        let roundtripped = mesh_config_to_proto(&config);
+        assert_proto_config_roundtrip_matches(&roundtripped, &snapshot);
+    }
+
+    fn assert_mesh_config_from_proto(config: &crate::plugin::MeshConfig) {
         assert_eq!(config.version, Some(1));
         assert_eq!(config.gpu.assignment, crate::plugin::GpuAssignment::Auto);
         assert_eq!(config.models.len(), 1);
@@ -1507,8 +1565,12 @@ mod tests {
         assert_eq!(config.models[0].gpu_id.as_deref(), Some("pci:0000:65:00.0"));
         assert_eq!(config.plugins.len(), 1);
         assert_eq!(config.plugins[0].name, "blackboard");
+    }
 
-        let roundtripped = mesh_config_to_proto(&config);
+    fn assert_proto_config_roundtrip_matches(
+        roundtripped: &NodeConfigSnapshot,
+        snapshot: &NodeConfigSnapshot,
+    ) {
         assert_eq!(roundtripped.version, snapshot.version);
         assert_eq!(
             roundtripped.gpu.as_ref().map(|g| g.assignment),
@@ -1895,6 +1957,7 @@ mod tests {
             served_model_runtime: vec![],
             owner_attestation: None,
             artifact_transfer_supported: true,
+            stage_protocol_generation_supported: true,
             stage_status_list_supported: true,
             latency_ms: None,
             latency_source: None,
@@ -1945,6 +2008,7 @@ mod tests {
             served_model_runtime: vec![],
             owner_attestation: None,
             artifact_transfer_supported: false,
+            stage_protocol_generation_supported: false,
             stage_status_list_supported: false,
             latency_ms: None,
             latency_source: None,

@@ -165,9 +165,27 @@ fn stage_config_preserves_backend_neutral_load_fields() {
     let request = load_request();
     let config = stage_config(&request, None, None).unwrap();
 
+    assert_stage_config_core_fields(&config);
+}
+
+fn assert_stage_config_core_fields(config: &StageConfig) {
+    assert_stage_config_identity(config);
+    assert_stage_config_package_fields(config);
+    assert_stage_config_execution_fields(config);
+}
+
+fn assert_stage_config_identity(config: &StageConfig) {
     assert_eq!(config.topology_id, "topology-a");
     assert_eq!(config.run_id, "run-a");
     assert_eq!(config.model_id, "model-a");
+    assert_eq!(config.stage_id, "stage-0");
+    assert_eq!(config.stage_index, 0);
+    assert_eq!(config.layer_start, 0);
+    assert_eq!(config.layer_end, 12);
+    assert_eq!(config.lane_count, 3);
+}
+
+fn assert_stage_config_package_fields(config: &StageConfig) {
     assert_eq!(config.package_ref.as_deref(), Some("pkg-a"));
     assert_eq!(config.manifest_sha256.as_deref(), Some("sha256"));
     assert_eq!(
@@ -176,11 +194,9 @@ fn stage_config_preserves_backend_neutral_load_fields() {
     );
     assert!(config.materialized_path.is_none());
     assert!(!config.materialized_pinned);
-    assert_eq!(config.stage_id, "stage-0");
-    assert_eq!(config.stage_index, 0);
-    assert_eq!(config.layer_start, 0);
-    assert_eq!(config.layer_end, 12);
-    assert_eq!(config.lane_count, 3);
+}
+
+fn assert_stage_config_execution_fields(config: &StageConfig) {
     assert_eq!(config.n_batch, Some(2048));
     assert_eq!(config.n_ubatch, Some(512));
     assert_eq!(config.model_path.as_deref(), Some("/models/model.gguf"));

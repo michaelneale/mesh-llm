@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import {
   displayVramGb,
@@ -64,14 +64,21 @@ describe('live node state helpers', () => {
   })
 
   it('handles invalid states gracefully without throwing', () => {
-    expect(formatLiveNodeState(undefined)).toBe('Unknown')
-    expect(formatLiveNodeState(null)).toBe('Unknown')
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
 
-    expect(topologyStatusTone(undefined)).toBe('neutral')
-    expect(topologyStatusTone(null)).toBe('neutral')
+    try {
+      expect(formatLiveNodeState(undefined)).toBe('Unknown')
+      expect(formatLiveNodeState(null)).toBe('Unknown')
 
-    expect(topologyStatusTooltip(undefined)).toBe('Node state unavailable')
-    expect(topologyStatusTooltip(null)).toBe('Node state unavailable')
+      expect(topologyStatusTone(undefined)).toBe('neutral')
+      expect(topologyStatusTone(null)).toBe('neutral')
+
+      expect(topologyStatusTooltip(undefined)).toBe('Node state unavailable')
+      expect(topologyStatusTooltip(null)).toBe('Node state unavailable')
+      expect(warnSpy).toHaveBeenCalledTimes(6)
+    } finally {
+      warnSpy.mockRestore()
+    }
   })
 
   it('excludes client nodes from local routable models', () => {

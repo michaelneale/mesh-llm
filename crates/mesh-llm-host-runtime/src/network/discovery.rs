@@ -247,13 +247,8 @@ pub(crate) struct LanPublishConfig {
 }
 
 pub(crate) async fn publish_lan_loop(node: crate::mesh::Node, config: LanPublishConfig) {
-    let daemon = match ServiceDaemon::new() {
-        Ok(daemon) => daemon,
-        Err(err) => {
-            tracing::warn!("Failed to create mDNS daemon: {err}");
-            let _ = send_publish_state(&config.status_tx, nostr::PublishStateUpdate::PublishFailed);
-            return;
-        }
+    let Some(daemon) = create_lan_publish_daemon(&config.status_tx) else {
+        return;
     };
 
     let instance_name = lan_instance_name(&node).await;
@@ -262,57 +257,121 @@ pub(crate) async fn publish_lan_loop(node: crate::mesh::Node, config: LanPublish
 
     let mut last_reported = None;
     loop {
-        let listing = build_local_mesh_listing(
-            &node,
-            config.name.clone(),
-            config.region.clone(),
-            config.max_clients,
-        )
+        publish_lan_advertisement(LanPublishAttempt {
+            daemon: &daemon,
+            node: &node,
+            name: config.name.clone(),
+            region: config.region.clone(),
+            max_clients: config.max_clients,
+            api_port: config.api_port,
+            status_tx: &config.status_tx,
+            last_reported: &mut last_reported,
+            instance_name: &instance_name,
+            host_name: &host_name,
+        })
         .await;
-        let advert = LanMeshAdvertisement::from_listing(
-            &listing,
-            Some(&listing.invite_token),
-            Some(crate::VERSION),
-        );
-
-        let service_info = match service_info_for_advertisement(
-            &advert,
-            &instance_name,
-            &host_name,
-            config.api_port,
-        ) {
-            Ok(info) => info,
-            Err(err) => {
-                tracing::warn!("Failed to encode mDNS mesh advertisement: {err}");
-                report_publish_state(
-                    &config.status_tx,
-                    &mut last_reported,
-                    nostr::PublishStateUpdate::PublishFailed,
-                );
-                tokio::time::sleep(Duration::from_secs(config.interval_secs)).await;
-                continue;
-            }
-        };
-
-        match daemon.register(service_info) {
-            Ok(()) => {
-                report_publish_state(
-                    &config.status_tx,
-                    &mut last_reported,
-                    nostr::PublishStateUpdate::Public,
-                );
-            }
-            Err(err) => {
-                tracing::warn!("Failed to register mDNS mesh advertisement: {err}");
-                report_publish_state(
-                    &config.status_tx,
-                    &mut last_reported,
-                    nostr::PublishStateUpdate::PublishFailed,
-                );
-            }
-        }
-
         tokio::time::sleep(Duration::from_secs(config.interval_secs)).await;
+    }
+}
+
+fn create_lan_publish_daemon(
+    status_tx: &Option<tokio::sync::watch::Sender<Option<nostr::PublishStateUpdate>>>,
+) -> Option<ServiceDaemon> {
+    match ServiceDaemon::new() {
+        Ok(daemon) => Some(daemon),
+        Err(err) => {
+            tracing::warn!("Failed to create mDNS daemon: {err}");
+            let _ = send_publish_state(status_tx, nostr::PublishStateUpdate::PublishFailed);
+            None
+        }
+    }
+}
+
+struct LanPublishAttempt<'a> {
+    daemon: &'a ServiceDaemon,
+    node: &'a crate::mesh::Node,
+    name: Option<String>,
+    region: Option<String>,
+    max_clients: Option<usize>,
+    api_port: u16,
+    status_tx: &'a Option<tokio::sync::watch::Sender<Option<nostr::PublishStateUpdate>>>,
+    last_reported: &'a mut Option<nostr::PublishStateUpdate>,
+    instance_name: &'a str,
+    host_name: &'a str,
+}
+
+async fn publish_lan_advertisement(attempt: LanPublishAttempt<'_>) {
+    let LanPublishAttempt {
+        daemon,
+        node,
+        name,
+        region,
+        max_clients,
+        api_port,
+        status_tx,
+        last_reported,
+        instance_name,
+        host_name,
+    } = attempt;
+    let listing = build_local_mesh_listing(node, name, region, max_clients).await;
+    let advert = LanMeshAdvertisement::from_listing(
+        &listing,
+        Some(&listing.invite_token),
+        Some(crate::VERSION),
+    );
+    let Some(service_info) = encode_lan_service_info(
+        &advert,
+        instance_name,
+        host_name,
+        api_port,
+        status_tx,
+        last_reported,
+    )
+    .await
+    else {
+        return;
+    };
+    register_lan_service(daemon, service_info, status_tx, last_reported);
+}
+
+async fn encode_lan_service_info(
+    advert: &LanMeshAdvertisement,
+    instance_name: &str,
+    host_name: &str,
+    api_port: u16,
+    status_tx: &Option<tokio::sync::watch::Sender<Option<nostr::PublishStateUpdate>>>,
+    last_reported: &mut Option<nostr::PublishStateUpdate>,
+) -> Option<ServiceInfo> {
+    match service_info_for_advertisement(advert, instance_name, host_name, api_port) {
+        Ok(info) => Some(info),
+        Err(err) => {
+            tracing::warn!("Failed to encode mDNS mesh advertisement: {err}");
+            report_publish_state(
+                status_tx,
+                last_reported,
+                nostr::PublishStateUpdate::PublishFailed,
+            );
+            None
+        }
+    }
+}
+
+fn register_lan_service(
+    daemon: &ServiceDaemon,
+    service_info: ServiceInfo,
+    status_tx: &Option<tokio::sync::watch::Sender<Option<nostr::PublishStateUpdate>>>,
+    last_reported: &mut Option<nostr::PublishStateUpdate>,
+) {
+    match daemon.register(service_info) {
+        Ok(()) => report_publish_state(status_tx, last_reported, nostr::PublishStateUpdate::Public),
+        Err(err) => {
+            tracing::warn!("Failed to register mDNS mesh advertisement: {err}");
+            report_publish_state(
+                status_tx,
+                last_reported,
+                nostr::PublishStateUpdate::PublishFailed,
+            );
+        }
     }
 }
 
@@ -333,91 +392,61 @@ pub(crate) async fn discover_lan(
     let mut by_instance: HashMap<String, LanDiscoveredMesh> = HashMap::new();
 
     while tokio::time::Instant::now() < deadline {
+        let Some(service) = next_resolved_lan_service(&receiver, deadline).await else {
+            break;
+        };
+        record_lan_service(&mut by_instance, &service, filter, supplied_invite_token);
+    }
+
+    stop_lan_browse(receiver, daemon).await;
+    Ok(sorted_lan_meshes(by_instance))
+}
+
+async fn next_resolved_lan_service(
+    receiver: &mdns_sd::Receiver<ServiceEvent>,
+    deadline: tokio::time::Instant,
+) -> Option<ResolvedService> {
+    loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
-            break;
+            return None;
         }
         let event = match tokio::time::timeout(remaining, receiver.recv_async()).await {
             Ok(Ok(event)) => event,
-            Ok(Err(_)) => break,
-            Err(_) => break,
+            Ok(Err(_)) | Err(_) => return None,
         };
-
-        let ServiceEvent::ServiceResolved(service) = event else {
-            continue;
-        };
-        if !service.is_valid() {
-            continue;
+        if let ServiceEvent::ServiceResolved(service) = event {
+            return Some(*service);
         }
-
-        let advert = match LanMeshAdvertisement::from_resolved_service(service.as_ref()) {
-            Ok(advert) => advert,
-            Err(err) => {
-                tracing::debug!(
-                    "Skipping malformed mDNS mesh advertisement {}: {err}",
-                    service.get_fullname()
-                );
-                continue;
-            }
-        };
-        let listing = advert.sanitized_listing();
-        let discovered = nostr::DiscoveredMesh {
-            listing: listing.clone(),
-            publisher_npub: format!("mdns:{}", service.get_fullname()),
-            published_at: current_unix_secs(),
-            expires_at: None,
-        };
-        if !filter.matches(&discovered) {
-            continue;
-        }
-
-        let joinable = advert.matches_supplied_token(supplied_invite_token);
-        by_instance.insert(
-            service.get_fullname().to_string(),
-            LanDiscoveredMesh {
-                mode: MeshDiscoveryMode::Mdns.as_str(),
-                scope: MeshDiscoveryMode::Mdns.scope(),
-                source: MeshDiscoveryMode::Mdns.source(),
-                service_type: LAN_SERVICE_TYPE,
-                instance_name: service.get_fullname().to_string(),
-                host: service.get_hostname().to_string(),
-                port: service.get_port(),
-                addresses: service
-                    .get_addresses()
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect(),
-                listing,
-                token_fingerprint: advert.token_fingerprint.clone(),
-                join_material: advert.join_material,
-                joinable_with_supplied_token: joinable,
-                published_version: advert.app_version.clone(),
-                discovered_at: current_unix_secs(),
-                join_token: joinable.then(|| supplied_invite_token.unwrap_or_default().to_string()),
-            },
-        );
     }
+}
 
+async fn stop_lan_browse(receiver: mdns_sd::Receiver<ServiceEvent>, daemon: ServiceDaemon) {
     drop(receiver);
     if let Err(err) = daemon.stop_browse(LAN_SERVICE_TYPE) {
         tracing::debug!("Failed to stop mDNS LAN browse before daemon shutdown: {err}");
     }
     shutdown_lan_daemon(daemon).await;
+}
+
+fn sorted_lan_meshes(by_instance: HashMap<String, LanDiscoveredMesh>) -> Vec<LanDiscoveredMesh> {
     let mut meshes = by_instance.into_values().collect::<Vec<_>>();
-    meshes.sort_by(|left, right| {
-        right
-            .listing
-            .node_count
-            .cmp(&left.listing.node_count)
-            .then(
-                right
-                    .listing
-                    .total_vram_bytes
-                    .cmp(&left.listing.total_vram_bytes),
-            )
-            .then(left.instance_name.cmp(&right.instance_name))
-    });
-    Ok(meshes)
+    meshes.sort_by(compare_lan_meshes);
+    meshes
+}
+
+fn compare_lan_meshes(left: &LanDiscoveredMesh, right: &LanDiscoveredMesh) -> std::cmp::Ordering {
+    right
+        .listing
+        .node_count
+        .cmp(&left.listing.node_count)
+        .then(
+            right
+                .listing
+                .total_vram_bytes
+                .cmp(&left.listing.total_vram_bytes),
+        )
+        .then(left.instance_name.cmp(&right.instance_name))
 }
 
 async fn shutdown_lan_daemon(daemon: ServiceDaemon) -> bool {
@@ -475,64 +504,16 @@ async fn build_local_mesh_listing(
     max_clients: Option<usize>,
 ) -> nostr::MeshListing {
     let peers = node.peers().await;
-    let client_count = peers
-        .iter()
-        .filter(|p| matches!(p.role, crate::mesh::NodeRole::Client))
-        .count();
-
-    let my_role = node.role().await;
-    let mut actually_serving: Vec<String> = Vec::new();
-    if matches!(my_role, crate::mesh::NodeRole::Host { .. }) {
-        for model in node.hosted_models().await {
-            push_unique(&mut actually_serving, model);
-        }
-    }
-    for peer in &peers {
-        if matches!(peer.role, crate::mesh::NodeRole::Host { .. }) {
-            for model in peer.routable_models() {
-                push_unique(&mut actually_serving, model);
-            }
-        }
-    }
-
+    let client_count = lan_client_count(&peers);
+    let actually_serving = lan_served_models(node, &peers).await;
     let served_set = actually_serving
         .iter()
         .map(String::as_str)
         .collect::<std::collections::HashSet<_>>();
-
-    let active_demand = node.active_demand().await;
-    let mut wanted = Vec::new();
-    for model in active_demand.keys() {
-        if !served_set.contains(model.as_str()) {
-            push_unique(&mut wanted, model.clone());
-        }
-    }
-
-    let mut available = Vec::new();
-    for model in node.available_models().await {
-        if !served_set.contains(model.as_str()) {
-            push_unique(&mut available, model);
-        }
-    }
-    for peer in &peers {
-        for model in &peer.available_models {
-            if !served_set.contains(model.as_str()) {
-                push_unique(&mut available, model.clone());
-            }
-        }
-    }
-
-    let total_vram_bytes = peers
-        .iter()
-        .filter(|peer| !matches!(peer.role, crate::mesh::NodeRole::Client))
-        .map(|peer| peer.vram_bytes)
-        .sum::<u64>()
-        + node.vram_bytes();
-    let node_count = peers
-        .iter()
-        .filter(|peer| !matches!(peer.role, crate::mesh::NodeRole::Client))
-        .count()
-        + 1;
+    let wanted = lan_wanted_models(node, &served_set).await;
+    let available = lan_available_models(node, &peers, &served_set).await;
+    let total_vram_bytes = lan_total_vram_bytes(node, &peers);
+    let node_count = lan_serving_node_count(&peers);
 
     nostr::MeshListing {
         invite_token: node.invite_token(),
@@ -547,6 +528,163 @@ async fn build_local_mesh_listing(
         region,
         mesh_id: node.mesh_id().await,
     }
+}
+
+fn record_lan_service(
+    by_instance: &mut HashMap<String, LanDiscoveredMesh>,
+    service: &ResolvedService,
+    filter: &nostr::MeshFilter,
+    supplied_invite_token: Option<&str>,
+) {
+    if !service.is_valid() {
+        return;
+    }
+    let Some((advert, listing, discovered)) = lan_discovered_listing(service) else {
+        return;
+    };
+    if !filter.matches(&discovered) {
+        return;
+    }
+    let joinable = advert.matches_supplied_token(supplied_invite_token);
+    by_instance.insert(
+        service.get_fullname().to_string(),
+        lan_discovered_mesh(service, listing, advert, supplied_invite_token, joinable),
+    );
+}
+
+fn lan_discovered_listing(
+    service: &ResolvedService,
+) -> Option<(
+    LanMeshAdvertisement,
+    nostr::MeshListing,
+    nostr::DiscoveredMesh,
+)> {
+    let advert = match LanMeshAdvertisement::from_resolved_service(service) {
+        Ok(advert) => advert,
+        Err(err) => {
+            tracing::debug!(
+                "Skipping malformed mDNS mesh advertisement {}: {err}",
+                service.get_fullname(),
+            );
+            return None;
+        }
+    };
+    let listing = advert.sanitized_listing();
+    let discovered = nostr::DiscoveredMesh {
+        listing: listing.clone(),
+        publisher_npub: format!("mdns:{}", service.get_fullname()),
+        published_at: current_unix_secs(),
+        expires_at: None,
+    };
+    Some((advert, listing, discovered))
+}
+
+fn lan_discovered_mesh(
+    service: &ResolvedService,
+    listing: nostr::MeshListing,
+    advert: LanMeshAdvertisement,
+    supplied_invite_token: Option<&str>,
+    joinable: bool,
+) -> LanDiscoveredMesh {
+    LanDiscoveredMesh {
+        mode: MeshDiscoveryMode::Mdns.as_str(),
+        scope: MeshDiscoveryMode::Mdns.scope(),
+        source: MeshDiscoveryMode::Mdns.source(),
+        service_type: LAN_SERVICE_TYPE,
+        instance_name: service.get_fullname().to_string(),
+        host: service.get_hostname().to_string(),
+        port: service.get_port(),
+        addresses: service
+            .get_addresses()
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+        listing,
+        token_fingerprint: advert.token_fingerprint,
+        join_material: advert.join_material,
+        joinable_with_supplied_token: joinable,
+        published_version: advert.app_version,
+        discovered_at: current_unix_secs(),
+        join_token: joinable.then(|| supplied_invite_token.unwrap_or_default().to_string()),
+    }
+}
+
+fn lan_client_count(peers: &[crate::mesh::PeerInfo]) -> usize {
+    peers
+        .iter()
+        .filter(|peer| matches!(peer.role, crate::mesh::NodeRole::Client))
+        .count()
+}
+
+async fn lan_served_models(
+    node: &crate::mesh::Node,
+    peers: &[crate::mesh::PeerInfo],
+) -> Vec<String> {
+    let mut actually_serving = Vec::new();
+    if matches!(node.role().await, crate::mesh::NodeRole::Host { .. }) {
+        for model in node.hosted_models().await {
+            push_unique(&mut actually_serving, model);
+        }
+    }
+    for peer in peers {
+        if matches!(peer.role, crate::mesh::NodeRole::Host { .. }) {
+            for model in peer.routable_models() {
+                push_unique(&mut actually_serving, model);
+            }
+        }
+    }
+    actually_serving
+}
+
+async fn lan_wanted_models(
+    node: &crate::mesh::Node,
+    served_set: &std::collections::HashSet<&str>,
+) -> Vec<String> {
+    let mut wanted = Vec::new();
+    for model in node.active_demand().await.keys() {
+        if !served_set.contains(model.as_str()) {
+            push_unique(&mut wanted, model.clone());
+        }
+    }
+    wanted
+}
+
+async fn lan_available_models(
+    node: &crate::mesh::Node,
+    peers: &[crate::mesh::PeerInfo],
+    served_set: &std::collections::HashSet<&str>,
+) -> Vec<String> {
+    let mut available = Vec::new();
+    for model in node.available_models().await {
+        if !served_set.contains(model.as_str()) {
+            push_unique(&mut available, model);
+        }
+    }
+    for peer in peers {
+        for model in &peer.available_models {
+            if !served_set.contains(model.as_str()) {
+                push_unique(&mut available, model.clone());
+            }
+        }
+    }
+    available
+}
+
+fn lan_total_vram_bytes(node: &crate::mesh::Node, peers: &[crate::mesh::PeerInfo]) -> u64 {
+    peers
+        .iter()
+        .filter(|peer| !matches!(peer.role, crate::mesh::NodeRole::Client))
+        .map(|peer| peer.vram_bytes)
+        .sum::<u64>()
+        + node.vram_bytes()
+}
+
+fn lan_serving_node_count(peers: &[crate::mesh::PeerInfo]) -> usize {
+    peers
+        .iter()
+        .filter(|peer| !matches!(peer.role, crate::mesh::NodeRole::Client))
+        .count()
+        + 1
 }
 
 async fn lan_instance_name(node: &crate::mesh::Node) -> String {

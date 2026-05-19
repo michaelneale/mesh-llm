@@ -142,3 +142,8 @@ fn interactive_post_terminal_exit_resumes_plain_event_output() {
 fn tui_model_card_separates_name_from_metadata_columns() {
     cli::output::assert_tui_model_card_separates_name_from_metadata_columns();
 }
+
+#[test]
+fn mesh_requirements_docs_examples_parse() {
+    cli::assert_mesh_requirements_docs_examples_parse();
+}

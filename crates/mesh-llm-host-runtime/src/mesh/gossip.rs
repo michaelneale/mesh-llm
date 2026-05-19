@@ -108,6 +108,34 @@ pub(super) fn peer_is_idle_transitive_client(ann: &PeerAnnouncement) -> bool {
             .unwrap_or(true)
 }
 
+struct LocalAnnouncementData {
+    role: NodeRole,
+    first_joined_mesh_ts: Option<u64>,
+    models: Vec<String>,
+    model_source: Option<String>,
+    serving_models: Vec<String>,
+    hosted_models: Vec<String>,
+    available_models: Vec<String>,
+    requested_models: Vec<String>,
+    explicit_model_interests: Vec<String>,
+    model_demand: HashMap<String, ModelDemand>,
+    mesh_id: Option<String>,
+    available_model_metadata: Vec<crate::proto::node::CompactModelMetadata>,
+    available_model_sizes: HashMap<String, u64>,
+    served_model_descriptors: Vec<ServedModelDescriptor>,
+    served_model_runtime: Vec<ModelRuntimeDescriptor>,
+    owner_attestation: Option<SignedNodeOwnership>,
+    artifact_transfer_supported: bool,
+    gpu_mem_bandwidth_gbps: Option<String>,
+    gpu_compute_tflops_fp32: Option<String>,
+    gpu_compute_tflops_fp16: Option<String>,
+}
+
+struct RebroadcastAnnouncements {
+    announcements: Vec<PeerAnnouncement>,
+    filtered_old_version: usize,
+}
+
 pub fn backfill_legacy_descriptors(ann: &mut PeerAnnouncement) {
     if ann.served_model_descriptors.is_empty() {
         let primary_model_name = ann
@@ -141,6 +169,7 @@ pub(super) fn peer_meaningfully_changed(old: &PeerInfo, new: &PeerInfo) -> bool 
         || old.served_model_descriptors != new.served_model_descriptors
         || old.served_model_runtime != new.served_model_runtime
         || old.artifact_transfer_supported != new.artifact_transfer_supported
+        || old.stage_protocol_generation_supported != new.stage_protocol_generation_supported
         || old.stage_status_list_supported != new.stage_status_list_supported
         || old.version != new.version
         || old.owner_summary != new.owner_summary
@@ -216,6 +245,7 @@ pub(super) fn apply_transitive_ann(
     existing.served_model_descriptors = ann.served_model_descriptors.clone();
     existing.served_model_runtime = ann.served_model_runtime.clone();
     existing.artifact_transfer_supported = ann.artifact_transfer_supported;
+    existing.stage_protocol_generation_supported = ann.stage_protocol_generation_supported;
     existing.stage_status_list_supported = ann.stage_status_list_supported;
     if ann.experts_summary.is_some() {
         existing.experts_summary = ann.experts_summary.clone();
@@ -247,6 +277,497 @@ pub(super) fn apply_transitive_ann(
 }
 
 impl Node {
+    async fn apply_announced_peer(
+        &self,
+        remote: EndpointId,
+        peer_id: EndpointId,
+        addr: &EndpointAddr,
+        ann: &PeerAnnouncement,
+        rtt_ms: Option<u32>,
+    ) {
+        if peer_id == self.endpoint.id() {
+            return;
+        }
+        if peer_id == remote {
+            if let Some(ref their_id) = ann.mesh_id {
+                self.set_mesh_id(their_id.clone()).await;
+            }
+            self.merge_remote_demand(&ann.model_demand);
+            self.add_peer(remote, addr.clone(), ann).await;
+            if let Some(rtt_ms) = rtt_ms {
+                self.update_peer_rtt(remote, rtt_ms).await;
+            }
+            return;
+        }
+        self.update_transitive_peer(peer_id, addr, ann, remote)
+            .await;
+    }
+
+    async fn apply_announced_peers(
+        &self,
+        remote: EndpointId,
+        their_announcements: &[(EndpointAddr, PeerAnnouncement)],
+        rtt_ms: Option<u32>,
+    ) {
+        for (addr, ann) in their_announcements {
+            self.apply_announced_peer(remote, addr.id, addr, ann, rtt_ms)
+                .await;
+        }
+    }
+
+    async fn refresh_gossip_path_rtt(&self, remote: EndpointId, ceiling_rtt_ms: Option<u32>) {
+        let conn = self.state.lock().await.connections.get(&remote).cloned();
+        let Some(conn) = conn else {
+            return;
+        };
+        let path_list = conn.paths();
+        for path_info in &path_list {
+            if !path_info.is_selected() {
+                continue;
+            }
+            let path_rtt_ms = path_info.rtt().as_millis() as u32;
+            if path_rtt_ms == 0 {
+                continue;
+            }
+            if ceiling_rtt_ms.is_some_and(|ceiling| path_rtt_ms >= ceiling) {
+                break;
+            }
+            let path_type = if path_info.is_ip() { "direct" } else { "relay" };
+            super::emit_mesh_info(format!(
+                "📡 Peer {} RTT: {}ms ({}){}",
+                remote.fmt_short(),
+                path_rtt_ms,
+                path_type,
+                if ceiling_rtt_ms.is_some() {
+                    " [path info]"
+                } else {
+                    ""
+                }
+            ));
+            self.update_peer_rtt(remote, path_rtt_ms).await;
+            break;
+        }
+    }
+
+    async fn maybe_connect_discovered_peer(
+        &self,
+        my_role: &super::NodeRole,
+        addr: EndpointAddr,
+        ann: &PeerAnnouncement,
+        known_peer_check_uses_connections: bool,
+        log_discovery_failure_as_warning: bool,
+    ) {
+        let peer_id = addr.id;
+        if self.should_skip_discovered_peer(my_role, peer_id, ann)
+            || self
+                .discovered_peer_already_known(peer_id, known_peer_check_uses_connections)
+                .await
+        {
+            return;
+        }
+        if let Err(error) = Box::pin(self.connect_to_peer(addr)).await {
+            if log_discovery_failure_as_warning {
+                tracing::warn!("Failed to discover peer: {error}");
+            } else {
+                tracing::debug!(
+                    "Could not connect to discovered peer {}: {error}",
+                    peer_id.fmt_short()
+                );
+            }
+        }
+    }
+
+    fn should_skip_discovered_peer(
+        &self,
+        my_role: &super::NodeRole,
+        peer_id: EndpointId,
+        ann: &PeerAnnouncement,
+    ) -> bool {
+        peer_id == self.endpoint.id()
+            || (matches!(my_role, super::NodeRole::Client)
+                && matches!(ann.role, super::NodeRole::Client))
+    }
+
+    async fn discovered_peer_already_known(
+        &self,
+        peer_id: EndpointId,
+        use_connections: bool,
+    ) -> bool {
+        let state = self.state.lock().await;
+        if use_connections {
+            state.connections.contains_key(&peer_id)
+        } else {
+            state.peers.contains_key(&peer_id)
+        }
+    }
+
+    fn peer_hardware_changed(old_peer: &PeerInfo, updated_peer: &PeerInfo) -> bool {
+        old_peer.gpu_name != updated_peer.gpu_name
+            || old_peer.hostname != updated_peer.hostname
+            || old_peer.is_soc != updated_peer.is_soc
+            || old_peer.gpu_vram != updated_peer.gpu_vram
+            || old_peer.gpu_reserved_bytes != updated_peer.gpu_reserved_bytes
+            || old_peer.gpu_mem_bandwidth_gbps != updated_peer.gpu_mem_bandwidth_gbps
+            || old_peer.gpu_compute_tflops_fp32 != updated_peer.gpu_compute_tflops_fp32
+            || old_peer.gpu_compute_tflops_fp16 != updated_peer.gpu_compute_tflops_fp16
+    }
+
+    fn update_existing_direct_peer(
+        existing: &mut PeerInfo,
+        addr: EndpointAddr,
+        ann: &PeerAnnouncement,
+        owner_summary: OwnershipSummary,
+        now: std::time::Instant,
+    ) -> (PeerInfo, bool, bool, bool) {
+        let old_peer = existing.clone();
+        let role_changed = existing.role != ann.role;
+        let ann_hosted_models = ann.hosted_models.clone().unwrap_or_default();
+        let serving_changed = existing.serving_models != ann.serving_models
+            || existing.hosted_models != ann_hosted_models
+            || existing.hosted_models_known != ann.hosted_models.is_some();
+        if role_changed {
+            tracing::info!(
+                "Peer {} role updated: {:?} → {:?}",
+                existing.id.fmt_short(),
+                existing.role,
+                ann.role
+            );
+            existing.role = ann.role.clone();
+        }
+        if !addr.addrs.is_empty() {
+            existing.addr = addr;
+        }
+        existing.models = ann.models.clone();
+        merge_first_joined_mesh_ts(&mut existing.first_joined_mesh_ts, ann.first_joined_mesh_ts);
+        existing.vram_bytes = ann.vram_bytes;
+        if ann.model_source.is_some() {
+            existing.model_source = ann.model_source.clone();
+        }
+        existing.serving_models = ann.serving_models.clone();
+        existing.hosted_models = ann_hosted_models;
+        existing.hosted_models_known = ann.hosted_models.is_some();
+        existing.available_models.clear();
+        existing
+            .available_models
+            .extend(ann.available_models.clone());
+        existing.requested_models = ann.requested_models.clone();
+        existing.explicit_model_interests = ann.explicit_model_interests.clone();
+        existing.last_seen = now;
+        existing.owner_attestation = ann.owner_attestation.clone();
+        existing.owner_summary = owner_summary;
+        existing.served_model_descriptors = ann.served_model_descriptors.clone();
+        existing.served_model_runtime = ann.served_model_runtime.clone();
+        existing.artifact_transfer_supported = ann.artifact_transfer_supported;
+        existing.stage_protocol_generation_supported = ann.stage_protocol_generation_supported;
+        existing.stage_status_list_supported = ann.stage_status_list_supported;
+        if ann.version.is_some() {
+            existing.version = ann.version.clone();
+        }
+        existing.gpu_name = ann.gpu_name.clone();
+        existing.hostname = ann.hostname.clone();
+        existing.is_soc = ann.is_soc;
+        existing.gpu_vram = ann.gpu_vram.clone();
+        existing.gpu_reserved_bytes = ann.gpu_reserved_bytes.clone();
+        existing.gpu_mem_bandwidth_gbps = ann.gpu_mem_bandwidth_gbps.clone();
+        existing.gpu_compute_tflops_fp32 = ann.gpu_compute_tflops_fp32.clone();
+        existing.gpu_compute_tflops_fp16 = ann.gpu_compute_tflops_fp16.clone();
+        if ann.experts_summary.is_some() {
+            existing.experts_summary = ann.experts_summary.clone();
+        }
+        let updated_peer = existing.clone();
+        let changed = peer_meaningfully_changed(&old_peer, &updated_peer)
+            || Self::peer_hardware_changed(&old_peer, &updated_peer);
+        (updated_peer, changed, role_changed, serving_changed)
+    }
+
+    async fn remove_disallowed_peer(&self, id: EndpointId) {
+        let mut state = self.state.lock().await;
+        if state.peers.remove(&id).is_some() {
+            let _ = self.peer_change_tx.send(state.peers.len());
+        }
+    }
+
+    async fn direct_peer_owner_summary(
+        &self,
+        id: EndpointId,
+        ann: &PeerAnnouncement,
+    ) -> OwnershipSummary {
+        let trust_store = self.trust_store.lock().await.clone();
+        verify_node_ownership(
+            ann.owner_attestation.as_ref(),
+            id.as_bytes(),
+            &trust_store,
+            self.trust_policy,
+            current_time_unix_ms(),
+        )
+    }
+
+    async fn reject_direct_peer_for_policy(
+        &self,
+        id: EndpointId,
+        owner_summary: &OwnershipSummary,
+    ) -> bool {
+        if policy_accepts_peer(self.trust_policy, owner_summary) {
+            return false;
+        }
+
+        let mut state = self.state.lock().await;
+        let last_status = state.policy_rejected_peers.get(&id).cloned();
+        if last_status.as_ref() != Some(&owner_summary.status) {
+            tracing::warn!(
+                "Rejecting peer {} due to owner policy: {:?}",
+                id.fmt_short(),
+                owner_summary.status
+            );
+            state
+                .policy_rejected_peers
+                .insert(id, owner_summary.status.clone());
+        }
+        if state.peers.remove(&id).is_some() {
+            let _ = self.peer_change_tx.send(state.peers.len());
+        }
+        true
+    }
+
+    async fn publish_direct_peer_update(
+        &self,
+        updated_peer: PeerInfo,
+        changed: bool,
+        should_publish_count: bool,
+        count: usize,
+    ) {
+        if should_publish_count {
+            let _ = self.peer_change_tx.send(count);
+        }
+        if changed {
+            self.emit_plugin_mesh_event(
+                crate::plugin::proto::mesh_event::Kind::PeerUpdated,
+                Some(&updated_peer),
+                String::new(),
+            )
+            .await;
+        }
+    }
+
+    async fn upsert_existing_direct_peer(
+        &self,
+        id: EndpointId,
+        addr: EndpointAddr,
+        ann: &PeerAnnouncement,
+        owner_summary: OwnershipSummary,
+        now: std::time::Instant,
+    ) -> bool {
+        let mut state = self.state.lock().await;
+        state.policy_rejected_peers.remove(&id);
+        let Some(existing) = state.peers.get_mut(&id) else {
+            return false;
+        };
+        let (updated_peer, changed, role_changed, serving_changed) =
+            Self::update_existing_direct_peer(existing, addr, ann, owner_summary, now);
+        let count = state.peers.len();
+        let should_publish_count = role_changed || serving_changed;
+        drop(state);
+        self.publish_direct_peer_update(updated_peer, changed, should_publish_count, count)
+            .await;
+        true
+    }
+
+    async fn insert_new_direct_peer(
+        &self,
+        id: EndpointId,
+        addr: EndpointAddr,
+        ann: &PeerAnnouncement,
+        owner_summary: OwnershipSummary,
+    ) {
+        let mut state = self.state.lock().await;
+        state.policy_rejected_peers.remove(&id);
+        tracing::info!(
+            "Peer added: {} role={:?} vram={:.1}GB assigned={:?} catalog={:?} (total: {})",
+            id.fmt_short(),
+            ann.role,
+            ann.vram_bytes as f64 / 1e9,
+            ann.serving_models.first(),
+            ann.available_models,
+            state.peers.len() + 1
+        );
+        let peer = PeerInfo::from_announcement(id, addr, ann, owner_summary);
+        state.peers.insert(id, peer.clone());
+        let count = state.peers.len();
+        drop(state);
+        let _ = self.peer_change_tx.send(count);
+        self.emit_plugin_mesh_event(
+            crate::plugin::proto::mesh_event::Kind::PeerUp,
+            Some(&peer),
+            String::new(),
+        )
+        .await;
+    }
+
+    async fn collect_rebroadcast_announcements(
+        &self,
+        stale_cutoff: std::time::Instant,
+    ) -> RebroadcastAnnouncements {
+        let mut filtered_old_version = 0;
+        let announcements = {
+            let state = self.state.lock().await;
+            state
+                .peers
+                .values()
+                .filter(|peer| {
+                    peer.last_seen >= stale_cutoff || peer.last_mentioned >= stale_cutoff
+                })
+                .filter(|peer| {
+                    let allowed = version_allowed_for_rebroadcast(peer.version.as_deref());
+                    if !allowed {
+                        filtered_old_version += 1;
+                    }
+                    allowed
+                })
+                .map(Self::announcement_from_peer)
+                .collect()
+        };
+        RebroadcastAnnouncements {
+            announcements,
+            filtered_old_version,
+        }
+    }
+
+    async fn snapshot_local_announcement_data(&self) -> LocalAnnouncementData {
+        let owner_summary = self.owner_summary.lock().await.clone();
+        LocalAnnouncementData {
+            role: self.role.lock().await.clone(),
+            first_joined_mesh_ts: *self.first_joined_mesh_ts.lock().await,
+            models: self.models.lock().await.clone(),
+            model_source: self.model_source.lock().await.clone(),
+            serving_models: self.serving_models.lock().await.clone(),
+            hosted_models: self.hosted_models.lock().await.clone(),
+            available_models: self.available_models.lock().await.clone(),
+            requested_models: self.requested_models.lock().await.clone(),
+            explicit_model_interests: self.explicit_model_interests.lock().await.clone(),
+            model_demand: self.get_demand(),
+            mesh_id: self.mesh_id.lock().await.clone(),
+            available_model_metadata: Vec::new(),
+            available_model_sizes: HashMap::new(),
+            served_model_descriptors: self.served_model_descriptors.lock().await.clone(),
+            served_model_runtime: self.model_runtime_descriptors.lock().await.clone(),
+            owner_attestation: self.owner_attestation.lock().await.clone(),
+            artifact_transfer_supported:
+                crate::models::artifact_transfer::artifact_transfer_advertised(&owner_summary),
+            gpu_mem_bandwidth_gbps: Self::format_optional_locked_f32_list(
+                &self.gpu_mem_bandwidth_gbps,
+            )
+            .await,
+            gpu_compute_tflops_fp32: Self::format_optional_locked_f32_list(
+                &self.gpu_compute_tflops_fp32,
+            )
+            .await,
+            gpu_compute_tflops_fp16: Self::format_optional_locked_f32_list(
+                &self.gpu_compute_tflops_fp16,
+            )
+            .await,
+        }
+    }
+
+    fn announcement_from_peer(peer: &PeerInfo) -> PeerAnnouncement {
+        let latency = peer.display_latency();
+        PeerAnnouncement {
+            addr: peer.addr.clone(),
+            role: peer.role.clone(),
+            first_joined_mesh_ts: peer.first_joined_mesh_ts,
+            models: peer.models.clone(),
+            vram_bytes: peer.vram_bytes,
+            model_source: peer.model_source.clone(),
+            serving_models: peer.serving_models.clone(),
+            hosted_models: peer.hosted_models_known.then(|| peer.hosted_models.clone()),
+            available_models: peer.available_models.clone(),
+            requested_models: peer.requested_models.clone(),
+            explicit_model_interests: peer.explicit_model_interests.clone(),
+            version: peer.version.clone(),
+            model_demand: HashMap::new(),
+            mesh_id: None,
+            gpu_name: peer.gpu_name.clone(),
+            hostname: peer.hostname.clone(),
+            is_soc: peer.is_soc,
+            gpu_vram: peer.gpu_vram.clone(),
+            gpu_reserved_bytes: peer.gpu_reserved_bytes.clone(),
+            gpu_mem_bandwidth_gbps: peer.gpu_mem_bandwidth_gbps.clone(),
+            gpu_compute_tflops_fp32: peer.gpu_compute_tflops_fp32.clone(),
+            gpu_compute_tflops_fp16: peer.gpu_compute_tflops_fp16.clone(),
+            available_model_metadata: peer.available_model_metadata.clone(),
+            experts_summary: peer.experts_summary.clone(),
+            available_model_sizes: peer.available_model_sizes.clone(),
+            served_model_descriptors: peer.served_model_descriptors.clone(),
+            served_model_runtime: peer.served_model_runtime.clone(),
+            owner_attestation: peer.owner_attestation.clone(),
+            artifact_transfer_supported: peer.artifact_transfer_supported,
+            stage_protocol_generation_supported: peer.stage_protocol_generation_supported,
+            stage_status_list_supported: peer.stage_status_list_supported,
+            latency_ms: latency.latency_ms,
+            latency_source: Some(match latency.source {
+                DisplayLatencySource::Direct => crate::proto::node::LatencySource::Direct,
+                DisplayLatencySource::Estimated => crate::proto::node::LatencySource::Estimated,
+                DisplayLatencySource::Unknown => crate::proto::node::LatencySource::Unknown,
+            }),
+            latency_age_ms: Some(latency.age_ms),
+            latency_observer_id: latency.observer_id,
+        }
+    }
+
+    async fn format_optional_locked_f32_list(
+        values: &tokio::sync::Mutex<Option<Vec<f64>>>,
+    ) -> Option<String> {
+        values.lock().await.as_ref().map(|values| {
+            values
+                .iter()
+                .map(|f| format!("{:.2}", f))
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+    }
+
+    fn build_local_announcement(&self, data: LocalAnnouncementData) -> PeerAnnouncement {
+        PeerAnnouncement {
+            addr: self.endpoint_addr_for_advertisement(),
+            role: data.role,
+            first_joined_mesh_ts: data.first_joined_mesh_ts,
+            models: data.models,
+            vram_bytes: self.vram_bytes,
+            model_source: data.model_source,
+            serving_models: data.serving_models,
+            hosted_models: Some(data.hosted_models),
+            available_models: data.available_models,
+            requested_models: data.requested_models,
+            explicit_model_interests: data.explicit_model_interests,
+            version: Some(crate::VERSION.to_string()),
+            model_demand: data.model_demand,
+            mesh_id: data.mesh_id,
+            gpu_name: self.enumerate_host.then(|| self.gpu_name.clone()).flatten(),
+            hostname: self.enumerate_host.then(|| self.hostname.clone()).flatten(),
+            is_soc: self.is_soc,
+            gpu_vram: self.enumerate_host.then(|| self.gpu_vram.clone()).flatten(),
+            gpu_reserved_bytes: self
+                .enumerate_host
+                .then(|| self.gpu_reserved_bytes.clone())
+                .flatten(),
+            gpu_mem_bandwidth_gbps: data.gpu_mem_bandwidth_gbps,
+            gpu_compute_tflops_fp32: data.gpu_compute_tflops_fp32,
+            gpu_compute_tflops_fp16: data.gpu_compute_tflops_fp16,
+            available_model_metadata: data.available_model_metadata,
+            experts_summary: None,
+            available_model_sizes: data.available_model_sizes,
+            served_model_descriptors: data.served_model_descriptors,
+            served_model_runtime: data.served_model_runtime,
+            owner_attestation: data.owner_attestation,
+            artifact_transfer_supported: data.artifact_transfer_supported,
+            stage_protocol_generation_supported: true,
+            stage_status_list_supported: true,
+            latency_ms: None,
+            latency_source: None,
+            latency_age_ms: None,
+            latency_observer_id: None,
+        }
+    }
+
     /// Open a gossip stream on an existing connection to exchange peer info.
     pub(super) async fn initiate_gossip(&self, conn: Connection, remote: EndpointId) -> Result<()> {
         // Timeout only the gossip round-trip. A misbehaving peer may accept the
@@ -313,74 +834,18 @@ impl Node {
         their_announcements: &[(EndpointAddr, PeerAnnouncement)],
         discover_peers: bool,
     ) -> Result<()> {
-        for (addr, ann) in their_announcements {
-            let peer_id = addr.id;
-            if peer_id == self.endpoint.id() {
-                continue;
-            }
-            if peer_id == remote {
-                if let Some(ref their_id) = ann.mesh_id {
-                    self.set_mesh_id(their_id.clone()).await;
-                }
-                self.merge_remote_demand(&ann.model_demand);
-                self.add_peer(remote, addr.clone(), ann).await;
-                self.update_peer_rtt(remote, rtt_ms).await;
-            } else {
-                self.update_transitive_peer(peer_id, addr, ann, remote)
-                    .await;
-            }
-        }
+        self.apply_announced_peers(remote, their_announcements, Some(rtt_ms))
+            .await;
 
         // Also check the connection's actual path info — the gossip round-trip
         // time above may reflect relay latency even if a direct path is now active.
-        {
-            let conn = self.state.lock().await.connections.get(&remote).cloned();
-            if let Some(conn) = conn {
-                let path_list = conn.paths();
-                for path_info in &path_list {
-                    if path_info.is_selected() {
-                        let path_rtt_ms = path_info.rtt().as_millis() as u32;
-                        if path_rtt_ms == 0 {
-                            continue;
-                        }
-                        let path_type = if path_info.is_ip() { "direct" } else { "relay" };
-                        if path_rtt_ms > 0 && path_rtt_ms < rtt_ms {
-                            super::emit_mesh_info(format!(
-                                "📡 Peer {} RTT: {}ms ({}) [path info]",
-                                remote.fmt_short(),
-                                path_rtt_ms,
-                                path_type
-                            ));
-                            self.update_peer_rtt(remote, path_rtt_ms).await;
-                        }
-                        break;
-                    }
-                }
-            }
-        }
+        self.refresh_gossip_path_rtt(remote, Some(rtt_ms)).await;
 
         if discover_peers {
             let my_role = self.role.lock().await.clone();
             for (addr, ann) in their_announcements {
-                let peer_id = addr.id;
-                if peer_id == self.endpoint.id() {
-                    continue;
-                }
-                // Clients skip connecting to other clients
-                if matches!(my_role, super::NodeRole::Client)
-                    && matches!(ann.role, super::NodeRole::Client)
-                {
-                    continue;
-                }
-                let has_conn = self.state.lock().await.connections.contains_key(&peer_id);
-                if !has_conn {
-                    if let Err(e) = Box::pin(self.connect_to_peer(addr.clone())).await {
-                        tracing::debug!(
-                            "Could not connect to discovered peer {}: {e}",
-                            peer_id.fmt_short()
-                        );
-                    }
-                }
+                self.maybe_connect_discovered_peer(&my_role, addr.clone(), ann, true, false)
+                    .await;
             }
         }
 
@@ -415,68 +880,14 @@ impl Node {
 
         let _ = recv.read_to_end(0).await;
 
-        for (addr, ann) in &their_announcements {
-            let peer_id = addr.id;
-            if peer_id == self.endpoint.id() {
-                continue;
-            }
-            if peer_id == remote {
-                if let Some(ref their_id) = ann.mesh_id {
-                    self.set_mesh_id(their_id.clone()).await;
-                }
-                self.merge_remote_demand(&ann.model_demand);
-                self.add_peer(remote, addr.clone(), ann).await;
-            } else {
-                self.update_transitive_peer(peer_id, addr, ann, remote)
-                    .await;
-            }
-        }
-
-        {
-            let conn = self.state.lock().await.connections.get(&remote).cloned();
-            if let Some(conn) = conn {
-                let path_list = conn.paths();
-                for path_info in &path_list {
-                    if path_info.is_selected() {
-                        let rtt_ms = path_info.rtt().as_millis() as u32;
-                        if rtt_ms == 0 {
-                            continue;
-                        }
-                        let path_type = if path_info.is_ip() { "direct" } else { "relay" };
-                        if rtt_ms > 0 {
-                            super::emit_mesh_info(format!(
-                                "📡 Peer {} RTT: {}ms ({})",
-                                remote.fmt_short(),
-                                rtt_ms,
-                                path_type
-                            ));
-                            self.update_peer_rtt(remote, rtt_ms).await;
-                        }
-                        break;
-                    }
-                }
-            }
-        }
+        self.apply_announced_peers(remote, &their_announcements, None)
+            .await;
+        self.refresh_gossip_path_rtt(remote, None).await;
 
         let my_role = self.role.lock().await.clone();
         for (addr, ann) in their_announcements {
-            let peer_id = addr.id;
-            if peer_id == self.endpoint.id() {
-                continue;
-            }
-            // Clients should only connect to hosts/workers — not other clients.
-            // This avoids O(N²) client-to-client connections in large meshes.
-            if matches!(my_role, super::NodeRole::Client)
-                && matches!(ann.role, super::NodeRole::Client)
-            {
-                continue;
-            }
-            let already_known = self.state.lock().await.peers.contains_key(&peer_id);
-            if !already_known {
-                if let Err(e) = Box::pin(self.connect_to_peer(addr)).await {
-                    tracing::warn!("Failed to discover peer: {e}");
-                }
-            }
+            self.maybe_connect_discovered_peer(&my_role, addr, &ann, false, true)
+                .await;
         }
 
         Ok(())
@@ -519,40 +930,14 @@ impl Node {
                 id.fmt_short(),
                 ann.version
             );
-            let mut state = self.state.lock().await;
-            if state.peers.remove(&id).is_some() {
-                let _ = self.peer_change_tx.send(state.peers.len());
-            }
+            self.remove_disallowed_peer(id).await;
             return;
         }
-        let trust_store = self.trust_store.lock().await.clone();
-        let owner_summary = verify_node_ownership(
-            ann.owner_attestation.as_ref(),
-            id.as_bytes(),
-            &trust_store,
-            self.trust_policy,
-            current_time_unix_ms(),
-        );
-        if !policy_accepts_peer(self.trust_policy, &owner_summary) {
-            let mut state = self.state.lock().await;
-            let last_status = state.policy_rejected_peers.get(&id).cloned();
-            if last_status.as_ref() != Some(&owner_summary.status) {
-                tracing::warn!(
-                    "Rejecting peer {} due to owner policy: {:?}",
-                    id.fmt_short(),
-                    owner_summary.status
-                );
-                state
-                    .policy_rejected_peers
-                    .insert(id, owner_summary.status.clone());
-            }
-            if state.peers.remove(&id).is_some() {
-                let _ = self.peer_change_tx.send(state.peers.len());
-            }
+        let owner_summary = self.direct_peer_owner_summary(id, ann).await;
+        if self.reject_direct_peer_for_policy(id, &owner_summary).await {
             return;
         }
         let mut state = self.state.lock().await;
-        // Peer accepted — clear any prior rejection record so future rejections log again.
         state.policy_rejected_peers.remove(&id);
         if id == self.endpoint.id() {
             return;
@@ -567,116 +952,17 @@ impl Node {
                 id.fmt_short()
             ));
         }
-        if let Some(existing) = state.peers.get_mut(&id) {
-            let old_peer = existing.clone();
-            let role_changed = existing.role != ann.role;
-            let ann_hosted_models = ann.hosted_models.clone().unwrap_or_default();
-            let serving_changed = existing.serving_models != ann.serving_models
-                || existing.hosted_models != ann_hosted_models
-                || existing.hosted_models_known != ann.hosted_models.is_some();
-            if role_changed {
-                tracing::info!(
-                    "Peer {} role updated: {:?} → {:?}",
-                    id.fmt_short(),
-                    existing.role,
-                    ann.role
-                );
-                existing.role = ann.role.clone();
-            }
-            // Update addr if the new one has more info
-            if !addr.addrs.is_empty() {
-                existing.addr = addr;
-            }
-            existing.models = ann.models.clone();
-            merge_first_joined_mesh_ts(
-                &mut existing.first_joined_mesh_ts,
-                ann.first_joined_mesh_ts,
-            );
-            existing.vram_bytes = ann.vram_bytes;
-            if ann.model_source.is_some() {
-                existing.model_source = ann.model_source.clone();
-            }
-            existing.serving_models = ann.serving_models.clone();
-            existing.hosted_models = ann_hosted_models;
-            existing.hosted_models_known = ann.hosted_models.is_some();
-            existing.available_models.clear();
-            existing.requested_models = ann.requested_models.clone();
-            existing.explicit_model_interests = ann.explicit_model_interests.clone();
-            existing.last_seen = now;
-            existing.owner_attestation = ann.owner_attestation.clone();
-            existing.owner_summary = owner_summary.clone();
-            existing.served_model_descriptors = ann.served_model_descriptors.clone();
-            existing.served_model_runtime = ann.served_model_runtime.clone();
-            existing.stage_status_list_supported = ann.stage_status_list_supported;
-            if ann.version.is_some() {
-                existing.version = ann.version.clone();
-            }
-            existing.gpu_name = ann.gpu_name.clone();
-            existing.hostname = ann.hostname.clone();
-            existing.is_soc = ann.is_soc;
-            existing.gpu_vram = ann.gpu_vram.clone();
-            existing.gpu_reserved_bytes = ann.gpu_reserved_bytes.clone();
-            existing.gpu_mem_bandwidth_gbps = ann.gpu_mem_bandwidth_gbps.clone();
-            existing.gpu_compute_tflops_fp32 = ann.gpu_compute_tflops_fp32.clone();
-            existing.gpu_compute_tflops_fp16 = ann.gpu_compute_tflops_fp16.clone();
-            if ann.experts_summary.is_some() {
-                existing.experts_summary = ann.experts_summary.clone();
-            }
-            let updated_peer = existing.clone();
-            let changed = peer_meaningfully_changed(&old_peer, &updated_peer)
-                || old_peer.gpu_name != updated_peer.gpu_name
-                || old_peer.hostname != updated_peer.hostname
-                || old_peer.is_soc != updated_peer.is_soc
-                || old_peer.gpu_vram != updated_peer.gpu_vram
-                || old_peer.gpu_reserved_bytes != updated_peer.gpu_reserved_bytes
-                || old_peer.gpu_mem_bandwidth_gbps != updated_peer.gpu_mem_bandwidth_gbps
-                || old_peer.gpu_compute_tflops_fp32 != updated_peer.gpu_compute_tflops_fp32
-                || old_peer.gpu_compute_tflops_fp16 != updated_peer.gpu_compute_tflops_fp16;
-            if role_changed || serving_changed {
-                let count = state.peers.len();
-                drop(state);
-                let _ = self.peer_change_tx.send(count);
-                if changed {
-                    self.emit_plugin_mesh_event(
-                        crate::plugin::proto::mesh_event::Kind::PeerUpdated,
-                        Some(&updated_peer),
-                        String::new(),
-                    )
-                    .await;
-                }
-            } else {
-                drop(state);
-                if changed {
-                    self.emit_plugin_mesh_event(
-                        crate::plugin::proto::mesh_event::Kind::PeerUpdated,
-                        Some(&updated_peer),
-                        String::new(),
-                    )
-                    .await;
-                }
-            }
+        let peer_exists = state.peers.contains_key(&id);
+        drop(state);
+        if peer_exists
+            && self
+                .upsert_existing_direct_peer(id, addr.clone(), ann, owner_summary.clone(), now)
+                .await
+        {
             return;
         }
-        tracing::info!(
-            "Peer added: {} role={:?} vram={:.1}GB assigned={:?} catalog={:?} (total: {})",
-            id.fmt_short(),
-            ann.role,
-            ann.vram_bytes as f64 / 1e9,
-            ann.serving_models.first(),
-            ann.available_models,
-            state.peers.len() + 1
-        );
-        let peer = PeerInfo::from_announcement(id, addr, ann, owner_summary);
-        state.peers.insert(id, peer.clone());
-        let count = state.peers.len();
-        drop(state);
-        let _ = self.peer_change_tx.send(count);
-        self.emit_plugin_mesh_event(
-            crate::plugin::proto::mesh_event::Kind::PeerUp,
-            Some(&peer),
-            String::new(),
-        )
-        .await;
+        self.insert_new_direct_peer(id, addr, ann, owner_summary)
+            .await;
     }
 
     /// Update a peer learned transitively through gossip (not directly connected).
@@ -802,96 +1088,13 @@ impl Node {
     }
 
     pub(super) async fn collect_announcements(&self) -> Vec<PeerAnnouncement> {
-        // Snapshot all locks independently — never hold multiple locks simultaneously.
-        let my_role = self.role.lock().await.clone();
-        let my_models = self.models.lock().await.clone();
-        let my_source = self.model_source.lock().await.clone();
-        let my_serving_models = self.serving_models.lock().await.clone();
-        let my_served_model_descriptors = self.served_model_descriptors.lock().await.clone();
-        let my_model_runtime_descriptors = self.model_runtime_descriptors.lock().await.clone();
-        let my_hosted_models = self.hosted_models.lock().await.clone();
-        let my_available = self.available_models.lock().await.clone();
-        let my_requested = self.requested_models.lock().await.clone();
-        let my_explicit_model_interests = self.explicit_model_interests.lock().await.clone();
-        let my_mesh_id = self.mesh_id.lock().await.clone();
-        let my_owner_attestation = self.owner_attestation.lock().await.clone();
-        let my_owner_summary = self.owner_summary.lock().await.clone();
-        let my_demand = self.get_demand();
         let stale_cutoff =
             std::time::Instant::now() - std::time::Duration::from_secs(PEER_STALE_SECS);
-        // Gossip wire encoding strips available_model_metadata and available_model_sizes,
-        // and remote ingest ignores them. Avoid an expensive scan_local_inventory_snapshot()
-        // on the hot gossip path.
-        let my_model_metadata: Vec<_> = Vec::new();
-        let my_model_sizes: HashMap<_, _> = HashMap::new();
-        let mut filtered_old_version: usize = 0;
-        let mut announcements: Vec<PeerAnnouncement> = {
-            let state = self.state.lock().await;
-            state
-                .peers
-                .values()
-                .filter(|p| p.last_seen >= stale_cutoff || p.last_mentioned >= stale_cutoff)
-                .filter(|p| {
-                    // Belt-and-braces: ingest gates already reject below-floor
-                    // peers, but if one slipped through (e.g. version mutated
-                    // after ingest), still exclude from outbound gossip.
-                    let allowed = version_allowed_for_rebroadcast(p.version.as_deref());
-                    if !allowed {
-                        filtered_old_version += 1;
-                    }
-                    allowed
-                })
-                .map(|p| {
-                    let latency = p.display_latency();
-                    PeerAnnouncement {
-                        addr: p.addr.clone(),
-                        role: p.role.clone(),
-                        first_joined_mesh_ts: p.first_joined_mesh_ts,
-                        models: p.models.clone(),
-                        vram_bytes: p.vram_bytes,
-                        model_source: p.model_source.clone(),
-                        serving_models: p.serving_models.clone(),
-                        hosted_models: p.hosted_models_known.then(|| p.hosted_models.clone()),
-                        available_models: p.available_models.clone(),
-                        requested_models: p.requested_models.clone(),
-                        explicit_model_interests: p.explicit_model_interests.clone(),
-                        version: p.version.clone(),
-                        model_demand: HashMap::new(),
-                        mesh_id: None,
-                        gpu_name: p.gpu_name.clone(),
-                        hostname: p.hostname.clone(),
-                        is_soc: p.is_soc,
-                        gpu_vram: p.gpu_vram.clone(),
-                        gpu_reserved_bytes: p.gpu_reserved_bytes.clone(),
-                        gpu_mem_bandwidth_gbps: p.gpu_mem_bandwidth_gbps.clone(),
-                        gpu_compute_tflops_fp32: p.gpu_compute_tflops_fp32.clone(),
-                        gpu_compute_tflops_fp16: p.gpu_compute_tflops_fp16.clone(),
-                        available_model_metadata: p.available_model_metadata.clone(),
-                        experts_summary: p.experts_summary.clone(),
-                        available_model_sizes: p.available_model_sizes.clone(),
-                        served_model_descriptors: p.served_model_descriptors.clone(),
-                        served_model_runtime: p.served_model_runtime.clone(),
-                        owner_attestation: p.owner_attestation.clone(),
-                        artifact_transfer_supported: p.artifact_transfer_supported,
-                        stage_status_list_supported: p.stage_status_list_supported,
-                        latency_ms: latency.latency_ms,
-                        latency_source: Some(match latency.source {
-                            DisplayLatencySource::Direct => {
-                                crate::proto::node::LatencySource::Direct
-                            }
-                            DisplayLatencySource::Estimated => {
-                                crate::proto::node::LatencySource::Estimated
-                            }
-                            DisplayLatencySource::Unknown => {
-                                crate::proto::node::LatencySource::Unknown
-                            }
-                        }),
-                        latency_age_ms: Some(latency.age_ms),
-                        latency_observer_id: latency.observer_id,
-                    }
-                })
-                .collect()
-        };
+        let local = self.snapshot_local_announcement_data().await;
+        let RebroadcastAnnouncements {
+            mut announcements,
+            filtered_old_version,
+        } = self.collect_rebroadcast_announcements(stale_cutoff).await;
         if filtered_old_version > 0 {
             tracing::debug!(
                 filtered = filtered_old_version,
@@ -901,75 +1104,7 @@ impl Node {
                 MIN_REBROADCAST_VERSION_MINOR,
             );
         }
-        let my_first_joined_mesh_ts = *self.first_joined_mesh_ts.lock().await;
-        announcements.push(PeerAnnouncement {
-            addr: self.endpoint_addr_for_advertisement(),
-            role: my_role,
-            first_joined_mesh_ts: my_first_joined_mesh_ts,
-            models: my_models,
-            vram_bytes: self.vram_bytes,
-            model_source: my_source,
-            serving_models: my_serving_models,
-            hosted_models: Some(my_hosted_models),
-            available_models: my_available,
-            requested_models: my_requested,
-            explicit_model_interests: my_explicit_model_interests,
-            version: Some(crate::VERSION.to_string()),
-            model_demand: my_demand,
-            mesh_id: my_mesh_id,
-            gpu_name: if self.enumerate_host {
-                self.gpu_name.clone()
-            } else {
-                None
-            },
-            hostname: if self.enumerate_host {
-                self.hostname.clone()
-            } else {
-                None
-            },
-            is_soc: self.is_soc,
-            gpu_vram: if self.enumerate_host {
-                self.gpu_vram.clone()
-            } else {
-                None
-            },
-            gpu_reserved_bytes: if self.enumerate_host {
-                self.gpu_reserved_bytes.clone()
-            } else {
-                None
-            },
-            gpu_mem_bandwidth_gbps: self.gpu_mem_bandwidth_gbps.lock().await.as_ref().map(|v| {
-                v.iter()
-                    .map(|f| format!("{:.2}", f))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            }),
-            gpu_compute_tflops_fp32: self.gpu_compute_tflops_fp32.lock().await.as_ref().map(|v| {
-                v.iter()
-                    .map(|f| format!("{:.2}", f))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            }),
-            gpu_compute_tflops_fp16: self.gpu_compute_tflops_fp16.lock().await.as_ref().map(|v| {
-                v.iter()
-                    .map(|f| format!("{:.2}", f))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            }),
-            available_model_metadata: my_model_metadata,
-            experts_summary: None,
-            available_model_sizes: my_model_sizes,
-            served_model_descriptors: my_served_model_descriptors,
-            served_model_runtime: my_model_runtime_descriptors,
-            owner_attestation: my_owner_attestation,
-            artifact_transfer_supported:
-                crate::models::artifact_transfer::artifact_transfer_advertised(&my_owner_summary),
-            stage_status_list_supported: true,
-            latency_ms: None,
-            latency_source: None,
-            latency_age_ms: None,
-            latency_observer_id: None,
-        });
+        announcements.push(self.build_local_announcement(local));
         announcements
     }
 }
@@ -1023,6 +1158,7 @@ mod tests {
             served_model_runtime: vec![],
             owner_attestation: None,
             artifact_transfer_supported: true,
+            stage_protocol_generation_supported: true,
             stage_status_list_supported: true,
             latency_ms: None,
             latency_source: None,
@@ -1142,6 +1278,16 @@ mod tests {
     }
 
     #[test]
+    fn test_meaningfully_changed_stage_protocol_generation_support() {
+        let old_peer = test_peer(Some(100));
+        let mut new_peer = test_peer(Some(100));
+        new_peer.stage_protocol_generation_supported =
+            !old_peer.stage_protocol_generation_supported;
+
+        assert!(peer_meaningfully_changed(&old_peer, &new_peer));
+    }
+
+    #[test]
     fn test_apply_transitive_ann_refreshes_explicit_model_interests() {
         let mut existing = test_peer(Some(100));
         let mut ann = test_announcement(Some(100));
@@ -1177,6 +1323,23 @@ mod tests {
         assert!(existing.stage_status_list_supported);
     }
 
+    #[test]
+    fn test_apply_transitive_ann_refreshes_stage_protocol_generation_support() {
+        let mut existing = test_peer(Some(100));
+        existing.stage_protocol_generation_supported = false;
+        let mut ann = test_announcement(Some(100));
+        ann.stage_protocol_generation_supported = true;
+
+        apply_transitive_ann(
+            &mut existing,
+            &test_addr(0x33),
+            &ann,
+            test_endpoint_id(0xee),
+        );
+
+        assert!(existing.stage_protocol_generation_supported);
+    }
+
     #[tokio::test]
     async fn test_add_peer_refreshes_stage_status_list_support() {
         let node = Node::new_for_tests(NodeRole::Worker).await.unwrap();
@@ -1192,6 +1355,23 @@ mod tests {
         let state = node.state.lock().await;
         let peer = state.peers.get(&peer_id).expect("peer should be tracked");
         assert!(peer.stage_status_list_supported);
+    }
+
+    #[tokio::test]
+    async fn test_add_peer_refreshes_stage_protocol_generation_support() {
+        let node = Node::new_for_tests(NodeRole::Worker).await.unwrap();
+        let peer_id = test_endpoint_id(0x45);
+        let addr = test_addr(0x45);
+        let mut ann = test_announcement(Some(100));
+        ann.stage_protocol_generation_supported = false;
+
+        node.add_peer(peer_id, addr.clone(), &ann).await;
+        ann.stage_protocol_generation_supported = true;
+        node.add_peer(peer_id, addr, &ann).await;
+
+        let state = node.state.lock().await;
+        let peer = state.peers.get(&peer_id).expect("peer should be tracked");
+        assert!(peer.stage_protocol_generation_supported);
     }
 
     #[tokio::test]

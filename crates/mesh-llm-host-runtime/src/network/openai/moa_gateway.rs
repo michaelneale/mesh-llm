@@ -46,6 +46,17 @@ pub async fn try_handle_moa(
         return None;
     };
 
+    run_moa_turn(tcp_stream, body_json, &config).await;
+    None
+}
+
+/// Run a turn through the gateway and write the response with x-moa-* headers.
+/// Caller has already validated the request and built the config.
+async fn run_moa_turn(
+    tcp_stream: TcpStream,
+    body_json: serde_json::Value,
+    config: &moa::GatewayConfig,
+) {
     let was_streaming = body_json
         .get("stream")
         .and_then(|v| v.as_bool())
@@ -53,48 +64,68 @@ pub async fn try_handle_moa(
     let mut moa_body = body_json;
     moa_body.as_object_mut().map(|o| o.remove("stream"));
 
-    let moa_result = moa::handle_turn(&config, &moa_body).await;
+    let moa_result = moa::handle_turn(config, &moa_body).await;
+    let extra_headers = build_moa_headers(&moa_result);
+    write_moa_response(
+        tcp_stream,
+        &moa_result.response_body,
+        &extra_headers,
+        was_streaming,
+    )
+    .await;
+}
 
-    let workers_ok = moa_result
+/// Write the MoA response on the chosen transport (JSON or SSE), logging
+/// (but not propagating) any I/O error.
+async fn write_moa_response(
+    tcp_stream: TcpStream,
+    body: &serde_json::Value,
+    extra_headers: &[(&str, String)],
+    was_streaming: bool,
+) {
+    let result = if was_streaming {
+        send_moa_as_sse(tcp_stream, body, extra_headers).await
+    } else {
+        proxy::send_json_ok_with_headers(tcp_stream, body, extra_headers).await
+    };
+    if let Err(e) = result {
+        tracing::warn!(
+            "MoA: response write failed ({}): {e}",
+            if was_streaming { "SSE" } else { "JSON" }
+        );
+    }
+}
+
+/// Build the `x-moa-*` observability headers from a finished turn and log
+/// a one-line summary.
+fn build_moa_headers(result: &moa::TurnResult) -> Vec<(&'static str, String)> {
+    let workers_ok = result
         .worker_summaries
         .iter()
         .filter(|w| w.succeeded)
         .count();
-    let workers_total = moa_result.worker_summaries.len();
+    let workers_total = result.worker_summaries.len();
     tracing::info!(
         "moa: {}ms, {}/{} workers, kind={}, reducer={} (attempts={})",
-        moa_result.elapsed_ms,
+        result.elapsed_ms,
         workers_ok,
         workers_total,
-        moa_result.turn_kind.label(),
-        moa_result.reducer_used,
-        moa_result.reducer_attempts,
+        result.turn_kind.label(),
+        result.reducer_used,
+        result.reducer_attempts,
     );
 
-    let extra_headers: Vec<(&str, String)> = vec![
-        ("x-moa-elapsed-ms", moa_result.elapsed_ms.to_string()),
-        ("x-moa-turn", moa_result.turn_kind.label().to_string()),
+    vec![
+        ("x-moa-elapsed-ms", result.elapsed_ms.to_string()),
+        ("x-moa-turn", result.turn_kind.label().to_string()),
         ("x-moa-workers", workers_total.to_string()),
         ("x-moa-workers-ok", workers_ok.to_string()),
-        ("x-moa-reducer", moa_result.reducer_used.to_string()),
+        ("x-moa-reducer", result.reducer_used.to_string()),
         (
             "x-moa-reducer-attempts",
-            moa_result.reducer_attempts.to_string(),
+            result.reducer_attempts.to_string(),
         ),
-    ];
-
-    if was_streaming {
-        if let Err(e) = send_moa_as_sse(tcp_stream, &moa_result.response_body, &extra_headers).await
-        {
-            tracing::warn!("MoA: SSE write failed: {e}");
-        }
-    } else if let Err(e) =
-        proxy::send_json_ok_with_headers(tcp_stream, &moa_result.response_body, &extra_headers)
-            .await
-    {
-        tracing::warn!("MoA: JSON write failed: {e}");
-    }
-    None
+    ]
 }
 
 /// Build a MoA gateway config from this node's mesh-wide view.
@@ -131,51 +162,19 @@ pub async fn build_moa_config(
     all_models.sort_by_key(|n| n.len());
 
     for name in all_models {
-        if name == moa::VIRTUAL_MODEL_NAME {
+        if !accept_for_dedup(&name, &mut seen_bases) {
             continue;
         }
-        let base = canonical_base_name(&name);
-        if !seen_bases.insert(base) {
-            continue;
-        }
-
-        // Prefer local skippy port when this node serves the model.
-        let local_port = targets.and_then(|t| {
-            t.targets.get(name.as_str()).and_then(|tv| {
-                tv.iter().find_map(|t| match t {
-                    election::InferenceTarget::Local(p) => Some(*p),
-                    _ => None,
-                })
-            })
-        });
-        if let Some(port) = local_port {
-            let backend_idx = backends.len();
-            backends.push(std::sync::Arc::new(LocalModelBackend {
-                port,
-                http: http.clone(),
-            }));
-            models.push(moa::ModelEntry {
-                name: name.clone(),
-                backend_index: backend_idx,
-            });
-            local_count += 1;
-            continue;
-        }
-
-        // Otherwise find a remote host. hosts_for_model returns peers in
-        // hash-preferred order; take the first.
-        let remote_hosts = node.hosts_for_model(&name).await;
-        if let Some(peer_id) = remote_hosts.into_iter().next() {
-            let backend_idx = backends.len();
-            backends.push(std::sync::Arc::new(RemoteModelBackend {
-                node: node.clone(),
-                peer_id,
-            }));
-            models.push(moa::ModelEntry {
-                name: name.clone(),
-                backend_index: backend_idx,
-            });
-        }
+        add_worker_backend(
+            node,
+            targets,
+            &http,
+            &name,
+            &mut backends,
+            &mut models,
+            &mut local_count,
+        )
+        .await;
     }
 
     if models.len() < 2 {
@@ -207,6 +206,68 @@ pub async fn build_moa_config(
         // the cold-KV / stale-peer tail.
         hedge_delay: std::time::Duration::from_secs(5),
     })
+}
+
+/// Filter out the virtual `"mesh"` name and de-dup by canonical base.
+/// Returns true if `name` is a fresh model that should be considered.
+fn accept_for_dedup(name: &str, seen_bases: &mut std::collections::HashSet<String>) -> bool {
+    if name == moa::VIRTUAL_MODEL_NAME {
+        return false;
+    }
+    seen_bases.insert(canonical_base_name(name))
+}
+
+/// Resolve `name` to a backend (local skippy port if available, else first
+/// remote host) and append it to `backends`/`models`. Returns true if a
+/// backend was added.
+async fn add_worker_backend(
+    node: &mesh::Node,
+    targets: Option<&election::ModelTargets>,
+    http: &reqwest::Client,
+    name: &str,
+    backends: &mut Vec<std::sync::Arc<dyn moa::ModelBackend>>,
+    models: &mut Vec<moa::ModelEntry>,
+    local_count: &mut usize,
+) -> bool {
+    // Prefer local skippy port when this node serves the model.
+    let local_port = targets.and_then(|t| {
+        t.targets.get(name).and_then(|tv| {
+            tv.iter().find_map(|t| match t {
+                election::InferenceTarget::Local(p) => Some(*p),
+                _ => None,
+            })
+        })
+    });
+    if let Some(port) = local_port {
+        let backend_idx = backends.len();
+        backends.push(std::sync::Arc::new(LocalModelBackend {
+            port,
+            http: http.clone(),
+        }));
+        models.push(moa::ModelEntry {
+            name: name.to_string(),
+            backend_index: backend_idx,
+        });
+        *local_count += 1;
+        return true;
+    }
+
+    // Otherwise find a remote host. hosts_for_model returns peers in
+    // hash-preferred order; take the first.
+    let remote_hosts = node.hosts_for_model(name).await;
+    if let Some(peer_id) = remote_hosts.into_iter().next() {
+        let backend_idx = backends.len();
+        backends.push(std::sync::Arc::new(RemoteModelBackend {
+            node: node.clone(),
+            peer_id,
+        }));
+        models.push(moa::ModelEntry {
+            name: name.to_string(),
+            backend_index: backend_idx,
+        });
+        return true;
+    }
+    false
 }
 
 /// Canonical name used for cross-peer dedup. Different peers advertise the

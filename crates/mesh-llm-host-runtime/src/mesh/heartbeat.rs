@@ -84,6 +84,131 @@ impl RelayReconnectReason {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum HomeRelayStatusTransition {
+    Missing { missing_secs: u64 },
+    Restored,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct RelayPeerObservation {
+    pub(super) peer_id: EndpointId,
+    pub(super) snapshot: RelayPathSnapshot,
+}
+
+#[derive(Default)]
+pub(super) struct RelayReconnectController {
+    peer_health: HashMap<EndpointId, RelayPeerHealth>,
+    relay_missing_since: Option<std::time::Instant>,
+    relay_missing_reported: bool,
+}
+
+impl RelayReconnectController {
+    pub(super) fn observe_home_relay(
+        &mut self,
+        has_home_relay: bool,
+        now: std::time::Instant,
+    ) -> Option<HomeRelayStatusTransition> {
+        if has_home_relay {
+            self.relay_missing_reported = false;
+            return self
+                .relay_missing_since
+                .take()
+                .map(|_| HomeRelayStatusTransition::Restored);
+        }
+
+        let missing_since = *self.relay_missing_since.get_or_insert(now);
+        if self.relay_missing_reported {
+            return None;
+        }
+
+        let missing_secs = now.duration_since(missing_since).as_secs();
+        if missing_secs >= RELAY_MISSING_GRACE_SECS {
+            self.relay_missing_reported = true;
+            return Some(HomeRelayStatusTransition::Missing { missing_secs });
+        }
+        None
+    }
+
+    pub(super) fn plan_reconnect<I>(
+        &mut self,
+        observations: I,
+        now: std::time::Instant,
+        inflight_requests: u64,
+        has_home_relay: bool,
+    ) -> Option<(EndpointId, RelayReconnectReason)>
+    where
+        I: IntoIterator<Item = RelayPeerObservation>,
+    {
+        let mut observations: Vec<RelayPeerObservation> = observations.into_iter().collect();
+        observations.sort_by_key(|observation| endpoint_id_hex(observation.peer_id));
+
+        if observations.is_empty() {
+            self.peer_health.clear();
+            return None;
+        }
+
+        let active_peers: std::collections::HashSet<EndpointId> = observations
+            .iter()
+            .map(|observation| observation.peer_id)
+            .collect();
+        self.peer_health
+            .retain(|peer_id, _| active_peers.contains(peer_id));
+
+        let mut stale_candidate: Option<(EndpointId, RelayReconnectReason)> = None;
+        for observation in observations {
+            let health = self.peer_health.entry(observation.peer_id).or_default();
+            health.observe(observation.snapshot, now);
+
+            let Some(reason) = relay_reconnect_reason(
+                health,
+                observation.snapshot,
+                now,
+                inflight_requests,
+                has_home_relay,
+            ) else {
+                continue;
+            };
+
+            if reason == RelayReconnectReason::RelayRttDegraded {
+                return Some((observation.peer_id, reason));
+            }
+            if stale_candidate.is_none() {
+                stale_candidate = Some((observation.peer_id, reason));
+            }
+        }
+
+        stale_candidate
+    }
+
+    pub(super) fn record_reconnect_attempt(
+        &mut self,
+        peer_id: EndpointId,
+        _reason: RelayReconnectReason,
+        now: std::time::Instant,
+    ) {
+        let health = self.peer_health.entry(peer_id).or_default();
+        health.last_reconnect_at = Some(now);
+    }
+
+    pub(super) fn record_reconnect_result(
+        &mut self,
+        peer_id: EndpointId,
+        succeeded: bool,
+        now: std::time::Instant,
+    ) {
+        if succeeded {
+            let health = self.peer_health.entry(peer_id).or_default();
+            health.relay_since = Some(now);
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn peer_health(&self, peer_id: EndpointId) -> Option<&RelayPeerHealth> {
+        self.peer_health.get(&peer_id)
+    }
+}
+
 pub(super) fn selected_path_snapshot(conn: &Connection) -> RelayPathSnapshot {
     let path_list = conn.paths();
     for path_info in &path_list {
@@ -186,6 +311,101 @@ pub(crate) fn resolve_peer_down(
 impl Node {
     const RTT_REFRESH_SECS: u64 = 15;
 
+    async fn relay_refresh_target(
+        &self,
+        peer_id: EndpointId,
+    ) -> Option<(EndpointAddr, Connection)> {
+        let state = self.state.lock().await;
+        let peer = state.peers.get(&peer_id).cloned()?;
+        let conn = state.connections.get(&peer_id).cloned()?;
+        Some((peer.addr, conn))
+    }
+
+    async fn dial_refreshed_peer_connection(
+        &self,
+        peer_id: EndpointId,
+        addr: EndpointAddr,
+    ) -> Option<Connection> {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            connect_mesh(&self.endpoint, addr),
+        )
+        .await
+        {
+            Ok(Ok(conn)) => Some(conn),
+            Ok(Err(err)) => {
+                tracing::debug!(
+                    "Relay health refresh dial to {} failed: {err}",
+                    peer_id.fmt_short()
+                );
+                None
+            }
+            Err(_) => {
+                tracing::debug!(
+                    "Relay health refresh dial to {} timed out",
+                    peer_id.fmt_short()
+                );
+                None
+            }
+        }
+    }
+
+    async fn refreshed_connection_completed_gossip(
+        &self,
+        peer_id: EndpointId,
+        conn: &Connection,
+    ) -> bool {
+        let gossip_ok = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            self.initiate_gossip_inner(conn.clone(), peer_id, false),
+        )
+        .await
+        .map(|result| result.is_ok())
+        .unwrap_or(false);
+        if !gossip_ok {
+            tracing::debug!(
+                "Relay health refresh gossip with {} failed",
+                peer_id.fmt_short()
+            );
+        }
+        gossip_ok
+    }
+
+    async fn install_refreshed_peer_connection(
+        &self,
+        peer_id: EndpointId,
+        existing_id: usize,
+        new_conn: Connection,
+    ) -> bool {
+        {
+            let mut state = self.state.lock().await;
+            if !should_remove_connection(
+                state.connections.get(&peer_id).map(|conn| conn.stable_id()),
+                existing_id,
+            ) {
+                tracing::debug!(
+                    "Relay health refresh for {} raced with another reconnect; keeping newer connection",
+                    peer_id.fmt_short()
+                );
+                drop(state);
+                new_conn.close(0u32.into(), b"relay-health-raced");
+                return false;
+            }
+            // Swap the tracked slot before closing the stale connection so its
+            // dispatcher sees the newer stable_id and exits without reconnecting.
+            state.connections.insert(peer_id, new_conn.clone());
+        }
+
+        let node_for_dispatch = self.clone();
+        let conn_for_dispatch = new_conn;
+        tokio::spawn(async move {
+            node_for_dispatch
+                .dispatch_streams(conn_for_dispatch, peer_id)
+                .await;
+        });
+        true
+    }
+
     pub fn start_rtt_refresh(&self) {
         let node = self.clone();
         tokio::spawn(async move {
@@ -224,9 +444,7 @@ impl Node {
         let node = self.clone();
         tokio::spawn(async move {
             let mut addr_watch = node.endpoint.watch_addr();
-            let mut peer_health: HashMap<EndpointId, RelayPeerHealth> = HashMap::new();
-            let mut relay_missing_since: Option<std::time::Instant> = None;
-            let mut relay_missing_warned = false;
+            let mut controller = RelayReconnectController::default();
 
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(RELAY_HEALTH_CHECK_SECS)).await;
@@ -235,27 +453,18 @@ impl Node {
                 let endpoint_addr = iroh::Watcher::get(&mut addr_watch);
                 let has_home_relay = endpoint_addr.relay_urls().next().is_some();
 
-                if has_home_relay {
-                    if relay_missing_since.take().is_some() {
+                match controller.observe_home_relay(has_home_relay, now) {
+                    Some(HomeRelayStatusTransition::Restored) => {
                         tracing::info!("Relay health: home relay restored");
                     }
-                    relay_missing_warned = false;
-                } else {
-                    let missing_since = *relay_missing_since.get_or_insert(now);
-                    if !relay_missing_warned
-                        && now.duration_since(missing_since)
-                            >= std::time::Duration::from_secs(RELAY_MISSING_GRACE_SECS)
-                    {
-                        relay_missing_warned = true;
-                        tracing::warn!(
-                            "Relay health: no home relay for {}s",
-                            now.duration_since(missing_since).as_secs()
-                        );
+                    Some(HomeRelayStatusTransition::Missing { missing_secs }) => {
+                        tracing::warn!("Relay health: no home relay for {}s", missing_secs);
                     }
+                    None => {}
                 }
 
                 let inflight_requests = node.inflight_requests();
-                let mut connections: Vec<(EndpointId, Connection)> = {
+                let connections: Vec<(EndpointId, Connection)> = {
                     let state = node.state.lock().await;
                     state
                         .peers
@@ -263,53 +472,24 @@ impl Node {
                         .filter_map(|id| state.connections.get(id).cloned().map(|conn| (*id, conn)))
                         .collect()
                 };
+                let observations: Vec<RelayPeerObservation> = connections
+                    .into_iter()
+                    .map(|(peer_id, conn)| RelayPeerObservation {
+                        peer_id,
+                        snapshot: selected_path_snapshot(&conn),
+                    })
+                    .collect();
 
-                if connections.is_empty() {
-                    peer_health.clear();
-                    continue;
-                }
-
-                connections.sort_by_key(|(peer_id, _)| endpoint_id_hex(*peer_id));
-                peer_health.retain(|peer_id, _| connections.iter().any(|(id, _)| id == peer_id));
-
-                let mut stale_candidate: Option<(EndpointId, RelayReconnectReason)> = None;
-                for (peer_id, conn) in connections {
-                    let snapshot = selected_path_snapshot(&conn);
-                    let health = peer_health.entry(peer_id).or_default();
-                    health.observe(snapshot, now);
-
-                    let Some(reason) = relay_reconnect_reason(
-                        health,
-                        snapshot,
-                        now,
-                        inflight_requests,
-                        has_home_relay,
-                    ) else {
-                        continue;
-                    };
-
-                    if reason == RelayReconnectReason::RelayRttDegraded {
-                        stale_candidate = Some((peer_id, reason));
-                        break;
-                    }
-                    if stale_candidate.is_none() {
-                        stale_candidate = Some((peer_id, reason));
-                    }
-                }
-
-                let Some((peer_id, reason)) = stale_candidate else {
+                let Some((peer_id, reason)) =
+                    controller.plan_reconnect(observations, now, inflight_requests, has_home_relay)
+                else {
                     continue;
                 };
 
-                if let Some(health) = peer_health.get_mut(&peer_id) {
-                    health.last_reconnect_at = Some(now);
-                }
+                controller.record_reconnect_attempt(peer_id, reason, now);
 
-                if node.refresh_peer_connection(peer_id, reason).await {
-                    if let Some(health) = peer_health.get_mut(&peer_id) {
-                        health.relay_since = Some(now);
-                    }
-                }
+                let refreshed = node.refresh_peer_connection(peer_id, reason).await;
+                controller.record_reconnect_result(peer_id, refreshed, now);
             }
         });
     }
@@ -653,16 +833,7 @@ impl Node {
         peer_id: EndpointId,
         reason: RelayReconnectReason,
     ) -> bool {
-        let (addr, existing_conn) = {
-            let state = self.state.lock().await;
-            let Some(peer) = state.peers.get(&peer_id).cloned() else {
-                return false;
-            };
-            let conn = state.connections.get(&peer_id).cloned();
-            (peer.addr, conn)
-        };
-
-        let Some(existing_conn) = existing_conn else {
+        let Some((addr, existing_conn)) = self.relay_refresh_target(peer_id).await else {
             return false;
         };
 
@@ -678,72 +849,24 @@ impl Node {
             reason.label()
         );
 
-        let new_conn = match tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            connect_mesh(&self.endpoint, addr.clone()),
-        )
-        .await
-        {
-            Ok(Ok(conn)) => conn,
-            Ok(Err(err)) => {
-                tracing::debug!(
-                    "Relay health refresh dial to {} failed: {err}",
-                    peer_id.fmt_short()
-                );
-                return false;
-            }
-            Err(_) => {
-                tracing::debug!(
-                    "Relay health refresh dial to {} timed out",
-                    peer_id.fmt_short()
-                );
-                return false;
-            }
+        let Some(new_conn) = self.dial_refreshed_peer_connection(peer_id, addr).await else {
+            return false;
         };
 
-        let gossip_ok = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            self.initiate_gossip_inner(new_conn.clone(), peer_id, false),
-        )
-        .await
-        .map(|result| result.is_ok())
-        .unwrap_or(false);
-
-        if !gossip_ok {
-            tracing::debug!(
-                "Relay health refresh gossip with {} failed",
-                peer_id.fmt_short()
-            );
+        if !self
+            .refreshed_connection_completed_gossip(peer_id, &new_conn)
+            .await
+        {
             new_conn.close(0u32.into(), b"relay-health-gossip-failed");
             return false;
         }
 
+        if !self
+            .install_refreshed_peer_connection(peer_id, existing_id, new_conn)
+            .await
         {
-            let mut state = self.state.lock().await;
-            if !should_remove_connection(
-                state.connections.get(&peer_id).map(|conn| conn.stable_id()),
-                existing_id,
-            ) {
-                tracing::debug!(
-                    "Relay health refresh for {} raced with another reconnect; keeping newer connection",
-                    peer_id.fmt_short()
-                );
-                drop(state);
-                new_conn.close(0u32.into(), b"relay-health-raced");
-                return false;
-            }
-            // Swap the tracked slot before closing the stale connection so its
-            // dispatcher sees the newer stable_id and exits without reconnecting.
-            state.connections.insert(peer_id, new_conn.clone());
+            return false;
         }
-
-        let node_for_dispatch = self.clone();
-        let conn_for_dispatch = new_conn.clone();
-        tokio::spawn(async move {
-            node_for_dispatch
-                .dispatch_streams(conn_for_dispatch, peer_id)
-                .await;
-        });
 
         existing_conn.close(0u32.into(), b"relay-health-refresh");
         let _ =

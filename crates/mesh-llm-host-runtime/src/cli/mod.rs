@@ -938,6 +938,62 @@ fn shell_display(arg: &OsString) -> String {
 }
 
 #[cfg(test)]
+pub(crate) fn assert_mesh_requirements_docs_examples_parse() {
+    let unrestricted_args =
+        normalize_runtime_surface_args(["mesh-llm", "serve", "--model", "Qwen3-8B-Q4_K_M"]);
+    let unrestricted = Cli::parse_from(unrestricted_args.normalized.clone());
+    assert!(unrestricted.command.is_none());
+    assert_eq!(unrestricted.model, vec![PathBuf::from("Qwen3-8B-Q4_K_M")]);
+    assert!(!unrestricted.publish);
+
+    let signed_public_args = normalize_runtime_surface_args([
+        "mesh-llm",
+        "serve",
+        "--model",
+        "Qwen3-8B-Q4_K_M",
+        "--publish",
+        "--owner-key",
+        "~/.mesh-llm/owner-keystore.json",
+        "--owner-required",
+        "--trust-policy",
+        "require-owned",
+        "--node-label",
+        "lab-a",
+    ]);
+    let signed_public = Cli::parse_from(signed_public_args.normalized.clone());
+    assert!(signed_public.command.is_none());
+    assert_eq!(signed_public.model, vec![PathBuf::from("Qwen3-8B-Q4_K_M")]);
+    assert!(signed_public.publish);
+    assert_eq!(
+        signed_public.owner_key,
+        Some(PathBuf::from("~/.mesh-llm/owner-keystore.json"))
+    );
+    assert!(signed_public.owner_required);
+    assert_eq!(signed_public.trust_policy, Some(TrustPolicy::RequireOwned));
+    assert_eq!(signed_public.node_label, Some("lab-a".to_string()));
+
+    let signed_bootstrap_args =
+        normalize_runtime_surface_args(["mesh-llm", "serve", "--join", "signed-bootstrap-token"]);
+    let signed_bootstrap = Cli::parse_from(signed_bootstrap_args.normalized.clone());
+    assert!(signed_bootstrap.command.is_none());
+    assert_eq!(
+        signed_bootstrap.join,
+        vec!["signed-bootstrap-token".to_string()]
+    );
+
+    let runtime_bootstrap = Cli::parse_from(["mesh-llm", "runtime", "bootstrap", "--port", "3131"]);
+    match runtime_bootstrap.command.expect("runtime command expected") {
+        Command::Runtime {
+            command: Some(RuntimeCommand::Bootstrap { port, json }),
+        } => {
+            assert_eq!(port, 3131);
+            assert!(!json);
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::cli::models::{ModelSearchSort, ModelsCommand};
@@ -1056,6 +1112,11 @@ mod tests {
             }
             other => panic!("unexpected command: {other:?}"),
         }
+    }
+
+    #[test]
+    fn mesh_requirements_docs_examples_parse() {
+        super::assert_mesh_requirements_docs_examples_parse();
     }
 
     #[test]

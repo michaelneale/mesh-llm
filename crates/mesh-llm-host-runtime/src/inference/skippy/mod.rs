@@ -28,7 +28,7 @@ use skippy_runtime::ModelInfo;
 use skippy_server::{
     binary_transport::WireCondition, embedded_openai_backend, telemetry::Telemetry,
     telemetry::TelemetryLevel, EmbeddedOpenAiArgs, EmbeddedRuntimeOptions, EmbeddedRuntimeStatus,
-    EmbeddedServerHandle, EmbeddedState, SkippyRuntimeHandle, CONTEXT_BUDGET_MAX_TOKENS,
+    EmbeddedServerHandle, EmbeddedState, SkippyRuntimeHandle, DEFAULT_EMBEDDED_MAX_TOKENS,
 };
 
 pub(crate) use certification::{
@@ -177,7 +177,7 @@ impl SkippyModelLoadOptions {
             n_ubatch: None,
             flash_attn_type: FlashAttentionType::Auto,
             generation_concurrency: 1,
-            default_max_tokens: CONTEXT_BUDGET_MAX_TOKENS,
+            default_max_tokens: DEFAULT_EMBEDDED_MAX_TOKENS,
             layer_end: None,
             selected_device: None,
             package_identity: None,
