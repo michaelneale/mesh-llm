@@ -357,178 +357,207 @@ client, no recursive hook loops.
   fewer workers but this limits model diversity.
 
 ---
-
-## Pressure-testing the mixture hypothesis
+## Diverse-mesh vs split-large: the equal-VRAM trade
 
 > **Status: research plan, not yet run.** No comparison numbers exist.
 > This section is the experimental design — including what would falsify
 > the hypothesis, so we cannot claim a win after the fact by moving the
 > goalposts.
 
-### Sharpened hypothesis
+### The real question
 
-MoA's value comes from **arbitration across genuinely different workers**,
-and that value is largest for **modest model pools** (single-digit-B
-models, or mid-tier 13–32B mixes) on tasks with **decomposable correctness
-signals** — places where any single worker is fallible but workers fail in
-*different* ways.
+Given fixed aggregate (V)RAM across a mesh — say 128 GB on one machine
+and 256 GB on another, 384 GB total — there are two ways to spend it:
 
-Three corollaries that should all hold if the hypothesis is right:
+| Option | Shape | Network on hot path? |
+|---|---|---|
+| **Split-large** | One big model (e.g. 70B Q4) sharded across both machines via Skippy | **Every token.** Each layer-boundary crossing pays an RTT. |
+| **Mix-diverse** | 2–3 mid-size models (e.g. 32B + 32B different families), each fully local to one node, fanned out via `model: "mesh"` | **Once per turn.** Fan-out + collect + reducer. Workers run independently. |
 
-1. MoA's lead over `auto` should **shrink toward zero** as the mesh gains
-   a clearly-dominant model.
-2. MoA with N copies of the **same** model should be measurably worse
-   than MoA with N **different** models of comparable size — otherwise
-   we're measuring sampling-variance reduction, not mixture.
-3. MoA should be **at or below parity** on tasks where correctness is
-   one indivisible thread (long-form prose, recency-sensitive facts), and
-   **above parity** on tasks where workers' errors are uncorrelated
-   (tool routing, constraint adherence, multi-symptom bugs).
+The question this eval answers is **not** "is mixture smarter than one big
+model on equal compute?" It is:
 
-If any of those three fail, the hypothesis as stated is wrong and needs
-to be reformulated before we keep recommending the feature.
+> At equal aggregate (V)RAM, on a real mesh with realistic network
+> conditions, **where does mix-diverse beat split-large on the
+> quality-vs-latency Pareto, and how does that frontier shift as the link
+> degrades?**
+
+This is a sharper claim because it predicts when each approach should
+win, and it makes the two existing systems (Skippy split, MoA fan-out)
+**complementary** rather than competing. The network condition decides
+which one is correct.
+
+### Why this is the load-bearing framing
+
+Split-large already wins on quality in the datacenter case. Nobody
+should claim 32B + 32B mixture beats a 70B with a fast interconnect.
+Pretending otherwise is the kind of overreach that costs the project
+credibility.
+
+The mesh case is exactly where split-large hurts most. Every cross-node
+hop is unpredictable on real-world links — laptops, home machines,
+different ISPs, QUIC over the open internet. A 70B split across two
+homes-with-fiber will be slower and more fragile than the same model in
+a single rack, and there is no fix for that short of "stop splitting."
+
+Conversely, MoA's apparent "weaknesses" become features in mesh
+conditions: per-worker latency variance doesn't matter much when the
+alternative is variance from network-on-critical-path. A slow peer
+becomes a degraded turn, not a hung turn. A dropped peer becomes fewer
+workers, not a failed turn.
+
+### Hypothesis (sharpened)
+
+The mix-diverse path **dominates** split-large on the quality-vs-latency
+Pareto frontier when **any of these holds**:
+
+1. **Cross-node link is high-latency** (≥ 20 ms RTT between mesh peers)
+2. **Cross-node link is lossy or jittery** (≥ 1% packet loss, or RTT
+   stddev comparable to the mean)
+3. **Mesh has ≥ 3 nodes** (split's per-token latency grows with
+   boundary count; MoA's wall-clock stays bounded by slowest worker)
+
+Conversely, split-large dominates when the link is LAN-grade and the
+mesh is exactly two nodes. Both are defensible regions of operation.
 
 ### What would falsify the hypothesis
 
 Pre-committed, so we don't move goalposts after seeing data:
 
-- On a mixed two-model mesh of comparable-size workers (e.g. 8B + 8B
-  different families), MoA does not dominate `auto` on the Pareto front
-  for **any** latency budget across the adversarial scenario set →
-  **falsified for modest-model meshes**, the core claim.
-- Same-model-N-workers ≈ different-model-N-workers within grader noise
-  → **falsified as "mixture"**; the value, if any, is variance reduction
-  and should be described that way.
-- MoA's lead does *not* shrink when a 30B+ model is added to the pool
-  → **the "modest models" framing is wrong** and we need to retract it.
+- On a degraded link (e.g. +30 ms RTT, 1% loss) at equal aggregate VRAM,
+  split-large still dominates mix-diverse on the Pareto front for **every**
+  task type → **falsified**, the network-tolerance claim was wrong.
+- Mix-diverse with N copies of the **same** model performs the same as
+  mix-diverse with N **different** models within grader noise →
+  **falsified as "diverse"**; the value is sampling-variance reduction,
+  not mixture of perspectives, and we should rename and re-pitch the
+  feature.
+- Mix-diverse's lead does not grow as mesh size increases from 2 → 3 → 4
+  nodes → **the scalability claim is wrong** and split-large's
+  multi-node story isn't actually worse.
 
 ### Step 1 — measure the variance floor first
 
 Before any A/B claim is meaningful, establish the noise band. Same
-single model, same prompt, 10 runs with different sampling seeds, on
-each grader rubric. The standard deviation of grades sets the minimum
-detectable effect. If a single 8B model fluctuates by ±0.8 on a 1-5
-grade across seeds, then a 0.3-point MoA "win" is in the noise and
-should not be reported as a win.
+single model, same prompt, 10 runs with different sampling seeds.
+The standard deviation of grades sets the minimum detectable effect.
+If a single 32B model fluctuates by ±0.8 on a 1–5 grade across seeds,
+then a 0.3-point lead is in the noise and is not a result.
 
-Most A/B writeups skip this step and end up claiming effects smaller
-than their own measurement error. We will not.
+Most A/B writeups skip this and claim effects smaller than their own
+measurement error. We will not.
 
-### Step 2 — adversarial scenario design
+### Step 2 — the three-way comparison at equal VRAM
 
-The scenario set must include cases hostile to the hypothesis, not just
-favorable ones. At minimum:
+All three configurations on the same physical hardware, fixed
+aggregate VRAM budget, fixed traffic. This is the headline experiment.
 
-**Tasks MoA should win on (decomposable correctness)**
-- Tool routing with strict format constraints (exact-N bullets, exact
-  schema, exact file location)
-- Multi-symptom bugs in small code (two independent defects; workers
-  often each catch one)
-- Constraint adherence ("don't touch the imports") where each worker is
-  ~70% reliable per constraint and consensus filters violators
+| Config | Example on 128 GB + 256 GB mesh | What it represents |
+|---|---|---|
+| **Split-large** | One 70B Q4 sharded across both machines (Skippy) | "Spend the VRAM on one bigger mind" |
+| **Mix-diverse** | 32B model A on box 1, 32B model B on box 2, optional 8B on either, via `model: "mesh"` | "Spend the VRAM on multiple independent minds" |
+| **Single-mid** | `auto` picks the strongest of the mid-size models | Sanity floor — what one of the diverse models gives you alone |
 
-**Tasks MoA should tie on (single coherent thread)**
-- Long-form prose ("write a 400-word argument for X") — reducer has to
-  pick one whole answer, so this collapses to "best single worker
-  survives" with extra latency
-- Step-by-step procedural answers with no decomposable check
+Single-mid is the baseline that catches "MoA = single-best + overhead"
+silently. If mix-diverse is not measurably above single-mid, the
+fan-out is paying latency for nothing.
 
-**Tasks MoA could lose on (failure-mode amplification)**
-- Plausible-but-wrong defaults — code that's *almost* right with one
-  wrong-but-natural-looking fix (e.g. wrong regex, off-by-one). If 3 of
-  4 workers all make the same plausible-but-wrong fix, consensus
-  *amplifies* the error. This is the reducer-only setup's failure mode
-  that proponents never advertise.
-- Single dominant fact — "capital of Bhutan" where one worker knows and
-  three don't. Arbiter has no signal to prefer the knower.
-- Recency-sensitive questions — workers with different knowledge cutoffs
-  give different answers, none of which the arbiter can verify.
+### Step 3 — the network sweep is the actual experiment
 
-Without the third group, we're not stress-testing — we're confirming.
+Quality alone is not the headline. The deliverable is a 2-D scatter:
+quality on Y, latency p50 on X, one curve per config per network
+condition.
 
-### Step 3 — Pareto curve, not win/tie/loss
+| Network condition | How to simulate | What we expect |
+|---|---|---|
+| LAN baseline | Two boxes on same switch | Split-large wins outright |
+| +20 ms RTT | `tc qdisc add ... netem delay 20ms` on inter-node link | Crossover begins |
+| +50 ms RTT | `netem delay 50ms` | Mix-diverse leads on latency, ties on quality |
+| 1% packet loss | `netem loss 1%` | Split-large becomes flaky; mix-diverse mostly unaffected |
+| 5% packet loss | `netem loss 5%` | Split-large unusable; mix-diverse degrades gracefully |
 
-The headline deliverable is not "MoA wins 7-2-1." It is a quality vs
-median-latency scatter, with every config a point:
+The interesting point in each plot is the **crossover** — the network
+condition at which mix-diverse starts dominating. That's the headline
+number, not raw win counts.
 
-- single fast model (smallest, baseline floor)
-- single medium model (`auto` on a small-only mesh)
-- single strong model (`auto` on a mesh that includes one)
-- MoA N=2 (smallest budget)
-- MoA N=3
-- MoA N=4
-- MoA with hedge_delay=3s vs 5s vs 10s
+### Step 4 — mesh-size scaling
 
-A point dominates another if it is both higher quality *and* lower
-latency. The interesting questions are:
+Run the same equal-VRAM comparison at 2, 3, and 4 nodes (with VRAM
+budget scaled accordingly).
 
-- Does any MoA point dominate any `auto` point?
-- If MoA wins only at the top-right (more latency for more quality),
-  what is the marginal cost per quality point, and is it worth it?
-- Where on the curve does early-exit fire most often, and how much
-  latency does that save?
+- **Split-large:** per-token latency should grow roughly linearly with
+  boundary count, because every additional split adds one more RTT to
+  the hot path.
+- **Mix-diverse:** wall-clock stays bounded by slowest worker. Adding
+  a fourth node gives one more independent worker for arbitration,
+  which can either improve quality or do nothing — but should not
+  materially worsen latency.
 
-### Step 4 — ablations to find the mechanism
+If split-large's latency does *not* grow with node count, the
+"mix-diverse scales better" claim is wrong and should be retracted.
 
-If MoA wins, *why*? Component-by-component:
+### Step 5 — task-type breakdown (quality measurement)
+
+Within the equal-VRAM, network-sweep frame, the quality axis still
+needs to be measured against real task types. Adversarial design from
+the earlier draft applies here as the *implementation* of quality, not
+the headline:
+
+**Tasks mix-diverse should win on (decomposable correctness)**
+- Tool routing with strict format constraints
+- Multi-symptom bugs (two independent defects)
+- Constraint adherence ("don't touch the imports")
+
+**Tasks both should tie on (single coherent thread)**
+- Long-form prose
+- Step-by-step procedural answers
+
+**Tasks mix-diverse could lose on (failure-mode amplification)**
+- Plausible-but-wrong defaults — if multiple workers make the same
+  natural-looking mistake, consensus *amplifies* it
+- Single-dominant-fact recall — split-large's bigger weights are more
+  likely to know the fact
+- Recency-sensitive questions
+
+Without the third group the result is a confirmation exercise, not a
+test.
+
+### Step 6 — ablations to find the mechanism
+
+If mix-diverse wins, *why*? Component-by-component:
 
 | Ablation | What it isolates |
 |---|---|
-| MoA with early-exit disabled (always reducer) | Is the win from consensus check, or from reducer synthesis? |
-| MoA with reducer disabled (return best worker on conflict) | Is the reducer doing real work, or just adding latency? |
+| Mix with early-exit disabled (always reducer) | Is the win from consensus or from reducer synthesis? |
+| Mix with reducer disabled (return best worker) | Is the reducer paying its latency cost? |
 | N=2 vs N=3 vs N=5 | Marginal value of each additional worker |
-| **All workers same model** (sampling diversity only) | Mixture-of-perspectives vs variance reduction |
-| Random reducer choice vs strongest-first | Does reducer selection matter, or any decent model? |
-| `mesh_hooks: true` (currently false for workers) | Does worker-side hook escalation add or subtract? |
+| **All workers same model** (sampling diversity only) | Mixture vs variance reduction |
+| Random reducer choice vs strongest-first | Does reducer selection matter? |
 
-Same-model-N-workers is the most important one: if it's close to
-different-model-N-workers, we should re-label the feature as "consensus
-voting for variance reduction," not "mixture of agents."
+The same-model-N-workers ablation is the most important: if it
+performs the same as different-model-N-workers, the feature is
+"consensus voting for variance reduction" and should be described that
+way, not as "mixture of agents."
 
-### Step 5 — composition sweep
+### Step 7 — grader robustness
 
-The "modest models" framing is the load-bearing claim. Test it directly:
+Agent-as-judge has well-documented failure modes. Required defenses:
 
-| Mesh shape | Prediction if hypothesis holds |
-|---|---|
-| 2× 4B (same family) | MoA win small; same-model ablation should tie |
-| 2× 8B (different families) | MoA win largest here |
-| 8B + 13B | MoA win persists, shrinks slightly |
-| 8B + 32B | MoA win shrinks substantially; `auto` picks 32B |
-| 8B + 32B + 70B | MoA win near zero or negative; `auto` dominates |
+- **Position swap.** Re-grade with config order reversed; agreement
+  must hold above ~95%.
+- **Dual grader.** Two different grader models on the same outputs;
+  correlate.
+- **Manual spot-check.** Hand-grade 10% of pairs; agreement with
+  automated graders must be ≥ ~80%.
 
-If the curve doesn't bend that way — if MoA's lead is flat across
-compositions, or grows as you add bigger models — the hypothesis is
-wrong as stated.
+### Step 8 — real-task replay
 
-### Step 6 — grader robustness
-
-Agent-as-judge has well-documented failure modes: verbosity bias,
-position bias, same-family preference. Defenses, all required:
-
-- **Position swap.** Re-grade each pair (`mesh` first vs `auto` first)
-  and compute agreement. Disagreement rate above ~5% means grader is
-  measuring position more than quality.
-- **Dual grader.** Run the full grade pass with two different grader
-  models and check correlation. Low correlation means the result is
-  grader idiosyncrasy, not agent quality.
-- **Manual spot-check.** Hand-grade 10% of pairs and compute agreement
-  with each automated grader. Below ~80% agreement, the grader is
-  unreliable and the eval result is suspect.
-
-### Step 7 — real-task replay
-
-Curated scenarios are prone to experimenter intuition. The strongest
-defense against cherry-picking is replaying real traffic:
-
-- Collect a sample of first-turn prompts from real goose / Claude Code /
-  pi sessions (with consent, from contributors' own logs)
-- Run each through both `mesh` and `auto` with everything else fixed
-- Grade with the same rubric set
-
-If MoA wins on curated scenarios but loses on real-traffic replay, the
-curated scenarios were the wrong selection. Real traffic is the
-acceptance test.
+Curated scenarios are prone to experimenter intuition. Replay a
+sample of real first-turn prompts (from contributors' own goose /
+Claude Code / pi sessions, with consent) through all three configs at
+each network condition. If mix-diverse wins on curated scenarios but
+loses on real-traffic replay, the curated set was the wrong selection.
+Real traffic is the acceptance test.
 
 ### Reporting discipline
 
@@ -537,30 +566,34 @@ Every result table must include:
 - N per cell
 - Variance-floor reference for the relevant model size
 - Grader version (model + rubric version)
-- Mesh composition (exact model list)
+- Mesh composition (exact model list and node placement)
+- **Network condition (RTT, loss, jitter)**
+- Aggregate VRAM budget (so equal-VRAM claim is auditable)
 - Latency percentiles (p50, p95), not just mean
-- Early-exit rate from `x-moa-*` headers
+- Early-exit rate from `x-moa-*` headers (mix-diverse only)
+- For split-large: cross-node bytes per token (so we can correlate
+  with network condition)
 
-A win is a result that exceeds the variance floor by at least 1.5×,
-holds under position swap, replicates with a second grader, and is
-visible on the Pareto curve — not just in a win/tie/loss count.
+A win is a result that exceeds the variance floor by ≥ 1.5×, holds
+under position swap, replicates with a second grader, and is visible
+as Pareto dominance — not just a higher mean.
 
 ### Worker-set knob (deferred, harness-side only)
 
-The composition sweep and same-model ablation both need a way to
-restrict which models MoA fans out to. The current `model: "mesh"`
-uses every callable model.
-
-When we need this, it belongs in the eval harness, not the crate:
-either pre-flight filter `/v1/models` to the allowed set before
-launching, or have the harness send a header (e.g.
-`x-moa-workers-include: A,B`) that the gateway honors. The crate
+Several steps above (equal-VRAM mix-diverse, same-model ablation,
+composition sweep) require restricting which models MoA fans out to.
+Currently `model: "mesh"` uses every callable model. The knob belongs
+in the eval harness, not in the crate: either pre-flight filter
+`/v1/models` to the allowed set, or send a header
+(e.g. `x-moa-workers-include: A,B`) the gateway honors. The crate
 already has the machinery to filter the worker pool; no semantic
 change required, just a knob.
 
 ### Status / next step
 
 No matrix has been run. The first concrete step is **Step 1, the
-variance floor**, against whichever mesh we have available. That
-single measurement gates everything else — without it, no later
-result can be claimed as significant.
+variance floor**, on whichever mesh we have available. Without it, no
+later result can be claimed significant. After variance floor, the
+priority is the **Step 2 three-way at LAN baseline** — if split-large
+doesn't dominate there, our network-condition framing is wrong and we
+need to rethink before running the network sweep.
