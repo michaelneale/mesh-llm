@@ -15,6 +15,8 @@ const FULL_SURFACE_VALID_FIXTURE: &str =
 const FULL_SURFACE_INVALID_FIXTURE: &str =
     include_str!("../../../../tests/fixtures/skippy_full_surface_invalid.toml");
 
+type FullSurfaceFixture = (MeshConfig, NamedTempFile, NamedTempFile, NamedTempFile);
+
 fn fake_package_identity(layer_count: u32) -> SkippyPackageIdentity {
     SkippyPackageIdentity {
         package_ref: "gguf:///models/qwen.gguf".to_string(),
@@ -269,57 +271,52 @@ parallel = 11
     assert_eq!(resolved.throughput.continuous_batching, "true");
 }
 
-#[test]
-fn request_overrides_change_request_time_defaults_without_mutating_load_time_stage_config() {
-    let mesh_config = parse_config(
-        r#"
-[defaults.model_fit]
-ctx_size = 4096
-
-[defaults.request_defaults]
-temperature = 0.2
-max_tokens = 128
-"#,
-    );
-    let model_file = temp_model_file();
-    let without_request = resolve_skippy_config(SkippyConfigResolveRequest {
-        mesh_config: &mesh_config,
+fn resolve_qwen_test_config(
+    mesh_config: &MeshConfig,
+    model_path: &Path,
+    request_defaults: Option<&RequestDefaultsConfig>,
+) -> ResolvedSkippyConfig {
+    resolve_skippy_config(SkippyConfigResolveRequest {
+        mesh_config,
         model_id: "Qwen/Qwen3-0.6B:Q4_K_M",
-        model_path: model_file.path(),
+        model_path,
         model_bytes: 10 * 1024 * 1024 * 1024,
         allocatable_memory_bytes: None,
-        request_defaults: None,
+        request_defaults,
     })
-    .unwrap();
-    let request_defaults = RequestDefaultsConfig {
-        temperature: Some(0.9),
-        max_tokens: Some(32),
-        ..Default::default()
-    };
-    let with_request = resolve_skippy_config(SkippyConfigResolveRequest {
-        mesh_config: &mesh_config,
-        model_id: "Qwen/Qwen3-0.6B:Q4_K_M",
-        model_path: model_file.path(),
-        model_bytes: 10 * 1024 * 1024 * 1024,
-        allocatable_memory_bytes: None,
-        request_defaults: Some(&request_defaults),
-    })
-    .unwrap();
+    .unwrap()
+}
 
+fn assert_load_time_config_unchanged(
+    without_request: &ResolvedSkippyConfig,
+    with_request: &ResolvedSkippyConfig,
+) {
     assert_eq!(without_request.model_fit, with_request.model_fit);
     assert_eq!(without_request.hardware, with_request.hardware);
     assert_eq!(without_request.skippy, with_request.skippy);
+}
+
+fn assert_request_defaults_follow_request_overrides(
+    without_request: &ResolvedSkippyConfig,
+    with_request: &ResolvedSkippyConfig,
+) {
     assert_eq!(without_request.request_defaults.temperature, Some(0.2));
     assert_eq!(with_request.request_defaults.temperature, Some(0.9));
     assert_eq!(without_request.request_defaults.max_tokens, 128);
     assert_eq!(with_request.request_defaults.max_tokens, 32);
+}
 
+fn assert_stage_config_ignores_request_defaults(
+    without_request: &ResolvedSkippyConfig,
+    with_request: &ResolvedSkippyConfig,
+) {
     let baseline_stage = without_request
         .to_stage_config(Some(fake_package_identity(28)), LoadMode::RuntimeSlice)
         .expect("baseline stage config should build");
     let override_stage = with_request
         .to_stage_config(Some(fake_package_identity(28)), LoadMode::RuntimeSlice)
         .expect("override stage config should build");
+
     assert_eq!(baseline_stage.model_id, override_stage.model_id);
     assert_eq!(baseline_stage.model_path, override_stage.model_path);
     assert_eq!(baseline_stage.ctx_size, override_stage.ctx_size);
@@ -338,15 +335,49 @@ max_tokens = 128
         override_stage.selected_device
     );
     assert_eq!(baseline_stage.load_mode, override_stage.load_mode);
+}
 
+fn assert_embedded_openai_max_tokens_follow_request_overrides(
+    without_request: &ResolvedSkippyConfig,
+    with_request: &ResolvedSkippyConfig,
+) {
     let baseline_openai = without_request
         .to_embedded_openai_args(4096, true)
         .expect("baseline openai args should build");
     let override_openai = with_request
         .to_embedded_openai_args(4096, true)
         .expect("override openai args should build");
+
     assert_eq!(baseline_openai.default_max_tokens, 128);
     assert_eq!(override_openai.default_max_tokens, 32);
+}
+
+#[test]
+fn request_overrides_change_request_time_defaults_without_mutating_load_time_stage_config() {
+    let mesh_config = parse_config(
+        r#"
+[defaults.model_fit]
+ctx_size = 4096
+
+[defaults.request_defaults]
+temperature = 0.2
+max_tokens = 128
+"#,
+    );
+    let model_file = temp_model_file();
+    let without_request = resolve_qwen_test_config(&mesh_config, model_file.path(), None);
+    let request_defaults = RequestDefaultsConfig {
+        temperature: Some(0.9),
+        max_tokens: Some(32),
+        ..Default::default()
+    };
+    let with_request =
+        resolve_qwen_test_config(&mesh_config, model_file.path(), Some(&request_defaults));
+
+    assert_load_time_config_unchanged(&without_request, &with_request);
+    assert_request_defaults_follow_request_overrides(&without_request, &with_request);
+    assert_stage_config_ignores_request_defaults(&without_request, &with_request);
+    assert_embedded_openai_max_tokens_follow_request_overrides(&without_request, &with_request);
 }
 
 #[test]
@@ -662,48 +693,52 @@ draft_acceptance_threshold = 0.5
     assert!(err.contains("draft_acceptance_threshold"));
 }
 
-#[test]
-fn integrated_full_surface_fixture_resolves_defaults_overrides_staged_and_runtime_paths() {
+fn full_surface_fixture_with_model_paths() -> FullSurfaceFixture {
     let mut mesh_config = parse_config(FULL_SURFACE_VALID_FIXTURE);
     let explicit_model = temp_model_file();
     let defaults_model = temp_model_file();
     let projector_file = NamedTempFile::new().expect("temp projector");
-    mesh_config.models[0]
+
+    let explicit_projector_path = projector_file.path().display().to_string();
+    let explicit_hardware = mesh_config.models[0]
         .hardware
         .as_mut()
-        .expect("explicit hardware")
-        .model_path = Some(explicit_model.path().display().to_string());
-    mesh_config.models[0]
-        .hardware
-        .as_mut()
-        .expect("explicit hardware")
-        .mmproj = Some(projector_file.path().display().to_string());
+        .expect("explicit hardware");
+    explicit_hardware.model_path = Some(explicit_model.path().display().to_string());
+    explicit_hardware.mmproj = Some(explicit_projector_path.clone());
     mesh_config.models[0]
         .multimodal
         .as_mut()
         .expect("explicit multimodal")
-        .mmproj = Some(projector_file.path().display().to_string());
+        .mmproj = Some(explicit_projector_path);
     mesh_config.models[1]
         .hardware
         .as_mut()
         .expect("defaults hardware")
         .model_path = Some(defaults_model.path().display().to_string());
-    let request_defaults = RequestDefaultsConfig {
-        temperature: Some(0.7),
-        max_tokens: Some(256),
-        ..Default::default()
-    };
 
-    let explicit = resolve_skippy_config(SkippyConfigResolveRequest {
-        mesh_config: &mesh_config,
-        model_id: "Qwen/Qwen3-0.6B:Q4_K_M",
-        model_path: explicit_model.path(),
-        model_bytes: 4 * 1024 * 1024 * 1024,
+    (mesh_config, explicit_model, defaults_model, projector_file)
+}
+
+fn resolve_full_surface_model(
+    mesh_config: &MeshConfig,
+    model_id: &str,
+    model_path: &Path,
+    model_bytes: u64,
+    request_defaults: Option<&RequestDefaultsConfig>,
+) -> ResolvedSkippyConfig {
+    resolve_skippy_config(SkippyConfigResolveRequest {
+        mesh_config,
+        model_id,
+        model_path,
+        model_bytes,
         allocatable_memory_bytes: Some(12 * 1024 * 1024 * 1024),
-        request_defaults: Some(&request_defaults),
+        request_defaults,
     })
-    .expect("explicit model should resolve");
+    .expect("full-surface fixture model should resolve")
+}
 
+fn assert_explicit_full_surface_resolution(explicit: &ResolvedSkippyConfig) {
     assert_eq!(explicit.model_fit.ctx_size, 16384);
     assert_eq!(explicit.model_fit.batch, 1024);
     assert_eq!(explicit.model_fit.ubatch, 128);
@@ -715,15 +750,20 @@ fn integrated_full_surface_fixture_resolves_defaults_overrides_staged_and_runtim
     assert_eq!(explicit.throughput.threads_batch, Some(6));
     assert_eq!(explicit.request_defaults.temperature, Some(0.7));
     assert_eq!(explicit.request_defaults.max_tokens, 256);
+}
 
+fn assert_explicit_full_surface_stage_config(explicit: &ResolvedSkippyConfig) {
     let stage = explicit
         .to_stage_config(Some(fake_package_identity(32)), LoadMode::RuntimeSlice)
         .expect("stage config should build");
+
     assert_eq!((stage.layer_start, stage.layer_end), (12, 24));
     assert_eq!(stage.n_batch, Some(1024));
     assert_eq!(stage.n_ubatch, Some(128));
     assert_eq!(stage.n_gpu_layers, 99);
+}
 
+fn assert_explicit_full_surface_runtime_options(explicit: &ResolvedSkippyConfig) {
     let runtime = explicit
         .to_embedded_runtime_options(
             &SkippyTelemetryOptions::off(),
@@ -731,14 +771,18 @@ fn integrated_full_surface_fixture_resolves_defaults_overrides_staged_and_runtim
             LoadMode::RuntimeSlice,
         )
         .expect("embedded runtime options should build");
+
     assert_eq!(runtime.n_threads, Some(10));
     assert_eq!(runtime.n_threads_batch, Some(6));
     assert_eq!(runtime.config.layer_start, 12);
     assert_eq!(runtime.config.layer_end, 24);
+}
 
+fn assert_explicit_full_surface_openai_args(explicit: &ResolvedSkippyConfig) {
     let openai = explicit
         .to_embedded_openai_args(4096, true)
         .expect("embedded openai args should build");
+
     assert_eq!(openai.prefill_chunk_policy, "schedule");
     assert_eq!(openai.prefill_chunk_size, 128);
     assert_eq!(
@@ -748,17 +792,9 @@ fn integrated_full_surface_fixture_resolves_defaults_overrides_staged_and_runtim
     assert_eq!(openai.speculative_window, 8);
     assert_eq!(openai.draft_n_gpu_layers, Some(12));
     assert_eq!(openai.default_max_tokens, 256);
+}
 
-    let omitted = resolve_skippy_config(SkippyConfigResolveRequest {
-        mesh_config: &mesh_config,
-        model_id: "ggml-org/gemma-3-270m-it-GGUF:Q8_0",
-        model_path: defaults_model.path(),
-        model_bytes: 2 * 1024 * 1024 * 1024,
-        allocatable_memory_bytes: Some(12 * 1024 * 1024 * 1024),
-        request_defaults: None,
-    })
-    .expect("defaults-only model should resolve");
-
+fn assert_defaults_only_full_surface_resolution(omitted: &ResolvedSkippyConfig) {
     assert_eq!(omitted.model_fit.ctx_size, 8192);
     assert_eq!(omitted.model_fit.batch, 512);
     assert_eq!(omitted.model_fit.ubatch, 128);
@@ -766,13 +802,49 @@ fn integrated_full_surface_fixture_resolves_defaults_overrides_staged_and_runtim
     assert_eq!(omitted.throughput.parallel, 2);
     assert_eq!(omitted.request_defaults.temperature, Some(0.2));
     assert_eq!(omitted.request_defaults.max_tokens, 128);
+}
 
+fn assert_defaults_only_full_surface_model_load_options(omitted: &ResolvedSkippyConfig) {
     let single_stage = omitted
         .to_model_load_options(SkippyTelemetryOptions::off())
         .expect("defaults-only model should remain single-stage safe");
+
     assert_eq!(single_stage.ctx_size, 8192);
     assert_eq!(single_stage.n_batch, Some(512));
     assert_eq!(single_stage.n_ubatch, Some(128));
+}
+
+#[test]
+fn integrated_full_surface_fixture_resolves_defaults_overrides_staged_and_runtime_paths() {
+    let (mesh_config, explicit_model, defaults_model, _projector_file) =
+        full_surface_fixture_with_model_paths();
+    let request_defaults = RequestDefaultsConfig {
+        temperature: Some(0.7),
+        max_tokens: Some(256),
+        ..Default::default()
+    };
+
+    let explicit = resolve_full_surface_model(
+        &mesh_config,
+        "Qwen/Qwen3-0.6B:Q4_K_M",
+        explicit_model.path(),
+        4 * 1024 * 1024 * 1024,
+        Some(&request_defaults),
+    );
+    assert_explicit_full_surface_resolution(&explicit);
+    assert_explicit_full_surface_stage_config(&explicit);
+    assert_explicit_full_surface_runtime_options(&explicit);
+    assert_explicit_full_surface_openai_args(&explicit);
+
+    let omitted = resolve_full_surface_model(
+        &mesh_config,
+        "ggml-org/gemma-3-270m-it-GGUF:Q8_0",
+        defaults_model.path(),
+        2 * 1024 * 1024 * 1024,
+        None,
+    );
+    assert_defaults_only_full_surface_resolution(&omitted);
+    assert_defaults_only_full_surface_model_load_options(&omitted);
 }
 
 #[test]
