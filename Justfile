@@ -355,49 +355,6 @@ test-all:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    configure_lld_rustflags() {
-        local lld=""
-        case "$(uname -s)" in
-            Linux)
-                if ! command -v ld.lld >/dev/null 2>&1; then
-                    echo "Error: LLVM ld.lld was not found. Install lld, then rerun this command." >&2
-                    exit 1
-                fi
-                lld="lld"
-                ;;
-            Darwin)
-                if command -v ld64.lld >/dev/null 2>&1; then
-                    lld="$(command -v ld64.lld)"
-                elif command -v brew >/dev/null 2>&1; then
-                    local lld_prefix
-                    lld_prefix="$(brew --prefix lld 2>/dev/null || true)"
-                    if [[ -n "$lld_prefix" && -x "$lld_prefix/bin/ld64.lld" ]]; then
-                        lld="$lld_prefix/bin/ld64.lld"
-                    fi
-                fi
-                if [[ -z "$lld" ]]; then
-                    for candidate in /opt/homebrew/opt/lld/bin/ld64.lld /usr/local/opt/lld/bin/ld64.lld; do
-                        if [[ -x "$candidate" ]]; then
-                            lld="$candidate"
-                            break
-                        fi
-                    done
-                fi
-                if [[ -z "$lld" ]]; then
-                    echo "Error: LLVM ld64.lld was not found. Install it with: brew install lld" >&2
-                    exit 1
-                fi
-                ;;
-            *)
-                echo "Unsupported OS for lld linker setup: $(uname -s)" >&2
-                exit 1
-                ;;
-        esac
-        export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C link-arg=-fuse-ld=$lld"
-    }
-
-    configure_lld_rustflags
-
     native_backend="${LLAMA_STAGE_BACKEND:-${SKIPPY_LLAMA_BACKEND:-${LLAMA_BACKEND:-}}}"
     if [[ -z "$native_backend" ]]; then
         case "$(uname -s)" in
@@ -420,16 +377,16 @@ test-all:
 
     # Each UI step runs in a subshell so cd doesn't leak between steps.
     echo "=== 1/7 Rust format check ==="
-    cargo fmt --all -- --check
+    just with-lld cargo fmt --all -- --check
     echo ""
     echo "=== 2/7 Clippy ==="
-    cargo clippy -p mesh-llm -- -D warnings
+    just with-lld cargo clippy -p mesh-llm -- -D warnings
     echo ""
     echo "=== 3/7 Rust tests ==="
     echo "--- mesh-llm ---"
-    cargo test -p mesh-llm
+    just with-lld cargo test -p mesh-llm
     echo "--- skippy-runtime lib ---"
-    cargo test -p skippy-runtime --lib
+    just with-lld cargo test -p skippy-runtime --lib
     echo ""
     echo "=== 4/7 ESLint + Prettier ==="
     (cd "{{ ui_dir }}" && pnpm run lint)
