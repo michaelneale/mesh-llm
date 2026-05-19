@@ -817,6 +817,23 @@ mod tests {
     }
 
     #[test]
+    fn kv_cache_quant_prices_key_and_value_widths_independently() {
+        let meta = GgufCompactMeta {
+            head_count: 32,
+            kv_head_count: 8,
+            layer_count: 24,
+            key_length: 64,
+            value_length: 256,
+            ..Default::default()
+        };
+        let quant = GgufKvCacheQuant::new(GgufKvCacheType::Q8_0, GgufKvCacheType::Q4_0);
+
+        assert_eq!(quant.k_cache_bytes_per_token(&meta), Some(13_056));
+        assert_eq!(quant.v_cache_bytes_per_token(&meta), Some(27_648));
+        assert_eq!(quant.kv_cache_bytes_per_token(&meta), Some(40_704));
+    }
+
+    #[test]
     fn kv_cache_bytes_per_token_returns_none_when_required_fields_are_missing() {
         let meta = GgufCompactMeta {
             head_count: 32,
