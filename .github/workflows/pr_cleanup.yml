@@ -25,7 +25,23 @@ jobs:
             const { owner, repo } = context.repo;
             const ref = process.env.PR_CACHE_REF;
             const perPage = 100;
+            const deleteBatchSize = 20;
+            const deleteBatchPauseMs = 15_000;
             const caches = [];
+
+            const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+            async function pauseBetweenDeleteBatches(nextIndex, totalCount, label) {
+              if (nextIndex >= totalCount) {
+                return;
+              }
+              core.notice(
+                `Deleted ${nextIndex}/${totalCount} ${label}; waiting ${
+                  deleteBatchPauseMs / 1000
+                }s before the next batch to avoid GitHub secondary rate limits.`,
+              );
+              await sleep(deleteBatchPauseMs);
+            }
 
             for (let page = 1; ; page += 1) {
               const response = await github.request(
@@ -42,22 +58,30 @@ jobs:
             let deletedBytes = 0;
             const deleted = [];
 
-            for (const cache of caches) {
-              try {
-                await github.request(
-                  "DELETE /repos/{owner}/{repo}/actions/caches/{cache_id}",
-                  { owner, repo, cache_id: cache.id },
-                );
-                deletedBytes += cache.size_in_bytes ?? 0;
-                deleted.push(cache);
-                core.info(`Deleted cache ${cache.id} (${cache.key}) from ${cache.ref}.`);
-              } catch (error) {
-                if (error.status === 404) {
-                  core.warning(`Cache ${cache.id} (${cache.key}) was already deleted.`);
-                  continue;
+            for (let index = 0; index < caches.length; index += deleteBatchSize) {
+              const batch = caches.slice(index, index + deleteBatchSize);
+              for (const cache of batch) {
+                try {
+                  await github.request(
+                    "DELETE /repos/{owner}/{repo}/actions/caches/{cache_id}",
+                    { owner, repo, cache_id: cache.id },
+                  );
+                  deletedBytes += cache.size_in_bytes ?? 0;
+                  deleted.push(cache);
+                  core.info(`Deleted cache ${cache.id} (${cache.key}) from ${cache.ref}.`);
+                } catch (error) {
+                  if (error.status === 404) {
+                    core.warning(`Cache ${cache.id} (${cache.key}) was already deleted.`);
+                    continue;
+                  }
+                  throw error;
                 }
-                throw error;
               }
+              await pauseBetweenDeleteBatches(
+                Math.min(index + deleteBatchSize, caches.length),
+                caches.length,
+                "cache(s)",
+              );
             }
 
             core.setOutput("cache-ref", ref);
@@ -81,7 +105,32 @@ jobs:
             const prNumber = Number(process.env.PR_NUMBER);
             const headSha = process.env.PR_HEAD_SHA;
             const perPage = 100;
+            const deleteBatchSize = 20;
+            const deleteBatchPauseMs = 15_000;
             const matchingRuns = [];
+
+            const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+            async function deleteInBatches(items, label, deleteItem) {
+              for (let index = 0; index < items.length; index += deleteBatchSize) {
+                const batch = items.slice(index, index + deleteBatchSize);
+                for (const item of batch) {
+                  await deleteItem(item);
+                }
+
+                const nextIndex = Math.min(index + deleteBatchSize, items.length);
+                if (nextIndex >= items.length) {
+                  continue;
+                }
+
+                core.notice(
+                  `Deleted ${nextIndex}/${items.length} ${label}; waiting ${
+                    deleteBatchPauseMs / 1000
+                  }s before the next batch to avoid GitHub secondary rate limits.`,
+                );
+                await sleep(deleteBatchPauseMs);
+              }
+            }
 
             for (let page = 1; ; page += 1) {
               const response = await github.request(
@@ -109,6 +158,7 @@ jobs:
 
             let deletedBytes = 0;
             let deletedCount = 0;
+            const artifactsToDelete = [];
 
             for (const run of matchingRuns) {
               for (let page = 1; ; page += 1) {
@@ -117,32 +167,38 @@ jobs:
                   { owner, repo, run_id: run.id, per_page: perPage, page },
                 );
                 const artifacts = response.data.artifacts ?? [];
-                for (const artifact of artifacts) {
-                  try {
-                    await github.request(
-                      "DELETE /repos/{owner}/{repo}/actions/artifacts/{artifact_id}",
-                      { owner, repo, artifact_id: artifact.id },
-                    );
-                    deletedBytes += artifact.size_in_bytes ?? 0;
-                    deletedCount += 1;
-                    core.info(
-                      `Deleted artifact ${artifact.id} (${artifact.name}) from run ${run.id}.`,
-                    );
-                  } catch (error) {
-                    if (error.status === 404) {
-                      core.warning(
-                        `Artifact ${artifact.id} (${artifact.name}) was already deleted.`,
-                      );
-                      continue;
-                    }
-                    throw error;
-                  }
-                }
+                artifactsToDelete.push(
+                  ...artifacts.map((artifact) => {
+                    return { artifact, runId: run.id };
+                  }),
+                );
                 if (artifacts.length < perPage) {
                   break;
                 }
               }
             }
+
+            await deleteInBatches(artifactsToDelete, "artifact(s)", async ({ artifact, runId }) => {
+              try {
+                await github.request(
+                  "DELETE /repos/{owner}/{repo}/actions/artifacts/{artifact_id}",
+                  { owner, repo, artifact_id: artifact.id },
+                );
+                deletedBytes += artifact.size_in_bytes ?? 0;
+                deletedCount += 1;
+                core.info(
+                  `Deleted artifact ${artifact.id} (${artifact.name}) from run ${runId}.`,
+                );
+              } catch (error) {
+                if (error.status === 404) {
+                  core.warning(
+                    `Artifact ${artifact.id} (${artifact.name}) was already deleted.`,
+                  );
+                  return;
+                }
+                throw error;
+              }
+            });
 
             core.setOutput("matched-runs", String(matchingRuns.length));
             core.setOutput("deleted-count", String(deletedCount));

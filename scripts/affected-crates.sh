@@ -110,7 +110,6 @@ main() {
        [[ "$file" =~ ^\.github/workflows/pr_builds\.yml$ ]] || \
        [[ "$file" =~ ^\.github/workflows/pr_quality\.yml$ ]] || \
        [[ "$file" =~ ^\.github/workflows/pr_docker\.yml$ ]] || \
-       [[ "$file" =~ ^\.github/workflows/pr_cleanup\.yml$ ]] || \
        [[ "$file" =~ ^\.github/workflows/smoke\.yml$ ]] || \
        [[ "$file" =~ ^scripts/affected-crates\.sh$ ]] || \
        [[ "$file" =~ ^scripts/plan-clippy-batches\.sh$ ]] || \
