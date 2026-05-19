@@ -5362,13 +5362,32 @@ async fn run_auto_start_new_mesh(cli: &Cli, node: &mesh::Node) {
     }
 }
 
+/// Returns true if `run_auto` should spawn the bootstrap proxy.
+///
+/// The bootstrap proxy binds :9337 immediately and tunnels OpenAI requests to
+/// whichever mesh peer can serve them, so the local API stays usable while this
+/// node's GPU loads the model.
+///
+/// Historically this gated solely on `cli.join` being non-empty, but `serve --auto`
+/// now routes its candidates through a separate `auto_join_candidates` vec
+/// (introduced in 1bd62389). Either signal means "we have somewhere to tunnel
+/// to," so accept both. `--client` always wants the proxy — it has no local
+/// model to fall back to.
+fn should_start_bootstrap_proxy(
+    cli: &Cli,
+    auto_join_candidates: &[(String, Option<String>)],
+) -> bool {
+    !cli.join.is_empty() || !auto_join_candidates.is_empty() || cli.client
+}
+
 fn start_run_auto_bootstrap_proxy(
     cli: &Cli,
     node: &mesh::Node,
     api_port: u16,
     affinity_router: &affinity::AffinityRouter,
+    auto_join_candidates: &[(String, Option<String>)],
 ) -> Option<BootstrapProxyStopTx> {
-    if cli.join.is_empty() {
+    if !should_start_bootstrap_proxy(cli, auto_join_candidates) {
         return None;
     }
 
@@ -6678,14 +6697,22 @@ async fn run_auto(
     node.set_requested_models(requested_model_names.clone())
         .await;
 
-    run_auto_join_mesh_phase(&mut cli, &node, &auto_join_candidates).await;
-
     let affinity_router = affinity::AffinityRouter::new();
 
-    // Start bootstrap proxy if joining an existing mesh.
-    // This gives instant API access via tunnel while our GPU loads.
-    let mut bootstrap_listener_tx =
-        start_run_auto_bootstrap_proxy(&cli, &node, api_port, &affinity_router);
+    // Start bootstrap proxy BEFORE joining. This binds :9337 immediately so the
+    // local API is usable while the QUIC join handshake completes and (for serve
+    // mode) while the GPU loads the model. The proxy reads peers from the node's
+    // gossip state, so it does not need the join to have completed first — it
+    // just needs to know that we intend to tunnel somewhere.
+    let mut bootstrap_listener_tx = start_run_auto_bootstrap_proxy(
+        &cli,
+        &node,
+        api_port,
+        &affinity_router,
+        &auto_join_candidates,
+    );
+
+    run_auto_join_mesh_phase(&mut cli, &node, &auto_join_candidates).await;
 
     let primary_startup_model = startup_models.first().cloned();
 
@@ -9676,5 +9703,121 @@ mod tests {
             ConsoleSessionMode::InteractiveDashboard,
         );
         assert_eq!(result, ConsoleSessionMode::None);
+    }
+
+    // ── Bootstrap-proxy gate ────────────────────────────────────────────
+    //
+    // Regression history: commit 1bd62389 ("feat(hardware): add hardware
+    // information enrichment") changed the serve --auto path so its join
+    // candidates land in `auto_join_candidates` instead of `cli.join`. The
+    // bootstrap proxy gate keyed off `cli.join` and silently stopped firing
+    // for `serve --auto`, leaving :9337 unbound while the local model
+    // loaded. These tests pin the gate so both client and serve get the
+    // bootstrap proxy whenever there is a candidate to tunnel to.
+
+    #[test]
+    fn bootstrap_proxy_gate_fires_when_cli_join_is_set() {
+        // Classic invite-token path (`--join <token>`).
+        let cli = Cli::parse_from(["mesh-llm", "--join", "tok-abc"]);
+        assert!(should_start_bootstrap_proxy(&cli, &[]));
+    }
+
+    #[test]
+    fn bootstrap_proxy_gate_fires_for_serve_auto_via_auto_join_candidates() {
+        // serve --auto leaves cli.join empty and stages discovery results in
+        // auto_join_candidates instead. The proxy must still spawn so :9337
+        // proxies through the mesh while the local GPU loads.
+        let cli = Cli::parse_from(["mesh-llm", "--auto"]);
+        assert!(
+            cli.join.is_empty(),
+            "precondition: serve --auto has empty cli.join"
+        );
+        let candidates = vec![(
+            "tok-from-discovery".to_string(),
+            Some("mesh-llm".to_string()),
+        )];
+        assert!(should_start_bootstrap_proxy(&cli, &candidates));
+    }
+
+    #[test]
+    fn bootstrap_proxy_gate_fires_for_client_with_no_candidates() {
+        // --client has no local model to fall back to, so we always want the
+        // bootstrap proxy listening even before discovery turns up a peer.
+        let cli = Cli::parse_from(["mesh-llm", "--client", "--auto"]);
+        assert!(should_start_bootstrap_proxy(&cli, &[]));
+    }
+
+    #[test]
+    fn bootstrap_proxy_gate_does_not_fire_for_standalone_serve() {
+        // Plain `mesh-llm` with no join, no auto candidates, no --client:
+        // this node intends to start a new mesh standalone. Nothing to tunnel
+        // through, so the bootstrap proxy should stay quiet.
+        let cli = Cli::parse_from(["mesh-llm"]);
+        assert!(!should_start_bootstrap_proxy(&cli, &[]));
+    }
+
+    #[tokio::test]
+    async fn bootstrap_proxy_binds_listener_for_serve_auto() {
+        // End-to-end check: `serve --auto` with a non-empty auto_join_candidates
+        // vec must actually bind a TCP listener on the chosen port. Before the
+        // fix this returned None and no listener was bound.
+        use crate::network::affinity;
+
+        let node = mesh::Node::new_for_tests(mesh::NodeRole::Worker)
+            .await
+            .expect("test node");
+        let cli = Cli::parse_from(["mesh-llm", "--auto"]);
+        let candidates = vec![("tok".to_string(), None)];
+        let router = affinity::AffinityRouter::default();
+
+        // Pick an ephemeral port by binding+releasing first.
+        let scratch = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = scratch.local_addr().unwrap().port();
+        drop(scratch);
+
+        let stop_tx = start_run_auto_bootstrap_proxy(&cli, &node, port, &router, &candidates);
+        assert!(
+            stop_tx.is_some(),
+            "serve --auto with auto_join_candidates must spawn bootstrap proxy"
+        );
+
+        // Give the spawned task a moment to bind, then confirm the port is
+        // actually accepting connections (i.e. bootstrap_proxy ran far enough
+        // to listen, not just that we got a stop_tx back).
+        let mut connected = false;
+        for _ in 0..20 {
+            if tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_ok()
+            {
+                connected = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert!(connected, "bootstrap proxy should be listening on :{port}");
+
+        // Hand the listener back so the proxy task can exit cleanly.
+        let (give_tx, give_rx) = tokio::sync::oneshot::channel();
+        let _ = stop_tx.unwrap().send(give_tx).await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), give_rx).await;
+    }
+
+    #[tokio::test]
+    async fn bootstrap_proxy_not_spawned_for_standalone_serve() {
+        // Inverse of the above: standalone serve must NOT bind the port early
+        // (that would conflict with the eventual full api_proxy bind).
+        use crate::network::affinity;
+
+        let node = mesh::Node::new_for_tests(mesh::NodeRole::Worker)
+            .await
+            .expect("test node");
+        let cli = Cli::parse_from(["mesh-llm"]);
+        let router = affinity::AffinityRouter::default();
+        let stop_tx = start_run_auto_bootstrap_proxy(&cli, &node, 0, &router, &[]);
+        assert!(
+            stop_tx.is_none(),
+            "standalone serve must not spawn bootstrap proxy"
+        );
     }
 }
