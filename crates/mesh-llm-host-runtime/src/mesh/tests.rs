@@ -969,6 +969,7 @@ fn make_test_peer_info(peer_id: EndpointId) -> PeerInfo {
         }],
         owner_attestation: None,
         artifact_transfer_supported: false,
+        stage_protocol_generation_supported: false,
         stage_status_list_supported: false,
         owner_summary: OwnershipSummary::default(),
         display_rtt: None,
@@ -2852,6 +2853,7 @@ fn gossip_frame_roundtrip_preserves_scanned_model_metadata() {
         }],
         owner_attestation: None,
         artifact_transfer_supported: false,
+        stage_protocol_generation_supported: false,
         stage_status_list_supported: false,
         latency_ms: None,
         latency_source: None,
@@ -2860,6 +2862,27 @@ fn gossip_frame_roundtrip_preserves_scanned_model_metadata() {
     };
 
     let proto_pa = local_ann_to_proto_ann(&local_ann);
+    assert_passive_model_metadata_stripped(&proto_pa);
+    assert_descriptor_capability_provenance(&proto_pa);
+
+    let (_, roundtripped) =
+        proto_ann_to_local(&proto_pa).expect("proto_ann_to_local must succeed on valid proto PA");
+    assert_local_gossip_restoration(&roundtripped);
+
+    let frame = build_gossip_frame(&[local_ann], peer_id);
+    assert_eq!(frame.sender_id, peer_id_bytes);
+    let encoded = encode_control_frame(STREAM_GOSSIP, &frame);
+    let decoded: GossipFrame = decode_control_frame(STREAM_GOSSIP, &encoded)
+        .expect("build_gossip_frame output must decode successfully");
+    assert_eq!(decoded.peers.len(), 1);
+    let wire_pa = &decoded.peers[0];
+    assert_wire_gossip_preserves_model_runtime(wire_pa);
+    let (_, final_local) =
+        proto_ann_to_local(wire_pa).expect("final proto_ann_to_local must succeed");
+    assert_local_gossip_restoration(&final_local);
+}
+
+fn assert_passive_model_metadata_stripped(proto_pa: &crate::proto::node::PeerAnnouncement) {
     assert_eq!(
         proto_pa.available_model_metadata.len(),
         0,
@@ -2870,26 +2893,29 @@ fn gossip_frame_roundtrip_preserves_scanned_model_metadata() {
         "local_ann_to_proto_ann must strip passive available_models from gossip"
     );
     assert_eq!(
-        proto_pa.experts_summary.as_ref().map(|e| e.total_experts),
-        Some(64),
-        "local_ann_to_proto_ann must carry experts_summary"
-    );
-    assert_eq!(
         proto_pa.available_model_sizes.len(),
         0,
         "local_ann_to_proto_ann must strip passive available_model_sizes from gossip"
     );
+    assert_eq!(
+        proto_pa.experts_summary.as_ref().map(|e| e.total_experts),
+        Some(64),
+        "local_ann_to_proto_ann must carry experts_summary"
+    );
+}
+
+fn assert_descriptor_capability_provenance(proto_pa: &crate::proto::node::PeerAnnouncement) {
     assert_eq!(
         proto_pa
             .served_model_descriptors
             .first()
             .and_then(|descriptor| descriptor.capabilities_known),
         Some(true),
-        "local_ann_to_proto_ann must carry descriptor capability provenance"
+        "gossip should preserve descriptor capability provenance"
     );
+}
 
-    let (_, roundtripped) =
-        proto_ann_to_local(&proto_pa).expect("proto_ann_to_local must succeed on valid proto PA");
+fn assert_local_gossip_restoration(roundtripped: &super::PeerAnnouncement) {
     assert_eq!(
         roundtripped.available_model_metadata.len(),
         0,
@@ -2899,6 +2925,7 @@ fn gossip_frame_roundtrip_preserves_scanned_model_metadata() {
         roundtripped.available_models.is_empty(),
         "proto_ann_to_local must ignore passive available_models from gossip"
     );
+    assert!(roundtripped.available_model_sizes.is_empty());
     assert_eq!(
         roundtripped
             .experts_summary
@@ -2907,7 +2934,6 @@ fn gossip_frame_roundtrip_preserves_scanned_model_metadata() {
         Some(64),
         "proto_ann_to_local must restore experts_summary"
     );
-    assert!(roundtripped.available_model_sizes.is_empty());
     assert!(
         roundtripped
             .served_model_descriptors
@@ -2924,61 +2950,32 @@ fn gossip_frame_roundtrip_preserves_scanned_model_metadata() {
         Some(32768),
         "proto_ann_to_local must preserve served model runtime context length"
     );
+}
 
-    let frame = build_gossip_frame(&[local_ann], peer_id);
-    assert_eq!(frame.sender_id, peer_id_bytes);
-    let encoded = encode_control_frame(STREAM_GOSSIP, &frame);
-    let decoded: GossipFrame = decode_control_frame(STREAM_GOSSIP, &encoded)
-        .expect("build_gossip_frame output must decode successfully");
-    assert_eq!(decoded.peers.len(), 1);
-    let wire_pa = &decoded.peers[0];
+fn assert_wire_gossip_preserves_model_runtime(proto_pa: &crate::proto::node::PeerAnnouncement) {
     assert_eq!(
-        wire_pa.available_model_metadata.len(),
+        proto_pa.available_model_metadata.len(),
         0,
         "build_gossip_frame must strip passive available_model_metadata from wire gossip"
     );
-    assert!(wire_pa.available_models.is_empty());
-    assert!(wire_pa.available_model_sizes.is_empty());
+    assert!(proto_pa.available_models.is_empty());
+    assert!(proto_pa.available_model_sizes.is_empty());
     assert_eq!(
-        wire_pa
+        proto_pa
             .experts_summary
             .as_ref()
             .map(|e| e.top_expert_ids.as_slice()),
         Some([1u32, 5, 10].as_slice())
     );
     assert_eq!(
-        wire_pa
+        proto_pa
             .served_model_runtime
             .first()
             .and_then(|runtime| runtime.context_length),
         Some(32768),
         "build_gossip_frame must preserve served model runtime context length"
     );
-    assert_eq!(
-        wire_pa
-            .served_model_descriptors
-            .first()
-            .and_then(|descriptor| descriptor.capabilities_known),
-        Some(true),
-        "build_gossip_frame must preserve descriptor capability provenance"
-    );
-    let (_, final_local) =
-        proto_ann_to_local(wire_pa).expect("final proto_ann_to_local must succeed");
-    assert!(final_local.available_model_metadata.is_empty());
-    assert!(final_local.available_models.is_empty());
-    assert!(final_local.available_model_sizes.is_empty());
-    assert_eq!(
-        final_local
-            .served_model_runtime
-            .first()
-            .and_then(ModelRuntimeDescriptor::advertised_context_length),
-        Some(32768)
-    );
-    assert!(final_local
-        .served_model_descriptors
-        .first()
-        .map(|descriptor| descriptor.capabilities_known)
-        .unwrap_or(false));
+    assert_descriptor_capability_provenance(proto_pa);
 }
 
 #[test]
@@ -3136,6 +3133,7 @@ fn transitive_peer_update_refreshes_metadata_fields() {
         served_model_runtime: vec![],
         owner_attestation: None,
         artifact_transfer_supported: true,
+        stage_protocol_generation_supported: true,
         stage_status_list_supported: true,
         latency_ms: None,
         latency_source: None,
@@ -3220,6 +3218,7 @@ fn transitive_peer_merge_preserves_richer_direct_address() {
         served_model_runtime: vec![],
         owner_attestation: None,
         artifact_transfer_supported: true,
+        stage_protocol_generation_supported: true,
         stage_status_list_supported: true,
         latency_ms: None,
         latency_source: None,
@@ -3278,6 +3277,7 @@ fn transitive_peer_merge_preserves_richer_direct_address() {
         served_model_runtime: vec![],
         owner_attestation: None,
         artifact_transfer_supported: true,
+        stage_protocol_generation_supported: true,
         stage_status_list_supported: true,
         latency_ms: None,
         latency_source: None,
@@ -3859,6 +3859,7 @@ fn transitive_peer_update_refreshes_last_mentioned() {
         served_model_runtime: vec![],
         owner_attestation: None,
         artifact_transfer_supported: true,
+        stage_protocol_generation_supported: true,
         stage_status_list_supported: true,
         latency_ms: None,
         latency_source: None,
@@ -4609,6 +4610,7 @@ fn make_test_peer(id: EndpointId, rtt_ms: Option<u32>, vram_gb: u64) -> PeerInfo
         served_model_runtime: vec![],
         owner_attestation: None,
         artifact_transfer_supported: false,
+        stage_protocol_generation_supported: false,
         stage_status_list_supported: false,
         owner_summary: OwnershipSummary::default(),
         display_rtt: None,

@@ -303,31 +303,17 @@ pub async fn publish_loop(node: crate::mesh::Node, keys: Keys, config: PublishLo
         status_tx,
     } = config;
     let mut last_reported = None;
-    let publisher = match Publisher::new(keys.clone(), &relays).await {
-        Ok(p) => p,
-        Err(e) => {
-            report_publish_state(
-                &status_tx,
-                &mut last_reported,
-                PublishStateUpdate::PublishFailed,
-            );
-            tracing::error!("Failed to create Nostr publisher: {e}");
-            return;
-        }
+    let Some(publisher) =
+        create_publish_loop_publisher(&keys, &relays, &status_tx, &mut last_reported).await
+    else {
+        return;
     };
 
     let npub = publisher.npub();
-    if let Some(cap) = max_clients {
-        eprintln!("   Will delist when {} clients connected", cap);
-    }
+    log_publish_client_cap(max_clients);
 
     // Wait for local serving to be ready before first publish (up to 60s).
-    for _ in 0..120 {
-        if node.is_llama_ready().await {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
+    wait_for_local_serving_ready(&node).await;
     eprintln!(
         "📡 Publishing mesh to Nostr (npub: {}...{})",
         &npub[..12],
@@ -340,201 +326,59 @@ pub async fn publish_loop(node: crate::mesh::Node, keys: Keys, config: PublishLo
     let disco = DiscoveryClient::new(&relays).await.ok();
 
     loop {
-        let invite_token = node.invite_token();
         let peers = node.peers().await;
-
-        // Count clients
-        let client_count = peers
-            .iter()
-            .filter(|p| matches!(p.role, crate::mesh::NodeRole::Client))
-            .count();
-
-        // Check max-clients cap
-        if let Some(cap) = max_clients {
-            if client_count >= cap && !delisted {
-                if let Err(e) = publisher.unpublish().await {
-                    tracing::warn!("Failed to unpublish from Nostr: {e}");
-                }
-                eprintln!(
-                    "📡 Delisted from Nostr ({} clients, cap is {})",
-                    client_count, cap
-                );
-                delisted = true;
-                tokio::time::sleep(Duration::from_secs(interval_secs)).await;
-                continue;
-            } else if client_count < cap && delisted {
-                eprintln!(
-                    "📡 Re-publishing to Nostr ({} clients, cap is {})",
-                    client_count, cap
-                );
-                delisted = false;
-            }
-        }
-
-        if delisted {
-            tokio::time::sleep(Duration::from_secs(interval_secs)).await;
+        let client_count = peer_client_count(&peers);
+        if update_delisted_state(
+            &publisher,
+            max_clients,
+            client_count,
+            &mut delisted,
+            interval_secs,
+        )
+        .await
+        {
             continue;
         }
 
-        // ── Solo convergence: if we have no GPU peers, look for a mesh to join ──
-        // First try split-heal (same mesh_id, different publisher, more nodes).
-        // Then try merging with any other mesh (different mesh, unnamed only).
-        // Only merge into meshes strictly larger than us to avoid two solo nodes
-        // endlessly unpublishing and trying to join each other.
-        let gpu_peers = peers
-            .iter()
-            .filter(|p| !matches!(p.role, crate::mesh::NodeRole::Client))
-            .count();
-        let my_node_count = gpu_peers + 1; // peers + self
-        if gpu_peers == 0 {
-            let filter = MeshFilter::default();
-            if let Ok(listings) = discover(&relays, &filter, disco.as_ref()).await {
-                let my_npub = publisher.npub();
-                let my_mesh_id = node.mesh_id().await;
-
-                // 1. Split-heal: same mesh_id from a different publisher with more nodes than us
-                let split_target = my_mesh_id.as_ref().and_then(|mid| {
-                    listings.iter().find(|m| {
-                        m.listing.mesh_id.as_deref() == Some(mid.as_str())
-                            && m.publisher_npub != my_npub
-                            && m.listing.node_count > my_node_count
-                    })
-                });
-
-                // 2. Merge: any unnamed mesh from a different publisher that is
-                //    strictly larger than us. Two solo nodes (both node_count=1)
-                //    must NOT try to merge — that creates a storm where both
-                //    unpublish and race to join each other.
-                let merge_target = if split_target.is_none() && name.is_none() {
-                    listings.iter().find(|m| {
-                        m.publisher_npub != my_npub
-                            && m.listing.name.is_none()
-                            && m.listing.node_count > my_node_count
-                    })
-                } else {
-                    None
-                };
-
-                if let Some(target) = split_target.or(merge_target) {
-                    eprintln!(
-                        "📡 Found larger mesh '{}' ({} nodes vs our {}) — rejoining",
-                        target.listing.name.as_deref().unwrap_or("unnamed"),
-                        target.listing.node_count,
-                        my_node_count
-                    );
-                    if let Err(e) = publisher.unpublish().await {
-                        tracing::warn!("Failed to unpublish solo listing: {e}");
-                    }
-                    if let Err(e) = node.join(&target.listing.invite_token).await {
-                        tracing::warn!("Merge/rejoin failed: {e}");
-                        tokio::time::sleep(Duration::from_secs(interval_secs)).await;
-                        continue;
-                    }
-                    eprintln!("📡 Merged into mesh — resuming publish as member");
-                    // Cooldown: give the mesh time to stabilize before checking again
-                    tokio::time::sleep(Duration::from_secs(30)).await;
-                    continue;
-                }
-            }
+        if wait_while_delisted(delisted, interval_secs).await {
+            continue;
         }
 
-        // "Actually serving" = a Host node has a ready local runtime for this model.
-        let my_role = node.role().await;
-        let mut actually_serving: Vec<String> = Vec::new();
-        if matches!(my_role, crate::mesh::NodeRole::Host { .. }) {
-            for model in node.hosted_models().await {
-                if !actually_serving.contains(&model) {
-                    actually_serving.push(model);
-                }
-            }
-        }
-        for p in &peers {
-            if matches!(p.role, crate::mesh::NodeRole::Host { .. }) {
-                for model in p.routable_models() {
-                    if !actually_serving.contains(&model) {
-                        actually_serving.push(model);
-                    }
-                }
-            }
+        if maybe_rejoin_larger_mesh(
+            &node,
+            &publisher,
+            &relays,
+            name.as_deref(),
+            interval_secs,
+            disco.as_ref(),
+            &peers,
+        )
+        .await
+        {
+            continue;
         }
 
-        let served_set: std::collections::HashSet<&str> =
-            actually_serving.iter().map(|s| s.as_str()).collect();
-
-        // Wanted = models with active demand but not currently served by a host
-        let active_demand = node.active_demand().await;
-        let mut wanted: Vec<String> = Vec::new();
-        for m in active_demand.keys() {
-            if !served_set.contains(m.as_str()) && !wanted.contains(m) {
-                wanted.push(m.clone());
-            }
-        }
-
-        // Available = all GGUFs on disk across mesh, minus what's already warm
-        let mut available: Vec<String> = Vec::new();
-        let my_available = node.available_models().await;
-        for m in &my_available {
-            if !served_set.contains(m.as_str()) && !available.contains(m) {
-                available.push(m.clone());
-            }
-        }
-        for p in &peers {
-            for m in &p.available_models {
-                if !served_set.contains(m.as_str()) && !available.contains(m) {
-                    available.push(m.clone());
-                }
-            }
-        }
-
-        let total_vram: u64 = peers
-            .iter()
-            .filter(|p| !matches!(p.role, crate::mesh::NodeRole::Client))
-            .map(|p| p.vram_bytes)
-            .sum::<u64>()
-            + node.vram_bytes();
-
-        let node_count = peers
-            .iter()
-            .filter(|p| !matches!(p.role, crate::mesh::NodeRole::Client))
-            .count()
-            + 1; // +1 for self
-
-        let mesh_id = node.mesh_id().await;
-
-        let listing = MeshListing {
+        let invite_token = node.invite_token();
+        let listing = build_publish_listing(
+            &node,
+            &peers,
             invite_token,
-            serving: actually_serving,
-            wanted,
-            on_disk: available,
-            total_vram_bytes: total_vram,
-            node_count,
             client_count,
-            max_clients: max_clients.unwrap_or(0),
-            name: name.clone(),
-            region: region.clone(),
-            mesh_id,
-        };
+            max_clients,
+            name.clone(),
+            region.clone(),
+        )
+        .await;
 
-        let ttl = interval_secs * 2;
-        match publisher.publish(&listing, ttl).await {
-            Ok(()) => {
-                report_publish_state(&status_tx, &mut last_reported, PublishStateUpdate::Public);
-                tracing::debug!(
-                    "Published mesh listing ({} models, {} nodes, {} clients)",
-                    listing.serving.len(),
-                    listing.node_count,
-                    client_count
-                );
-            }
-            Err(e) => {
-                report_publish_state(
-                    &status_tx,
-                    &mut last_reported,
-                    PublishStateUpdate::PublishFailed,
-                );
-                tracing::warn!("Failed to publish to Nostr: {e}");
-            }
-        }
+        publish_current_listing(
+            &publisher,
+            &listing,
+            interval_secs,
+            client_count,
+            &status_tx,
+            &mut last_reported,
+        )
+        .await;
 
         tokio::time::sleep(Duration::from_secs(interval_secs)).await;
     }
@@ -558,72 +402,32 @@ pub async fn publish_watchdog(
     check_interval_secs: u64,
     status_tx: Option<tokio::sync::watch::Sender<Option<PublishStateUpdate>>>,
 ) {
-    // Short initial wait with jitter (10-30s) — start watching quickly
-    let jitter = (rand::random::<u64>() % 20) + 10;
-    tokio::time::sleep(Duration::from_secs(jitter)).await;
+    watchdog_initial_delay().await;
 
     // Reusable client for repeated discovery checks.
     let disco = DiscoveryClient::new(&relays).await.ok();
+    let filter = MeshFilter::default();
 
     loop {
-        // Check if any listing for our mesh exists on Nostr
-        let filter = MeshFilter::default();
         match discover(&relays, &filter, disco.as_ref()).await {
             Ok(meshes) => {
-                let our_peers = node.peers().await;
-                let served = node.models_being_served().await;
-                let our_mesh_id = node.mesh_id().await;
-
-                // Our mesh is "listed" if any Nostr listing carries our mesh_id.
-                // Fall back to model overlap only if we don't have a mesh_id yet.
-                let mesh_listed = if let Some(ref mid) = our_mesh_id {
-                    meshes
-                        .iter()
-                        .any(|m| m.listing.mesh_id.as_deref() == Some(mid.as_str()))
-                } else if !served.is_empty() {
-                    meshes
-                        .iter()
-                        .any(|m| served.iter().any(|s| m.listing.serving.contains(s)))
-                } else {
-                    false
-                };
-
-                if !mesh_listed && (!our_peers.is_empty() || !served.is_empty()) {
-                    // Brief backoff with jitter to avoid stampede (3-10s)
-                    let backoff = (rand::random::<u64>() % 7) + 3;
-                    eprintln!("📡 Mesh listing missing from Nostr — waiting {backoff}s before taking over...");
-                    tokio::time::sleep(Duration::from_secs(backoff)).await;
-
-                    // Re-check — maybe another watchdog already took over
-                    if let Ok(recheck) = discover(&relays, &filter, disco.as_ref()).await {
-                        let still_missing = if let Some(ref mid) = our_mesh_id {
-                            !recheck
-                                .iter()
-                                .any(|m| m.listing.mesh_id.as_deref() == Some(mid.as_str()))
-                        } else if !served.is_empty() {
-                            !recheck
-                                .iter()
-                                .any(|m| served.iter().any(|s| m.listing.serving.contains(s)))
-                        } else {
-                            true
-                        };
-                        if !still_missing {
-                            eprintln!("📡 Someone else took over publishing — standing down");
-                            tokio::time::sleep(Duration::from_secs(check_interval_secs)).await;
-                            continue;
-                        }
+                if should_take_over_publish(&node, &meshes).await {
+                    if !confirm_missing_listing_after_backoff(
+                        &relays,
+                        &filter,
+                        disco.as_ref(),
+                        &node,
+                    )
+                    .await
+                    {
+                        tokio::time::sleep(Duration::from_secs(check_interval_secs)).await;
+                        continue;
                     }
 
                     eprintln!("📡 Taking over Nostr publishing for the mesh");
-                    let keys = match load_or_create_keys() {
-                        Ok(k) => k,
-                        Err(e) => {
-                            tracing::warn!("Failed to load Nostr keys for publish takeover: {e}");
-                            tokio::time::sleep(Duration::from_secs(check_interval_secs)).await;
-                            continue;
-                        }
+                    let Some(keys) = load_watchdog_publish_keys(check_interval_secs).await else {
+                        continue;
                     };
-                    // Start publish loop (blocks forever)
                     publish_loop(
                         node,
                         keys,
@@ -758,24 +562,7 @@ pub async fn discover(
     let client: &Client = if let Some(cc) = cached_client {
         &cc.client
     } else {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let keys = Keys::generate();
-        let c = Client::new(keys);
-        let mut added = 0;
-        for relay in relays {
-            match c.add_relay(relay).await {
-                Ok(_) => added += 1,
-                Err(e) => tracing::warn!("Nostr relay {relay}: {e}"),
-            }
-        }
-        if added == 0 {
-            anyhow::bail!(
-                "Could not connect to any Nostr relay (tried {})",
-                relays.len()
-            );
-        }
-        c.connect().await;
-        _tmp = c;
+        _tmp = build_discovery_client(relays).await?;
         &_tmp
     };
 
@@ -801,61 +588,12 @@ pub async fn discover(
     let now = Timestamp::now().as_secs();
 
     // Dedupe by publisher (keep latest per pubkey, using replaceable event semantics)
-    let mut latest: std::collections::HashMap<String, &Event> = std::collections::HashMap::new();
-    for event in events.iter() {
-        let pubkey = event.pubkey.to_hex();
-        if let Some(existing) = latest.get(&pubkey) {
-            if event.created_at.as_secs() > existing.created_at.as_secs() {
-                latest.insert(pubkey, event);
-            }
-        } else {
-            latest.insert(pubkey, event);
-        }
-    }
+    let latest = latest_events_by_pubkey(&events);
 
     let mut meshes = Vec::new();
     for event in latest.values() {
-        // Check expiration
-        let expires_at = event
-            .tags
-            .iter()
-            .find(|t| t.as_slice().first().map(|s| s.as_str()) == Some("expiration"))
-            .and_then(|t| t.as_slice().get(1))
-            .and_then(|s| s.parse::<u64>().ok());
-
-        if let Some(exp) = expires_at {
-            if exp < now {
-                continue; // expired
-            }
-        }
-
-        let listing: MeshListing = match serde_json::from_str(&event.content) {
-            Ok(l) => l,
-            Err(err) => {
-                tracing::warn!(
-                    "Skipping Nostr listing from {}: bad JSON: {err}",
-                    event.pubkey.to_bech32().unwrap_or_default()
-                );
-                continue;
-            }
-        };
-
-        // Reject listings with invalid invite tokens before they enter the
-        // candidate pool — a bad token here would poison the entire auto-join.
-        if let Err(err) = crate::mesh::Node::decode_invite_token(&listing.invite_token) {
-            tracing::warn!(
-                "Skipping Nostr listing from {}: {err}",
-                event.pubkey.to_bech32().unwrap_or_default()
-            );
+        let Some(discovered) = parse_discovered_mesh(event, now) else {
             continue;
-        }
-
-        let publisher_npub = event.pubkey.to_bech32().unwrap_or_default();
-        let discovered = DiscoveredMesh {
-            listing,
-            publisher_npub,
-            published_at: event.created_at.as_secs(),
-            expires_at,
         };
 
         if filter.matches(&discovered) {
@@ -872,6 +610,446 @@ pub async fn discover(
     });
 
     Ok(meshes)
+}
+
+async fn wait_for_local_serving_ready(node: &crate::mesh::Node) {
+    for _ in 0..120 {
+        if node.is_llama_ready().await {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+fn peer_client_count(peers: &[crate::mesh::PeerInfo]) -> usize {
+    peers
+        .iter()
+        .filter(|peer| matches!(peer.role, crate::mesh::NodeRole::Client))
+        .count()
+}
+
+fn non_client_peer_count(peers: &[crate::mesh::PeerInfo]) -> usize {
+    peers
+        .iter()
+        .filter(|peer| !matches!(peer.role, crate::mesh::NodeRole::Client))
+        .count()
+}
+
+async fn maybe_rejoin_larger_mesh(
+    node: &crate::mesh::Node,
+    publisher: &Publisher,
+    relays: &[String],
+    mesh_name: Option<&str>,
+    interval_secs: u64,
+    disco: Option<&DiscoveryClient>,
+    peers: &[crate::mesh::PeerInfo],
+) -> bool {
+    let Some(my_node_count) = solo_mesh_node_count(peers) else {
+        return false;
+    };
+    let Ok(listings) = discover(relays, &MeshFilter::default(), disco).await else {
+        return false;
+    };
+    let my_npub = publisher.npub();
+    let my_mesh_id = node.mesh_id().await;
+    let target = pick_larger_mesh_target(
+        &listings,
+        &my_npub,
+        my_mesh_id.as_deref(),
+        mesh_name,
+        my_node_count,
+    );
+    let Some(target) = target else {
+        return false;
+    };
+    rejoin_larger_mesh_target(node, publisher, target, my_node_count, interval_secs).await
+}
+
+async fn create_publish_loop_publisher(
+    keys: &Keys,
+    relays: &[String],
+    status_tx: &Option<tokio::sync::watch::Sender<Option<PublishStateUpdate>>>,
+    last_reported: &mut Option<PublishStateUpdate>,
+) -> Option<Publisher> {
+    match Publisher::new(keys.clone(), relays).await {
+        Ok(publisher) => Some(publisher),
+        Err(err) => {
+            report_publish_state(status_tx, last_reported, PublishStateUpdate::PublishFailed);
+            tracing::error!("Failed to create Nostr publisher: {err}");
+            None
+        }
+    }
+}
+
+fn log_publish_client_cap(max_clients: Option<usize>) {
+    if let Some(cap) = max_clients {
+        eprintln!("   Will delist when {} clients connected", cap);
+    }
+}
+
+async fn wait_while_delisted(delisted: bool, interval_secs: u64) -> bool {
+    if !delisted {
+        return false;
+    }
+    tokio::time::sleep(Duration::from_secs(interval_secs)).await;
+    true
+}
+
+async fn publish_current_listing(
+    publisher: &Publisher,
+    listing: &MeshListing,
+    interval_secs: u64,
+    client_count: usize,
+    status_tx: &Option<tokio::sync::watch::Sender<Option<PublishStateUpdate>>>,
+    last_reported: &mut Option<PublishStateUpdate>,
+) {
+    let ttl = interval_secs * 2;
+    match publisher.publish(listing, ttl).await {
+        Ok(()) => {
+            report_publish_state(status_tx, last_reported, PublishStateUpdate::Public);
+            tracing::debug!(
+                "Published mesh listing ({} models, {} nodes, {} clients)",
+                listing.serving.len(),
+                listing.node_count,
+                client_count
+            );
+        }
+        Err(err) => {
+            report_publish_state(status_tx, last_reported, PublishStateUpdate::PublishFailed);
+            tracing::warn!("Failed to publish to Nostr: {err}");
+        }
+    }
+}
+
+async fn watchdog_initial_delay() {
+    let jitter = (rand::random::<u64>() % 20) + 10;
+    tokio::time::sleep(Duration::from_secs(jitter)).await;
+}
+
+async fn should_take_over_publish(node: &crate::mesh::Node, meshes: &[DiscoveredMesh]) -> bool {
+    let our_peers = node.peers().await;
+    let served = node.models_being_served().await;
+    let our_mesh_id = node.mesh_id().await;
+    !mesh_listing_present(meshes, our_mesh_id.as_deref(), &served)
+        && (!our_peers.is_empty() || !served.is_empty())
+}
+
+async fn confirm_missing_listing_after_backoff(
+    relays: &[String],
+    filter: &MeshFilter,
+    disco: Option<&DiscoveryClient>,
+    node: &crate::mesh::Node,
+) -> bool {
+    let backoff = (rand::random::<u64>() % 7) + 3;
+    eprintln!("📡 Mesh listing missing from Nostr — waiting {backoff}s before taking over...");
+    tokio::time::sleep(Duration::from_secs(backoff)).await;
+
+    let Ok(recheck) = discover(relays, filter, disco).await else {
+        return true;
+    };
+    let served = node.models_being_served().await;
+    let our_mesh_id = node.mesh_id().await;
+    let still_missing = !mesh_listing_present(&recheck, our_mesh_id.as_deref(), &served);
+    if !still_missing {
+        eprintln!("📡 Someone else took over publishing — standing down");
+    }
+    still_missing
+}
+
+async fn load_watchdog_publish_keys(check_interval_secs: u64) -> Option<Keys> {
+    match load_or_create_keys() {
+        Ok(keys) => Some(keys),
+        Err(err) => {
+            tracing::warn!("Failed to load Nostr keys for publish takeover: {err}");
+            tokio::time::sleep(Duration::from_secs(check_interval_secs)).await;
+            None
+        }
+    }
+}
+
+fn solo_mesh_node_count(peers: &[crate::mesh::PeerInfo]) -> Option<usize> {
+    let gpu_peers = non_client_peer_count(peers);
+    (gpu_peers == 0).then_some(gpu_peers + 1)
+}
+
+async fn rejoin_larger_mesh_target(
+    node: &crate::mesh::Node,
+    publisher: &Publisher,
+    target: &DiscoveredMesh,
+    my_node_count: usize,
+    interval_secs: u64,
+) -> bool {
+    eprintln!(
+        "📡 Found larger mesh '{}' ({} nodes vs our {}) — rejoining",
+        target.listing.name.as_deref().unwrap_or("unnamed"),
+        target.listing.node_count,
+        my_node_count
+    );
+    unpublish_before_rejoin(publisher).await;
+    if join_larger_mesh(node, target).await.is_err() {
+        tokio::time::sleep(Duration::from_secs(interval_secs)).await;
+        return true;
+    }
+    eprintln!("📡 Merged into mesh — resuming publish as member");
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    true
+}
+
+async fn unpublish_before_rejoin(publisher: &Publisher) {
+    if let Err(e) = publisher.unpublish().await {
+        tracing::warn!("Failed to unpublish solo listing: {e}");
+    }
+}
+
+async fn join_larger_mesh(node: &crate::mesh::Node, target: &DiscoveredMesh) -> Result<()> {
+    node.join(&target.listing.invite_token).await.map_err(|e| {
+        tracing::warn!("Merge/rejoin failed: {e}");
+        e
+    })
+}
+
+fn pick_larger_mesh_target<'a>(
+    listings: &'a [DiscoveredMesh],
+    my_npub: &str,
+    my_mesh_id: Option<&str>,
+    mesh_name: Option<&str>,
+    my_node_count: usize,
+) -> Option<&'a DiscoveredMesh> {
+    let split_target = my_mesh_id.and_then(|mesh_id| {
+        listings.iter().find(|mesh| {
+            mesh.listing.mesh_id.as_deref() == Some(mesh_id)
+                && mesh.publisher_npub != my_npub
+                && mesh.listing.node_count > my_node_count
+        })
+    });
+    split_target.or_else(|| {
+        (mesh_name.is_none()).then(|| {
+            listings.iter().find(|mesh| {
+                mesh.publisher_npub != my_npub
+                    && mesh.listing.name.is_none()
+                    && mesh.listing.node_count > my_node_count
+            })
+        })?
+    })
+}
+
+async fn build_publish_listing(
+    node: &crate::mesh::Node,
+    peers: &[crate::mesh::PeerInfo],
+    invite_token: String,
+    client_count: usize,
+    max_clients: Option<usize>,
+    name: Option<String>,
+    region: Option<String>,
+) -> MeshListing {
+    let serving = collect_actually_serving_models(node, peers).await;
+    let served_set: std::collections::HashSet<&str> = serving.iter().map(String::as_str).collect();
+    let wanted = collect_wanted_models(node, &served_set).await;
+    let on_disk = collect_available_models(node, peers, &served_set).await;
+    let total_vram_bytes = peers
+        .iter()
+        .filter(|peer| !matches!(peer.role, crate::mesh::NodeRole::Client))
+        .map(|peer| peer.vram_bytes)
+        .sum::<u64>()
+        + node.vram_bytes();
+    let node_count = non_client_peer_count(peers) + 1;
+    MeshListing {
+        invite_token,
+        serving,
+        wanted,
+        on_disk,
+        total_vram_bytes,
+        node_count,
+        client_count,
+        max_clients: max_clients.unwrap_or(0),
+        name,
+        region,
+        mesh_id: node.mesh_id().await,
+    }
+}
+
+async fn collect_actually_serving_models(
+    node: &crate::mesh::Node,
+    peers: &[crate::mesh::PeerInfo],
+) -> Vec<String> {
+    let mut serving = Vec::new();
+    if matches!(node.role().await, crate::mesh::NodeRole::Host { .. }) {
+        extend_unique(&mut serving, node.hosted_models().await);
+    }
+    for peer in peers {
+        if matches!(peer.role, crate::mesh::NodeRole::Host { .. }) {
+            extend_unique(&mut serving, peer.routable_models());
+        }
+    }
+    serving
+}
+
+async fn collect_wanted_models(
+    node: &crate::mesh::Node,
+    served_set: &std::collections::HashSet<&str>,
+) -> Vec<String> {
+    let mut wanted = Vec::new();
+    for model in node.active_demand().await.keys() {
+        if !served_set.contains(model.as_str()) && !wanted.contains(model) {
+            wanted.push(model.clone());
+        }
+    }
+    wanted
+}
+
+async fn collect_available_models(
+    node: &crate::mesh::Node,
+    peers: &[crate::mesh::PeerInfo],
+    served_set: &std::collections::HashSet<&str>,
+) -> Vec<String> {
+    let mut available = Vec::new();
+    extend_unique_filtered(&mut available, node.available_models().await, served_set);
+    for peer in peers {
+        extend_unique_filtered(&mut available, peer.available_models.clone(), served_set);
+    }
+    available
+}
+
+fn extend_unique(into: &mut Vec<String>, values: Vec<String>) {
+    for value in values {
+        if !into.contains(&value) {
+            into.push(value);
+        }
+    }
+}
+
+fn extend_unique_filtered(
+    into: &mut Vec<String>,
+    values: Vec<String>,
+    served_set: &std::collections::HashSet<&str>,
+) {
+    for value in values {
+        if !served_set.contains(value.as_str()) && !into.contains(&value) {
+            into.push(value);
+        }
+    }
+}
+
+fn mesh_listing_present(
+    meshes: &[DiscoveredMesh],
+    mesh_id: Option<&str>,
+    served: &[String],
+) -> bool {
+    if let Some(mesh_id) = mesh_id {
+        return meshes
+            .iter()
+            .any(|mesh| mesh.listing.mesh_id.as_deref() == Some(mesh_id));
+    }
+    !served.is_empty()
+        && meshes.iter().any(|mesh| {
+            served
+                .iter()
+                .any(|model| mesh.listing.serving.contains(model))
+        })
+}
+
+async fn update_delisted_state(
+    publisher: &Publisher,
+    max_clients: Option<usize>,
+    client_count: usize,
+    delisted: &mut bool,
+    interval_secs: u64,
+) -> bool {
+    let Some(cap) = max_clients else {
+        return false;
+    };
+    if client_count >= cap && !*delisted {
+        if let Err(e) = publisher.unpublish().await {
+            tracing::warn!("Failed to unpublish from Nostr: {e}");
+        }
+        eprintln!(
+            "📡 Delisted from Nostr ({} clients, cap is {})",
+            client_count, cap
+        );
+        *delisted = true;
+        tokio::time::sleep(Duration::from_secs(interval_secs)).await;
+        return true;
+    }
+    if client_count < cap && *delisted {
+        eprintln!(
+            "📡 Re-publishing to Nostr ({} clients, cap is {})",
+            client_count, cap
+        );
+        *delisted = false;
+    }
+    false
+}
+
+async fn build_discovery_client(relays: &[String]) -> Result<Client> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let keys = Keys::generate();
+    let client = Client::new(keys);
+    let mut added = 0;
+    for relay in relays {
+        match client.add_relay(relay).await {
+            Ok(_) => added += 1,
+            Err(e) => tracing::warn!("Nostr relay {relay}: {e}"),
+        }
+    }
+    if added == 0 {
+        anyhow::bail!(
+            "Could not connect to any Nostr relay (tried {})",
+            relays.len()
+        );
+    }
+    client.connect().await;
+    Ok(client)
+}
+
+fn latest_events_by_pubkey<'a>(events: &'a Events) -> std::collections::HashMap<String, &'a Event> {
+    let mut latest: std::collections::HashMap<String, &'a Event> = std::collections::HashMap::new();
+    for event in events.iter() {
+        let pubkey = event.pubkey.to_hex();
+        match latest.get(&pubkey) {
+            Some(existing) if event.created_at.as_secs() <= existing.created_at.as_secs() => {}
+            _ => {
+                latest.insert(pubkey, event);
+            }
+        }
+    }
+    latest
+}
+
+fn parse_discovered_mesh(event: &Event, now: u64) -> Option<DiscoveredMesh> {
+    let expires_at = event
+        .tags
+        .iter()
+        .find(|t| t.as_slice().first().map(|s| s.as_str()) == Some("expiration"))
+        .and_then(|t| t.as_slice().get(1))
+        .and_then(|s| s.parse::<u64>().ok());
+    if expires_at.is_some_and(|exp| exp < now) {
+        return None;
+    }
+
+    let listing: MeshListing = match serde_json::from_str(&event.content) {
+        Ok(listing) => listing,
+        Err(err) => {
+            tracing::warn!(
+                "Skipping Nostr listing from {}: bad JSON: {err}",
+                event.pubkey.to_bech32().unwrap_or_default()
+            );
+            return None;
+        }
+    };
+    if let Err(err) = crate::mesh::Node::decode_invite_token(&listing.invite_token) {
+        tracing::warn!(
+            "Skipping Nostr listing from {}: {err}",
+            event.pubkey.to_bech32().unwrap_or_default()
+        );
+        return None;
+    }
+
+    Some(DiscoveredMesh {
+        listing,
+        publisher_npub: event.pubkey.to_bech32().unwrap_or_default(),
+        published_at: event.created_at.as_secs(),
+        expires_at,
+    })
 }
 
 // ---------------------------------------------------------------------------

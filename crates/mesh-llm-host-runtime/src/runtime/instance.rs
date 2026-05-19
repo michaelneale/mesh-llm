@@ -436,57 +436,13 @@ pub async fn scan_local_instances(
     let snapshots =
         tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<LocalInstanceSnapshot>> {
             let mut snapshots = Vec::new();
-
             for entry in fs::read_dir(&root_owned)
                 .with_context(|| format!("failed to read runtime root: {}", root_owned.display()))?
                 .flatten()
             {
-                let entry_path = entry.path();
-                if !entry_path.is_dir() {
-                    continue;
+                if let Some(snapshot) = scan_local_instance_entry(entry.path(), my_pid) {
+                    snapshots.push(snapshot);
                 }
-
-                let owner_path = entry_path.join("owner.json");
-                if !owner_path.exists() {
-                    continue;
-                }
-
-                let json = match fs::read_to_string(&owner_path) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        tracing::warn!(
-                            path = %owner_path.display(),
-                            error = %e,
-                            "failed to read owner.json — skipping"
-                        );
-                        continue;
-                    }
-                };
-
-                let meta: OwnerMetadata = match serde_json::from_str(&json) {
-                    Ok(m) => m,
-                    Err(e) => {
-                        tracing::warn!(
-                            path = %owner_path.display(),
-                            error = %e,
-                            "failed to parse owner.json — skipping"
-                        );
-                        continue;
-                    }
-                };
-
-                if validate::process_liveness(meta.pid) == validate::Liveness::Dead {
-                    continue;
-                }
-
-                snapshots.push(LocalInstanceSnapshot {
-                    pid: meta.pid,
-                    api_port: meta.api_port,
-                    version: meta.version,
-                    started_at_unix: meta.started_at_unix.unwrap_or(0),
-                    runtime_dir: entry_path,
-                    is_self: meta.pid == my_pid,
-                });
             }
 
             Ok(snapshots)
@@ -495,6 +451,57 @@ pub async fn scan_local_instances(
         .context("scan_local_instances task panicked")??;
 
     Ok(snapshots)
+}
+
+fn scan_local_instance_entry(entry_path: PathBuf, my_pid: u32) -> Option<LocalInstanceSnapshot> {
+    if !entry_path.is_dir() {
+        return None;
+    }
+
+    let owner_path = entry_path.join("owner.json");
+    if !owner_path.exists() {
+        return None;
+    }
+
+    let meta = read_local_instance_owner_metadata(&owner_path)?;
+    if validate::process_liveness(meta.pid) == validate::Liveness::Dead {
+        return None;
+    }
+
+    Some(LocalInstanceSnapshot {
+        pid: meta.pid,
+        api_port: meta.api_port,
+        version: meta.version,
+        started_at_unix: meta.started_at_unix.unwrap_or(0),
+        runtime_dir: entry_path,
+        is_self: meta.pid == my_pid,
+    })
+}
+
+fn read_local_instance_owner_metadata(owner_path: &Path) -> Option<OwnerMetadata> {
+    let json = match fs::read_to_string(owner_path) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(
+                path = %owner_path.display(),
+                error = %e,
+                "failed to read owner.json — skipping"
+            );
+            return None;
+        }
+    };
+
+    match serde_json::from_str(&json) {
+        Ok(meta) => Some(meta),
+        Err(e) => {
+            tracing::warn!(
+                path = %owner_path.display(),
+                error = %e,
+                "failed to parse owner.json — skipping"
+            );
+            None
+        }
+    }
 }
 
 /// Spawn a background task that refreshes `shared` every 5 seconds.

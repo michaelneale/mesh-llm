@@ -17,12 +17,12 @@ fn test_gpu_facts_result() -> &'static TestGpuFactsOverride {
     TEST_GPU_FACTS_RESULT.get_or_init(|| Mutex::new(None))
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 pub(super) fn set_test_gpu_facts_result(result: anyhow::Result<Vec<GpuFacts>>) {
     *test_gpu_facts_result().lock().unwrap() = Some(result.map_err(|err| err.to_string()));
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 pub(super) fn clear_test_gpu_facts_result() {
     *test_gpu_facts_result().lock().unwrap() = None;
 }

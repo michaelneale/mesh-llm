@@ -7,9 +7,15 @@ use std::collections::HashMap;
 
 fn skippy_stage_subprotocols(
     artifact_transfer_supported: bool,
+    stage_protocol_generation_supported: bool,
     status_list_supported: bool,
 ) -> Vec<crate::proto::node::MeshSubprotocol> {
     let mut features = vec![skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STAGE_CONTROL.to_string()];
+    if stage_protocol_generation_supported {
+        features.push(
+            skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STAGE_PROTOCOL_GENERATION_V2.to_string(),
+        );
+    }
     if artifact_transfer_supported {
         features.push(skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_ARTIFACT_TRANSFER.to_string());
     }
@@ -34,6 +40,16 @@ fn supports_skippy_status_list(subprotocols: &[crate::proto::node::MeshSubprotoc
     supports_skippy_stage_feature(
         subprotocols,
         skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STATUS_LIST,
+    )
+}
+
+fn supports_skippy_stage_generation(subprotocols: &[crate::proto::node::MeshSubprotocol]) -> bool {
+    supports_skippy_stage_feature(
+        subprotocols,
+        skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STAGE_PROTOCOL_GENERATION_V2,
+    ) && supports_skippy_stage_feature(
+        subprotocols,
+        skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STAGE_CONTROL,
     )
 }
 
@@ -92,33 +108,15 @@ fn join_optional_csv(values: &[Option<String>]) -> Option<String> {
 fn local_owner_attestation_to_proto(
     attestation: &crate::crypto::SignedNodeOwnership,
 ) -> Option<crate::proto::node::SignedNodeOwnership> {
-    let owner_sign_public_key = match hex::decode(&attestation.claim.owner_sign_public_key) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            tracing::warn!(
-                "dropping local owner attestation from gossip: invalid owner_sign_public_key hex: {err}"
-            );
-            return None;
-        }
-    };
-    let node_endpoint_id = match hex::decode(&attestation.claim.node_endpoint_id) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            tracing::warn!(
-                "dropping local owner attestation from gossip: invalid node_endpoint_id hex: {err}"
-            );
-            return None;
-        }
-    };
-    let signature = match hex::decode(&attestation.signature) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            tracing::warn!(
-                "dropping local owner attestation from gossip: invalid signature hex: {err}"
-            );
-            return None;
-        }
-    };
+    let owner_sign_public_key = decode_local_owner_attestation_hex(
+        "owner_sign_public_key",
+        &attestation.claim.owner_sign_public_key,
+    )?;
+    let node_endpoint_id = decode_local_owner_attestation_hex(
+        "node_endpoint_id",
+        &attestation.claim.node_endpoint_id,
+    )?;
+    let signature = decode_local_owner_attestation_hex("signature", &attestation.signature)?;
     Some(crate::proto::node::SignedNodeOwnership {
         version: attestation.claim.version,
         cert_id: attestation.claim.cert_id.clone(),
@@ -131,6 +129,18 @@ fn local_owner_attestation_to_proto(
         hostname_hint: attestation.claim.hostname_hint.clone(),
         signature,
     })
+}
+
+fn decode_local_owner_attestation_hex(field_name: &str, value: &str) -> Option<Vec<u8>> {
+    match hex::decode(value) {
+        Ok(bytes) => Some(bytes),
+        Err(err) => {
+            tracing::warn!(
+                "dropping local owner attestation from gossip: invalid {field_name} hex: {err}"
+            );
+            None
+        }
+    }
 }
 
 fn proto_owner_attestation_to_local(
@@ -545,6 +555,7 @@ pub(crate) fn local_ann_to_proto_ann(
             .map(|id| id.as_bytes().to_vec()),
         subprotocols: skippy_stage_subprotocols(
             ann.artifact_transfer_supported,
+            ann.stage_protocol_generation_supported,
             ann.stage_status_list_supported,
         ),
     }
@@ -714,6 +725,7 @@ pub(crate) fn proto_ann_to_local(
             .as_ref()
             .map(proto_owner_attestation_to_local),
         artifact_transfer_supported: supports_skippy_artifact_transfer(&pa.subprotocols),
+        stage_protocol_generation_supported: supports_skippy_stage_generation(&pa.subprotocols),
         stage_status_list_supported: supports_skippy_status_list(&pa.subprotocols),
         latency_ms: pa.latency_ms,
         latency_source: crate::proto::node::LatencySource::try_from(pa.latency_source).ok(),

@@ -1,7 +1,7 @@
 use super::config::{ExternalPluginSpec, PluginHostMode};
 use super::plugin_manifest_overview;
 use super::support::{plugin_error, serialize_params, summarize_capabilities};
-use super::transport::{bind_local_listener, connection_loop};
+use super::transport::{bind_local_listener, connection_loop, LocalListener, LocalStream};
 use super::{
     proto, PluginMeshEvent, PluginRpcBridge, PluginSummary, ToolCallResult, ToolSummary,
     CONNECT_TIMEOUT_SECS, PROTOCOL_VERSION, REQUEST_TIMEOUT_SECS,
@@ -39,6 +39,8 @@ pub(crate) struct PluginRuntime {
     pub(crate) outbound_tx: mpsc::Sender<proto::Envelope>,
     pub(crate) pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<proto::Envelope>>>>>,
 }
+
+type PendingResponses = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<proto::Envelope>>>>>;
 
 impl ExternalPlugin {
     pub(crate) async fn spawn(
@@ -107,6 +109,193 @@ impl ExternalPlugin {
             .publish_plugin_summary(self.summary().await);
     }
 
+    async fn publish_starting_summary(&self) {
+        {
+            let mut summary = self.summary.lock().await;
+            summary.status = "starting".into();
+            summary.pid = None;
+            summary.error = None;
+        }
+        self.publish_summary().await;
+    }
+
+    fn log_waiting_for_connection(&self, listener: &LocalListener) {
+        let endpoint = listener.endpoint();
+        let transport = listener.transport_name();
+        tracing::debug!(
+            plugin = %self.spec.name,
+            endpoint = %endpoint,
+            transport,
+            "Waiting for plugin connection"
+        );
+    }
+
+    fn configured_child_command(&self, endpoint: &str, transport: &str) -> Command {
+        let mut child = Command::new(&self.spec.command);
+        child.args(&self.spec.args);
+        child.env("MESH_LLM_PLUGIN_ENDPOINT", endpoint);
+        child.env("MESH_LLM_PLUGIN_TRANSPORT", transport);
+        child.env("MESH_LLM_PLUGIN_NAME", &self.spec.name);
+        if let Some(ref url) = self.spec.url {
+            child.env("MESH_LLM_OPENAI_ENDPOINT_URL", url);
+        }
+        for (key, value) in &self.spec.env {
+            child.env(key, value);
+        }
+        child.stdin(std::process::Stdio::null());
+        child.stdout(std::process::Stdio::null());
+        child.stderr(std::process::Stdio::inherit());
+        child.kill_on_drop(true);
+        child
+    }
+
+    fn spawn_child_process(&self, endpoint: &str, transport: &str) -> Result<Child> {
+        self.configured_child_command(endpoint, transport)
+            .spawn()
+            .with_context(|| {
+                format!(
+                    "Failed to launch plugin '{}' via {}",
+                    self.spec.name, self.spec.command
+                )
+            })
+    }
+
+    async fn await_plugin_connection(&self, listener: LocalListener) -> Result<LocalStream> {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS),
+            listener.accept(),
+        )
+        .await
+        .with_context(|| format!("Timed out waiting for plugin '{}'", self.spec.name))?
+    }
+
+    async fn install_runtime(
+        &self,
+        child: Child,
+        stream: LocalStream,
+    ) -> (u64, mpsc::Sender<proto::Envelope>, PendingResponses) {
+        let (outbound_tx, outbound_rx) = mpsc::channel(256);
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
+        let outbound_tx_for_runtime = outbound_tx.clone();
+        let outbound_tx_for_init = outbound_tx.clone();
+        *self.runtime.lock().await = Some(PluginRuntime {
+            generation,
+            _child: child,
+            outbound_tx,
+            pending: pending.clone(),
+        });
+        tokio::spawn(connection_loop(
+            stream,
+            outbound_rx,
+            pending.clone(),
+            self.mesh_tx.clone(),
+            self.spec.name.clone(),
+            self.summary.clone(),
+            self.rpc_bridge.clone(),
+            self.runtime.clone(),
+            outbound_tx_for_runtime,
+            generation,
+        ));
+        (generation, outbound_tx_for_init, pending)
+    }
+
+    async fn request_initialize(
+        &self,
+        generation: u64,
+        outbound_tx: mpsc::Sender<proto::Envelope>,
+        pending: PendingResponses,
+    ) -> Result<proto::InitializeResponse> {
+        let host_info_json = serde_json::to_string(&InitializeRequestParams::default())?;
+        let response = self
+            .request_once(
+                generation,
+                outbound_tx,
+                pending,
+                proto::envelope::Payload::InitializeRequest(proto::InitializeRequest {
+                    host_protocol_version: PROTOCOL_VERSION,
+                    host_version: crate::VERSION.to_string(),
+                    host_info_json,
+                    mesh_visibility: proto_mesh_visibility(self.host_mode.mesh_visibility),
+                }),
+            )
+            .await?;
+        self.parse_initialize_response(generation, response).await
+    }
+
+    async fn parse_initialize_response(
+        &self,
+        generation: u64,
+        response: proto::Envelope,
+    ) -> Result<proto::InitializeResponse> {
+        let init = match response.payload {
+            Some(proto::envelope::Payload::InitializeResponse(resp)) => resp,
+            Some(proto::envelope::Payload::ErrorResponse(err))
+                if err.code == STARTUP_DISABLED_ERROR_CODE =>
+            {
+                self.mark_disabled(generation, err.message).await;
+                bail!("Plugin '{}' is disabled", self.spec.name);
+            }
+            Some(proto::envelope::Payload::ErrorResponse(err)) => {
+                bail!(
+                    "Plugin '{}' rejected initialize: {}",
+                    self.spec.name,
+                    err.message
+                )
+            }
+            _ => bail!(
+                "Plugin '{}' returned an unexpected initialize payload",
+                self.spec.name
+            ),
+        };
+        self.validate_initialize_response(&init)?;
+        Ok(init)
+    }
+
+    fn validate_initialize_response(&self, init: &proto::InitializeResponse) -> Result<()> {
+        if init.plugin_id != self.spec.name {
+            bail!(
+                "Plugin '{}' identified itself as '{}'",
+                self.spec.name,
+                init.plugin_id
+            );
+        }
+        if init.plugin_protocol_version != PROTOCOL_VERSION {
+            bail!(
+                "Plugin '{}' uses protocol {}, host uses {}",
+                self.spec.name,
+                init.plugin_protocol_version,
+                PROTOCOL_VERSION
+            );
+        }
+        Ok(())
+    }
+
+    async fn initialize_runtime(
+        &self,
+        generation: u64,
+        outbound_tx: mpsc::Sender<proto::Envelope>,
+        pending: PendingResponses,
+    ) -> Result<proto::InitializeResponse> {
+        match self
+            .request_initialize(generation, outbound_tx, pending)
+            .await
+        {
+            Ok(init) => Ok(init),
+            Err(err) => {
+                if self.is_disabled().await {
+                    return Err(err);
+                }
+                self.handle_runtime_failure(
+                    Some(generation),
+                    format!("Plugin '{}' failed initialize: {err}", self.spec.name),
+                )
+                .await;
+                Err(err)
+            }
+        }
+    }
+
     pub(crate) async fn supervise(&self) -> Result<()> {
         if self.is_disabled().await {
             return Ok(());
@@ -163,150 +352,22 @@ impl ExternalPlugin {
             return Ok(());
         }
 
-        {
-            let mut summary = self.summary.lock().await;
-            summary.status = "starting".into();
-            summary.pid = None;
-            summary.error = None;
-        }
-        self.publish_summary().await;
+        self.publish_starting_summary().await;
 
         let listener = bind_local_listener(&self.instance_id, &self.spec.name).await?;
         let endpoint = listener.endpoint();
         let transport = listener.transport_name();
-        tracing::debug!(
-            plugin = %self.spec.name,
-            endpoint = %endpoint,
-            transport,
-            "Waiting for plugin connection"
-        );
+        self.log_waiting_for_connection(&listener);
 
-        let mut child = Command::new(&self.spec.command);
-        child.args(&self.spec.args);
-        child.env("MESH_LLM_PLUGIN_ENDPOINT", &endpoint);
-        child.env("MESH_LLM_PLUGIN_TRANSPORT", transport);
-        child.env("MESH_LLM_PLUGIN_NAME", &self.spec.name);
-        if let Some(ref url) = self.spec.url {
-            child.env("MESH_LLM_OPENAI_ENDPOINT_URL", url);
-        }
-        for (key, value) in &self.spec.env {
-            child.env(key, value);
-        }
-        child.stdin(std::process::Stdio::null());
-        child.stdout(std::process::Stdio::null());
-        child.stderr(std::process::Stdio::inherit());
-        child.kill_on_drop(true);
-
-        let child = child.spawn().with_context(|| {
-            format!(
-                "Failed to launch plugin '{}' via {}",
-                self.spec.name, self.spec.command
-            )
-        })?;
+        let child = self.spawn_child_process(&endpoint, transport)?;
         let pid = child.id();
         self.summary.lock().await.pid = pid;
 
-        let stream = tokio::time::timeout(
-            std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS),
-            listener.accept(),
-        )
-        .await
-        .with_context(|| format!("Timed out waiting for plugin '{}'", self.spec.name))??;
-
-        let (outbound_tx, outbound_rx) = mpsc::channel(256);
-        let pending = Arc::new(Mutex::new(HashMap::new()));
-        let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
-        let outbound_tx_for_runtime = outbound_tx.clone();
-        *self.runtime.lock().await = Some(PluginRuntime {
-            generation,
-            _child: child,
-            outbound_tx,
-            pending: pending.clone(),
-        });
-        tokio::spawn(connection_loop(
-            stream,
-            outbound_rx,
-            pending,
-            self.mesh_tx.clone(),
-            self.spec.name.clone(),
-            self.summary.clone(),
-            self.rpc_bridge.clone(),
-            self.runtime.clone(),
-            outbound_tx_for_runtime,
-            generation,
-        ));
-
-        let (_, outbound_tx, pending) = self.runtime_handles().await?;
-        let init_result: Result<proto::InitializeResponse> = async {
-            let host_info_json = serde_json::to_string(&InitializeRequestParams::default())?;
-            let response = self
-                .request_once(
-                    generation,
-                    outbound_tx.clone(),
-                    pending.clone(),
-                    proto::envelope::Payload::InitializeRequest(proto::InitializeRequest {
-                        host_protocol_version: PROTOCOL_VERSION,
-                        host_version: crate::VERSION.to_string(),
-                        host_info_json,
-                        mesh_visibility: proto_mesh_visibility(self.host_mode.mesh_visibility),
-                    }),
-                )
-                .await?;
-
-            let init = match response.payload {
-                Some(proto::envelope::Payload::InitializeResponse(resp)) => resp,
-                Some(proto::envelope::Payload::ErrorResponse(err))
-                    if err.code == STARTUP_DISABLED_ERROR_CODE =>
-                {
-                    self.mark_disabled(generation, err.message).await;
-                    bail!("Plugin '{}' is disabled", self.spec.name);
-                }
-                Some(proto::envelope::Payload::ErrorResponse(err)) => {
-                    bail!(
-                        "Plugin '{}' rejected initialize: {}",
-                        self.spec.name,
-                        err.message
-                    )
-                }
-                _ => bail!(
-                    "Plugin '{}' returned an unexpected initialize payload",
-                    self.spec.name
-                ),
-            };
-
-            if init.plugin_id != self.spec.name {
-                bail!(
-                    "Plugin '{}' identified itself as '{}'",
-                    self.spec.name,
-                    init.plugin_id
-                );
-            }
-            if init.plugin_protocol_version != PROTOCOL_VERSION {
-                bail!(
-                    "Plugin '{}' uses protocol {}, host uses {}",
-                    self.spec.name,
-                    init.plugin_protocol_version,
-                    PROTOCOL_VERSION
-                );
-            }
-
-            Ok(init)
-        }
-        .await;
-        let init = match init_result {
-            Ok(init) => init,
-            Err(err) => {
-                if self.is_disabled().await {
-                    return Err(err);
-                }
-                self.handle_runtime_failure(
-                    Some(generation),
-                    format!("Plugin '{}' failed initialize: {err}", self.spec.name),
-                )
-                .await;
-                return Err(err);
-            }
-        };
+        let stream = self.await_plugin_connection(listener).await?;
+        let (generation, outbound_tx, pending) = self.install_runtime(child, stream).await;
+        let init = self
+            .initialize_runtime(generation, outbound_tx, pending)
+            .await?;
 
         let server_info: ServerInfo =
             serde_json::from_str(&init.server_info_json).with_context(|| {

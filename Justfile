@@ -16,24 +16,10 @@ default: build
 
 [private]
 [unix]
-_lld-cargo-config:
+with-lld *COMMAND:
     #!/usr/bin/env bash
     set -euo pipefail
-    mkdir -p .cargo
-    config=".cargo/config.toml"
-    tmp="$(mktemp)"
-    if [[ -f "$config" ]]; then
-        awk '
-            /^# BEGIN Mesh-LLM lld config$/ { skip = 1; next }
-            /^# END Mesh-LLM lld config$/ { skip = 0; next }
-            !skip { print }
-        ' "$config" > "$tmp"
-    else
-        : > "$tmp"
-    fi
-    if [[ -s "$tmp" && "$(tail -c 1 "$tmp")" != "" ]]; then
-        printf '\n' >> "$tmp"
-    fi
+    lld=""
     case "$(uname -s)" in
         Linux)
             if ! command -v ld.lld >/dev/null 2>&1; then
@@ -52,18 +38,9 @@ _lld-cargo-config:
     EOF
                 exit 1
             fi
-            cat >> "$tmp" <<'EOF'
-    # BEGIN Mesh-LLM lld config
-    [target.x86_64-unknown-linux-gnu]
-    rustflags = ["-C", "link-arg=-fuse-ld=lld"]
-
-    [target.aarch64-unknown-linux-gnu]
-    rustflags = ["-C", "link-arg=-fuse-ld=lld"]
-    # END Mesh-LLM lld config
-    EOF
+            lld="lld"
             ;;
         Darwin)
-            lld=""
             if command -v ld64.lld >/dev/null 2>&1; then
                 lld="$(command -v ld64.lld)"
             elif command -v brew >/dev/null 2>&1; then
@@ -96,27 +73,19 @@ _lld-cargo-config:
     EOF
                 exit 1
             fi
-            cat >> "$tmp" <<EOF
-    # BEGIN Mesh-LLM lld config
-    [target.aarch64-apple-darwin]
-    rustflags = ["-C", "link-arg=-fuse-ld=$lld"]
-
-    [target.x86_64-apple-darwin]
-    rustflags = ["-C", "link-arg=-fuse-ld=$lld"]
-    # END Mesh-LLM lld config
-    EOF
             ;;
         *)
-            echo "Unsupported OS for lld cargo config: $(uname -s)" >&2
+            echo "Unsupported OS for lld linker setup: $(uname -s)" >&2
             exit 1
             ;;
     esac
-    mv "$tmp" "$config"
+    export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C link-arg=-fuse-ld=$lld"
+    exec {{ COMMAND }}
 
 [private]
 [windows]
-_lld-cargo-config:
-    @powershell -NoProfile -ExecutionPolicy Bypass -Command "$$ErrorActionPreference = 'Stop'; $$linker = $$null; try { $$sysroot = (& rustc --print sysroot).Trim(); foreach ($$target in @('x86_64-pc-windows-msvc', 'aarch64-pc-windows-msvc')) { $$candidate = Join-Path $$sysroot \"lib\rustlib\$$target\bin\rust-lld.exe\"; if (Test-Path $$candidate) { $$linker = $$candidate; break } } } catch {}; if (-not $$linker) { foreach ($$name in @('rust-lld.exe', 'lld-link.exe')) { $$command = Get-Command $$name -ErrorAction SilentlyContinue; if ($$command) { $$linker = $$command.Source; break } } }; if (-not $$linker) { Write-Error \"LLVM lld was not found for the Windows MSVC target.`n`nlld is required for faster Rust builds (measured up to 26% faster locally).`n`nInstall one of these, then rerun the just command:`n  rustup component add llvm-tools-preview`n`nOr install LLVM lld-link:`n  winget install LLVM.LLVM`n  choco install llvm`n`nThe build requires lld. It looks for rust-lld.exe in the active Rust sysroot first, then falls back to rust-lld.exe or lld-link.exe on PATH.\"; exit 1 }; New-Item -ItemType Directory -Force -Path .cargo | Out-Null; $$config = '.cargo/config.toml'; $$body = if (Test-Path $$config) { Get-Content -Raw $$config } else { '' }; $$body = [regex]::Replace($$body, '(?ms)^# BEGIN Mesh-LLM lld config\\r?\\n.*?^# END Mesh-LLM lld config\\r?\\n?', ''); if ($$body -and -not $$body.EndsWith(\"`n\")) { $$body += \"`n\" }; $$body += \"# BEGIN Mesh-LLM lld config`n[target.x86_64-pc-windows-msvc]`nlinker = `\"$$linker`\"`n`n[target.aarch64-pc-windows-msvc]`nlinker = `\"$$linker`\"`n# END Mesh-LLM lld config`n\"; Set-Content -Path $$config -Value $$body"
+with-lld *COMMAND:
+    @powershell -NoProfile -ExecutionPolicy Bypass -Command "$$ErrorActionPreference = 'Stop'; $$linker = $$null; try { $$sysroot = (& rustc --print sysroot).Trim(); foreach ($$target in @('x86_64-pc-windows-msvc', 'aarch64-pc-windows-msvc')) { $$candidate = Join-Path $$sysroot \"lib\rustlib\$$target\bin\rust-lld.exe\"; if (Test-Path $$candidate) { $$linker = $$candidate; break } } } catch {}; if (-not $$linker) { foreach ($$name in @('rust-lld.exe', 'lld-link.exe')) { $$command = Get-Command $$name -ErrorAction SilentlyContinue; if ($$command) { $$linker = $$command.Source; break } } }; if (-not $$linker) { Write-Error \"LLVM lld was not found for the Windows MSVC target.`n`nlld is required for faster Rust builds (measured up to 26% faster locally).`n`nInstall one of these, then rerun the just command:`n  rustup component add llvm-tools-preview`n`nOr install LLVM lld-link:`n  winget install LLVM.LLVM`n  choco install llvm`n`nThe build requires lld. It looks for rust-lld.exe in the active Rust sysroot first, then falls back to rust-lld.exe or lld-link.exe on PATH.\"; exit 1 }; $$env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = $$linker; $$env:CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER = $$linker; Invoke-Expression '{{ COMMAND }}'"
 
 # Build for the current platform (macOS Metal ABI, Linux/Windows auto ABI backend)
 [macos]
@@ -222,12 +191,12 @@ release-build-vulkan-windows:
 
 # Build the skippy benchmark/debug telemetry collector.
 [unix]
-metrics-server-build: _lld-cargo-config
-    cargo build -p metrics-server
+metrics-server-build:
+    just with-lld cargo build -p metrics-server
 
 [windows]
-metrics-server-build: _lld-cargo-config
-    @cargo build -p metrics-server
+metrics-server-build:
+    @just with-lld cargo build -p metrics-server
 
 # Build the binaries copied into the Skippy WAN Docker lab image.
 [linux]
@@ -239,17 +208,17 @@ bench-corpus tier="smoke" *ARGS:
     scripts/generate-bench-corpus.py "{{ tier }}" {{ ARGS }}
 
 # Run skippy family certification checks.
-family-certify *ARGS: _lld-cargo-config
-    scripts/family-certify.sh {{ ARGS }}
+family-certify *ARGS:
+    just with-lld scripts/family-certify.sh {{ ARGS }}
 
 # Run target/draft speculative compatibility checks.
-spec-bench target draft *ARGS: _lld-cargo-config
-    LLAMA_STAGE_BUILD_DIR=".deps/llama-build/build-stage-abi-static" cargo build -p llama-spec-bench
+spec-bench target draft *ARGS:
+    just with-lld env LLAMA_STAGE_BUILD_DIR=".deps/llama-build/build-stage-abi-static" cargo build -p llama-spec-bench
     LLAMA_STAGE_BUILD_DIR=".deps/llama-build/build-stage-abi-static" target/debug/llama-spec-bench --target-model-path "{{ target }}" --draft-model-path "{{ draft }}" {{ ARGS }}
 
 # Smoke a standalone skippy OpenAI frontend stage.
-skippy-openai-smoke *ARGS: _lld-cargo-config
-    scripts/skippy-openai-smoke.sh {{ ARGS }}
+skippy-openai-smoke *ARGS:
+    just with-lld scripts/skippy-openai-smoke.sh {{ ARGS }}
 
 # Run the skippy benchmark/debug telemetry collector.
 metrics-server db="/tmp/mesh-metrics.duckdb" http_addr="127.0.0.1:18080" otlp_addr="127.0.0.1:14317" *ARGS: metrics-server-build
@@ -318,12 +287,12 @@ release-bundle-arm64 version output="dist":
 
 # Run repo-level release-target consistency checks.
 [unix]
-check-release: _lld-cargo-config
-    cargo run -p xtask -- repo-consistency release-targets
+check-release:
+    just with-lld cargo run -p xtask -- repo-consistency release-targets
 
 [windows]
-check-release: _lld-cargo-config
-    @cargo run -p xtask -- repo-consistency release-targets
+check-release:
+    @just with-lld cargo run -p xtask -- repo-consistency release-targets
 
 release-bundle-windows version output="dist":
     @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Version "{{version}}" -OutputDir "{{output}}"
@@ -382,7 +351,7 @@ ui-test:
 # ── Full Validation Gate ───────────────────────────────────────
 
 # Run all checks: Rust tests, fmt, clippy, ESLint, Prettier, E2E smoke.
-test-all: _lld-cargo-config
+test-all:
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -408,16 +377,16 @@ test-all: _lld-cargo-config
 
     # Each UI step runs in a subshell so cd doesn't leak between steps.
     echo "=== 1/7 Rust format check ==="
-    cargo fmt --all -- --check
+    just with-lld cargo fmt --all -- --check
     echo ""
     echo "=== 2/7 Clippy ==="
-    cargo clippy -p mesh-llm -- -D warnings
+    just with-lld cargo clippy -p mesh-llm -- -D warnings
     echo ""
     echo "=== 3/7 Rust tests ==="
     echo "--- mesh-llm ---"
-    cargo test -p mesh-llm
+    just with-lld cargo test -p mesh-llm
     echo "--- skippy-runtime lib ---"
-    cargo test -p skippy-runtime --lib
+    just with-lld cargo test -p skippy-runtime --lib
     echo ""
     echo "=== 4/7 ESLint + Prettier ==="
     (cd "{{ ui_dir }}" && pnpm run lint)

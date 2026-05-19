@@ -15,114 +15,21 @@ use tokio::{
 pub(crate) async fn start_with_listener(
     port: u16,
     state: MeshApi,
-    mut target_rx: watch::Receiver<election::InferenceTarget>,
+    target_rx: watch::Receiver<election::InferenceTarget>,
     listen_all: bool,
     headless: bool,
     existing_listener: Option<TcpListener>,
 ) {
     state.set_headless(headless).await;
-    // Watch election target changes
-    let state2 = state.clone();
-    tokio::spawn(async move {
-        loop {
-            if target_rx.changed().await.is_err() {
-                break;
-            }
-            let target = target_rx.borrow().clone();
-            match target {
-                election::InferenceTarget::Local(port) => {
-                    state2.set_llama_port(Some(port)).await;
-                }
-                election::InferenceTarget::Remote(_) => {
-                    let mut inner = state2.inner.lock().await;
-                    inner.llama_ready = true;
-                    inner.llama_port = None;
-                    inner
-                        .runtime_data_producer
-                        .publish_runtime_status(|runtime_status| {
-                            let mut changed = false;
-                            if !runtime_status.llama_ready {
-                                runtime_status.llama_ready = true;
-                                changed = true;
-                            }
-                            if runtime_status.llama_port.is_some() {
-                                runtime_status.llama_port = None;
-                                changed = true;
-                            }
-                            changed
-                        });
-                }
-                election::InferenceTarget::None => {
-                    state2.set_llama_port(None).await;
-                }
-            }
-        }
-    });
+    spawn_target_watcher(state.clone(), target_rx);
+    spawn_peer_watcher(state.clone()).await;
+    spawn_inflight_watcher(state.clone()).await;
+    spawn_latest_version_check(state.clone());
 
-    // Push status when peers join/leave.
-    let mut peer_rx = {
-        let inner = state.inner.lock().await;
-        inner.node.peer_change_rx.clone()
+    let Some(listener) = bind_management_listener(port, listen_all, existing_listener).await else {
+        return;
     };
-    let state3 = state.clone();
-    tokio::spawn(async move {
-        loop {
-            if peer_rx.changed().await.is_err() {
-                break;
-            }
-            state3.push_status().await;
-        }
-    });
-
-    // Push status when in-flight request count changes.
-    let mut inflight_rx = {
-        let inner = state.inner.lock().await;
-        inner.node.inflight_change_rx()
-    };
-    let state4 = state.clone();
-    tokio::spawn(async move {
-        loop {
-            if inflight_rx.changed().await.is_err() {
-                break;
-            }
-            state4.push_status().await;
-        }
-    });
-
-    // One-shot check for newer public release (for UI footer indicator).
-    let state5 = state.clone();
-    tokio::spawn(async move {
-        let Some(latest) = crate::system::autoupdate::latest_release_version().await else {
-            return;
-        };
-        if !crate::system::autoupdate::version_newer(&latest, crate::VERSION) {
-            return;
-        }
-        {
-            let mut inner = state5.inner.lock().await;
-            inner.latest_version = Some(latest);
-        }
-        state5.push_status().await;
-    });
-
-    let addr = if listen_all { "0.0.0.0" } else { "127.0.0.1" };
-    let listener = match existing_listener {
-        Some(listener) => listener,
-        None => match TcpListener::bind(format!("{addr}:{port}")).await {
-            Ok(l) => l,
-            Err(e) => {
-                tracing::error!("Management API: failed to bind :{port}: {e}");
-                return;
-            }
-        },
-    };
-    let management_url = listener
-        .local_addr()
-        .map(|addr| format!("http://{addr}"))
-        .unwrap_or_else(|err| {
-            tracing::warn!("Management API: failed to read listener address: {err}");
-            format!("http://localhost:{port}")
-        });
+    let management_url = management_url(&listener, port);
     tracing::info!("Management API on {management_url}");
 
     loop {
@@ -138,6 +45,120 @@ pub(crate) async fn start_with_listener(
     }
 }
 
+fn spawn_target_watcher(state: MeshApi, mut target_rx: watch::Receiver<election::InferenceTarget>) {
+    tokio::spawn(async move {
+        loop {
+            if target_rx.changed().await.is_err() {
+                break;
+            }
+            let target = { target_rx.borrow().clone() };
+            apply_inference_target(&state, target).await;
+        }
+    });
+}
+
+async fn apply_inference_target(state: &MeshApi, target: election::InferenceTarget) {
+    match target {
+        election::InferenceTarget::Local(port) => state.set_llama_port(Some(port)).await,
+        election::InferenceTarget::Remote(_) => mark_remote_llama_ready(state).await,
+        election::InferenceTarget::None => state.set_llama_port(None).await,
+    }
+}
+
+async fn mark_remote_llama_ready(state: &MeshApi) {
+    let mut inner = state.inner.lock().await;
+    inner.llama_ready = true;
+    inner.llama_port = None;
+    inner
+        .runtime_data_producer
+        .publish_runtime_status(|runtime_status| {
+            let mut changed = false;
+            if !runtime_status.llama_ready {
+                runtime_status.llama_ready = true;
+                changed = true;
+            }
+            if runtime_status.llama_port.is_some() {
+                runtime_status.llama_port = None;
+                changed = true;
+            }
+            changed
+        });
+}
+
+async fn spawn_peer_watcher(state: MeshApi) {
+    let mut peer_rx = {
+        let inner = state.inner.lock().await;
+        inner.node.peer_change_rx.clone()
+    };
+    tokio::spawn(async move {
+        loop {
+            if peer_rx.changed().await.is_err() {
+                break;
+            }
+            state.push_status().await;
+        }
+    });
+}
+
+async fn spawn_inflight_watcher(state: MeshApi) {
+    let mut inflight_rx = {
+        let inner = state.inner.lock().await;
+        inner.node.inflight_change_rx()
+    };
+    tokio::spawn(async move {
+        loop {
+            if inflight_rx.changed().await.is_err() {
+                break;
+            }
+            state.push_status().await;
+        }
+    });
+}
+
+fn spawn_latest_version_check(state: MeshApi) {
+    tokio::spawn(async move {
+        let Some(latest) = crate::system::autoupdate::latest_release_version().await else {
+            return;
+        };
+        if !crate::system::autoupdate::version_newer(&latest, crate::VERSION) {
+            return;
+        }
+        {
+            let mut inner = state.inner.lock().await;
+            inner.latest_version = Some(latest);
+        }
+        state.push_status().await;
+    });
+}
+
+async fn bind_management_listener(
+    port: u16,
+    listen_all: bool,
+    existing_listener: Option<TcpListener>,
+) -> Option<TcpListener> {
+    let addr = if listen_all { "0.0.0.0" } else { "127.0.0.1" };
+    match existing_listener {
+        Some(listener) => Some(listener),
+        None => match TcpListener::bind(format!("{addr}:{port}")).await {
+            Ok(listener) => Some(listener),
+            Err(e) => {
+                tracing::error!("Management API: failed to bind :{port}: {e}");
+                None
+            }
+        },
+    }
+}
+
+fn management_url(listener: &TcpListener, port: u16) -> String {
+    listener
+        .local_addr()
+        .map(|addr| format!("http://{addr}"))
+        .unwrap_or_else(|err| {
+            tracing::warn!("Management API: failed to read listener address: {err}");
+            format!("http://localhost:{port}")
+        })
+}
+
 // ── Request dispatch ──
 
 pub(crate) fn is_ui_only_route(path: &str) -> bool {
@@ -151,15 +172,8 @@ pub(crate) fn is_ui_only_route(path: &str) -> bool {
 }
 
 pub(crate) async fn handle_request(mut stream: TcpStream, state: &MeshApi) -> anyhow::Result<()> {
-    let request = match tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        proxy::read_http_request(&mut stream),
-    )
-    .await
-    {
-        Ok(Ok(request)) => request,
-        Ok(Err(e)) => return Err(e),
-        Err(_) => return Ok(()), // read timeout — health check probe, just close
+    let Some(request) = read_management_request(&mut stream).await? else {
+        return Ok(());
     };
     let req = String::from_utf8_lossy(&request.raw);
     let method = request.method.as_str();
@@ -175,21 +189,15 @@ pub(crate) async fn handle_request(mut stream: TcpStream, state: &MeshApi) -> an
     match (method, path_only) {
         // ── Dashboard UI ──
         ("GET", "/") => {
-            if !respond_console_index(&mut stream).await? {
-                respond_error(&mut stream, 500, "Dashboard bundle missing").await?;
-            }
+            respond_dashboard_index(&mut stream).await?;
         }
 
         ("GET", "/dashboard") | ("GET", "/chat") | ("GET", "/dashboard/") | ("GET", "/chat/") => {
-            if !respond_console_index(&mut stream).await? {
-                respond_error(&mut stream, 500, "Dashboard bundle missing").await?;
-            }
+            respond_dashboard_index(&mut stream).await?;
         }
 
         ("GET", p) if p.starts_with("/chat/") => {
-            if !respond_console_index(&mut stream).await? {
-                respond_error(&mut stream, 500, "Dashboard bundle missing").await?;
-            }
+            respond_dashboard_index(&mut stream).await?;
         }
 
         // ── Frontend static assets (bundled UI dist) ──
@@ -198,9 +206,7 @@ pub(crate) async fn handle_request(mut stream: TcpStream, state: &MeshApi) -> an
                 || matches!(p.rsplit('.').next(), Some("png" | "ico" | "webmanifest"))
                 || (p.ends_with(".json") && !p.starts_with("/api/")) =>
         {
-            if !respond_console_asset(&mut stream, p).await? {
-                respond_error(&mut stream, 404, "Not found").await?;
-            }
+            respond_static_asset(&mut stream, p).await?;
         }
 
         _ => {
@@ -219,6 +225,35 @@ pub(crate) async fn handle_request(mut stream: TcpStream, state: &MeshApi) -> an
                 respond_error(&mut stream, 404, "Not found").await?;
             }
         }
+    }
+    Ok(())
+}
+
+async fn read_management_request(
+    stream: &mut TcpStream,
+) -> anyhow::Result<Option<proxy::BufferedHttpRequest>> {
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        proxy::read_http_request(stream),
+    )
+    .await
+    {
+        Ok(Ok(request)) => Ok(Some(request)),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Ok(None), // read timeout — health check probe, just close
+    }
+}
+
+async fn respond_dashboard_index(stream: &mut TcpStream) -> anyhow::Result<()> {
+    if !respond_console_index(stream).await? {
+        respond_error(stream, 500, "Dashboard bundle missing").await?;
+    }
+    Ok(())
+}
+
+async fn respond_static_asset(stream: &mut TcpStream, path: &str) -> anyhow::Result<()> {
+    if !respond_console_asset(stream, path).await? {
+        respond_error(stream, 404, "Not found").await?;
     }
     Ok(())
 }

@@ -3,6 +3,9 @@ name = "mesh-llm-plugin"
 version = "0.65.1"
 edition = "2021"
 
+[lints]
+workspace = true
+
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"

@@ -1,5 +1,8 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/react-router'
+import { AppProviders } from '@/app/providers/AppProviders'
+import { routeTree } from '@/app/router/router'
 import type { ImageDescriptionResult } from '@/features/chat/lib/vision-describe'
 
 vi.mock('@/components/ui/select', async () => {
@@ -85,13 +88,7 @@ vi.mock('@/components/ui/select', async () => {
 })
 
 import { defaultQueryClient } from '@/lib/query/query-client'
-import {
-  App,
-  attachmentForMessage,
-  ChatPage,
-  describeImageAttachmentForPrompt,
-  describeRenderedPagesAsText
-} from '@/App'
+import { attachmentForMessage, ChatPage, describeImageAttachmentForPrompt, describeRenderedPagesAsText } from '@/App'
 import type { StatusPayload } from '@/features/app-shell/lib/status-types'
 
 function buildProps(overrides: Partial<Parameters<typeof ChatPage>[0]> = {}): Parameters<typeof ChatPage>[0] {
@@ -236,6 +233,21 @@ function setupFetchMock() {
 
 function setPath(path: string) {
   window.history.replaceState({}, '', path)
+}
+
+function renderAppRoute(path: string) {
+  const testRouter = createRouter({
+    history: createMemoryHistory({ initialEntries: [path] }),
+    routeTree
+  })
+
+  render(
+    <AppProviders initialDataMode="live" persistDataMode={false} queryClient={defaultQueryClient}>
+      <RouterProvider router={testRouter} />
+    </AppProviders>
+  )
+
+  return testRouter
 }
 
 class MockEventSource {
@@ -476,12 +488,11 @@ describe('ChatPage', () => {
 
 describe('App routing and status', () => {
   it('desktop unknown path fallback resolves to dashboard behavior', async () => {
-    setPath('/unknown-path')
-    render(<App />)
+    const testRouter = renderAppRoute('/unknown-path')
 
     const networkLink = await screen.findByRole('link', { name: 'Network' })
     expect(networkLink).toHaveAttribute('aria-current', 'page')
-    await waitFor(() => expect(window.location.pathname).toBe('/unknown-path'))
+    await waitFor(() => expect(testRouter.state.location.pathname).toBe('/unknown-path'))
     expect(screen.queryByRole('button', { name: /New chat/i })).not.toBeInTheDocument()
   })
 
@@ -492,14 +503,12 @@ describe('App routing and status', () => {
       writable: true,
       value: 640
     })
-    setPath('/unknown-path')
+    const testRouter = renderAppRoute('/unknown-path')
 
     try {
-      render(<App />)
-
       const networkLink = await screen.findByRole('link', { name: 'Network' })
       expect(networkLink).toHaveAttribute('aria-current', 'page')
-      await waitFor(() => expect(window.location.pathname).toBe('/unknown-path'))
+      await waitFor(() => expect(testRouter.state.location.pathname).toBe('/unknown-path'))
       expect(screen.queryByRole('button', { name: /New chat/i })).not.toBeInTheDocument()
     } finally {
       Object.defineProperty(window, 'innerWidth', {
@@ -511,29 +520,26 @@ describe('App routing and status', () => {
   })
 
   it('/dashboard route renders without redirecting to /config', async () => {
-    setPath('/dashboard')
-    render(<App />)
+    const testRouter = renderAppRoute('/dashboard')
 
     const networkLink = await screen.findByRole('link', { name: 'Network' })
     expect(networkLink).toHaveAttribute('aria-current', 'page')
-    await waitFor(() => expect(window.location.pathname).not.toBe('/configuration'))
+    await waitFor(() => expect(testRouter.state.location.pathname).not.toBe('/configuration'))
     expect(screen.queryByRole('button', { name: /New chat/i })).not.toBeInTheDocument()
   })
 
   it('/chat route renders chat section content', async () => {
-    setPath('/chat')
-    render(<App />)
+    const testRouter = renderAppRoute('/chat')
 
     const chatLink = await screen.findByRole('link', { name: 'Chat' })
     expect(chatLink).toHaveAttribute('aria-current', 'page')
     await screen.findByTestId('chat-input')
-    await waitFor(() => expect(window.location.pathname).toBe('/chat'))
+    await waitFor(() => expect(testRouter.state.location.pathname).toBe('/chat'))
     expect(screen.queryByRole('link', { current: 'page', name: 'Network' })).not.toBeInTheDocument()
   })
 
   it.skip('boots /api/status on mount and consumes status payload', async () => {
-    setPath('/dashboard')
-    render(<App />)
+    renderAppRoute('/dashboard')
 
     await waitFor(() => expect(mockFetch.mock.calls.some((call) => call[0] === '/api/status')).toBe(true))
     await screen.findByText('Mesh LLM v1.0.0')
@@ -567,8 +573,7 @@ describe('App routing and status', () => {
       ]
     }
 
-    setPath('/dashboard')
-    render(<App />)
+    renderAppRoute('/dashboard')
 
     expect((await screen.findAllByText('Loading')).length).toBeGreaterThan(0)
     expect((await screen.findAllByText('Standby')).length).toBeGreaterThan(0)
@@ -617,8 +622,7 @@ describe('App routing and status', () => {
       ]
     }
 
-    setPath('/dashboard')
-    render(<App />)
+    renderAppRoute('/dashboard')
 
     const modelButton = await screen.findByRole('button', {
       name: /Hermes-2-Pro-Mistral-7B/i
@@ -645,8 +649,7 @@ describe('App routing and status', () => {
       hosted_models: [],
       serving_models: []
     }
-    setPath('/chat')
-    render(<App />)
+    renderAppRoute('/chat')
 
     const input = await screen.findByTestId('chat-input')
     await waitFor(() => expect(mockFetch.mock.calls.some((call) => call[0] === '/api/models')).toBe(true))
@@ -668,8 +671,7 @@ describe('App routing and status', () => {
       hosted_models: [],
       serving_models: ['unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_XL']
     }
-    setPath('/chat')
-    render(<App />)
+    renderAppRoute('/chat')
 
     const input = await screen.findByTestId('chat-input')
     await waitFor(() => expect(input).not.toBeDisabled())
@@ -678,9 +680,7 @@ describe('App routing and status', () => {
 
   it('ignores the global command-bar shortcut when focus is inside the chat input', async () => {
     statusPayload = createStatusPayload()
-    setPath('/chat')
-
-    render(<App />)
+    renderAppRoute('/chat')
 
     const chatInput = await screen.findByTestId('chat-input')
     chatInput.focus()

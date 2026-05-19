@@ -210,7 +210,7 @@ function useChatLane({
     if (!liveMode || !conversationId) return
 
     if (previousPersistedConversationRef.current !== conversationId) {
-      window.queueMicrotask(() => setPreviousPersistedConversationId(conversationId))
+      setPreviousPersistedConversationId(conversationId)
       return
     }
 
@@ -256,7 +256,7 @@ export function ChatSessionProvider({ children, data = CHAT_HARNESS }: ChatSessi
     activeLaneId: 'primary',
     laneConversationIds: {
       primary: activeConversationKey || draftConversationId,
-      secondary: createChatDraftConversationId()
+      secondary: draftConversationId
     }
   }))
   const { activeLaneId, laneConversationIds } = laneRoutingState
@@ -347,15 +347,28 @@ export function ChatSessionProvider({ children, data = CHAT_HARNESS }: ChatSessi
         : [],
     [liveMode, primaryLane, secondaryLane]
   )
-  const nextLaneRoutingState = normalizeChatLaneRoutingState(laneRoutingState, {
-    activeConversationKey,
-    draftConversationId,
-    primaryIsStreaming: primaryLane.isStreaming,
-    secondaryIsStreaming: secondaryLane.isStreaming,
-    selectedConversationId
-  })
-  if (nextLaneRoutingState !== laneRoutingState) {
-    setLaneRoutingState(nextLaneRoutingState)
+
+  const normalizedLaneRoutingState = useMemo(
+    () =>
+      normalizeChatLaneRoutingState(laneRoutingState, {
+        activeConversationKey,
+        draftConversationId,
+        primaryIsStreaming: primaryLane.isStreaming,
+        secondaryIsStreaming: secondaryLane.isStreaming,
+        selectedConversationId
+      }),
+    [
+      activeConversationKey,
+      draftConversationId,
+      laneRoutingState,
+      primaryLane.isStreaming,
+      secondaryLane.isStreaming,
+      selectedConversationId
+    ]
+  )
+
+  if (normalizedLaneRoutingState !== laneRoutingState) {
+    setLaneRoutingState(normalizedLaneRoutingState)
   }
 
   const value = useMemo<ChatSessionContextValue>(

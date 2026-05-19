@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Conversation, ConversationGroup, ChatHarnessData, ThreadMessage } from '@/features/app-tabs/types'
 import {
   MAX_CHAT_CONVERSATIONS,
@@ -89,6 +89,10 @@ function createFallbackState(fallback: ChatHarnessData): ResolvedChatState {
   }
 }
 
+function serializeResolvedChatState(state: ResolvedChatState): string {
+  return JSON.stringify(state)
+}
+
 function normalizeChatState(state: ChatState | undefined, fallback: ChatHarnessData): ResolvedChatState {
   const fallbackState = createFallbackState(fallback)
   if (!state) {
@@ -159,14 +163,43 @@ function reorderConversations(conversations: Conversation[], updatedConversation
 
 export function useConversations(fallback: ChatHarnessData, scope: ChatStorageScope) {
   const [state, setState] = useState<ResolvedChatState>(() => createFallbackState(fallback))
+  // Track the scope used for the most recently resolved state so that switching scopes
+  // can reset state to the fallback even when no persisted state exists for the new scope.
+  // A ref (not state) avoids extra renders when the scope is unchanged across renders.
+  const lastResolvedScopeRef = useRef<ChatStorageScope>(scope)
+  const lastFallbackSignatureRef = useRef<string | null>(null)
+
+  if (lastFallbackSignatureRef.current === null) {
+    lastFallbackSignatureRef.current = serializeResolvedChatState(state)
+  }
 
   useEffect(() => {
     let cancelled = false
+    const scopeChanged = lastResolvedScopeRef.current !== scope
 
     loadChatState(scope).then((storedState) => {
       if (cancelled) return
 
-      setState(normalizeChatState(storedState, fallback))
+      const fallbackState = createFallbackState(fallback)
+      const fallbackSignature = serializeResolvedChatState(fallbackState)
+
+      if (storedState) {
+        setState(normalizeChatState(storedState, fallback))
+        lastResolvedScopeRef.current = scope
+        lastFallbackSignatureRef.current = fallbackSignature
+        return
+      }
+
+      // No persisted state for this scope. Reset state to the fallback only when the
+      // scope changed mid-life or when the fallback data changed in place for the same
+      // scope. Skip the initial identical fallback resolution to avoid a spurious async
+      // re-render that would fire outside a test's act() boundary.
+      if (scopeChanged || lastFallbackSignatureRef.current !== fallbackSignature) {
+        setState(fallbackState)
+      }
+
+      lastResolvedScopeRef.current = scope
+      lastFallbackSignatureRef.current = fallbackSignature
     })
 
     return () => {

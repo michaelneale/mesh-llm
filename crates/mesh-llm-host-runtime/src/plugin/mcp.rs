@@ -19,6 +19,7 @@ use rmcp::{
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
 use std::sync::Arc;
 use tokio::net::TcpStream;
 #[cfg(unix)]
@@ -499,57 +500,124 @@ impl PluginMcpServer {
         Ok(endpoints)
     }
 
-    async fn discover_tools(&self) -> Result<BTreeMap<String, ToolRef>, ErrorData> {
-        let mut tools = BTreeMap::new();
+    async fn plugin_manifests(
+        &self,
+    ) -> Result<Vec<(String, plugin::proto::PluginManifest)>, ErrorData> {
+        let mut manifests = Vec::new();
         for (plugin_name, _) in self.plugin_manager.list_server_infos().await {
             let manifest = self
                 .plugin_manager
                 .manifest(&plugin_name)
                 .await
                 .map_err(internal_error)?;
-            if let Some(manifest) = manifest.filter(|manifest| !manifest.operations.is_empty()) {
-                for operation in &manifest.operations {
-                    let raw_name = operation.name.clone();
-                    for mcp_name in tool_aliases(&plugin_name, &raw_name) {
-                        tools.insert(
-                            mcp_name.clone(),
-                            ToolRef {
-                                target: ToolTarget::Plugin {
-                                    plugin_name: plugin_name.clone(),
-                                    tool_name: raw_name.clone(),
-                                },
-                                tool: stapler::operation(mcp_name, operation),
+            if let Some(manifest) = manifest {
+                manifests.push((plugin_name, manifest));
+            }
+        }
+        Ok(manifests)
+    }
+
+    async fn collect_external_items<T, Fetch, Fut>(
+        &self,
+        client_skip_message: &'static str,
+        list_fail_message: &'static str,
+        mut fetch: Fetch,
+    ) -> Result<Vec<(ExternalMcpEndpoint, Vec<T>)>, ErrorData>
+    where
+        Fetch: FnMut(Arc<ExternalMcpClient>) -> Fut,
+        Fut: Future<Output = Result<Vec<T>>>,
+    {
+        let mut items = Vec::new();
+        for endpoint in self.active_external_mcp_endpoints().await? {
+            if let Some(item) = self
+                .collect_external_items_for_endpoint(
+                    endpoint,
+                    client_skip_message,
+                    list_fail_message,
+                    &mut fetch,
+                )
+                .await
+            {
+                items.push(item);
+            }
+        }
+        Ok(items)
+    }
+
+    async fn collect_external_items_for_endpoint<T, Fetch, Fut>(
+        &self,
+        endpoint: ExternalMcpEndpoint,
+        client_skip_message: &'static str,
+        list_fail_message: &'static str,
+        fetch: &mut Fetch,
+    ) -> Option<(ExternalMcpEndpoint, Vec<T>)>
+    where
+        Fetch: FnMut(Arc<ExternalMcpClient>) -> Fut,
+        Fut: Future<Output = Result<Vec<T>>>,
+    {
+        let client = match self.external_mcp.client_for(&endpoint).await {
+            Ok(client) => client,
+            Err(err) => {
+                tracing::warn!(
+                    plugin = %endpoint.plugin_name,
+                    endpoint = %endpoint.endpoint_id,
+                    error = %err,
+                    "{client_skip_message}"
+                );
+                return None;
+            }
+        };
+        let listed = match fetch(client).await {
+            Ok(listed) => listed,
+            Err(err) => {
+                tracing::warn!(
+                    plugin = %endpoint.plugin_name,
+                    endpoint = %endpoint.endpoint_id,
+                    error = %err,
+                    "{list_fail_message}"
+                );
+                return None;
+            }
+        };
+        Some((endpoint, listed))
+    }
+
+    async fn discover_tools(&self) -> Result<BTreeMap<String, ToolRef>, ErrorData> {
+        let mut tools = BTreeMap::new();
+        for (plugin_name, manifest) in self.plugin_manifests().await? {
+            if manifest.operations.is_empty() {
+                continue;
+            }
+            for operation in &manifest.operations {
+                let raw_name = operation.name.clone();
+                for mcp_name in tool_aliases(&plugin_name, &raw_name) {
+                    tools.insert(
+                        mcp_name.clone(),
+                        ToolRef {
+                            target: ToolTarget::Plugin {
+                                plugin_name: plugin_name.clone(),
+                                tool_name: raw_name.clone(),
                             },
-                        );
-                    }
+                            tool: stapler::operation(mcp_name, operation),
+                        },
+                    );
                 }
             }
         }
-        for endpoint in self.active_external_mcp_endpoints().await? {
-            let client = match self.external_mcp.client_for(&endpoint).await {
-                Ok(client) => client,
-                Err(err) => {
-                    tracing::warn!(
-                        plugin = %endpoint.plugin_name,
-                        endpoint = %endpoint.endpoint_id,
-                        error = %err,
-                        "Skipping external MCP endpoint during tool discovery"
-                    );
-                    continue;
-                }
-            };
-            let listed = match client.peer.list_all_tools().await {
-                Ok(tools) => tools,
-                Err(err) => {
-                    tracing::warn!(
-                        plugin = %endpoint.plugin_name,
-                        endpoint = %endpoint.endpoint_id,
-                        error = %err,
-                        "Failed to list tools from external MCP endpoint"
-                    );
-                    continue;
-                }
-            };
+        for (endpoint, listed) in self
+            .collect_external_items(
+                "Skipping external MCP endpoint during tool discovery",
+                "Failed to list tools from external MCP endpoint",
+                |client| async move {
+                    client
+                        .peer
+                        .list_all_tools()
+                        .await
+                        .map_err(anyhow::Error::from)
+                },
+            )
+            .await?
+        {
             for tool in listed {
                 let raw_name = tool.name.to_string();
                 let canonical_name = endpoint.canonical_name(&raw_name);
@@ -572,51 +640,36 @@ impl PluginMcpServer {
 
     async fn discover_prompts(&self) -> Result<BTreeMap<String, PromptRef>, ErrorData> {
         let mut prompts = BTreeMap::new();
-        for (plugin_name, _) in self.plugin_manager.list_server_infos().await {
-            let manifest = self
-                .plugin_manager
-                .manifest(&plugin_name)
-                .await
-                .map_err(internal_error)?;
-            if let Some(manifest) = manifest.filter(|manifest| !manifest.prompts.is_empty()) {
-                for prompt in &manifest.prompts {
-                    prompts.insert(
-                        canonical_name(&plugin_name, &prompt.name),
-                        PromptRef {
-                            target: PromptTarget::Plugin {
-                                plugin_name: plugin_name.clone(),
-                                prompt_name: prompt.name.clone(),
-                            },
+        for (plugin_name, manifest) in self.plugin_manifests().await? {
+            if manifest.prompts.is_empty() {
+                continue;
+            }
+            for prompt in &manifest.prompts {
+                prompts.insert(
+                    canonical_name(&plugin_name, &prompt.name),
+                    PromptRef {
+                        target: PromptTarget::Plugin {
+                            plugin_name: plugin_name.clone(),
+                            prompt_name: prompt.name.clone(),
                         },
-                    );
-                }
+                    },
+                );
             }
         }
-        for endpoint in self.active_external_mcp_endpoints().await? {
-            let client = match self.external_mcp.client_for(&endpoint).await {
-                Ok(client) => client,
-                Err(err) => {
-                    tracing::warn!(
-                        plugin = %endpoint.plugin_name,
-                        endpoint = %endpoint.endpoint_id,
-                        error = %err,
-                        "Skipping external MCP endpoint during prompt discovery"
-                    );
-                    continue;
-                }
-            };
-            let listed = match client.peer.list_all_prompts().await {
-                Ok(prompts) => prompts,
-                Err(err) => {
-                    tracing::warn!(
-                        plugin = %endpoint.plugin_name,
-                        endpoint = %endpoint.endpoint_id,
-                        error = %err,
-                        "Failed to list prompts from external MCP endpoint"
-                    );
-                    continue;
-                }
-            };
+        for (endpoint, listed) in self
+            .collect_external_items(
+                "Skipping external MCP endpoint during prompt discovery",
+                "Failed to list prompts from external MCP endpoint",
+                |client| async move {
+                    client
+                        .peer
+                        .list_all_prompts()
+                        .await
+                        .map_err(anyhow::Error::from)
+                },
+            )
+            .await?
+        {
             for prompt in listed {
                 prompts.insert(
                     endpoint.canonical_name(&prompt.name),
@@ -638,51 +691,36 @@ impl PluginMcpServer {
 
     async fn discover_resources(&self) -> Result<BTreeMap<String, ResourceRef>, ErrorData> {
         let mut resources = BTreeMap::new();
-        for (plugin_name, _) in self.plugin_manager.list_server_infos().await {
-            let manifest = self
-                .plugin_manager
-                .manifest(&plugin_name)
-                .await
-                .map_err(internal_error)?;
-            if let Some(manifest) = manifest.filter(|manifest| !manifest.resources.is_empty()) {
-                for resource in manifest.resources {
-                    resources.insert(
-                        resource.uri.clone(),
-                        ResourceRef {
-                            target: ResourceTarget::Plugin {
-                                plugin_name: plugin_name.clone(),
-                                resource_uri: resource.uri,
-                            },
+        for (plugin_name, manifest) in self.plugin_manifests().await? {
+            if manifest.resources.is_empty() {
+                continue;
+            }
+            for resource in manifest.resources {
+                resources.insert(
+                    resource.uri.clone(),
+                    ResourceRef {
+                        target: ResourceTarget::Plugin {
+                            plugin_name: plugin_name.clone(),
+                            resource_uri: resource.uri,
                         },
-                    );
-                }
+                    },
+                );
             }
         }
-        for endpoint in self.active_external_mcp_endpoints().await? {
-            let client = match self.external_mcp.client_for(&endpoint).await {
-                Ok(client) => client,
-                Err(err) => {
-                    tracing::warn!(
-                        plugin = %endpoint.plugin_name,
-                        endpoint = %endpoint.endpoint_id,
-                        error = %err,
-                        "Skipping external MCP endpoint during resource discovery"
-                    );
-                    continue;
-                }
-            };
-            let listed = match client.peer.list_all_resources().await {
-                Ok(resources) => resources,
-                Err(err) => {
-                    tracing::warn!(
-                        plugin = %endpoint.plugin_name,
-                        endpoint = %endpoint.endpoint_id,
-                        error = %err,
-                        "Failed to list resources from external MCP endpoint"
-                    );
-                    continue;
-                }
-            };
+        for (endpoint, listed) in self
+            .collect_external_items(
+                "Skipping external MCP endpoint during resource discovery",
+                "Failed to list resources from external MCP endpoint",
+                |client| async move {
+                    client
+                        .peer
+                        .list_all_resources()
+                        .await
+                        .map_err(anyhow::Error::from)
+                },
+            )
+            .await?
+        {
             for resource in listed {
                 resources.insert(
                     endpoint.canonical_resource_uri(&resource.raw.uri),
@@ -798,43 +836,28 @@ impl ServerHandler for PluginMcpServer {
     ) -> Result<ListPromptsResult, ErrorData> {
         self.refresh_peer(context.peer.clone()).await;
         let mut prompts = Vec::new();
-        for (plugin_name, _) in self.plugin_manager.list_server_infos().await {
-            let manifest = self
-                .plugin_manager
-                .manifest(&plugin_name)
-                .await
-                .map_err(internal_error)?;
-            if let Some(manifest) = manifest.filter(|manifest| !manifest.prompts.is_empty()) {
-                prompts.extend(manifest.prompts.into_iter().map(|prompt| {
-                    stapler::prompt(canonical_name(&plugin_name, &prompt.name), &prompt)
-                }));
+        for (plugin_name, manifest) in self.plugin_manifests().await? {
+            if manifest.prompts.is_empty() {
+                continue;
             }
+            prompts.extend(manifest.prompts.into_iter().map(|prompt| {
+                stapler::prompt(canonical_name(&plugin_name, &prompt.name), &prompt)
+            }));
         }
-        for endpoint in self.active_external_mcp_endpoints().await? {
-            let client = match self.external_mcp.client_for(&endpoint).await {
-                Ok(client) => client,
-                Err(err) => {
-                    tracing::warn!(
-                        plugin = %endpoint.plugin_name,
-                        endpoint = %endpoint.endpoint_id,
-                        error = %err,
-                        "Skipping external MCP endpoint during prompt listing"
-                    );
-                    continue;
-                }
-            };
-            let listed = match client.peer.list_all_prompts().await {
-                Ok(prompts) => prompts,
-                Err(err) => {
-                    tracing::warn!(
-                        plugin = %endpoint.plugin_name,
-                        endpoint = %endpoint.endpoint_id,
-                        error = %err,
-                        "Failed to list prompts from external MCP endpoint"
-                    );
-                    continue;
-                }
-            };
+        for (endpoint, listed) in self
+            .collect_external_items(
+                "Skipping external MCP endpoint during prompt listing",
+                "Failed to list prompts from external MCP endpoint",
+                |client| async move {
+                    client
+                        .peer
+                        .list_all_prompts()
+                        .await
+                        .map_err(anyhow::Error::from)
+                },
+            )
+            .await?
+        {
             prompts.extend(listed.into_iter().map(|mut prompt| {
                 prompt.name = endpoint.canonical_name(&prompt.name);
                 prompt
@@ -903,41 +926,26 @@ impl ServerHandler for PluginMcpServer {
     ) -> Result<ListResourcesResult, ErrorData> {
         self.refresh_peer(context.peer.clone()).await;
         let mut resources = Vec::new();
-        for (plugin_name, _) in self.plugin_manager.list_server_infos().await {
-            let manifest = self
-                .plugin_manager
-                .manifest(&plugin_name)
-                .await
-                .map_err(internal_error)?;
-            if let Some(manifest) = manifest.filter(|manifest| !manifest.resources.is_empty()) {
-                resources.extend(manifest.resources.iter().map(stapler::resource));
+        for (_, manifest) in self.plugin_manifests().await? {
+            if manifest.resources.is_empty() {
+                continue;
             }
+            resources.extend(manifest.resources.iter().map(stapler::resource));
         }
-        for endpoint in self.active_external_mcp_endpoints().await? {
-            let client = match self.external_mcp.client_for(&endpoint).await {
-                Ok(client) => client,
-                Err(err) => {
-                    tracing::warn!(
-                        plugin = %endpoint.plugin_name,
-                        endpoint = %endpoint.endpoint_id,
-                        error = %err,
-                        "Skipping external MCP endpoint during resource listing"
-                    );
-                    continue;
-                }
-            };
-            let listed = match client.peer.list_all_resources().await {
-                Ok(resources) => resources,
-                Err(err) => {
-                    tracing::warn!(
-                        plugin = %endpoint.plugin_name,
-                        endpoint = %endpoint.endpoint_id,
-                        error = %err,
-                        "Failed to list resources from external MCP endpoint"
-                    );
-                    continue;
-                }
-            };
+        for (endpoint, listed) in self
+            .collect_external_items(
+                "Skipping external MCP endpoint during resource listing",
+                "Failed to list resources from external MCP endpoint",
+                |client| async move {
+                    client
+                        .peer
+                        .list_all_resources()
+                        .await
+                        .map_err(anyhow::Error::from)
+                },
+            )
+            .await?
+        {
             resources.extend(listed.into_iter().map(|mut resource| {
                 resource.raw.name = endpoint.canonical_name(&resource.raw.name);
                 resource.raw.uri = endpoint.canonical_resource_uri(&resource.raw.uri);
@@ -958,48 +966,31 @@ impl ServerHandler for PluginMcpServer {
     ) -> Result<ListResourceTemplatesResult, ErrorData> {
         self.refresh_peer(context.peer.clone()).await;
         let mut resource_templates = Vec::new();
-        for (plugin_name, _) in self.plugin_manager.list_server_infos().await {
-            let manifest = self
-                .plugin_manager
-                .manifest(&plugin_name)
-                .await
-                .map_err(internal_error)?;
-            if let Some(manifest) =
-                manifest.filter(|manifest| !manifest.resource_templates.is_empty())
-            {
-                resource_templates.extend(
-                    manifest
-                        .resource_templates
-                        .iter()
-                        .map(stapler::resource_template),
-                );
+        for (_, manifest) in self.plugin_manifests().await? {
+            if manifest.resource_templates.is_empty() {
+                continue;
             }
+            resource_templates.extend(
+                manifest
+                    .resource_templates
+                    .iter()
+                    .map(stapler::resource_template),
+            );
         }
-        for endpoint in self.active_external_mcp_endpoints().await? {
-            let client = match self.external_mcp.client_for(&endpoint).await {
-                Ok(client) => client,
-                Err(err) => {
-                    tracing::warn!(
-                        plugin = %endpoint.plugin_name,
-                        endpoint = %endpoint.endpoint_id,
-                        error = %err,
-                        "Skipping external MCP endpoint during resource template listing"
-                    );
-                    continue;
-                }
-            };
-            let listed = match client.peer.list_all_resource_templates().await {
-                Ok(templates) => templates,
-                Err(err) => {
-                    tracing::warn!(
-                        plugin = %endpoint.plugin_name,
-                        endpoint = %endpoint.endpoint_id,
-                        error = %err,
-                        "Failed to list resource templates from external MCP endpoint"
-                    );
-                    continue;
-                }
-            };
+        for (endpoint, listed) in self
+            .collect_external_items(
+                "Skipping external MCP endpoint during resource template listing",
+                "Failed to list resource templates from external MCP endpoint",
+                |client| async move {
+                    client
+                        .peer
+                        .list_all_resource_templates()
+                        .await
+                        .map_err(anyhow::Error::from)
+                },
+            )
+            .await?
+        {
             resource_templates.extend(listed.into_iter().map(|mut template| {
                 template.raw.name = endpoint.canonical_name(&template.raw.name);
                 template.raw.uri_template =

@@ -416,6 +416,7 @@ describe('TopNav', () => {
       '/mesh/llm/ui-preview/configuration/toml-review'
     )
 
+    window.addEventListener('click', (event) => event.preventDefault(), { once: true })
     fireEvent.click(screen.getByRole('link', { name: 'Chat' }), { button: 0, metaKey: true })
 
     expect(onTabChange).not.toHaveBeenCalled()

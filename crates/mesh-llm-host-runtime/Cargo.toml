@@ -8,6 +8,9 @@ gpu-bench-cuda = ["mesh-llm-system/gpu-bench-cuda"]
 gpu-bench-hip = ["mesh-llm-system/gpu-bench-hip"]
 gpu-bench-intel = ["mesh-llm-system/gpu-bench-intel"]
 
+[lints]
+workspace = true
+
 [dependencies]
 ansi-to-tui = "8"
 mesh-llm-plugin = { path = "../mesh-llm-plugin" }
