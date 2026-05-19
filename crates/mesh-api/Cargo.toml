@@ -1,6 +1,6 @@
 [package]
 name = "mesh-api"
-version = "0.66.0"
+version.workspace = true
 edition = "2021"
 description = "Public Rust SDK for embedding Mesh LLM clients in applications"
 license = "Apache-2.0"
