@@ -194,6 +194,21 @@ Current structure notes.
 - Model command handlers belong in `mesh-llm-host-runtime/src/cli/commands/`; `models/` should stay domain-focused.
 - The shipped binary crate (`crates/mesh-llm/`) should remain a thin shim; do not move domain logic into it.
 
+## Code Quality Rules for New Code
+
+- Do not add Rust methods or functions over the configured Clippy line-count
+  limit. Split long logic into semantically named helpers before it reaches the
+  configured `too_many_lines` threshold.
+- Do not add Rust source files over 2,000 lines. If a file is approaching that
+  size, split it by responsibility into an owning module instead of adding more
+  code to the oversized file.
+- Do not add Rust code over the configured cognitive-complexity limit. Prefer
+  small, named decision helpers and clear control-flow phases instead of nested
+  branching.
+- Treat these as design constraints for new code, not cleanup suggestions after
+  the fact. CI runs Clippy with warnings denied, so configured Clippy warnings
+  must be resolved before a PR can pass.
+
 ## Key Source Files
 
 Host runtime (main monolith — `crates/mesh-llm-host-runtime/src/`):

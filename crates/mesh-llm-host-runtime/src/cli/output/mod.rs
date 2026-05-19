@@ -2723,37 +2723,46 @@ impl DashboardState {
         self.ready_llama_process_rows.insert(name);
     }
 
-    fn apply_output_event(&mut self, event: &OutputEvent) {
-        self.record_startup_history_event(event);
+    fn apply_model_queue_event(&mut self, model: &str) {
+        self.upsert_model(model, RuntimeStatus::Loading, None, None, None);
+        self.upsert_loading_model_row(model);
+        self.upsert_loading_process_row(model);
+    }
 
-        if self.shutdown_in_progress && is_shutdown_suppressed_ready_event(event) {
-            return;
-        }
+    fn apply_model_ready_event(
+        &mut self,
+        model: &str,
+        internal_port: Option<u16>,
+        role: Option<String>,
+    ) {
+        self.upsert_model(
+            model,
+            RuntimeStatus::Ready,
+            internal_port,
+            role.clone(),
+            None,
+        );
+        self.upsert_loaded_model_row(DashboardModelRow {
+            name: model.to_string(),
+            role,
+            status: RuntimeStatus::Ready,
+            port: internal_port,
+            device: None,
+            slots: None,
+            quantization: None,
+            ctx_size: None,
+            ctx_used_tokens: None,
+            lanes: None,
+            file_size_gb: None,
+        });
+    }
 
+    fn apply_model_event(&mut self, event: &OutputEvent) -> bool {
         match event {
-            OutputEvent::Startup { version, .. } => {
-                self.version = Some(version.clone());
-                self.runtime_ready = false;
-                self.launch_plan = None;
-                self.ready_llama_process_rows.clear();
-            }
-            OutputEvent::LaunchPlan { plan } => {
-                self.launch_plan = Some(plan.clone());
-                self.preseed_launch_plan_rows(plan);
-            }
-            OutputEvent::NodeIdentity { node_id, mesh_id } => {
-                self.node_id = Some(node_id.clone());
-                self.mesh_id = mesh_id.clone();
-            }
-            OutputEvent::ModelQueued { model } | OutputEvent::ModelLoading { model, .. } => {
-                self.upsert_model(model, RuntimeStatus::Loading, None, None, None);
-                self.upsert_loading_model_row(model);
-                self.upsert_loading_process_row(model);
-            }
-            OutputEvent::ModelLoaded { model, .. } => {
-                self.upsert_model(model, RuntimeStatus::Loading, None, None, None);
-                self.upsert_loading_model_row(model);
-                self.upsert_loading_process_row(model);
+            OutputEvent::ModelQueued { model }
+            | OutputEvent::ModelLoading { model, .. }
+            | OutputEvent::ModelLoaded { model, .. } => {
+                self.apply_model_queue_event(model);
             }
             OutputEvent::ModelUnloading { model } | OutputEvent::ModelUnloaded { model } => {
                 self.upsert_model(model, RuntimeStatus::Stopped, None, None, None);
@@ -2762,29 +2771,7 @@ impl DashboardState {
                 model,
                 internal_port,
                 role,
-            } => {
-                self.upsert_model(
-                    model,
-                    RuntimeStatus::Ready,
-                    *internal_port,
-                    role.clone(),
-                    None,
-                );
-                self.upsert_loaded_model_row(DashboardModelRow {
-                    name: model.clone(),
-                    role: role.clone(),
-                    status: RuntimeStatus::Ready,
-                    port: *internal_port,
-                    device: None,
-                    slots: None,
-                    quantization: None,
-                    ctx_size: None,
-                    ctx_used_tokens: None,
-                    lanes: None,
-                    file_size_gb: None,
-                });
-            }
-
+            } => self.apply_model_ready_event(model, *internal_port, role.clone()),
             OutputEvent::HostElected {
                 model,
                 role,
@@ -2799,38 +2786,41 @@ impl DashboardState {
                     *capacity_gb,
                 );
             }
-            OutputEvent::PassiveMode {
-                role,
-                status,
+            _ => return false,
+        }
+        true
+    }
+
+    fn apply_passive_mode_event(
+        &mut self,
+        role: &str,
+        status: &RuntimeStatus,
+        capacity_gb: Option<f64>,
+        models_on_disk: Option<&Vec<String>>,
+        detail: Option<&String>,
+    ) {
+        let next_models_on_disk = models_on_disk.cloned().unwrap_or_default();
+        if let Some(existing) = self.passive_mode.as_mut() {
+            existing.role = role.to_string();
+            existing.status = status.clone();
+            existing.capacity_gb = capacity_gb.or(existing.capacity_gb);
+            if models_on_disk.is_some() {
+                existing.models_on_disk = next_models_on_disk;
+            }
+            existing.detail = detail.cloned().or_else(|| existing.detail.clone());
+        } else {
+            self.passive_mode = Some(PassiveModeState {
+                role: role.to_string(),
+                status: status.clone(),
                 capacity_gb,
-                models_on_disk,
-                detail,
-            } => {
-                let next_models_on_disk = models_on_disk.clone().unwrap_or_default();
-                if let Some(existing) = self.passive_mode.as_mut() {
-                    existing.role = role.clone();
-                    existing.status = status.clone();
-                    existing.capacity_gb = capacity_gb.or(existing.capacity_gb);
-                    if models_on_disk.is_some() {
-                        existing.models_on_disk = next_models_on_disk;
-                    }
-                    existing.detail = detail.clone().or_else(|| existing.detail.clone());
-                } else {
-                    self.passive_mode = Some(PassiveModeState {
-                        role: role.clone(),
-                        status: status.clone(),
-                        capacity_gb: *capacity_gb,
-                        models_on_disk: next_models_on_disk,
-                        detail: detail.clone(),
-                    });
-                }
-            }
-            OutputEvent::MultiModelMode { count, models } => {
-                self.multi_model_mode = Some(MultiModelModeState {
-                    count: *count,
-                    models: models.clone(),
-                });
-            }
+                models_on_disk: next_models_on_disk,
+                detail: detail.cloned(),
+            });
+        }
+    }
+
+    fn apply_llama_event(&mut self, event: &OutputEvent) -> bool {
+        match event {
             OutputEvent::LlamaStarting {
                 model,
                 http_port,
@@ -2922,97 +2912,151 @@ impl DashboardState {
                     });
                 }
             }
+            _ => return false,
+        }
+        true
+    }
+
+    fn apply_endpoint_state(
+        &mut self,
+        label: &str,
+        status: RuntimeStatus,
+        url: &str,
+        row_label: &str,
+    ) {
+        let state = EndpointState {
+            label: label.to_string(),
+            status: status.clone(),
+            url: url.to_string(),
+            details: Vec::new(),
+        };
+        let row = DashboardEndpointRow {
+            label: row_label.to_string(),
+            status,
+            url: url.to_string(),
+            port: dashboard_port_from_url(url),
+            pid: None,
+        };
+        if row_label == "Console" {
+            self.webserver = Some(state);
+        } else {
+            self.api = Some(state);
+        }
+        self.upsert_endpoint_row(row);
+    }
+
+    fn apply_runtime_ready_event(
+        &mut self,
+        api_url: &str,
+        console_url: Option<&String>,
+        pi_command: Option<&String>,
+        goose_command: Option<&String>,
+    ) {
+        self.runtime_ready = true;
+        self.model_progress = None;
+        if let Some(console_url) = console_url.cloned() {
+            self.webserver = Some(EndpointState {
+                label: "Console".to_string(),
+                status: RuntimeStatus::Ready,
+                url: console_url,
+                details: Vec::new(),
+            });
+        }
+        let mut details = Vec::new();
+        if let Some(pi_command) = pi_command.cloned() {
+            details.push(format!("pi:    {pi_command}"));
+        }
+        if let Some(goose_command) = goose_command.cloned() {
+            details.push(format!("goose: {goose_command}"));
+        }
+        self.api = Some(EndpointState {
+            label: "OpenAI-compatible API".to_string(),
+            status: RuntimeStatus::Ready,
+            url: api_url.to_string(),
+            details,
+        });
+    }
+
+    fn apply_endpoint_event(&mut self, event: &OutputEvent) -> bool {
+        match event {
             OutputEvent::WebserverStarting { url } => {
-                self.webserver = Some(EndpointState {
-                    label: "Console".to_string(),
-                    status: RuntimeStatus::Starting,
-                    url: url.clone(),
-                    details: Vec::new(),
-                });
-                self.upsert_endpoint_row(DashboardEndpointRow {
-                    label: "Console".to_string(),
-                    status: RuntimeStatus::Starting,
-                    url: url.clone(),
-                    port: dashboard_port_from_url(url),
-                    pid: None,
-                });
+                self.apply_endpoint_state("Console", RuntimeStatus::Starting, url, "Console");
             }
             OutputEvent::WebserverReady { url } => {
-                self.webserver = Some(EndpointState {
-                    label: "Console".to_string(),
-                    status: RuntimeStatus::Ready,
-                    url: url.clone(),
-                    details: Vec::new(),
-                });
-                self.upsert_endpoint_row(DashboardEndpointRow {
-                    label: "Console".to_string(),
-                    status: RuntimeStatus::Ready,
-                    url: url.clone(),
-                    port: dashboard_port_from_url(url),
-                    pid: None,
-                });
+                self.apply_endpoint_state("Console", RuntimeStatus::Ready, url, "Console");
             }
             OutputEvent::ApiStarting { url } => {
-                self.api = Some(EndpointState {
-                    label: "OpenAI-compatible API".to_string(),
-                    status: RuntimeStatus::Starting,
-                    url: url.clone(),
-                    details: Vec::new(),
-                });
-                self.upsert_endpoint_row(DashboardEndpointRow {
-                    label: "API".to_string(),
-                    status: RuntimeStatus::Starting,
-                    url: url.clone(),
-                    port: dashboard_port_from_url(url),
-                    pid: None,
-                });
+                self.apply_endpoint_state(
+                    "OpenAI-compatible API",
+                    RuntimeStatus::Starting,
+                    url,
+                    "API",
+                );
             }
             OutputEvent::ApiReady { url } => {
-                self.api = Some(EndpointState {
-                    label: "OpenAI-compatible API".to_string(),
-                    status: RuntimeStatus::Ready,
-                    url: url.clone(),
-                    details: Vec::new(),
-                });
-                self.upsert_endpoint_row(DashboardEndpointRow {
-                    label: "API".to_string(),
-                    status: RuntimeStatus::Ready,
-                    url: url.clone(),
-                    port: dashboard_port_from_url(url),
-                    pid: None,
-                });
+                self.apply_endpoint_state(
+                    "OpenAI-compatible API",
+                    RuntimeStatus::Ready,
+                    url,
+                    "API",
+                );
             }
             OutputEvent::RuntimeReady {
                 api_url,
                 console_url,
-                api_port: _api_port,
-                console_port: _console_port,
                 pi_command,
                 goose_command,
                 ..
-            } => {
-                self.runtime_ready = true;
-                self.model_progress = None;
-                if let Some(console_url) = console_url.clone() {
-                    self.webserver = Some(EndpointState {
-                        label: "Console".to_string(),
-                        status: RuntimeStatus::Ready,
-                        url: console_url,
-                        details: Vec::new(),
-                    });
-                }
-                let mut details = Vec::new();
-                if let Some(pi_command) = pi_command.clone() {
-                    details.push(format!("pi:    {pi_command}"));
-                }
-                if let Some(goose_command) = goose_command.clone() {
-                    details.push(format!("goose: {goose_command}"));
-                }
-                self.api = Some(EndpointState {
-                    label: "OpenAI-compatible API".to_string(),
-                    status: RuntimeStatus::Ready,
-                    url: api_url.clone(),
-                    details,
+            } => self.apply_runtime_ready_event(
+                api_url,
+                console_url.as_ref(),
+                pi_command.as_ref(),
+                goose_command.as_ref(),
+            ),
+            _ => return false,
+        }
+        true
+    }
+
+    fn apply_output_event(&mut self, event: &OutputEvent) {
+        self.record_startup_history_event(event);
+
+        if self.shutdown_in_progress && is_shutdown_suppressed_ready_event(event) {
+            return;
+        }
+
+        match event {
+            OutputEvent::Startup { version, .. } => {
+                self.version = Some(version.clone());
+                self.runtime_ready = false;
+                self.launch_plan = None;
+                self.ready_llama_process_rows.clear();
+            }
+            OutputEvent::LaunchPlan { plan } => {
+                self.launch_plan = Some(plan.clone());
+                self.preseed_launch_plan_rows(plan);
+            }
+            OutputEvent::NodeIdentity { node_id, mesh_id } => {
+                self.node_id = Some(node_id.clone());
+                self.mesh_id = mesh_id.clone();
+            }
+            OutputEvent::PassiveMode {
+                role,
+                status,
+                capacity_gb,
+                models_on_disk,
+                detail,
+            } => self.apply_passive_mode_event(
+                role,
+                status,
+                *capacity_gb,
+                models_on_disk.as_ref(),
+                detail.as_ref(),
+            ),
+            OutputEvent::MultiModelMode { count, models } => {
+                self.multi_model_mode = Some(MultiModelModeState {
+                    count: *count,
+                    models: models.clone(),
                 });
             }
             OutputEvent::ModelDownloadProgress {
@@ -3052,6 +3096,12 @@ impl DashboardState {
                 join_token_view.scroll_offset = 0;
                 join_token_view.selected_row = None;
             }
+            OutputEvent::PeerJoined { peer_id, .. } => {
+                self.peer_ids.insert(peer_id.clone());
+            }
+            OutputEvent::PeerLeft { peer_id, .. } => {
+                self.peer_ids.remove(peer_id);
+            }
             OutputEvent::Info { .. }
             | OutputEvent::Warning { .. }
             | OutputEvent::RpcServerStarting { .. }
@@ -3064,12 +3114,10 @@ impl DashboardState {
             | OutputEvent::WaitingForPeers { .. }
             | OutputEvent::RequestRouted { .. }
             | OutputEvent::LlamaNativeLog { .. } => {}
-            OutputEvent::PeerJoined { peer_id, .. } => {
-                self.peer_ids.insert(peer_id.clone());
-            }
-            OutputEvent::PeerLeft { peer_id, .. } => {
-                self.peer_ids.remove(peer_id);
-            }
+            _ if self.apply_model_event(event)
+                || self.apply_llama_event(event)
+                || self.apply_endpoint_event(event) => {}
+            _ => {}
         }
 
         self.apply_startup_lifecycle_event(event);
@@ -9170,6 +9218,210 @@ mod tests {
         }
     }
 
+    fn half_scale_model_row() -> DashboardModelRow {
+        DashboardModelRow {
+            name: "Half-Scale".to_string(),
+            role: Some("host".to_string()),
+            status: RuntimeStatus::Ready,
+            port: Some(4002),
+            device: Some("CUDA0".to_string()),
+            slots: Some(8),
+            quantization: Some("Q5_K_M".to_string()),
+            ctx_size: Some(4096),
+            ctx_used_tokens: Some(2048),
+            lanes: Some(
+                (0..8)
+                    .map(|index| DashboardModelLane {
+                        index,
+                        active: index == 0,
+                    })
+                    .collect(),
+            ),
+            file_size_gb: Some(12.0),
+        }
+    }
+
+    fn line_x(line: &str, needle: &str, description: &str) -> usize {
+        line.find(needle)
+            .map(|index| line[..index].chars().count())
+            .expect(description)
+    }
+
+    fn filled_gauge_bounds(line: &str, value_label: &str) -> (usize, usize, usize) {
+        let gauge_byte = line.find('█').expect("expected gauge byte coordinate");
+        let gauge_x = line[..gauge_byte].chars().count();
+        let bar_end_x = gauge_x
+            + line[gauge_byte..]
+                .chars()
+                .take_while(|ch| *ch == '█')
+                .count();
+        let value_x = line_x(line, value_label, "expected value label x coordinate");
+        (gauge_x, bar_end_x, value_x)
+    }
+
+    fn first_block_x(line: &str, description: &str) -> usize {
+        line.find('◼')
+            .map(|index| line[..index].chars().count())
+            .expect(description)
+    }
+
+    fn assert_segmented_model_card_layout(rendered: &str, buffer: &Buffer, theme: &TuiTheme) {
+        let (full_title_y, full_title_line) = find_rendered_line(rendered, "Segmented-Model");
+        let full_border_line = rendered
+            .lines()
+            .nth(full_title_y.saturating_sub(1))
+            .expect("expected card border above model name");
+        assert!(
+            full_border_line.contains("│╭"),
+            "expected model card to start flush against the panel content edge, without a highlight gutter, in {full_border_line}"
+        );
+        assert!(
+            !full_title_line.contains("PORT:"),
+            "model name should have its own interior row before metadata: {full_title_line}"
+        );
+        let (full_ctx_y, full_ctx_line) =
+            find_rendered_line_after(rendered, full_title_y, "8192 / 8192");
+        let (full_slots_y, full_slots_line) =
+            find_rendered_line_after(rendered, full_ctx_y, "2 / 4");
+        let (_, divider_line) = find_rendered_line_after(rendered, full_title_y, "──");
+        assert!(
+            !divider_line.contains('├') && !divider_line.contains('┤'),
+            "expected subtle interior divider, not frame-joining divider, in {divider_line}"
+        );
+        assert!(
+            full_ctx_line.contains("CTX") && full_ctx_line.contains("8192 / 8192"),
+            "expected CTX row with right-aligned value label in {full_ctx_line}"
+        );
+        assert!(
+            full_slots_line.contains("SLOTS") && full_slots_line.contains("2 / 4"),
+            "expected SLOTS row with right-aligned value label in {full_slots_line}"
+        );
+
+        let (full_ctx_gauge_x, full_ctx_bar_end_x, full_ctx_value_x) =
+            filled_gauge_bounds(full_ctx_line, "8192 / 8192");
+        let full_slots_block_x =
+            first_block_x(full_slots_line, "expected SLOTS block byte coordinate");
+        let full_slots_value_x = line_x(
+            full_slots_line,
+            "2 / 4",
+            "expected SLOTS value label x coordinate",
+        );
+        let full_slots_label_x = line_x(
+            full_slots_line,
+            "SLOTS",
+            "expected SLOTS label x coordinate",
+        );
+        assert!(
+            full_ctx_bar_end_x < full_ctx_value_x && full_slots_block_x < full_slots_value_x,
+            "expected a visible gap between metric visuals and value labels: {full_ctx_line} / {full_slots_line}"
+        );
+        assert!(
+            full_slots_block_x > full_slots_label_x + "SLOTS".chars().count(),
+            "expected visible gap between SLOTS label and slot blocks: {full_slots_line}"
+        );
+        assert_eq!(
+            buffer[(
+                u16::try_from(full_slots_block_x + 1).unwrap(),
+                u16::try_from(full_slots_y).unwrap()
+            )]
+                .symbol(),
+            "◼",
+            "expected adjacent visible slot blocks without separators"
+        );
+        assert_eq!(
+            buffer[(
+                u16::try_from(full_ctx_gauge_x).unwrap(),
+                u16::try_from(full_ctx_y).unwrap()
+            )]
+                .style()
+                .fg,
+            Some(tui_model_usage_color(1.0))
+        );
+        assert_eq!(
+            buffer[(
+                u16::try_from(full_slots_block_x).unwrap(),
+                u16::try_from(full_slots_y).unwrap()
+            )]
+                .style()
+                .fg,
+            Some(theme.warning)
+        );
+        assert_eq!(
+            buffer[(
+                u16::try_from(full_slots_block_x + 2).unwrap(),
+                u16::try_from(full_slots_y).unwrap()
+            )]
+                .style()
+                .fg,
+            Some(theme.dim)
+        );
+    }
+
+    fn assert_half_scale_model_card_segments(half_buffer: &Buffer, theme: &TuiTheme) {
+        let half_rendered = buffer_to_rendered_string(half_buffer);
+        let (half_title_y, _) = find_rendered_line(&half_rendered, "Half-Scale");
+        let (half_ctx_y, half_ctx_line) =
+            find_rendered_line_after(&half_rendered, half_title_y, "2048 / 4096");
+        let (half_slots_y, half_slots_line) =
+            find_rendered_line_after(&half_rendered, half_ctx_y, "1 / 8");
+        let (half_ctx_gauge_x, _, ctx_value_x) = filled_gauge_bounds(half_ctx_line, "2048 / 4096");
+        let half_slots_block_x = first_block_x(
+            half_slots_line,
+            "expected half-scale SLOTS block x coordinate",
+        );
+        let slots_value_x = line_x(
+            half_slots_line,
+            "1 / 8",
+            "expected half SLOTS value label x coordinate",
+        );
+        assert_eq!(
+            half_buffer[(
+                u16::try_from(half_ctx_gauge_x).unwrap(),
+                u16::try_from(half_ctx_y).unwrap()
+            )]
+                .style()
+                .fg,
+            Some(tui_model_usage_color(0.5))
+        );
+        assert_eq!(
+            half_buffer[(
+                u16::try_from(half_slots_block_x).unwrap(),
+                u16::try_from(half_slots_y).unwrap()
+            )]
+                .style()
+                .fg,
+            Some(theme.warning)
+        );
+        assert!(
+            ((half_ctx_gauge_x + 1)..ctx_value_x).any(|x| {
+                half_buffer[(
+                    u16::try_from(x).unwrap(),
+                    u16::try_from(half_ctx_y).unwrap(),
+                )]
+                    .style()
+                    .fg
+                    == Some(theme.dim)
+            }),
+            "expected CTX usage bar to show grey empty track after the fill"
+        );
+        assert!(
+            ((half_slots_block_x + 1)..slots_value_x).any(|x| {
+                half_buffer[(
+                    u16::try_from(x).unwrap(),
+                    u16::try_from(half_slots_y).unwrap(),
+                )]
+                    .style()
+                    .fg
+                    == Some(theme.dim)
+            }),
+            "expected SLOTS row to show grey inactive blocks after the active lane"
+        );
+        assert!(
+            half_slots_line.contains("◼◼") && !half_slots_line.contains("◼ ◼"),
+            "expected slot blocks to render adjacently without separators: {half_slots_line}"
+        );
+    }
+
     fn sample_launch_plan() -> DashboardLaunchPlan {
         DashboardLaunchPlan {
             llama_process_rows: vec![DashboardProcessRow {
@@ -14036,204 +14288,16 @@ tail line"
         state.reduce(DashboardAction::SnapshotUpdated(DashboardSnapshot {
             loaded_model_rows: vec![
                 sample_model_row("Segmented-Model", 4001),
-                DashboardModelRow {
-                    name: "Half-Scale".to_string(),
-                    role: Some("host".to_string()),
-                    status: RuntimeStatus::Ready,
-                    port: Some(4002),
-                    device: Some("CUDA0".to_string()),
-                    slots: Some(8),
-                    quantization: Some("Q5_K_M".to_string()),
-                    ctx_size: Some(4096),
-                    ctx_used_tokens: Some(2048),
-                    lanes: Some(vec![
-                        DashboardModelLane {
-                            index: 0,
-                            active: true,
-                        },
-                        DashboardModelLane {
-                            index: 1,
-                            active: false,
-                        },
-                        DashboardModelLane {
-                            index: 2,
-                            active: false,
-                        },
-                        DashboardModelLane {
-                            index: 3,
-                            active: false,
-                        },
-                        DashboardModelLane {
-                            index: 4,
-                            active: false,
-                        },
-                        DashboardModelLane {
-                            index: 5,
-                            active: false,
-                        },
-                        DashboardModelLane {
-                            index: 6,
-                            active: false,
-                        },
-                        DashboardModelLane {
-                            index: 7,
-                            active: false,
-                        },
-                    ]),
-                    file_size_gb: Some(12.0),
-                },
+                half_scale_model_row(),
             ],
             ..snapshot_fixture(0, 30)
         }));
 
         let (rendered, buffer) = render_tui_frame_snapshot_with_buffer(&state, 260, 32);
         let theme = tui_theme();
-        let (full_title_y, full_title_line) = find_rendered_line(&rendered, "Segmented-Model");
-        let full_border_line = rendered
-            .lines()
-            .nth(full_title_y.saturating_sub(1))
-            .expect("expected card border above model name");
-        assert!(
-            full_border_line.contains("│╭"),
-            "expected model card to start flush against the panel content edge, without a highlight gutter, in {full_border_line}"
-        );
-        assert!(
-            !full_title_line.contains("PORT:"),
-            "model name should have its own interior row before metadata: {full_title_line}"
-        );
-        let (full_ctx_y, full_ctx_line) =
-            find_rendered_line_after(&rendered, full_title_y, "8192 / 8192");
-        let (full_slots_y, full_slots_line) =
-            find_rendered_line_after(&rendered, full_ctx_y, "2 / 4");
-        let (_, divider_line) = find_rendered_line_after(&rendered, full_title_y, "──");
-        assert!(
-            !divider_line.contains('├') && !divider_line.contains('┤'),
-            "expected subtle interior divider, not frame-joining divider, in {divider_line}"
-        );
-        assert!(
-            full_ctx_line.contains("CTX") && full_ctx_line.contains("8192 / 8192"),
-            "expected CTX row with right-aligned value label in {full_ctx_line}"
-        );
-        assert!(
-            full_slots_line.contains("SLOTS") && full_slots_line.contains("2 / 4"),
-            "expected SLOTS row with right-aligned value label in {full_slots_line}"
-        );
-        let full_ctx_gauge_byte = full_ctx_line
-            .find('█')
-            .expect("expected CTX usage bar byte coordinate");
-        let full_slots_block_byte = full_slots_line
-            .find('◼')
-            .expect("expected SLOTS block byte coordinate");
-        let full_ctx_gauge_x = full_ctx_line[..full_ctx_gauge_byte].chars().count();
-        let full_slots_block_x = full_slots_line[..full_slots_block_byte].chars().count();
-        let full_ctx_bar_end_x = full_ctx_gauge_x
-            + full_ctx_line[full_ctx_gauge_byte..]
-                .chars()
-                .take_while(|ch| *ch == '█')
-                .count();
-        let full_ctx_value_x = full_ctx_line
-            .find("8192 / 8192")
-            .map(|index| full_ctx_line[..index].chars().count())
-            .expect("expected CTX value label x coordinate");
-        let full_slots_value_x = full_slots_line
-            .find("2 / 4")
-            .map(|index| full_slots_line[..index].chars().count())
-            .expect("expected SLOTS value label x coordinate");
-        let full_slots_label_x = full_slots_line
-            .find("SLOTS")
-            .map(|index| full_slots_line[..index].chars().count())
-            .expect("expected SLOTS label x coordinate");
-        assert!(
-            full_ctx_bar_end_x < full_ctx_value_x && full_slots_block_x < full_slots_value_x,
-            "expected a visible gap between metric visuals and value labels: {full_ctx_line} / {full_slots_line}"
-        );
-        assert!(
-            full_slots_block_x > full_slots_label_x + "SLOTS".chars().count(),
-            "expected visible gap between SLOTS label and slot blocks: {full_slots_line}"
-        );
-        assert_eq!(
-            buffer[(
-                u16::try_from(full_slots_block_x + 1).unwrap(),
-                u16::try_from(full_slots_y).unwrap()
-            )]
-                .symbol(),
-            "◼",
-            "expected adjacent visible slot blocks without separators"
-        );
-        assert_eq!(
-            buffer[(
-                u16::try_from(full_ctx_gauge_x).unwrap(),
-                u16::try_from(full_ctx_y).unwrap()
-            )]
-                .style()
-                .fg,
-            Some(tui_model_usage_color(1.0))
-        );
-        assert_eq!(
-            buffer[(
-                u16::try_from(full_slots_block_x).unwrap(),
-                u16::try_from(full_slots_y).unwrap()
-            )]
-                .style()
-                .fg,
-            Some(theme.warning)
-        );
-        assert_eq!(
-            buffer[(
-                u16::try_from(full_slots_block_x + 2).unwrap(),
-                u16::try_from(full_slots_y).unwrap()
-            )]
-                .style()
-                .fg,
-            Some(theme.dim)
-        );
+        assert_segmented_model_card_layout(&rendered, &buffer, &theme);
 
-        let half_row = DashboardModelRow {
-            name: "Half-Scale".to_string(),
-            role: Some("host".to_string()),
-            status: RuntimeStatus::Ready,
-            port: Some(4002),
-            device: Some("CUDA0".to_string()),
-            slots: Some(8),
-            quantization: Some("Q5_K_M".to_string()),
-            ctx_size: Some(4096),
-            ctx_used_tokens: Some(2048),
-            lanes: Some(vec![
-                DashboardModelLane {
-                    index: 0,
-                    active: true,
-                },
-                DashboardModelLane {
-                    index: 1,
-                    active: false,
-                },
-                DashboardModelLane {
-                    index: 2,
-                    active: false,
-                },
-                DashboardModelLane {
-                    index: 3,
-                    active: false,
-                },
-                DashboardModelLane {
-                    index: 4,
-                    active: false,
-                },
-                DashboardModelLane {
-                    index: 5,
-                    active: false,
-                },
-                DashboardModelLane {
-                    index: 6,
-                    active: false,
-                },
-                DashboardModelLane {
-                    index: 7,
-                    active: false,
-                },
-            ]),
-            file_size_gb: Some(12.0),
-        };
+        let half_row = half_scale_model_row();
         let mut half_buffer =
             Buffer::empty(Rect::new(0, 0, 80, PRETTY_TUI_MODEL_CARD_HEIGHT as u16));
         TuiModelCardWidget {
@@ -14243,74 +14307,7 @@ tail line"
             is_focused: false,
         }
         .render(half_buffer.area, &mut half_buffer);
-        let half_rendered = buffer_to_rendered_string(&half_buffer);
-        let (half_title_y, _) = find_rendered_line(&half_rendered, "Half-Scale");
-        let (half_ctx_y, half_ctx_line) =
-            find_rendered_line_after(&half_rendered, half_title_y, "2048 / 4096");
-        let (half_slots_y, half_slots_line) =
-            find_rendered_line_after(&half_rendered, half_ctx_y, "1 / 8");
-        let half_ctx_gauge_x = half_ctx_line
-            .find('█')
-            .map(|index| half_ctx_line[..index].chars().count())
-            .expect("expected half-scale CTX usage bar x coordinate");
-        let half_slots_block_x = half_slots_line
-            .find('◼')
-            .map(|index| half_slots_line[..index].chars().count())
-            .expect("expected half-scale SLOTS block x coordinate");
-        assert_eq!(
-            half_buffer[(
-                u16::try_from(half_ctx_gauge_x).unwrap(),
-                u16::try_from(half_ctx_y).unwrap()
-            )]
-                .style()
-                .fg,
-            Some(tui_model_usage_color(0.5))
-        );
-        assert_eq!(
-            half_buffer[(
-                u16::try_from(half_slots_block_x).unwrap(),
-                u16::try_from(half_slots_y).unwrap()
-            )]
-                .style()
-                .fg,
-            Some(theme.warning)
-        );
-        let ctx_value_x = half_ctx_line
-            .find("2048 / 4096")
-            .map(|index| half_ctx_line[..index].chars().count())
-            .expect("expected half CTX value label x coordinate");
-        let slots_value_x = half_slots_line
-            .find("1 / 8")
-            .map(|index| half_slots_line[..index].chars().count())
-            .expect("expected half SLOTS value label x coordinate");
-        assert!(
-            ((half_ctx_gauge_x + 1)..ctx_value_x).any(|x| {
-                half_buffer[(
-                    u16::try_from(x).unwrap(),
-                    u16::try_from(half_ctx_y).unwrap(),
-                )]
-                    .style()
-                    .fg
-                    == Some(theme.dim)
-            }),
-            "expected CTX usage bar to show grey empty track after the fill"
-        );
-        assert!(
-            ((half_slots_block_x + 1)..slots_value_x).any(|x| {
-                half_buffer[(
-                    u16::try_from(x).unwrap(),
-                    u16::try_from(half_slots_y).unwrap(),
-                )]
-                    .style()
-                    .fg
-                    == Some(theme.dim)
-            }),
-            "expected SLOTS row to show grey inactive blocks after the active lane"
-        );
-        assert!(
-            half_slots_line.contains("◼◼") && !half_slots_line.contains("◼ ◼"),
-            "expected slot blocks to render adjacently without separators: {half_slots_line}"
-        );
+        assert_half_scale_model_card_segments(&half_buffer, &theme);
     }
 
     #[test]

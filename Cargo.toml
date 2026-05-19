@@ -58,6 +58,7 @@ sha2 = "0.10"
 
 [workspace.lints.clippy]
 cognitive_complexity = "warn"
+too_many_lines = "warn"
 
 # Do not remove this section: direct GGUF debug startup spends most of its time
 # hashing the source model via sha2/sha2-asm before native skippy model open,
