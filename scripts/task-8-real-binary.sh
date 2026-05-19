@@ -14,7 +14,9 @@ else
   BIN_SRC="$REPO_ROOT/target/debug/mesh-llm"
 fi
 export LLAMA_STAGE_BUILD_DIR="${LLAMA_STAGE_BUILD_DIR:-$REPO_ROOT/.deps/llama-build/build-stage-abi-cpu}"
-STAMP_SEED_HEX="1111111111111111111111111111111111111111111111111111111111111111"
+# Deterministic local-test signer seed only. Do not use this as a production
+# release signer; real release attestations must use protected signing material.
+STAMP_SEED_HEX="${TASK8_STAMP_SEED_HEX:-1111111111111111111111111111111111111111111111111111111111111111}"
 OWNER_KEY="$WORK_ROOT/owner.json"
 
 BUILD_EVIDENCE="$EVIDENCE_DIR/task-8-real-binary-build.txt"
@@ -29,8 +31,18 @@ CLEANUP_EVIDENCE="$EVIDENCE_DIR/task-8-real-binary-cleanup.txt"
 mkdir -p "$EVIDENCE_DIR" "$NOTEPAD_DIR" "$WORK_ROOT" "$RUNTIME_ROOT"
 
 cleanup_all() {
-  pkill -f "$WORK_ROOT/.*/mesh-llm" 2>/dev/null || true
-  pkill -f "mesh-task8-real-binary" 2>/dev/null || true
+  if [[ -d "$WORK_ROOT" ]]; then
+    while IFS= read -r pid_file; do
+      local pid
+      pid="$(cat "$pid_file" 2>/dev/null || true)"
+      if [[ "$pid" =~ ^[0-9]+$ ]]; then
+        kill "$pid" 2>/dev/null || true
+        sleep 1
+        kill -9 "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+      fi
+    done < <(find "$WORK_ROOT" -mindepth 2 -maxdepth 2 -name pid -type f 2>/dev/null)
+  fi
 }
 
 trap cleanup_all EXIT
@@ -432,7 +444,7 @@ run_transitive() {
 }
 
 run_cleanup_evidence() {
-  record_file_header "$CLEANUP_EVIDENCE" "cleanup=pkill -f mesh-task8-real-binary || true"
+  record_file_header "$CLEANUP_EVIDENCE" "cleanup=kill pids recorded under TASK8_WORK_ROOT"
   cleanup_all
   {
     printf 'cleanup_check_command=ps -eo pid=,comm=,args=\n'

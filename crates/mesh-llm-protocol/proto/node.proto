@@ -55,6 +55,7 @@ message PeerAnnouncement {
   optional SignedMeshGenesisPolicy genesis_policy = 45;
   optional ReleaseBuildAttestation release_attestation = 46;
   optional DirectNodeAdmissionProof direct_admission_proof = 47;
+}
 
 enum LatencySource {
   LATENCY_SOURCE_UNSPECIFIED = 0;
@@ -134,7 +135,6 @@ message DirectNodeAdmissionProof {
   uint64 timestamp_unix_ms = 6;
   string signature_algorithm = 7;
   bytes signature = 8;             // Ed25519 signature over sender_id + mesh_id + policy_hash + attestation_hash + timestamp
-}
 }
 
 message MeshSubprotocol {

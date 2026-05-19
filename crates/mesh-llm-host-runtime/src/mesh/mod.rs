@@ -3467,6 +3467,25 @@ fn encode_signed_bootstrap_token(token: &crate::SignedBootstrapToken) -> String 
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json)
 }
 
+fn signed_bootstrap_token_matches_invite_context(
+    token: &crate::SignedBootstrapToken,
+    addr: &EndpointAddr,
+    mesh_id: &str,
+    policy_hash: &str,
+    policy: &crate::MeshGenesisPolicy,
+) -> bool {
+    if token.mesh_id != mesh_id
+        || token.policy_hash != policy_hash
+        || token.genesis_policy != *policy
+    {
+        return false;
+    }
+    match decode_signed_bootstrap_addrs(token) {
+        Ok(addrs) => addrs.iter().any(|cached_addr| cached_addr == addr),
+        Err(_) => false,
+    }
+}
+
 impl Node {
     pub async fn initialize_mesh_identity_as_originator(
         &self,
@@ -3542,6 +3561,21 @@ impl Node {
         signed_policy: Option<crate::SignedMeshGenesisPolicy>,
         cached_token: Option<crate::SignedBootstrapToken>,
     ) -> String {
+        if let Some(token) = self
+            .valid_cached_bootstrap_token(cached_token.clone())
+            .await
+        {
+            if signed_bootstrap_token_matches_invite_context(
+                &token,
+                addr,
+                &mesh_id,
+                &policy_hash,
+                &policy,
+            ) {
+                return encode_signed_bootstrap_token(&token);
+            }
+        }
+
         if let Some(owner) = self.requirement_origin_owner(&policy, signed_policy.as_ref()) {
             let (signed_policy, token) =
                 sign_requirement_bootstrap_token(addr, &policy, signed_policy.as_ref(), owner)

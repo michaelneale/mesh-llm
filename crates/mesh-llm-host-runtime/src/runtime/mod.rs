@@ -5196,9 +5196,19 @@ async fn store_benchmark_metrics(
     reason = "release attestation loading logs valid and invalid sidecar states before advertising the result"
 )]
 async fn attach_local_release_attestation(node: &mesh::Node) -> Result<()> {
-    let Some(loaded) = release_attestation::load_for_current_binary()? else {
-        tracing::info!("no release attestation sidecar found for local binary");
-        return Ok(());
+    let loaded = match release_attestation::load_for_current_binary() {
+        Ok(Some(loaded)) => loaded,
+        Ok(None) => {
+            tracing::info!("no release attestation sidecar found for local binary");
+            return Ok(());
+        }
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "failed to load local release attestation sidecar; continuing without advertising one"
+            );
+            return Ok(());
+        }
     };
     let attestation_hash = loaded.attestation.canonical_hash_hex().ok();
     let is_valid = loaded.attestation.verify().is_ok();
