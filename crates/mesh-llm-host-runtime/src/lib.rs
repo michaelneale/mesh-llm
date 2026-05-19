@@ -18,6 +18,14 @@ pub mod proto {
     pub use mesh_llm_protocol::proto::*;
 }
 
+pub use mesh::requirements::{
+    BootstrapStatus, DirectNodeAdmissionProof, DirectPeerProofStatus, MeshGenesisPolicy,
+    MeshRequirementDecision, MeshRequirementEvaluationInput, MeshRequirementRejectReason,
+    MeshRequirements, NodeVersionBounds, PeerReleaseAttestationStatus, ProtocolGenerationBounds,
+    ReleaseAttestationRequirement, ReleaseBuildAttestation, SignedBootstrapToken,
+    SignedMeshGenesisPolicy, DIRECT_NODE_ADMISSION_PROOF_MAX_CLOCK_SKEW_MS,
+};
+
 pub(crate) use plugins::blackboard;
 
 use anyhow::Result;

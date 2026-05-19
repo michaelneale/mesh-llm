@@ -147,3 +147,226 @@ fn tui_model_card_separates_name_from_metadata_columns() {
 fn mesh_requirements_docs_examples_parse() {
     cli::assert_mesh_requirements_docs_examples_parse();
 }
+
+#[test]
+fn mesh_requirements_policy_canonical_hash_is_stable() {
+    mesh::requirements::tests::assert_mesh_requirements_policy_canonical_hash_is_stable();
+}
+
+#[test]
+fn mesh_requirements_policy_change_changes_mesh_id() {
+    mesh::requirements::tests::assert_mesh_requirements_policy_change_changes_mesh_id();
+}
+
+#[test]
+fn mesh_requirements_bootstrap_token_validates_origin_signature() {
+    mesh::requirements::tests::assert_mesh_requirements_bootstrap_token_validates_origin_signature(
+    );
+}
+
+#[test]
+fn mesh_requirements_bootstrap_rejects_expired_token() {
+    mesh::requirements::tests::assert_mesh_requirements_bootstrap_rejects_expired_token();
+}
+
+#[test]
+fn mesh_requirements_bootstrap_rejects_policy_hash_mismatch() {
+    mesh::requirements::tests::assert_mesh_requirements_bootstrap_rejects_policy_hash_mismatch();
+}
+
+#[test]
+fn mesh_requirements_policy_hash_derives_mesh_id() {
+    mesh::requirements::tests::assert_mesh_requirements_policy_hash_derives_mesh_id();
+}
+
+#[test]
+fn mesh_requirements_policy_change_creates_distinct_mesh() {
+    mesh::requirements::tests::assert_mesh_requirements_policy_change_changes_mesh_id();
+}
+
+#[test]
+fn mesh_requirements_version_bounds_unset_min_only_max_only_and_exact() {
+    mesh::requirements::tests::assert_mesh_requirements_version_bounds_unset_min_only_max_only_and_exact();
+}
+
+#[test]
+fn mesh_requirements_protocol_bounds_reject_unknown_only_when_constrained() {
+    mesh::requirements::tests::assert_mesh_requirements_protocol_bounds_reject_unknown_only_when_constrained();
+}
+
+#[test]
+fn mesh_requirements_rejects_unsigned_when_attestation_required() {
+    mesh::requirements::tests::assert_mesh_requirements_rejects_unsigned_when_attestation_required(
+    );
+}
+
+#[test]
+fn mesh_requirements_rejection_reasons_are_stable() {
+    mesh::requirements::tests::assert_mesh_requirements_rejection_reasons_are_stable();
+}
+
+#[test]
+fn mesh_requirements_cli_accepts_each_bound_independently() {
+    runtime::assert_mesh_requirements_cli_accepts_each_bound_independently();
+}
+
+#[test]
+fn mesh_requirements_config_accepts_unset_min_only_max_only_and_full_ranges() {
+    plugin::assert_mesh_requirements_config_accepts_unset_min_only_max_only_and_full_ranges();
+}
+
+#[test]
+fn mesh_requirements_config_rejects_required_attestation_without_signer_keys() {
+    plugin::assert_mesh_requirements_config_rejects_required_attestation_without_signer_keys();
+}
+
+#[test]
+fn mesh_requirements_config_rejects_non_ed25519_signer_key() {
+    plugin::assert_mesh_requirements_config_rejects_non_ed25519_signer_key();
+}
+
+#[test]
+fn mesh_requirements_survive_owner_control_config_round_trip() {
+    protocol::tests::mesh_requirements_survive_owner_control_config_round_trip();
+}
+
+#[test]
+fn mesh_requirements_cli_overrides_config_per_field_before_genesis() {
+    runtime::assert_mesh_requirements_cli_overrides_config_per_field_before_genesis();
+}
+
+#[test]
+fn mesh_requirements_config_rejects_min_greater_than_max_after_merge() {
+    runtime::assert_mesh_requirements_config_rejects_min_greater_than_max_after_merge();
+}
+
+#[test]
+fn mesh_requirements_rejects_local_policy_mutation_on_existing_mesh() {
+    runtime::assert_mesh_requirements_rejects_local_policy_mutation_on_existing_mesh();
+}
+
+#[test]
+fn mesh_requirements_direct_proof_rejects_stale_timestamp() {
+    mesh::requirements::tests::assert_mesh_requirements_direct_proof_rejects_stale_timestamp();
+}
+
+#[test]
+fn mesh_requirements_direct_proof_rejects_sender_id_mismatch() {
+    mesh::requirements::tests::assert_mesh_requirements_direct_proof_rejects_sender_id_mismatch();
+}
+
+#[test]
+fn mesh_requirements_outbound_admits_compliant_peer_after_requirements_pass() {
+    mesh::tests::assert_mesh_requirements_outbound_admits_compliant_peer_after_requirements_pass();
+}
+
+#[test]
+fn mesh_requirements_inbound_rejects_before_topology_announcement() {
+    mesh::tests::assert_mesh_requirements_inbound_rejects_before_topology_announcement();
+}
+
+#[test]
+fn mesh_requirements_outbound_rejects_before_peer_promotion() {
+    mesh::tests::assert_mesh_requirements_outbound_rejects_before_peer_promotion();
+}
+
+#[test]
+fn mesh_requirements_add_peer_rejects_missing_direct_admission_proof() {
+    mesh::tests::assert_mesh_requirements_add_peer_rejects_missing_direct_admission_proof();
+}
+
+#[test]
+fn mesh_requirements_add_peer_rejects_invalid_direct_admission_proof() {
+    mesh::tests::assert_mesh_requirements_add_peer_rejects_invalid_direct_admission_proof();
+}
+
+#[test]
+fn mesh_requirements_add_peer_rejects_stale_direct_admission_proof() {
+    mesh::tests::assert_mesh_requirements_add_peer_rejects_stale_direct_admission_proof();
+}
+
+#[test]
+fn mesh_requirements_add_peer_rejects_direct_proof_sender_mismatch() {
+    mesh::tests::assert_mesh_requirements_add_peer_rejects_direct_proof_sender_mismatch();
+}
+
+#[test]
+fn requirement_aware_mesh_without_attestation_rejects_missing_direct_proof() {
+    mesh::tests::assert_requirement_aware_mesh_without_attestation_rejects_missing_direct_proof();
+}
+
+#[test]
+fn requirement_aware_mesh_without_attestation_rejects_invalid_direct_proof() {
+    mesh::tests::assert_requirement_aware_mesh_without_attestation_rejects_invalid_direct_proof();
+}
+
+#[test]
+fn requirement_aware_mesh_without_attestation_rejects_stale_direct_proof() {
+    mesh::tests::assert_requirement_aware_mesh_without_attestation_rejects_stale_direct_proof();
+}
+
+#[test]
+fn requirement_aware_mesh_without_attestation_rejects_sender_mismatch_direct_proof() {
+    mesh::tests::assert_requirement_aware_mesh_without_attestation_rejects_sender_mismatch_direct_proof();
+}
+
+#[test]
+fn requirement_aware_mesh_without_attestation_accepts_valid_direct_proof() {
+    mesh::tests::assert_requirement_aware_mesh_without_attestation_accepts_valid_direct_proof();
+}
+
+#[test]
+fn mesh_requirements_add_peer_rejects_untrusted_release_signer() {
+    mesh::tests::assert_mesh_requirements_add_peer_rejects_untrusted_release_signer();
+}
+
+#[test]
+fn mesh_requirements_add_peer_rejects_invalid_release_attestation_signature() {
+    mesh::tests::assert_mesh_requirements_add_peer_rejects_invalid_release_attestation_signature();
+}
+
+#[test]
+fn mesh_requirements_add_peer_rejects_wrong_mesh_id() {
+    mesh::tests::assert_mesh_requirements_add_peer_rejects_wrong_mesh_id();
+}
+
+#[test]
+fn mesh_requirements_transitive_gossip_never_admits_peer_without_direct_proof() {
+    mesh::tests::assert_mesh_requirements_transitive_gossip_never_admits_peer_without_direct_proof(
+    );
+}
+
+#[test]
+fn mesh_requirements_rejected_peer_messages_have_no_mesh_effect() {
+    mesh::tests::assert_mesh_requirements_rejected_peer_messages_have_no_mesh_effect();
+}
+
+#[test]
+fn mesh_requirements_join_rejects_invalid_bootstrap_token() {
+    mesh::tests::assert_mesh_requirements_join_rejects_invalid_bootstrap_token();
+}
+
+#[test]
+fn mesh_requirements_unrestricted_legacy_mesh_join_stays_compatible() {
+    mesh::tests::assert_mesh_requirements_unrestricted_legacy_mesh_join_stays_compatible();
+}
+
+#[test]
+fn mesh_requirements_status_excludes_rejected_peers_from_admitted_list() {
+    api::tests::assert_mesh_requirements_status_excludes_rejected_peers_from_admitted_list();
+}
+
+#[test]
+fn mesh_requirements_status_reports_policy_hash_read_only() {
+    api::tests::assert_mesh_requirements_status_reports_policy_hash_read_only();
+}
+
+#[test]
+fn mesh_requirements_certified_binary_required_event_text() {
+    api::tests::assert_mesh_requirements_certified_binary_required_event_text();
+}
+
+#[test]
+fn mesh_requirements_rejection_events_do_not_expose_tokens() {
+    api::tests::assert_mesh_requirements_rejection_events_do_not_expose_tokens();
+}

@@ -80,6 +80,9 @@ impl LanMeshAdvertisement {
         supplied_invite_token: Option<&str>,
         app_version: Option<&str>,
     ) -> Self {
+        // LAN discovery intentionally publishes only a fingerprint of the join
+        // token so mDNS remains an untrusted pointer surface rather than a
+        // transport for trust-bearing bootstrap material.
         let token_fingerprint = supplied_invite_token
             .filter(|token| !token.trim().is_empty())
             .map(lan_token_fingerprint)
@@ -181,6 +184,7 @@ impl LanMeshAdvertisement {
 
     fn sanitized_listing(&self) -> nostr::MeshListing {
         nostr::MeshListing {
+            // LAN discovery never republishes the actual join token.
             invite_token: String::new(),
             serving: self.serving_summary.clone(),
             wanted: self.wanted_summary.clone(),
@@ -516,7 +520,7 @@ async fn build_local_mesh_listing(
     let node_count = lan_serving_node_count(&peers);
 
     nostr::MeshListing {
-        invite_token: node.invite_token(),
+        invite_token: node.invite_token().await,
         serving: actually_serving,
         wanted,
         on_disk: available,

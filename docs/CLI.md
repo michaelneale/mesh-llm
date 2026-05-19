@@ -78,6 +78,10 @@ Runtime switches:
 - `--bind-port <PORT>`: bind mesh QUIC to a fixed UDP port, usually paired
   with `--bind-ip` for firewall or NAT rules.
 - `--publish`: publish your mesh for discovery.
+- `--require-release-attestation`: when creating a requirement-aware mesh,
+  require peers to present a trusted release attestation.
+- `--release-signer-key <KEY>`: allow a release signer key in the creation-time
+  attestation policy (repeatable). Use with `--require-release-attestation`.
 - `--mesh-name <MESH_NAME>`: friendly mesh name in discovery.
 - `--region <REGION>`: region hint for discovery.
 - `--blackboard`: enable blackboard on public meshes. Private meshes enable

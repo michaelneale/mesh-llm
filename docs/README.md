@@ -34,6 +34,7 @@ Use [SKIPPY_SPLITS.md](SKIPPY_SPLITS.md) for Skippy split-serving workflows.
 |---|---|
 | [BENCHMARKS.md](BENCHMARKS.md) | Current benchmark numbers and performance context |
 | [design/](design/) | Architecture notes, protocol design, testing playbooks, carried llama.cpp patch documentation |
+| [design/NODE_OWNER_IDENTITY.md](design/NODE_OWNER_IDENTITY.md) | Owner identity, trust policy, and how owner trust stays separate from release attestation |
 | [plugins/](plugins/) | Plugin architecture and implementation planning |
 | [plans/](plans/) | Narrow implementation plans that are not yet general design docs |
 | [specs/](specs/) | Focused behavior specs for individual features |

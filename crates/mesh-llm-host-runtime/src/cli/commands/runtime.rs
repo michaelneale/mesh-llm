@@ -474,6 +474,7 @@ mod tests {
                 assignment: GpuAssignment::Auto,
                 parallel: None,
             },
+            mesh_requirements: Default::default(),
             models: Vec::new(),
             plugins: Vec::new(),
             owner_control: Default::default(),

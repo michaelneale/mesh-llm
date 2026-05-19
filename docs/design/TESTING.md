@@ -76,7 +76,57 @@ mesh-llm serve
 - Explicit `mesh-llm serve --model ...` should still bypass configured `[[models]]` and therefore bypass config-owned pinned IDs
 - Do not use GPU indexes, `index:*`, or backend-device names like `CUDA0` / `HIP0` / `MTL0` as `gpu_id`
 
-### 0c. Terminal dashboard smoke
+### 0c. Requirement-aware mesh smoke
+
+Create an unrestricted mesh:
+
+```bash
+mesh-llm serve --model Qwen3-8B-Q4_K_M
+```
+
+Create a release-attestation-required public mesh:
+
+```bash
+mesh-llm serve --model Qwen3-8B-Q4_K_M --publish \
+  --require-release-attestation \
+  --release-signer-key ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+  --owner-key ~/.mesh-llm/owner-keystore.json \
+  --owner-required \
+  --trust-policy require-owned \
+  --node-label lab-a
+```
+
+The release-attestation flags are creation-time mesh requirements. The owner and
+trust-policy flags exercise local owner-identity behavior and must not change
+the mesh requirements hash.
+
+Or with config-backed creation requirements:
+
+```toml
+[mesh_requirements]
+require_release_attestation = true
+release_signer_keys = ["ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"]
+```
+
+Join via signed bootstrap token:
+
+```bash
+mesh-llm serve --join <signed-bootstrap-token>
+```
+
+- `mesh-llm runtime bootstrap --port 3131` should show the local owner-control
+  bootstrap policy used by the node.
+- `curl -s http://localhost:3131/api/runtime/control-bootstrap | jq .` should
+  report the same local bootstrap policy in JSON form.
+- Admission failures for nodes that miss the certified-build gate should be
+  deterministic. In human-facing prose this is "certified build required";
+  the machine reason codes surfaced by logs, status, and evidence are
+  `certified_binary_required`, `build_proof_invalid`, and
+  `release_signer_untrusted`.
+- Legacy unrestricted meshes still accept the older unsigned invite-token path,
+  while requirement-aware meshes require signed bootstrap tokens.
+
+### 0d. Terminal dashboard smoke
 
 The pretty dashboard uses raw mode and the alternate screen when both stdin and stderr are interactive TTYs and `TERM` supports a real terminal. It should leave native terminal text selection available and fall back to line-oriented pretty output when stdin is not a TTY, stderr is not a TTY, or `TERM` is empty / `dumb`.
 

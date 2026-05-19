@@ -14,6 +14,67 @@ mesh-llm serve --auto
 starts serving if this machine has usable hardware. Use this when you just want
 the system to work end to end.
 
+## Immutable mesh requirements
+
+Mesh requirements are fixed when the mesh is created. For requirement-aware
+meshes, changing mesh requirements creates a new mesh: changing the required
+node version, protocol generation, or release-attestation policy derives a new
+mesh id from the new policy hash. Trust policy is a local owner-trust setting,
+not part of the immutable mesh requirements hash.
+
+The release-attestation side of mesh requirements is build provenance only:
+certified-build admission is not remote runtime attestation. A signed release
+attestation proves a peer's binary was published by a trusted release signer.
+It does not prove the remote process is actually running unmodified code, nor
+that the host OS or hardware has not been tampered with.
+
+Requirement-aware meshes use signed bootstrap tokens. Unrestricted legacy and
+private meshes still keep the older unsigned invite-token path.
+
+Create an unrestricted mesh:
+
+```bash
+mesh-llm serve --model Qwen3-8B-Q4_K_M
+```
+
+Create a release-attestation-required public mesh:
+
+```bash
+mesh-llm serve --model Qwen3-8B-Q4_K_M --publish \
+  --require-release-attestation \
+  --release-signer-key ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+  --owner-key ~/.mesh-llm/owner-keystore.json \
+  --owner-required \
+  --trust-policy require-owned \
+  --node-label lab-a
+```
+
+The release-attestation flags above are creation-time mesh requirements. The
+owner-key and trust-policy flags are local owner-identity policy; they do not
+change the mesh requirements hash.
+
+Equivalent creation-time config:
+
+```toml
+[mesh_requirements]
+require_release_attestation = true
+release_signer_keys = ["ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"]
+```
+
+Join via signed bootstrap token:
+
+```bash
+mesh-llm serve --join <signed-bootstrap-token>
+```
+
+If a node does not satisfy the certified-build gate, the human-facing outcome is
+"certified build required". The machine reason codes surfaced in logs, status,
+and evidence are underscored: `certified_binary_required`,
+`build_proof_invalid`, and `release_signer_untrusted`.
+
+When migrating from an unrestricted legacy mesh to a requirement-aware mesh,
+recreate the mesh, republish it, and issue new signed bootstrap tokens.
+
 For an API-only node that does not serve models:
 
 ```bash
@@ -74,6 +135,9 @@ mesh-llm serve --model Qwen3-8B-Q4_K_M --publish
 with `--auto`, `--discover`, or `mesh-llm discover`. Published meshes are
 republished periodically and include a TTL; if the node exits, the publication
 ages out.
+
+Public discovery is separate from admission. A public mesh can still reject
+nodes that do not satisfy its creation-time requirements.
 
 Add a friendly discovery name:
 

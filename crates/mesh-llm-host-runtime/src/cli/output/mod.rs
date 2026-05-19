@@ -2576,8 +2576,10 @@ impl DashboardState {
             OutputEvent::PassiveMode { detail, .. } => {
                 self.update_startup_mesh_component_ready(detail.clone());
             }
-            OutputEvent::Info { message, .. } if message == "Joined mesh" => {
-                self.update_startup_mesh_component_ready(Some(message.clone()));
+            OutputEvent::Info { message, .. }
+                if message == "Connected to bootstrap peer; awaiting mesh admission" =>
+            {
+                self.update_startup_mesh_component_starting(Some(message.clone()));
             }
             OutputEvent::Warning { message, .. }
                 if message == "Failed to join any peer — running standalone" =>

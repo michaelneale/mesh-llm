@@ -2,9 +2,11 @@
 // These tests verify the portable protocol layer that is safe to use on mobile targets.
 
 use mesh_client::proto::node::{
-    GossipFrame, MeshSubprotocol, MeshSubprotocolOpen, NodeRole, OwnerControlEnvelope,
-    OwnerControlErrorCode, OwnerControlGetConfigRequest, OwnerControlRequest, PeerAnnouncement,
-    PeerDown, PeerLeaving, RouteTable, RouteTableRequest,
+    DirectNodeAdmissionProof, GossipFrame, MeshGenesisPolicy, MeshRequirements, MeshSubprotocol,
+    MeshSubprotocolOpen, NodeRole, NodeVersionBounds, OwnerControlEnvelope, OwnerControlErrorCode,
+    OwnerControlGetConfigRequest, OwnerControlRequest, PeerAnnouncement, PeerDown, PeerLeaving,
+    ProtocolGenerationBounds, ReleaseAttestationRequirement, ReleaseBuildAttestation, RouteTable,
+    RouteTableRequest, SignedMeshGenesisPolicy,
 };
 use mesh_client::protocol::{
     decode_control_frame, decode_legacy_tunnel_map_frame, decode_owner_control_envelope,
@@ -17,6 +19,7 @@ use mesh_client::protocol::{
 use mesh_client::{
     ConfigTransportSelection, ControlPlaneBootstrapOptions, ControlPlaneRetryPolicy,
 };
+use prost::Message;
 
 // ── ALPN constants ──────────────────────────────────────────────────────────
 
@@ -134,6 +137,50 @@ fn make_valid_gossip_frame() -> GossipFrame {
     }
 }
 
+fn mesh_requirements_signed_policy_proto() -> SignedMeshGenesisPolicy {
+    SignedMeshGenesisPolicy {
+        version: 1,
+        policy: Some(MeshGenesisPolicy {
+            version: 1,
+            origin_owner_id: "owner-123".into(),
+            created_at_unix_ms: 1_717_171_717_000,
+            requirements: Some(MeshRequirements {
+                node_version: Some(NodeVersionBounds {
+                    min: Some("0.65.0".into()),
+                    max: Some("0.65.2".into()),
+                }),
+                protocol_generation: Some(ProtocolGenerationBounds {
+                    min: Some(1),
+                    max: Some(2),
+                }),
+                release_attestation: Some(ReleaseAttestationRequirement {
+                    required: Some(true),
+                    allowed_signer_keys: vec!["signer-a".into(), "signer-b".into()],
+                }),
+            }),
+        }),
+        origin_sign_public_key: vec![0x11; 32],
+        signature_algorithm: "ed25519".into(),
+        signature: vec![0x22; 64],
+    }
+}
+
+fn mesh_requirements_release_attestation_proto() -> ReleaseBuildAttestation {
+    ReleaseBuildAttestation {
+        version: 1,
+        node_version: "0.65.1".into(),
+        build_id: "build-123".into(),
+        commit: "abcdef123456".into(),
+        target_triple: "aarch64-apple-darwin".into(),
+        supported_protocol_generation_min: Some(1),
+        supported_protocol_generation_max: Some(2),
+        artifact_digest: Some("sha256:deadbeef".into()),
+        signer_key_id: "signer-a".into(),
+        signature_algorithm: "ed25519".into(),
+        signature: vec![0x33; 64],
+    }
+}
+
 #[test]
 fn gossip_frame_roundtrip() {
     let frame = make_valid_gossip_frame();
@@ -145,6 +192,99 @@ fn gossip_frame_roundtrip() {
     assert_eq!(decoded.peers.len(), 1);
     assert_eq!(decoded.peers[0].endpoint_id, vec![0u8; 32]);
     assert_eq!(decoded.peers[0].role, NodeRole::Worker as i32);
+}
+
+#[test]
+fn mesh_requirements_missing_optional_fields_remain_legacy_compatible() {
+    let frame = GossipFrame {
+        gen: NODE_PROTOCOL_GENERATION,
+        sender_id: vec![0x44; 32],
+        peers: vec![PeerAnnouncement {
+            endpoint_id: vec![0x55; 32],
+            role: NodeRole::Worker as i32,
+            version: Some("0.65.1".into()),
+            mesh_id: Some("mesh-legacy".into()),
+            ..Default::default()
+        }],
+    };
+
+    let encoded = encode_control_frame(STREAM_GOSSIP, &frame);
+    let decoded: GossipFrame = decode_control_frame(STREAM_GOSSIP, &encoded)
+        .expect("legacy gossip frames without mesh-requirements proofs must still decode");
+
+    let peer = &decoded.peers[0];
+    assert_eq!(peer.version.as_deref(), Some("0.65.1"));
+    assert_eq!(peer.mesh_id.as_deref(), Some("mesh-legacy"));
+    assert_eq!(peer.mesh_policy_hash, None);
+    assert!(peer.genesis_policy.is_none());
+    assert!(peer.release_attestation.is_none());
+}
+
+#[test]
+fn mesh_requirements_gossip_roundtrip_preserves_policy_and_attestation_fields() {
+    let frame = GossipFrame {
+        gen: NODE_PROTOCOL_GENERATION,
+        sender_id: vec![0x44; 32],
+        peers: vec![PeerAnnouncement {
+            endpoint_id: vec![0x55; 32],
+            role: NodeRole::Worker as i32,
+            version: Some("0.65.1".into()),
+            mesh_id: Some("mesh-policy-a".into()),
+            mesh_policy_hash: Some(
+                "40a3e2b4d96294e47f443c74d0d8441bd3363efea1580eb82627253ae47363ee".into(),
+            ),
+            genesis_policy: Some(mesh_requirements_signed_policy_proto()),
+            release_attestation: Some(mesh_requirements_release_attestation_proto()),
+            ..Default::default()
+        }],
+    };
+
+    let encoded = encode_control_frame(STREAM_GOSSIP, &frame);
+    let decoded: GossipFrame = decode_control_frame(STREAM_GOSSIP, &encoded)
+        .expect("mesh-requirements gossip fields must survive wire roundtrip");
+
+    let peer = &decoded.peers[0];
+    assert_eq!(peer.mesh_id.as_deref(), Some("mesh-policy-a"));
+    assert_eq!(
+        peer.mesh_policy_hash.as_deref(),
+        Some("40a3e2b4d96294e47f443c74d0d8441bd3363efea1580eb82627253ae47363ee")
+    );
+    assert_eq!(
+        peer.genesis_policy
+            .as_ref()
+            .and_then(|policy| policy.policy.as_ref())
+            .map(|policy| policy.origin_owner_id.as_str()),
+        Some("owner-123")
+    );
+    assert_eq!(
+        peer.release_attestation
+            .as_ref()
+            .map(|attestation| attestation.signer_key_id.as_str()),
+        Some("signer-a")
+    );
+}
+
+#[test]
+fn mesh_requirements_direct_proof_proto_roundtrip_preserves_fields() {
+    let proof = DirectNodeAdmissionProof {
+        version: 1,
+        sender_id: vec![0x66; 32],
+        mesh_id: "mesh-policy-a".into(),
+        policy_hash: "policy-hash-a".into(),
+        attestation_hash: "attestation-hash-a".into(),
+        timestamp_unix_ms: 1_717_171_717_000,
+        signature_algorithm: "ed25519".into(),
+        signature: vec![0x77; 64],
+    };
+
+    let encoded = prost::Message::encode_to_vec(&proof);
+    let decoded = DirectNodeAdmissionProof::decode(encoded.as_slice())
+        .expect("direct proof protobuf should roundtrip");
+
+    assert_eq!(decoded.mesh_id, "mesh-policy-a");
+    assert_eq!(decoded.policy_hash, "policy-hash-a");
+    assert_eq!(decoded.attestation_hash, "attestation-hash-a");
+    assert_eq!(decoded.sender_id, vec![0x66; 32]);
 }
 
 #[test]

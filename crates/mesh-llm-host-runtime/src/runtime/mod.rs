@@ -6,6 +6,7 @@ pub mod instance;
 mod interactive;
 mod local;
 mod proxy;
+mod release_attestation;
 mod split_planning;
 mod survey;
 pub(crate) mod wakeable;
@@ -45,6 +46,7 @@ use crate::models;
 use crate::network::{affinity, discovery as mesh_discovery, nostr, tunnel};
 use crate::plugin;
 use crate::system::{autoupdate, backend, benchmark, hardware};
+use crate::MeshRequirements;
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser};
 use skippy_protocol::FlashAttentionType;
@@ -128,6 +130,11 @@ struct RuntimeUnloadCandidate {
     owner: RuntimeUnloadOwner,
     instance_id: String,
     model_name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StartupMeshCreationState {
+    requirements: MeshRequirements,
 }
 
 thread_local! {
@@ -2704,6 +2711,204 @@ fn owner_runtime_config(
     })
 }
 
+fn resolve_startup_mesh_creation_state(
+    cli: &Cli,
+    config: &plugin::MeshConfig,
+) -> Result<StartupMeshCreationState> {
+    let merged = plugin::MeshRequirementsConfig {
+        min_node_version: cli
+            .min_node_version
+            .clone()
+            .or_else(|| config.mesh_requirements.min_node_version.clone()),
+        max_node_version: cli
+            .max_node_version
+            .clone()
+            .or_else(|| config.mesh_requirements.max_node_version.clone()),
+        min_protocol_version: cli
+            .min_protocol_version
+            .or(config.mesh_requirements.min_protocol_version),
+        max_protocol_version: cli
+            .max_protocol_version
+            .or(config.mesh_requirements.max_protocol_version),
+        require_release_attestation: cli.require_release_attestation
+            || config.mesh_requirements.require_release_attestation,
+        release_signer_keys: if cli.release_signer_key.is_empty() {
+            config.mesh_requirements.release_signer_keys.clone()
+        } else {
+            cli.release_signer_key.clone()
+        },
+    };
+    let requirements = merged.to_mesh_requirements();
+    requirements
+        .validate()
+        .map_err(|reason| anyhow::anyhow!(plugin::mesh_requirements_validation_error(reason)))?;
+    requirements
+        .release_attestation
+        .validate_signer_key_shapes()
+        .map_err(|reason| anyhow::anyhow!(plugin::mesh_requirements_validation_error(reason)))?;
+    Ok(StartupMeshCreationState { requirements })
+}
+
+#[cfg(test)]
+fn ensure_existing_mesh_requirements_match(
+    startup_state: &StartupMeshCreationState,
+    existing_policy: &crate::MeshGenesisPolicy,
+) -> Result<()> {
+    if existing_policy.requirements == startup_state.requirements {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "Local mesh requirements conflict with the joined mesh genesis policy. Changing mesh requirements creates a new mesh; remove the local creation-time overrides or start a new mesh instead."
+    );
+}
+
+#[cfg(test)]
+pub(crate) fn assert_mesh_requirements_cli_accepts_each_bound_independently() {
+    let min_only = Cli::parse_from(["mesh-llm", "--min-node-version", "0.65.0"]);
+    assert_eq!(min_only.min_node_version.as_deref(), Some("0.65.0"));
+    assert_eq!(min_only.max_node_version, None);
+
+    let max_only = Cli::parse_from(["mesh-llm", "--max-node-version", "0.65.9"]);
+    assert_eq!(max_only.min_node_version, None);
+    assert_eq!(max_only.max_node_version.as_deref(), Some("0.65.9"));
+
+    let min_protocol = Cli::parse_from(["mesh-llm", "--min-protocol-version", "1"]);
+    assert_eq!(min_protocol.min_protocol_version, Some(1));
+    assert_eq!(min_protocol.max_protocol_version, None);
+
+    let max_protocol = Cli::parse_from(["mesh-llm", "--max-protocol-version", "3"]);
+    assert_eq!(max_protocol.min_protocol_version, None);
+    assert_eq!(max_protocol.max_protocol_version, Some(3));
+
+    let attestation = Cli::parse_from([
+        "mesh-llm",
+        "--require-release-attestation",
+        "--release-signer-key",
+        "signer-a",
+        "--release-signer-key",
+        "signer-b",
+    ]);
+    assert!(attestation.require_release_attestation);
+    assert_eq!(
+        attestation.release_signer_key,
+        vec!["signer-a".to_string(), "signer-b".to_string()]
+    );
+}
+
+#[cfg(test)]
+pub(crate) fn assert_mesh_requirements_cli_overrides_config_per_field_before_genesis() {
+    let cli = Cli::parse_from([
+        "mesh-llm",
+        "--min-node-version",
+        "0.65.3",
+        "--max-protocol-version",
+        "5",
+        "--release-signer-key",
+        "ed25519:3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+    ]);
+    let config = plugin::MeshConfig {
+        mesh_requirements: plugin::MeshRequirementsConfig {
+            min_node_version: Some("0.65.0".into()),
+            max_node_version: Some("0.65.9".into()),
+            min_protocol_version: Some(1),
+            max_protocol_version: Some(2),
+            require_release_attestation: true,
+            release_signer_keys: vec![
+                "ed25519:d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a".into(),
+            ],
+        },
+        ..plugin::MeshConfig::default()
+    };
+
+    let startup_state = resolve_startup_mesh_creation_state(&cli, &config)
+        .expect("merged requirements should validate");
+    let policy = crate::MeshGenesisPolicy::new(
+        "owner-123",
+        1_717_171_717_000,
+        startup_state.requirements.clone(),
+    )
+    .expect("genesis policy should validate after merge");
+
+    assert_eq!(
+        startup_state.requirements.node_version.min.as_deref(),
+        Some("0.65.3")
+    );
+    assert_eq!(
+        startup_state.requirements.node_version.max.as_deref(),
+        Some("0.65.9")
+    );
+    assert_eq!(startup_state.requirements.protocol_generation.min, Some(1));
+    assert_eq!(startup_state.requirements.protocol_generation.max, Some(5));
+    assert!(startup_state.requirements.release_attestation.required);
+    assert_eq!(
+        startup_state
+            .requirements
+            .release_attestation
+            .allowed_signer_keys,
+        vec![
+            "ed25519:3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c".to_string()
+        ]
+    );
+    assert_eq!(policy.requirements, startup_state.requirements);
+    assert_eq!(
+        runtime_startup_requirements(&startup_state),
+        &startup_state.requirements,
+        "merged mesh requirements must remain available after entering runtime startup state"
+    );
+}
+
+#[cfg(test)]
+pub(crate) fn assert_mesh_requirements_config_rejects_min_greater_than_max_after_merge() {
+    let cli = Cli::parse_from(["mesh-llm", "--min-node-version", "0.65.5"]);
+    let config = plugin::MeshConfig {
+        mesh_requirements: plugin::MeshRequirementsConfig {
+            max_node_version: Some("0.65.4".into()),
+            ..plugin::MeshRequirementsConfig::default()
+        },
+        ..plugin::MeshConfig::default()
+    };
+
+    let err = resolve_startup_mesh_creation_state(&cli, &config)
+        .expect_err("merged bounds should be rejected");
+    assert!(err.to_string().contains(
+        "mesh_requirements.min_node_version must be less than or equal to mesh_requirements.max_node_version"
+    ));
+}
+
+#[cfg(test)]
+pub(crate) fn assert_mesh_requirements_rejects_local_policy_mutation_on_existing_mesh() {
+    let cli = Cli::parse_from(["mesh-llm", "--max-node-version", "0.65.9"]);
+    let config = plugin::MeshConfig {
+        mesh_requirements: plugin::MeshRequirementsConfig {
+            require_release_attestation: true,
+            release_signer_keys: vec![
+                "ed25519:d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a".into(),
+            ],
+            ..plugin::MeshRequirementsConfig::default()
+        },
+        ..plugin::MeshConfig::default()
+    };
+    let startup_state = resolve_startup_mesh_creation_state(&cli, &config)
+        .expect("local requirements should validate");
+    let existing_policy = crate::MeshGenesisPolicy::new(
+        "owner-123",
+        1_717_171_717_000,
+        MeshRequirements::unrestricted(),
+    )
+    .expect("existing policy should validate");
+
+    let err = ensure_existing_mesh_requirements_match(&startup_state, &existing_policy)
+        .expect_err("policy mutation should be rejected");
+    assert_eq!(
+        err.to_string(),
+        "Local mesh requirements conflict with the joined mesh genesis policy. Changing mesh requirements creates a new mesh; remove the local creation-time overrides or start a new mesh instead."
+    );
+}
+
+fn runtime_startup_requirements(state: &StartupMeshCreationState) -> &MeshRequirements {
+    &state.requirements
+}
+
 /// Wait for either SIGINT (ctrl-c) or SIGTERM. Without this, an unhandled
 /// SIGTERM aborts the process before runtime cleanup can run.
 async fn wait_shutdown_signal() -> &'static str {
@@ -3148,6 +3353,7 @@ pub(crate) async fn run() -> Result<()> {
     }
 
     let config = plugin::load_config(cli.config.as_deref())?;
+    let startup_mesh_creation_state = resolve_startup_mesh_creation_state(&cli, &config)?;
     let cli_has_explicit_models = cli_has_explicit_models(&cli);
     let has_config_models = !config.models.is_empty();
     let has_startup_models = cli_has_explicit_models || has_config_models;
@@ -3187,6 +3393,7 @@ pub(crate) async fn run() -> Result<()> {
     run_auto(
         cli,
         config,
+        startup_mesh_creation_state,
         startup_models,
         requested_model_names,
         bin_dir,
@@ -4778,7 +4985,7 @@ async fn join_mcp_with_tokens(tokens: &[String], node: &mesh::Node) -> Result<()
                     record_first_joined_mesh_ts(node).await;
                 }
                 let _ = emit_event(OutputEvent::Info {
-                    message: "Joined mesh".to_string(),
+                    message: "Connected to bootstrap peer; awaiting mesh admission".to_string(),
                     context: None,
                 });
                 return Ok(());
@@ -4946,8 +5153,10 @@ pub(crate) async fn run_plugin_mcp(cli: &Cli) -> Result<()> {
         !cli.no_enumerate_host,
         Some(owner_config),
         cli.config.as_deref(),
+        MeshRequirements::unrestricted(),
     )
     .await?;
+    attach_local_release_attestation(&node).await?;
     node.start_accepting();
     node.set_display_name(node_display_name(cli, &node)).await;
     node.start_heartbeat();
@@ -4980,6 +5189,46 @@ async fn store_benchmark_metrics(
     *mem_arc.lock().await = result.map(|r| r.mem_bandwidth_gbps.clone());
     *fp32_arc.lock().await = result.and_then(|r| r.compute_tflops_fp32.clone());
     *fp16_arc.lock().await = result.and_then(|r| r.compute_tflops_fp16.clone());
+}
+
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "release attestation loading logs valid and invalid sidecar states before advertising the result"
+)]
+async fn attach_local_release_attestation(node: &mesh::Node) -> Result<()> {
+    let loaded = match release_attestation::load_for_current_binary() {
+        Ok(Some(loaded)) => loaded,
+        Ok(None) => {
+            tracing::info!("no release attestation sidecar found for local binary");
+            return Ok(());
+        }
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "failed to load local release attestation sidecar; continuing without advertising one"
+            );
+            return Ok(());
+        }
+    };
+    let attestation_hash = loaded.attestation.canonical_hash_hex().ok();
+    let is_valid = loaded.attestation.verify().is_ok();
+    if is_valid {
+        tracing::info!(
+            path = %loaded.path.display(),
+            signer_key_id = %loaded.attestation.signer_key_id,
+            attestation_hash = attestation_hash.as_deref().unwrap_or("unknown"),
+            "loaded local release attestation"
+        );
+    } else {
+        tracing::warn!(
+            path = %loaded.path.display(),
+            signer_key_id = %loaded.attestation.signer_key_id,
+            attestation_hash = attestation_hash.as_deref().unwrap_or("unknown"),
+            "loaded local release attestation with invalid shape; peers may reject it"
+        );
+    }
+    node.set_release_attestation(Some(loaded.attestation)).await;
+    Ok(())
 }
 
 fn skippy_telemetry_options(cli: &Cli) -> skippy::SkippyTelemetryOptions {
@@ -5094,6 +5343,7 @@ async fn start_run_auto_node_and_plugins(
     cli: &Cli,
     config: &plugin::MeshConfig,
     resolved_plugins: &plugin::ResolvedPlugins,
+    startup_mesh_creation_state: &StartupMeshCreationState,
 ) -> Result<(mesh::Node, mesh::TunnelChannels, plugin::PluginManager)> {
     let role = if cli.client {
         NodeRole::Client
@@ -5113,8 +5363,10 @@ async fn start_run_auto_node_and_plugins(
         !cli.no_enumerate_host,
         Some(owner_config),
         cli.config.as_deref(),
+        startup_mesh_creation_state.requirements.clone(),
     )
     .await?;
+    attach_local_release_attestation(&node).await?;
     node.set_stage_control_sender(skippy::spawn_stage_control_loop(Some(Arc::new(
         node.clone(),
     ))))
@@ -5149,6 +5401,7 @@ async fn build_run_auto_node_setup(
     config: &plugin::MeshConfig,
     resolved_plugins: &plugin::ResolvedPlugins,
     bin_dir: &Path,
+    startup_mesh_creation_state: &StartupMeshCreationState,
 ) -> Result<AutoRuntimeNodeSetup> {
     let console_port = Some(cli.console);
     let is_client = cli.client;
@@ -5160,7 +5413,8 @@ async fn build_run_auto_node_setup(
     };
     tracing::info!("Local models on disk: {:?}", local_models);
     let (node, channels, plugin_manager) =
-        start_run_auto_node_and_plugins(cli, config, resolved_plugins).await?;
+        start_run_auto_node_and_plugins(cli, config, resolved_plugins, startup_mesh_creation_state)
+            .await?;
     let survey_hardware = run_auto_survey_hardware(is_client);
     let survey_telemetry = survey::SurveyTelemetry::start(
         config,
@@ -5211,7 +5465,7 @@ async fn attempt_run_auto_join(
                     record_first_joined_mesh_ts(node).await;
                 }
                 let _ = emit_event(OutputEvent::Info {
-                    message: "Joined mesh".to_string(),
+                    message: "Connected to bootstrap peer; awaiting mesh admission".to_string(),
                     context: None,
                 });
                 outcome.joined = true;
@@ -5291,7 +5545,7 @@ async fn spawn_run_auto_post_join_tasks(cli: &Cli, node: &mesh::Node) {
         .await
         .unwrap_or_else(|| "pending".to_string());
     let _ = emit_event(OutputEvent::InviteToken {
-        token: node.invite_token(),
+        token: node.invite_token().await,
         mesh_id,
         mesh_name: cli.mesh_name.clone(),
     });
@@ -5325,7 +5579,7 @@ async fn spawn_run_auto_post_join_tasks(cli: &Cli, node: &mesh::Node) {
     }
 }
 
-async fn run_auto_start_new_mesh(cli: &Cli, node: &mesh::Node) {
+async fn run_auto_start_new_mesh(cli: &Cli, node: &mesh::Node) -> Result<()> {
     let nostr_pubkey =
         if cli.publish && cli.mesh_discovery_mode == mesh_discovery::MeshDiscoveryMode::Nostr {
             nostr::load_or_create_keys()
@@ -5334,13 +5588,14 @@ async fn run_auto_start_new_mesh(cli: &Cli, node: &mesh::Node) {
         } else {
             None
         };
-    let mesh_id = mesh::generate_mesh_id(cli.mesh_name.as_deref(), nostr_pubkey.as_deref());
-    node.set_mesh_id_force(mesh_id.clone()).await;
+    let mesh_id = node
+        .initialize_mesh_identity_as_originator(cli.mesh_name.as_deref(), nostr_pubkey.as_deref())
+        .await?;
     record_first_joined_mesh_ts(node).await;
     mesh::save_last_mesh_id(&mesh_id);
     tracing::info!("Mesh ID: {mesh_id}");
     let _ = emit_event(OutputEvent::InviteToken {
-        token: node.invite_token(),
+        token: node.invite_token().await,
         mesh_id: mesh_id.clone(),
         mesh_name: cli.mesh_name.clone(),
     });
@@ -5360,6 +5615,8 @@ async fn run_auto_start_new_mesh(cli: &Cli, node: &mesh::Node) {
             rediscover_mesh_name,
         )));
     }
+
+    Ok(())
 }
 
 fn start_run_auto_bootstrap_proxy(
@@ -5493,12 +5750,13 @@ async fn run_auto_join_mesh_phase(
     cli: &mut Cli,
     node: &mesh::Node,
     auto_join_candidates: &[(String, Option<String>)],
-) {
+) -> Result<()> {
     if !cli.join.is_empty() || !auto_join_candidates.is_empty() {
         run_auto_join_existing_mesh(cli, node, auto_join_candidates).await;
     } else {
-        run_auto_start_new_mesh(cli, node).await;
+        run_auto_start_new_mesh(cli, node).await?;
     }
+    Ok(())
 }
 
 fn run_auto_model_identity(
@@ -6646,9 +6904,18 @@ async fn spawn_run_auto_local_instance_scanner(
 }
 
 /// Serve mode: join the mesh and serve local models through the embedded runtime.
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "run_auto is the top-level runtime orchestration path and preserves startup/shutdown ordering"
+)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "run_auto bridges prepared startup state into the existing runtime orchestration during this rebase"
+)]
 async fn run_auto(
     mut cli: Cli,
     config: plugin::MeshConfig,
+    startup_mesh_creation_state: StartupMeshCreationState,
     startup_models: Vec<StartupModelPlan>,
     requested_model_names: Vec<String>,
     bin_dir: PathBuf,
@@ -6656,6 +6923,10 @@ async fn run_auto(
     auto_join_candidates: Vec<(String, Option<String>)>,
 ) -> Result<()> {
     let resolved_plugins = resolve_plugins_from_config(&config, &cli)?;
+    tracing::debug!(
+        mesh_requirements = ?runtime_startup_requirements(&startup_mesh_creation_state),
+        "loaded creation-time mesh requirements into runtime startup state"
+    );
     let api_port = cli.port;
     configure_run_auto_process_state(&cli, runtime.as_ref());
     let _native_log_forwarding = SkippyNativeLogForwardingGuard;
@@ -6672,13 +6943,20 @@ async fn run_auto(
         channels,
         plugin_manager,
         survey_telemetry,
-    } = build_run_auto_node_setup(&cli, &config, &resolved_plugins, &bin_dir).await?;
+    } = build_run_auto_node_setup(
+        &cli,
+        &config,
+        &resolved_plugins,
+        &bin_dir,
+        &startup_mesh_creation_state,
+    )
+    .await?;
 
     // Advertise what we have on disk and what we want the mesh to serve
     node.set_requested_models(requested_model_names.clone())
         .await;
 
-    run_auto_join_mesh_phase(&mut cli, &node, &auto_join_candidates).await;
+    run_auto_join_mesh_phase(&mut cli, &node, &auto_join_candidates).await?;
 
     let affinity_router = affinity::AffinityRouter::new();
 

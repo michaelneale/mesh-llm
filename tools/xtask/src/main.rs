@@ -1,13 +1,102 @@
+use ed25519_dalek::{Signer, SigningKey};
 use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::error::Error;
-use std::fs;
+use std::fs::{self, File};
+use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 type DynError = Box<dyn Error>;
 type DynResult<T> = Result<T, DynError>;
+
+const RELEASE_BUILD_ATTESTATION_VERSION: u32 = 1;
+const RELEASE_BUILD_ATTESTATION_DOMAIN_TAG: &[u8] = b"mesh-llm-release-attestation-v1:";
+const ED25519_SIGNATURE_ALGORITHM: &str = "ed25519";
+const DEFAULT_NODE_VERSION: &str = "0.65.1+skippy.20260504.kv.2";
+
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+struct ReleaseBuildAttestation {
+    version: u32,
+    node_version: String,
+    build_id: String,
+    commit: String,
+    target_triple: String,
+    supported_protocol_generation_min: Option<u32>,
+    supported_protocol_generation_max: Option<u32>,
+    artifact_digest: Option<String>,
+    signer_key_id: String,
+    signature_algorithm: String,
+    signature: Vec<u8>,
+}
+
+impl ReleaseBuildAttestation {
+    fn validate(&self) -> DynResult<()> {
+        if self.version != RELEASE_BUILD_ATTESTATION_VERSION
+            || self.node_version.trim().is_empty()
+            || self.build_id.trim().is_empty()
+            || self.commit.trim().is_empty()
+            || self.target_triple.trim().is_empty()
+            || self.signer_key_id.trim().is_empty()
+            || self.signature_algorithm.trim().is_empty()
+            || self.signature.is_empty()
+        {
+            return Err("invalid release build attestation shape".into());
+        }
+        if let (Some(min), Some(max)) = (
+            self.supported_protocol_generation_min,
+            self.supported_protocol_generation_max,
+        ) {
+            if min > max {
+                return Err("invalid release build attestation protocol bounds".into());
+            }
+        }
+        Ok(())
+    }
+
+    fn canonical_bytes(&self) -> DynResult<Vec<u8>> {
+        self.validate()?;
+        let mut buf = Vec::with_capacity(256);
+        buf.extend_from_slice(RELEASE_BUILD_ATTESTATION_DOMAIN_TAG);
+        buf.extend_from_slice(&self.version.to_le_bytes());
+        write_string(&mut buf, self.node_version.trim());
+        write_string(&mut buf, self.build_id.trim());
+        write_string(&mut buf, self.commit.trim());
+        write_string(&mut buf, self.target_triple.trim());
+        write_optional_u32(&mut buf, self.supported_protocol_generation_min);
+        write_optional_u32(&mut buf, self.supported_protocol_generation_max);
+        write_optional_string(&mut buf, self.artifact_digest.as_deref());
+        write_string(&mut buf, self.signer_key_id.trim());
+        write_string(&mut buf, self.signature_algorithm.trim());
+        Ok(buf)
+    }
+
+    fn canonical_hash_hex(&self) -> DynResult<String> {
+        use sha2::{Digest, Sha256};
+
+        Ok(hex::encode(Sha256::digest(self.canonical_bytes()?)))
+    }
+
+    fn verify(&self) -> DynResult<()> {
+        self.validate()?;
+        if self.signature_algorithm.trim() != ED25519_SIGNATURE_ALGORITHM
+            || self.signature.len() != 64
+        {
+            return Err("invalid release build attestation signature shape".into());
+        }
+        let signer_public_key = parse_release_signer_public_key(self.signer_key_id.trim())?;
+        let signature = ed25519_dalek::Signature::from_bytes(
+            &self
+                .signature
+                .as_slice()
+                .try_into()
+                .map_err(|_| "invalid release build attestation signature length")?,
+        );
+        signer_public_key.verify_strict(&self.canonical_bytes()?, &signature)?;
+        Ok(())
+    }
+}
 
 fn main() {
     if let Err(error) = run() {
@@ -25,15 +114,264 @@ fn run() -> DynResult<()> {
         [command, scope] if command == "repo-consistency" && scope == "ci-crate-lists" => {
             let repo_root = repo_root()?;
             check_ci_script_workspace_members(&repo_root)?;
+            check_attestation_default_version(&repo_root)?;
             println!("repo consistency checks passed: ci-crate-lists");
             Ok(())
         }
+        [command, scope, rest @ ..] if command == "release-attestation" && scope == "stamp" => {
+            stamp_release_attestation(rest)
+        }
+        [command, scope, rest @ ..]
+            if command == "release-attestation" && scope == "inspect" =>
+        {
+            inspect_release_attestation(rest)
+        }
         _ => Err(
-            "usage:\n  cargo run -p xtask -- repo-consistency release-targets\n  cargo run -p xtask -- repo-consistency ci-crate-lists"
+            "usage:\n  cargo run -p xtask -- repo-consistency release-targets\n  cargo run -p xtask -- repo-consistency ci-crate-lists\n  cargo run -p xtask -- release-attestation stamp --binary <path> --signing-seed-hex <64-hex> [--output <path>] [--node-version <semver>] [--build-id <id>] [--commit <sha>] [--target-triple <triple>] [--protocol-min <n>] [--protocol-max <n>]\n  cargo run -p xtask -- release-attestation inspect --binary <path> [--input <path>]"
                 .to_string()
                 .into(),
         ),
     }
+}
+
+#[derive(Default)]
+struct StampArgs {
+    binary: Option<PathBuf>,
+    output: Option<PathBuf>,
+    signing_seed_hex: Option<String>,
+    node_version: Option<String>,
+    build_id: Option<String>,
+    commit: Option<String>,
+    target_triple: Option<String>,
+    protocol_min: Option<u32>,
+    protocol_max: Option<u32>,
+}
+
+#[derive(Default)]
+struct InspectArgs {
+    binary: Option<PathBuf>,
+    input: Option<PathBuf>,
+}
+
+fn stamp_release_attestation(args: &[String]) -> DynResult<()> {
+    let parsed = parse_stamp_args(args)?;
+    let binary = parsed.binary.ok_or("--binary is required")?;
+    let output = parsed
+        .output
+        .unwrap_or_else(|| sibling_attestation_path(&binary));
+    let signing_seed_hex = parsed
+        .signing_seed_hex
+        .ok_or("--signing-seed-hex is required")?;
+    let signing_key = signing_key_from_seed_hex(&signing_seed_hex)?;
+    let verifying_key = signing_key.verifying_key();
+    let signer_key_id = format!("ed25519:{}", hex::encode(verifying_key.as_bytes()));
+    let artifact_digest = sha256_file(&binary)?;
+
+    let mut attestation = ReleaseBuildAttestation {
+        version: 1,
+        node_version: parsed
+            .node_version
+            .unwrap_or_else(|| DEFAULT_NODE_VERSION.to_string()),
+        build_id: parsed
+            .build_id
+            .unwrap_or_else(|| default_build_id(&binary, &artifact_digest)),
+        commit: parsed.commit.unwrap_or_else(default_commit),
+        target_triple: parsed.target_triple.unwrap_or_else(default_target_triple),
+        supported_protocol_generation_min: parsed.protocol_min,
+        supported_protocol_generation_max: parsed.protocol_max,
+        artifact_digest: Some(format!("sha256:{artifact_digest}")),
+        signer_key_id,
+        signature_algorithm: "ed25519".to_string(),
+        signature: vec![0; 64],
+    };
+    let signature = signing_key.sign(
+        &attestation
+            .canonical_bytes()
+            .map_err(|reason| format!("invalid attestation bytes: {reason:?}"))?,
+    );
+    attestation.signature = signature.to_bytes().to_vec();
+    attestation
+        .validate()
+        .map_err(|reason| format!("invalid attestation: {reason:?}"))?;
+
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&output, serde_json::to_vec_pretty(&attestation)?)?;
+
+    let summary = serde_json::json!({
+        "binary": binary,
+        "attestation_path": output,
+        "node_version": attestation.node_version,
+        "build_id": attestation.build_id,
+        "commit": attestation.commit,
+        "target_triple": attestation.target_triple,
+        "supported_protocol_generation_min": attestation.supported_protocol_generation_min,
+        "supported_protocol_generation_max": attestation.supported_protocol_generation_max,
+        "artifact_digest": attestation.artifact_digest,
+        "signer_key_id": attestation.signer_key_id,
+        "signer_public_key_hex": hex::encode(verifying_key.as_bytes()),
+        "attestation_hash": attestation
+            .canonical_hash_hex()
+            .map_err(|reason| format!("invalid attestation hash: {reason:?}"))?,
+    });
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+fn inspect_release_attestation(args: &[String]) -> DynResult<()> {
+    let parsed = parse_inspect_args(args)?;
+    let binary = parsed.binary.ok_or("--binary is required")?;
+    let input = parsed
+        .input
+        .unwrap_or_else(|| sibling_attestation_path(&binary));
+    let attestation: ReleaseBuildAttestation = serde_json::from_slice(&fs::read(&input)?)?;
+    let summary = serde_json::json!({
+        "binary": binary,
+        "attestation_path": input,
+        "valid": attestation.verify().is_ok(),
+        "node_version": attestation.node_version,
+        "build_id": attestation.build_id,
+        "commit": attestation.commit,
+        "target_triple": attestation.target_triple,
+        "supported_protocol_generation_min": attestation.supported_protocol_generation_min,
+        "supported_protocol_generation_max": attestation.supported_protocol_generation_max,
+        "artifact_digest": attestation.artifact_digest,
+        "signer_key_id": attestation.signer_key_id,
+        "signature_len": attestation.signature.len(),
+        "attestation_hash": attestation.canonical_hash_hex().ok(),
+    });
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+fn parse_stamp_args(args: &[String]) -> DynResult<StampArgs> {
+    let mut parsed = StampArgs::default();
+    let mut iter = args.iter();
+    while let Some(flag) = iter.next() {
+        let value = iter
+            .next()
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+        match flag.as_str() {
+            "--binary" => parsed.binary = Some(PathBuf::from(value)),
+            "--output" => parsed.output = Some(PathBuf::from(value)),
+            "--signing-seed-hex" => parsed.signing_seed_hex = Some(value.clone()),
+            "--node-version" => parsed.node_version = Some(value.clone()),
+            "--build-id" => parsed.build_id = Some(value.clone()),
+            "--commit" => parsed.commit = Some(value.clone()),
+            "--target-triple" => parsed.target_triple = Some(value.clone()),
+            "--protocol-min" => parsed.protocol_min = Some(value.parse()?),
+            "--protocol-max" => parsed.protocol_max = Some(value.parse()?),
+            _ => return Err(format!("unknown flag for stamp: {flag}").into()),
+        }
+    }
+    Ok(parsed)
+}
+
+fn parse_inspect_args(args: &[String]) -> DynResult<InspectArgs> {
+    let mut parsed = InspectArgs::default();
+    let mut iter = args.iter();
+    while let Some(flag) = iter.next() {
+        let value = iter
+            .next()
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+        match flag.as_str() {
+            "--binary" => parsed.binary = Some(PathBuf::from(value)),
+            "--input" => parsed.input = Some(PathBuf::from(value)),
+            _ => return Err(format!("unknown flag for inspect: {flag}").into()),
+        }
+    }
+    Ok(parsed)
+}
+
+fn sibling_attestation_path(binary: &Path) -> PathBuf {
+    let file_name = binary
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("mesh-llm");
+    binary.with_file_name(format!("{file_name}.attestation.json"))
+}
+
+fn signing_key_from_seed_hex(seed_hex: &str) -> DynResult<SigningKey> {
+    let seed = hex::decode(seed_hex)?;
+    let seed: [u8; 32] = seed
+        .try_into()
+        .map_err(|_| "--signing-seed-hex must decode to exactly 32 bytes")?;
+    Ok(SigningKey::from_bytes(&seed))
+}
+
+fn sha256_file(path: &Path) -> DynResult<String> {
+    use sha2::{Digest, Sha256};
+
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let len = reader.read(&mut buf)?;
+        if len == 0 {
+            break;
+        }
+        hasher.update(&buf[..len]);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn parse_release_signer_public_key(signer_key_id: &str) -> DynResult<ed25519_dalek::VerifyingKey> {
+    let encoded = signer_key_id
+        .strip_prefix("ed25519:")
+        .ok_or("release signer key id must start with ed25519:")?;
+    let bytes = hex::decode(encoded)?;
+    let bytes: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| "release signer key id must contain a 32-byte public key")?;
+    Ok(ed25519_dalek::VerifyingKey::from_bytes(&bytes)?)
+}
+
+fn write_string(buf: &mut Vec<u8>, value: &str) {
+    write_bytes(buf, value.as_bytes());
+}
+
+fn write_optional_string(buf: &mut Vec<u8>, value: Option<&str>) {
+    match value {
+        Some(value) => {
+            buf.push(1);
+            write_string(buf, value.trim());
+        }
+        None => buf.push(0),
+    }
+}
+
+fn write_optional_u32(buf: &mut Vec<u8>, value: Option<u32>) {
+    match value {
+        Some(value) => {
+            buf.push(1);
+            buf.extend_from_slice(&value.to_le_bytes());
+        }
+        None => buf.push(0),
+    }
+}
+
+fn write_bytes(buf: &mut Vec<u8>, bytes: &[u8]) {
+    buf.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+    buf.extend_from_slice(bytes);
+}
+
+fn default_build_id(binary: &Path, artifact_digest: &str) -> String {
+    let stem = binary
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("mesh-llm");
+    format!("{stem}-{}", &artifact_digest[..12])
+}
+
+fn default_commit() -> String {
+    std::env::var("GIT_COMMIT").unwrap_or_else(|_| "task8-local".to_string())
+}
+
+fn default_target_triple() -> String {
+    std::env::var("TARGET")
+        .unwrap_or_else(|_| format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS))
 }
 
 fn check_release_targets() -> DynResult<()> {
@@ -51,10 +389,38 @@ fn check_release_targets() -> DynResult<()> {
     }
     check_windows_name_invariance(&fixture_rows, &fixture_version)?;
     check_ci_script_workspace_members(&repo_root)?;
+    check_attestation_default_version(&repo_root)?;
     check_docs_and_workflow_invariants(&repo_root)?;
 
     println!("repo consistency checks passed: release-targets");
     Ok(())
+}
+
+fn check_attestation_default_version(repo_root: &Path) -> DynResult<()> {
+    let runtime_lib = repo_root
+        .join("crates")
+        .join("mesh-llm-host-runtime")
+        .join("src")
+        .join("lib.rs");
+    let contents = fs::read_to_string(runtime_lib)?;
+    let runtime_version = extract_runtime_version(&contents)?;
+    ensure_eq(
+        runtime_version,
+        DEFAULT_NODE_VERSION,
+        "xtask release-attestation default node version",
+    )
+}
+
+fn extract_runtime_version(contents: &str) -> DynResult<&str> {
+    const PREFIX: &str = "pub const VERSION: &str = \"";
+    for line in contents.lines().map(str::trim) {
+        if let Some(rest) = line.strip_prefix(PREFIX) {
+            return rest
+                .strip_suffix("\";")
+                .ok_or_else(|| "malformed mesh-llm-host-runtime VERSION constant".into());
+        }
+    }
+    Err("missing mesh-llm-host-runtime VERSION constant".into())
 }
 
 fn host_supports_shell_parity_checks() -> bool {

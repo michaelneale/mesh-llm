@@ -684,7 +684,7 @@ pub(crate) fn decode_control_frame<T: ValidateControlFrame>(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::crypto::OwnershipSummary;
     use crate::mesh::{resolve_peer_down, resolve_peer_leaving, PeerInfo};
@@ -736,6 +736,7 @@ mod tests {
                 command: Some("mesh-llm".to_string()),
                 args: vec!["--plugin".to_string(), "blackboard".to_string()],
             }],
+            mesh_requirements: None,
         }
     }
 
@@ -801,12 +802,16 @@ mod tests {
                 id: peer_id,
                 addrs: Default::default(),
             },
+            mesh_id: None,
+            mesh_policy_hash: None,
+            genesis_policy: None,
             role: crate::mesh::NodeRole::Worker,
             first_joined_mesh_ts: None,
             models: vec![],
             vram_bytes: 0,
             rtt_ms: None,
             model_source: None,
+            admitted: true,
             serving_models: vec![],
             hosted_models: vec![],
             hosted_models_known: false,
@@ -1237,6 +1242,7 @@ mod tests {
             version: None,
             model_demand: HashMap::new(),
             mesh_id: None,
+            mesh_policy_hash: None,
             gpu_name: None,
             hostname: None,
             is_soc: None,
@@ -1264,6 +1270,9 @@ mod tests {
                 },
                 signature: "33".repeat(64),
             }),
+            genesis_policy: None,
+            release_attestation: None,
+            direct_admission_proof: None,
             artifact_transfer_supported: true,
             stage_protocol_generation_supported: true,
             stage_status_list_supported: true,
@@ -1379,6 +1388,7 @@ mod tests {
             version: Some("0.52.0".to_string()),
             model_demand: HashMap::new(),
             mesh_id: Some("mesh-proto-roundtrip".to_string()),
+            mesh_policy_hash: None,
             gpu_name: Some("NVIDIA A100".to_string()),
             hostname: Some("worker-01".to_string()),
             is_soc: Some(false),
@@ -1393,6 +1403,9 @@ mod tests {
             served_model_descriptors: vec![],
             served_model_runtime: vec![],
             owner_attestation: None,
+            genesis_policy: None,
+            release_attestation: None,
+            direct_admission_proof: None,
             artifact_transfer_supported: true,
             stage_protocol_generation_supported: true,
             stage_status_list_supported: true,
@@ -1617,6 +1630,7 @@ mod tests {
                 }),
             }],
             plugins: vec![],
+            mesh_requirements: None,
         };
 
         let restored = proto_config_to_mesh(&snapshot);
@@ -1652,6 +1666,7 @@ mod tests {
                 }),
             }],
             plugins: vec![],
+            mesh_requirements: None,
         };
 
         let restored = proto_config_to_mesh(&snapshot);
@@ -1700,6 +1715,7 @@ mod tests {
                 assignment: GpuAssignment::Auto,
                 parallel: None,
             },
+            mesh_requirements: Default::default(),
             owner_control: Default::default(),
             telemetry: Default::default(),
             models: vec![ModelConfigEntry {
@@ -1741,6 +1757,61 @@ mod tests {
     }
 
     #[test]
+    pub(crate) fn mesh_requirements_survive_owner_control_config_round_trip() {
+        // Regression: NodeConfigSnapshot used to drop [mesh_requirements] on the
+        // owner-control get/apply path, silently stripping admission requirements
+        // from an immutable mesh. The proto NodeConfigSnapshot now carries an
+        // additive `mesh_requirements` field that mesh_config_to_proto and
+        // proto_config_to_mesh round-trip end-to-end.
+        use crate::plugin::{MeshRequirementsConfig, OwnerControlConfig};
+        let original = crate::plugin::MeshConfig {
+            version: Some(1),
+            gpu: Default::default(),
+            mesh_requirements: MeshRequirementsConfig {
+                min_node_version: Some("0.65.0".to_string()),
+                max_node_version: Some("0.66.0".to_string()),
+                min_protocol_version: Some(1),
+                max_protocol_version: Some(3),
+                require_release_attestation: true,
+                release_signer_keys: vec![
+                    "ed25519:d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+                        .to_string(),
+                    "ed25519:3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c"
+                        .to_string(),
+                ],
+            },
+            owner_control: OwnerControlConfig::default(),
+            telemetry: Default::default(),
+            models: vec![],
+            plugins: vec![],
+        };
+        let snapshot = mesh_config_to_proto(&original);
+        assert!(
+            snapshot.mesh_requirements.is_some(),
+            "non-default mesh_requirements must serialize to the proto snapshot"
+        );
+        let restored = proto_config_to_mesh(&snapshot);
+        assert_eq!(
+            restored.mesh_requirements, original.mesh_requirements,
+            "mesh_requirements must round-trip through owner-control config get/apply"
+        );
+
+        // Default mesh_requirements should remain omitted on the wire so older
+        // peers continue to round-trip with absent field semantics.
+        let default_only = crate::plugin::MeshConfig::default();
+        let default_snapshot = mesh_config_to_proto(&default_only);
+        assert!(
+            default_snapshot.mesh_requirements.is_none(),
+            "default mesh_requirements must not be encoded on the wire"
+        );
+        let default_restored = proto_config_to_mesh(&default_snapshot);
+        assert_eq!(
+            default_restored.mesh_requirements,
+            crate::plugin::MeshRequirementsConfig::default()
+        );
+    }
+
+    #[test]
     fn config_sync_empty_config_roundtrip() {
         let config = crate::plugin::MeshConfig::default();
         let snapshot = mesh_config_to_proto(&config);
@@ -1758,6 +1829,7 @@ mod tests {
                 assignment: GpuAssignment::Auto,
                 parallel: None,
             },
+            mesh_requirements: Default::default(),
             owner_control: Default::default(),
             telemetry: Default::default(),
             models: vec![ModelConfigEntry {
@@ -1786,6 +1858,7 @@ mod tests {
                 assignment: GpuAssignment::Auto,
                 parallel: None,
             },
+            mesh_requirements: Default::default(),
             owner_control: Default::default(),
             telemetry: Default::default(),
             models: vec![ModelConfigEntry {
@@ -1817,6 +1890,7 @@ mod tests {
                 assignment: GpuAssignment::Pinned,
                 parallel: None,
             },
+            mesh_requirements: Default::default(),
             owner_control: Default::default(),
             telemetry: Default::default(),
             models: vec![ModelConfigEntry {
@@ -1901,6 +1975,7 @@ mod tests {
                 mmproj_ref: None,
             }],
             plugins: vec![],
+            mesh_requirements: None,
         };
 
         let encoded = snapshot.encode_to_vec();
@@ -1942,6 +2017,7 @@ mod tests {
             version: None,
             model_demand: HashMap::new(),
             mesh_id: None,
+            mesh_policy_hash: None,
             gpu_name: None,
             hostname: None,
             is_soc: None,
@@ -1956,6 +2032,9 @@ mod tests {
             served_model_descriptors: vec![],
             served_model_runtime: vec![],
             owner_attestation: None,
+            genesis_policy: None,
+            release_attestation: None,
+            direct_admission_proof: None,
             artifact_transfer_supported: true,
             stage_protocol_generation_supported: true,
             stage_status_list_supported: true,
@@ -1993,6 +2072,7 @@ mod tests {
             version: None,
             model_demand: HashMap::new(),
             mesh_id: None,
+            mesh_policy_hash: None,
             gpu_name: None,
             hostname: None,
             is_soc: None,
@@ -2007,6 +2087,9 @@ mod tests {
             served_model_descriptors: vec![],
             served_model_runtime: vec![],
             owner_attestation: None,
+            genesis_policy: None,
+            release_attestation: None,
+            direct_admission_proof: None,
             artifact_transfer_supported: false,
             stage_protocol_generation_supported: false,
             stage_status_list_supported: false,

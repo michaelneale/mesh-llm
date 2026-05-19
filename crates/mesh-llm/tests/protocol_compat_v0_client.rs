@@ -11,6 +11,9 @@ use mesh_client::protocol::{
 use mesh_client::{
     ConfigTransportSelection, ControlPlaneBootstrapOptions, ControlPlaneRetryPolicy,
 };
+use mesh_llm::{
+    MeshGenesisPolicy, MeshRequirementDecision, MeshRequirementEvaluationInput, MeshRequirements,
+};
 
 #[test]
 fn alpn_v0_byte_sequence_is_stable() {
@@ -122,4 +125,25 @@ fn v0_gossip_json_byte_format_is_valid_json_array() {
 fn v0_gossip_json_requires_array_not_object() {
     let result: Result<Vec<serde_json::Value>, _> = serde_json::from_slice(b"{\"peers\":[]}");
     assert!(result.is_err());
+}
+
+#[test]
+fn mesh_requirements_unrestricted_legacy_meshes_remain_compatible() {
+    let policy = MeshGenesisPolicy::new(
+        "owner-legacy",
+        1_717_171_717_000,
+        MeshRequirements::unrestricted(),
+    )
+    .expect("unrestricted legacy policy should validate");
+
+    assert_eq!(
+        protocol_from_alpn(ALPN_V0),
+        ControlProtocol::JsonV0,
+        "legacy peers should still negotiate the v0 codec"
+    );
+    assert_eq!(
+        policy.evaluate(&MeshRequirementEvaluationInput::default()),
+        MeshRequirementDecision::Accepted,
+        "unrestricted meshes must not require signed admission metadata"
+    );
 }
