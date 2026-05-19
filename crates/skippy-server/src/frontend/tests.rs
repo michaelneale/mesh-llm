@@ -1115,7 +1115,7 @@ fn request_defaults_fill_omitted_chat_fields_only() {
     );
     assert_eq!(
         GenerationTokenLimit::from_request(request.effective_max_tokens(), 64),
-        GenerationTokenLimit::Explicit(64)
+        GenerationTokenLimit::Default(64)
     );
 }
 
@@ -1153,7 +1153,7 @@ fn request_defaults_fill_omitted_completion_fields_and_nulls() {
     assert_eq!(sampling.logit_bias.len(), 2);
     assert_eq!(
         GenerationTokenLimit::from_request(request.max_tokens, 48),
-        GenerationTokenLimit::Explicit(48)
+        GenerationTokenLimit::Default(48)
     );
 }
 
