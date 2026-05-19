@@ -446,6 +446,21 @@ mod tests {
         .unwrap()
     }
 
+    fn audio_request(mesh_hooks: bool) -> ChatCompletionRequest {
+        serde_json::from_value(json!({
+            "model": "auto",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "please transcribe this"},
+                    {"type": "input_audio", "input_audio": {"url": "data:audio/wav;base64,abc"}}
+                ]
+            }],
+            "mesh_hooks": mesh_hooks
+        }))
+        .unwrap()
+    }
+
     fn uncertain_signals() -> PrefillHookSignals {
         PrefillHookSignals {
             first_token_entropy: PREFILL_ENTROPY_THRESHOLD + 0.1,
@@ -580,6 +595,25 @@ mod tests {
                 model: "auto".to_string(),
                 media_url: "data:image/png;base64,abc".to_string(),
                 user_text: "what is this?".to_string(),
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn media_fallback_hook_calls_audio_trigger_and_injects() {
+        let (policy, executor) = policy_with_recorder(HookDebugConfig::default());
+        let mut request = audio_request(true);
+
+        let outcome = policy.before_chat_completion(&mut request).await.unwrap();
+
+        assert_eq!(outcome, ChatHookOutcome::injected("[media fallback]\n\n"));
+        assert_eq!(
+            executor.calls(),
+            vec![RecordedHookCall::Image {
+                trigger: "audio_no_support".to_string(),
+                model: "auto".to_string(),
+                media_url: "data:audio/wav;base64,abc".to_string(),
+                user_text: "please transcribe this".to_string(),
             }]
         );
     }

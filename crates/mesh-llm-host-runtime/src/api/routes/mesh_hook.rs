@@ -68,11 +68,7 @@ async fn dispatch_hook(state: &MeshApi, payload: Value) -> Value {
     let messages: Vec<Value> = payload["messages"].as_array().cloned().unwrap_or_default();
 
     match hook {
-        "pre_inference" => {
-            let trigger = payload["trigger"].as_str().unwrap_or("unknown");
-            let (image_url, user_text) = virtual_llm::extract_image(&payload);
-            virtual_llm::handle_image(&node, trigger, &model, &image_url, &user_text).await
-        }
+        "pre_inference" => dispatch_pre_inference(&node, &payload, &model).await,
         "post_prefill" => {
             let entropy = payload["signals"]["first_token_entropy"]
                 .as_f64()
@@ -92,5 +88,19 @@ async fn dispatch_hook(state: &MeshApi, payload: Value) -> Value {
             tracing::warn!("mesh hook: unknown hook type: {hook}");
             serde_json::json!({ "action": "none" })
         }
+    }
+}
+
+async fn dispatch_pre_inference(node: &crate::mesh::Node, payload: &Value, model: &str) -> Value {
+    let trigger = payload["trigger"].as_str().unwrap_or("unknown");
+    let (media_url, user_text) = pre_inference_media(payload, trigger);
+    virtual_llm::handle_image(node, trigger, model, &media_url, &user_text).await
+}
+
+fn pre_inference_media(payload: &Value, trigger: &str) -> (String, String) {
+    if trigger == "audio_no_support" {
+        virtual_llm::extract_audio(payload)
+    } else {
+        virtual_llm::extract_image(payload)
     }
 }

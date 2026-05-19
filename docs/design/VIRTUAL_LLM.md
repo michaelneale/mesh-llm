@@ -25,7 +25,7 @@ Before generation starts. Fires when the request has media the model can't handl
 | `images_no_multimodal` | Request has images but model has no mmproj |
 | `audio_no_support` | Request has audio but model can't process it |
 
-When mesh hooks are enabled and the model can't handle images, the content parser strips images to `[image attached]` text (instead of rejecting with a 500 error) and preserves the original image URL as `mesh_image_url` in the messages JSON. The hook detects `mesh_image_url` and fires.
+When mesh hooks are enabled and the model can't handle media, the hook path preserves enough request media to consult a capable peer instead of rejecting the request. Image fallback can use direct `image_url`/`input_image` parts or legacy `mesh_image_url` preservation. Audio fallback can use direct `audio_url`/`input_audio` parts, inline audio `data` + `format` blocks, or legacy `mesh_audio_url` preservation.
 
 **What llama-server sends:**
 ```json
@@ -40,9 +40,9 @@ When mesh hooks are enabled and the model can't handle images, the content parse
 }
 ```
 
-**What mesh-llm does:** Extracts the image URL from `mesh_image_url` in messages, finds a vision-capable peer, sends the image for captioning, returns the caption for injection into the prompt.
+**What mesh-llm does:** Extracts the unsupported media reference from the user message, finds a peer with the required runtime capability, sends the media over the mesh for captioning or audio context extraction, and returns concise text for injection into the prompt.
 
-**Response:** `{"action": "inject", "text": "[Image description: ...]\n\n"}` or `{"action": "none"}`
+**Response:** `{"action": "inject", "text": "[Image description: ...]\n\n"}`, `{"action": "inject", "text": "[Audio context: ...]\n\n"}`, or `{"action": "none"}`
 
 ### Hook 2: Post-prefill
 
@@ -173,6 +173,7 @@ Files modified (all additive to upstream):
 
 | File | Purpose |
 |---|---|
+| `openai-frontend/src/hooks.rs` | Hook-time media extraction from OpenAI chat parts, including audio handoff shapes |
 | `inference/virtual_llm.rs` | Typed handlers: `handle_image`, `handle_uncertain`, `handle_drift`, `get_peer_hint` |
 | `inference/consult.rs` | Peer discovery, fan-out racing, QUIC consultation, recursion guard |
 | `api/routes/mesh_hook.rs` | Route handler — parses JSON, dispatches to typed handlers |

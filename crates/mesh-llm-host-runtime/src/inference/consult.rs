@@ -8,6 +8,7 @@
 //! Three consultation patterns:
 //!
 //! - **Caption** — send an image to a vision-capable peer, get a text description
+//! - **Audio rescue** — send audio to an audio-capable peer, get concise text context
 //! - **Summarize** — send conversation history, get a condensed summary
 //! - **Second opinion** — send the same question to a different model, get its answer
 
@@ -239,6 +240,46 @@ pub async fn caption_image(
     chat_completion(node, peer_id, model, messages, 256, TIMEOUT_CONSULTATION).await
 }
 
+/// Ask an audio-capable peer to extract useful text context from audio.
+/// `audio_url` should be a URL or a data URL accepted by the peer's OpenAI
+/// chat surface.
+pub async fn transcribe_audio(
+    node: &mesh::Node,
+    peer_id: EndpointId,
+    model: &str,
+    audio_url: &str,
+    user_text: &str,
+) -> Result<String> {
+    chat_completion(
+        node,
+        peer_id,
+        model,
+        audio_rescue_messages(audio_url, user_text),
+        512,
+        TIMEOUT_CONSULTATION,
+    )
+    .await
+}
+
+fn audio_rescue_messages(audio_url: &str, user_text: &str) -> Vec<Value> {
+    let prompt = if user_text.is_empty() {
+        "Extract concise text context from this audio. If it contains speech, transcribe the speech. If it contains non-speech audio, describe the audible events. Return only the useful context."
+            .to_string()
+    } else {
+        format!(
+            "The user asked: \"{user_text}\"\n\nExtract concise text context from this audio for a text-only model. If it contains speech, transcribe the relevant speech. If it contains non-speech audio, describe the audible events relevant to the user's request. Return only the useful context."
+        )
+    };
+
+    vec![serde_json::json!({
+        "role": "user",
+        "content": [
+            {"type": "text", "text": prompt},
+            {"type": "input_audio", "input_audio": {"url": audio_url}}
+        ]
+    })]
+}
+
 /// Ask a peer for a second opinion on the user's question.
 ///
 /// Sends only the last user message (not the full conversation) and asks
@@ -406,6 +447,23 @@ mod tests {
         assert_eq!(body["mesh_hooks"], false);
         assert_eq!(body["model"], "vision-model");
         assert_eq!(body["stream"], false);
+    }
+
+    #[test]
+    fn audio_rescue_messages_attach_audio_and_user_prompt() {
+        let messages = audio_rescue_messages("data:audio/wav;base64,abc", "please transcribe this");
+        let body = consultation_request_body("audio-model", messages, 512);
+
+        assert_eq!(body["mesh_hooks"], false);
+        assert_eq!(body["model"], "audio-model");
+        assert_eq!(
+            body["messages"][0]["content"][1]["input_audio"]["url"],
+            "data:audio/wav;base64,abc"
+        );
+        assert!(body["messages"][0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("please transcribe this"));
     }
 
     #[test]

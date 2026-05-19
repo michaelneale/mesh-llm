@@ -258,7 +258,18 @@ fn media_from_part(part: &MessageContentPart, user_text: &str) -> Option<ChatMed
 }
 
 fn media_url(part: &MessageContentPart) -> Option<String> {
-    for key in ["image_url", "input_image", "image", "audio", "video", "url"] {
+    for key in [
+        "image_url",
+        "input_image",
+        "image",
+        "input_audio",
+        "audio",
+        "audio_url",
+        "input_video",
+        "video",
+        "video_url",
+        "url",
+    ] {
         if let Some(value) = part.extra.get(key) {
             if let Some(url) = value.as_str() {
                 return Some(url.to_string());
@@ -266,9 +277,73 @@ fn media_url(part: &MessageContentPart) -> Option<String> {
             if let Some(url) = value.get("url").and_then(Value::as_str) {
                 return Some(url.to_string());
             }
+            if let Some(data_url) = inline_media_data_url(key, value) {
+                return Some(data_url);
+            }
         }
     }
     None
+}
+
+fn inline_media_data_url(container_key: &str, value: &Value) -> Option<String> {
+    let data = value.get("data").and_then(Value::as_str)?;
+    if data.trim_start().starts_with("data:") {
+        return Some(data.to_string());
+    }
+    let mime_type = value
+        .get("mime_type")
+        .or_else(|| value.get("media_type"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| {
+            value
+                .get("format")
+                .and_then(Value::as_str)
+                .and_then(|format| mime_type_from_format(container_key, format))
+                .map(ToString::to_string)
+        })
+        .unwrap_or_else(|| default_media_mime_type(container_key).to_string());
+    Some(format!("data:{mime_type};base64,{data}"))
+}
+
+fn mime_type_from_format(container_key: &str, format: &str) -> Option<&'static str> {
+    let format = format.trim().trim_start_matches('.').to_ascii_lowercase();
+    match format.as_str() {
+        "wav" => Some("audio/wav"),
+        "mp3" => Some("audio/mpeg"),
+        "flac" => Some("audio/flac"),
+        "ogg" | "opus" => Some("audio/ogg"),
+        "webm" if is_audio_container(container_key) => Some("audio/webm"),
+        "webm" => Some("video/webm"),
+        "m4a" | "mp4" if is_audio_container(container_key) => Some("audio/mp4"),
+        "mp4" => Some("video/mp4"),
+        "mpeg" | "mpga" if is_audio_container(container_key) => Some("audio/mpeg"),
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    }
+}
+
+fn default_media_mime_type(container_key: &str) -> &'static str {
+    if is_audio_container(container_key) {
+        "audio/wav"
+    } else if is_video_container(container_key) {
+        "video/mp4"
+    } else {
+        "image/png"
+    }
+}
+
+fn is_audio_container(container_key: &str) -> bool {
+    matches!(container_key, "input_audio" | "audio" | "audio_url")
+}
+
+fn is_video_container(container_key: &str) -> bool {
+    matches!(container_key, "input_video" | "video" | "video_url")
 }
 
 #[cfg(test)]
@@ -359,6 +434,51 @@ mod tests {
         assert_eq!(media.kind, ChatMediaKind::Image);
         assert_eq!(media.url, "data:image/png;base64,abc");
         assert_eq!(media.user_text, "what is this?");
+    }
+
+    #[test]
+    fn first_chat_media_extracts_audio_url_and_user_text() {
+        let request: ChatCompletionRequest = serde_json::from_value(json!({
+            "model": "auto",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "please transcribe this"},
+                    {"type": "audio_url", "audio_url": {"url": "data:audio/wav;base64,abc"}}
+                ]
+            }]
+        }))
+        .unwrap();
+
+        let media = first_chat_media(&request.messages).expect("media");
+
+        assert_eq!(media.kind, ChatMediaKind::Audio);
+        assert_eq!(media.url, "data:audio/wav;base64,abc");
+        assert_eq!(media.user_text, "please transcribe this");
+    }
+
+    #[test]
+    fn first_chat_media_extracts_inline_input_audio_data() {
+        let request: ChatCompletionRequest = serde_json::from_value(json!({
+            "model": "auto",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what does this say?"},
+                    {"type": "input_audio", "input_audio": {
+                        "data": "YWJj",
+                        "format": "wav"
+                    }}
+                ]
+            }]
+        }))
+        .unwrap();
+
+        let media = first_chat_media(&request.messages).expect("media");
+
+        assert_eq!(media.kind, ChatMediaKind::Audio);
+        assert_eq!(media.url, "data:audio/wav;base64,YWJj");
+        assert_eq!(media.user_text, "what does this say?");
     }
 
     #[test]
