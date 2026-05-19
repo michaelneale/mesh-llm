@@ -5364,9 +5364,9 @@ async fn run_auto_start_new_mesh(cli: &Cli, node: &mesh::Node) {
 
 /// Returns true if `run_auto` should spawn the bootstrap proxy.
 ///
-/// The bootstrap proxy binds :9337 immediately and tunnels OpenAI requests to
-/// whichever mesh peer can serve them, so the local API stays usable while this
-/// node's GPU loads the model.
+/// The bootstrap proxy binds the API port and tunnels OpenAI requests to
+/// whichever mesh peer can serve them, so the local API stays usable while
+/// this node's GPU loads its model.
 ///
 /// Historically this gated solely on `cli.join` being non-empty, which worked
 /// because both `--client --auto` and `serve --auto` pushed their discovered
@@ -6707,13 +6707,12 @@ async fn run_auto(
     node.set_requested_models(requested_model_names.clone())
         .await;
 
+    run_auto_join_mesh_phase(&mut cli, &node, &auto_join_candidates).await;
+
     let affinity_router = affinity::AffinityRouter::new();
 
-    // Start bootstrap proxy BEFORE joining. This binds :9337 immediately so the
-    // local API is usable while the QUIC join handshake completes and (for serve
-    // mode) while the GPU loads the model. The proxy reads peers from the node's
-    // gossip state, so it does not need the join to have completed first — it
-    // just needs to know that we intend to tunnel somewhere.
+    // Start bootstrap proxy if we have somewhere to tunnel to. This gives
+    // instant API access via tunnel while our GPU loads.
     let mut bootstrap_listener_tx = start_run_auto_bootstrap_proxy(
         &cli,
         &node,
@@ -6721,8 +6720,6 @@ async fn run_auto(
         &affinity_router,
         &auto_join_candidates,
     );
-
-    run_auto_join_mesh_phase(&mut cli, &node, &auto_join_candidates).await;
 
     let primary_startup_model = startup_models.first().cloned();
 
