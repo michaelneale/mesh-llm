@@ -4,6 +4,11 @@ version = "0.65.1"
 edition = "2021"
 
 [features]
+default = ["web-ui"]
+# Embed the React web console into the binary. Default on so the shipped
+# binary keeps shipping the console; turn off (`--no-default-features`)
+# for a lean variant that drops the embedded UI assets.
+web-ui = ["mesh-llm-host-runtime/web-ui"]
 gpu-bench-cuda = ["mesh-llm-host-runtime/gpu-bench-cuda"]
 gpu-bench-hip = ["mesh-llm-host-runtime/gpu-bench-hip"]
 gpu-bench-intel = ["mesh-llm-host-runtime/gpu-bench-intel"]
@@ -12,7 +17,7 @@ gpu-bench-intel = ["mesh-llm-host-runtime/gpu-bench-intel"]
 workspace = true
 
 [dependencies]
-mesh-llm-host-runtime = { path = "../mesh-llm-host-runtime" }
+mesh-llm-host-runtime = { path = "../mesh-llm-host-runtime", default-features = false }
 tokio = { version = "1", features = ["full"] }
 
 [dev-dependencies]
