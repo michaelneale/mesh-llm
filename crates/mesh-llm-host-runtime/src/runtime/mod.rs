@@ -5368,16 +5368,26 @@ async fn run_auto_start_new_mesh(cli: &Cli, node: &mesh::Node) {
 /// whichever mesh peer can serve them, so the local API stays usable while this
 /// node's GPU loads the model.
 ///
-/// Historically this gated solely on `cli.join` being non-empty, but `serve --auto`
-/// now routes its candidates through a separate `auto_join_candidates` vec
-/// (introduced in 1bd62389). Either signal means "we have somewhere to tunnel
-/// to," so accept both. `--client` always wants the proxy — it has no local
-/// model to fall back to.
+/// Historically this gated solely on `cli.join` being non-empty, which worked
+/// because both `--client --auto` and `serve --auto` pushed their discovered
+/// token into `cli.join`. Commit 1bd62389 changed the serve path to stage
+/// candidates in `auto_join_candidates` instead, leaving `cli.join` empty and
+/// silently disabling the bootstrap proxy for `serve --auto`. Accepting either
+/// signal restores the original contract without changing any other path:
+///
+/// - `--join <token>` (any mode): `cli.join` non-empty → fires (unchanged).
+/// - `--client --auto` with discovery hit: `cli.join` populated by
+///   `handle_auto_decision` → fires (unchanged).
+/// - `serve --auto` with discovery hit: `auto_join_candidates` non-empty,
+///   `cli.join` empty → **now fires** (the fix).
+/// - Anything with no candidates and no join token (bare `mesh-llm`, bare
+///   `--client`, `--auto` with zero discovery results): both empty → does
+///   not fire (unchanged — there is nowhere to tunnel to).
 fn should_start_bootstrap_proxy(
     cli: &Cli,
     auto_join_candidates: &[(String, Option<String>)],
 ) -> bool {
-    !cli.join.is_empty() || !auto_join_candidates.is_empty() || cli.client
+    !cli.join.is_empty() || !auto_join_candidates.is_empty()
 }
 
 fn start_run_auto_bootstrap_proxy(
@@ -9740,10 +9750,22 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_proxy_gate_fires_for_client_with_no_candidates() {
-        // --client has no local model to fall back to, so we always want the
-        // bootstrap proxy listening even before discovery turns up a peer.
+    fn bootstrap_proxy_gate_does_not_fire_for_client_auto_with_no_candidates() {
+        // --client --auto with zero discovery results: nothing to tunnel to.
+        // This matches the pre-1bd62389 behavior — the gate stays closed
+        // until discovery turns up a peer, at which point handle_auto_decision
+        // populates cli.join and the gate fires on the next pass through
+        // run_auto. We don't pre-bind the proxy speculatively for --client.
         let cli = Cli::parse_from(["mesh-llm", "--client", "--auto"]);
+        assert!(!should_start_bootstrap_proxy(&cli, &[]));
+    }
+
+    #[test]
+    fn bootstrap_proxy_gate_fires_for_client_auto_with_join_populated() {
+        // --client --auto with a successful discovery hit: handle_auto_decision
+        // pushed the token into cli.join, so the gate fires (unchanged from
+        // pre-regression behavior).
+        let cli = Cli::parse_from(["mesh-llm", "--client", "--auto", "--join", "tok-x"]);
         assert!(should_start_bootstrap_proxy(&cli, &[]));
     }
 
