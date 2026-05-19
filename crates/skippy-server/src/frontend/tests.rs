@@ -1423,8 +1423,49 @@ fn omitted_max_tokens_can_use_remaining_context_budget() {
 }
 
 #[test]
-fn configured_default_max_tokens_remains_explicit() {
-    let limit = GenerationTokenLimit::from_request(None, 4);
+fn omitted_max_tokens_with_embedded_default_is_bounded() {
+    // Server picked DEFAULT_EMBEDDED_MAX_TOKENS as the cap because the
+    // client omitted max_tokens. With a large ctx window the cap is
+    // the binding limit.
+    let limit = GenerationTokenLimit::from_request(None, DEFAULT_EMBEDDED_MAX_TOKENS);
+    let ctx_size = 32_000;
+    let resolved = limit.resolve(128, ctx_size).unwrap();
+    assert_eq!(resolved, DEFAULT_EMBEDDED_MAX_TOKENS);
+    assert!((resolved as usize) < ctx_size);
+}
+
+#[test]
+fn omitted_max_tokens_clamps_to_remaining_budget_in_small_ctx() {
+    // When the configured ctx_size is smaller than the server-picked
+    // default, the omitted-max_tokens path must clamp to remaining
+    // budget rather than reject the request. The client didn't ask
+    // for the specific number; the server picked it.
+    let limit = GenerationTokenLimit::from_request(None, DEFAULT_EMBEDDED_MAX_TOKENS);
+    let ctx_size = 1024;
+    let prompt_tokens = 128;
+    let resolved = limit.resolve(prompt_tokens, ctx_size).unwrap();
+    assert_eq!(resolved, (ctx_size - prompt_tokens) as u32);
+    assert!(resolved < DEFAULT_EMBEDDED_MAX_TOKENS);
+}
+
+#[test]
+fn omitted_max_tokens_errors_only_when_prompt_already_exceeds_ctx() {
+    // Even on the silently-clamping default path, a prompt that
+    // already overflows the context window is an error the client
+    // needs to see.
+    let limit = GenerationTokenLimit::from_request(None, DEFAULT_EMBEDDED_MAX_TOKENS);
+    let error = limit.resolve(2048, 1024).unwrap_err();
+    assert_eq!(
+        error.body().error.code.as_deref(),
+        Some("context_length_exceeded")
+    );
+}
+
+#[test]
+fn explicit_max_tokens_still_errors_when_too_large_for_ctx() {
+    // Client-asserted max_tokens that won't fit is still a hard error.
+    // The clamping behavior applies only to the server-picked default.
+    let limit = GenerationTokenLimit::from_request(Some(4), 999);
     assert_eq!(limit.resolve(4, 8).unwrap(), 4);
 
     let error = limit.resolve(5, 8).unwrap_err();
