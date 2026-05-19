@@ -41,6 +41,8 @@ jobs:
       backend_changed: ${{ steps.compute.outputs.backend_changed }}
       sdk_smoke_required: ${{ steps.compute.outputs.sdk_smoke_required }}
       ui_dist_cache_key: ${{ steps.ui_key.outputs.ui_dist_cache_key }}
+      linux_inference_artifact_required: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.rust == 'true' || steps.filter.outputs.ui == 'true' }}
+      macos_inference_artifact_required: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.rust == 'true' || steps.filter.outputs.ui == 'true' || steps.filter.outputs.benchmarks == 'true' }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -510,7 +512,7 @@ jobs:
 
   inference_smoke_tests:
     needs: [changes, linux_targets]
-    if: ${{ needs.linux_targets.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.all_rust == 'true' || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'skippy-server') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'skippy-runtime') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'openai-frontend') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'model-artifact')) && needs.changes.outputs.docs_only != 'true' }}
+    if: ${{ needs.linux_targets.result == 'success' && needs.changes.outputs.linux_inference_artifact_required == 'true' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.all_rust == 'true' || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'skippy-server') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'skippy-runtime') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'openai-frontend') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'model-artifact')) && needs.changes.outputs.docs_only != 'true' }}
     uses: ./.github/workflows/smoke.yml
     with:
       artifact_name: ci-linux-inference-binaries
@@ -565,7 +567,7 @@ jobs:
 
   two_node_client_serving_smoke:
     needs: [changes, linux_targets]
-    if: ${{ needs.linux_targets.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.all_rust == 'true' || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'openai-frontend') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm-client')) && needs.changes.outputs.docs_only != 'true' }}
+    if: ${{ needs.linux_targets.result == 'success' && needs.changes.outputs.linux_inference_artifact_required == 'true' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.all_rust == 'true' || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'openai-frontend') || contains(fromJson(needs.changes.outputs.affected_crates || '[]'), 'mesh-llm-client')) && needs.changes.outputs.docs_only != 'true' }}
     uses: ./.github/workflows/scripted-binary-smoke.yml
     with:
       artifact_name: ci-linux-inference-binaries
@@ -577,7 +579,7 @@ jobs:
 
   native_sdk_smoke:
     needs: [changes, linux_targets]
-    if: ${{ needs.linux_targets.result == 'success' && needs.changes.outputs.sdk_smoke_required == 'true' && needs.changes.outputs.docs_only != 'true' }}
+    if: ${{ needs.linux_targets.result == 'success' && needs.changes.outputs.linux_inference_artifact_required == 'true' && needs.changes.outputs.sdk_smoke_required == 'true' && needs.changes.outputs.docs_only != 'true' }}
     uses: ./.github/workflows/sdk-smoke.yml
     with:
       sdk_kind: native
@@ -589,7 +591,7 @@ jobs:
 
   kotlin_sdk_smoke:
     needs: [changes, linux_targets]
-    if: ${{ needs.linux_targets.result == 'success' && needs.changes.outputs.sdk_smoke_required == 'true' && needs.changes.outputs.docs_only != 'true' }}
+    if: ${{ needs.linux_targets.result == 'success' && needs.changes.outputs.linux_inference_artifact_required == 'true' && needs.changes.outputs.sdk_smoke_required == 'true' && needs.changes.outputs.docs_only != 'true' }}
     uses: ./.github/workflows/sdk-smoke.yml
     with:
       sdk_kind: kotlin
@@ -601,7 +603,7 @@ jobs:
 
   swift_sdk_smoke:
     needs: [changes, macos_targets]
-    if: ${{ needs.macos_targets.result == 'success' && needs.changes.outputs.sdk_smoke_required == 'true' && needs.changes.outputs.docs_only != 'true' }}
+    if: ${{ needs.macos_targets.result == 'success' && needs.changes.outputs.macos_inference_artifact_required == 'true' && needs.changes.outputs.sdk_smoke_required == 'true' && needs.changes.outputs.docs_only != 'true' }}
     uses: ./.github/workflows/sdk-smoke.yml
     with:
       sdk_kind: swift
