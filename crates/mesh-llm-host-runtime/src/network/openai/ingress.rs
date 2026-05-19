@@ -543,19 +543,9 @@ async fn maybe_handle_control_request(
         return Ok(());
     }
 
-    let path = request
-        .path
-        .split('?')
-        .next()
-        .unwrap_or(&request.path)
-        .to_string();
+    let path = request.path.split('?').next().unwrap_or(&request.path);
     if request.method == "POST" && path == "/mesh/load" {
         handle_mesh_load_request(tcp_stream, request, ctx.control_tx).await;
-        return Ok(());
-    }
-
-    if proxy::is_drop_request(&request.method, &request.path) {
-        handle_mesh_unload_request(tcp_stream, request, ctx.control_tx).await;
         return Ok(());
     }
 
@@ -597,6 +587,11 @@ async fn handle_buffered_api_request(
     let callable = callable_models_with_local_served(ctx.route.targets, local_models);
     let descriptors = ctx.route.node.served_model_descriptors().await;
     proxy::rewrite_public_model_alias(&mut request, &callable, &descriptors);
+
+    if proxy::is_drop_request(&request.method, &request.path) {
+        handle_mesh_unload_request(tcp_stream, &request, ctx.control_tx).await;
+        return;
+    }
 
     let decision = match prepare_auto_route_decision(&mut request, &ctx.route, &descriptors).await {
         Ok(decision) => decision,
