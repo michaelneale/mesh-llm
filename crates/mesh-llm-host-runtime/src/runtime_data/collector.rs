@@ -37,7 +37,7 @@ use crate::network::metrics::RoutingCollectorSnapshot;
 use crate::plugin::PluginEndpointSummary;
 use crate::runtime::instance::LocalInstanceSnapshot;
 use crate::runtime::wakeable::{WakeableInventoryEntry, WakeableState};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::watch;
 
@@ -395,11 +395,11 @@ impl RuntimeDataCollector {
         }
     }
 
-    pub(crate) fn build_model_view(&self, input: ModelViewInput) -> ModelViewSnapshot {
+    pub(crate) fn build_model_view(&self, mut input: ModelViewInput) -> ModelViewSnapshot {
         let routing_metrics_by_model = self.routing_snapshot().models;
-        let local_model_names = input.local_inventory.model_names;
-        let mut metadata_by_name = input.local_inventory.metadata_by_name;
-        let mut size_by_name = input.local_inventory.size_by_name;
+        let local_model_names = std::mem::take(&mut input.local_inventory.model_names);
+        let mut metadata_by_name = std::mem::take(&mut input.local_inventory.metadata_by_name);
+        let mut size_by_name = std::mem::take(&mut input.local_inventory.size_by_name);
         for peer in &input.peers {
             for meta in &peer.available_model_metadata {
                 metadata_by_name
@@ -411,7 +411,7 @@ impl RuntimeDataCollector {
             }
         }
 
-        let mut catalog = input.catalog;
+        let mut catalog = std::mem::take(&mut input.catalog);
         let mut catalog_names = catalog
             .iter()
             .map(|entry| entry.model_name.clone())
@@ -430,266 +430,16 @@ impl RuntimeDataCollector {
             });
         }
 
+        let build_ctx = ModelViewBuildContext {
+            input: &input,
+            routing_metrics_by_model: &routing_metrics_by_model,
+            local_model_names: &local_model_names,
+            metadata_by_name: &metadata_by_name,
+            size_by_name: &size_by_name,
+        };
         let models = catalog
             .iter()
-            .map(|entry| {
-                let name = &entry.model_name;
-                let descriptor = entry.descriptor.as_ref();
-                let identity = descriptor.map(|descriptor| &descriptor.identity);
-                let catalog_entry = find_catalog_model(name);
-                let is_warm = input.served_models.iter().any(|served| served == name);
-                let local_known = local_model_names.contains(name)
-                    || input.my_hosted_models.iter().any(|s| s == name)
-                    || input.my_serving_models.iter().any(|s| s == name)
-                    || name == &input.model_name;
-                let display_name = crate::models::installed_model_display_name(name);
-                let route_stats = is_warm.then(|| {
-                    http_route_stats(
-                        name,
-                        &input.peers,
-                        &input.my_hosted_models,
-                        input.node_hostname.as_deref(),
-                        input.my_vram_gb,
-                    )
-                });
-                let node_count = route_stats
-                    .as_ref()
-                    .map(|stats| stats.node_count)
-                    .unwrap_or(0);
-                let active_nodes = route_stats
-                    .as_ref()
-                    .map(|stats| stats.active_nodes.clone())
-                    .unwrap_or_default();
-                let mesh_vram_gb = route_stats
-                    .as_ref()
-                    .map(|stats| stats.mesh_vram_gb)
-                    .unwrap_or(0.0);
-                let size_gb = if name == &input.model_name && input.model_size_bytes > 0 {
-                    input.model_size_bytes as f64 / 1e9
-                } else {
-                    size_by_name
-                        .get(name)
-                        .map(|size| *size as f64 / 1e9)
-                        .unwrap_or_else(|| {
-                            crate::models::catalog::parse_size_gb(
-                                catalog_entry
-                                    .as_ref()
-                                    .and_then(|m| m.size.as_deref())
-                                    .unwrap_or("0"),
-                            )
-                        })
-                };
-                let (request_count, last_active_secs_ago) = match input.active_demand.get(name) {
-                    Some(demand) => (
-                        Some(demand.request_count),
-                        Some(input.now_unix_secs.saturating_sub(demand.last_active)),
-                    ),
-                    None => (None, None),
-                };
-                let routing_metrics = routing_metrics_by_model.get(name).cloned();
-                let mut capabilities = descriptor
-                    .filter(|descriptor| descriptor.capabilities_known)
-                    .map(|descriptor| descriptor.capabilities)
-                    .unwrap_or_else(|| {
-                        if local_known {
-                            crate::models::installed_model_capabilities(name)
-                        } else {
-                            crate::models::ModelCapabilities::default()
-                        }
-                    });
-                if local_known
-                    && likely_reasoning_model(
-                        name,
-                        catalog_entry
-                            .as_ref()
-                            .and_then(|m| m.description.as_deref()),
-                    )
-                {
-                    capabilities.reasoning = capabilities
-                        .reasoning
-                        .max(crate::models::capabilities::CapabilityLevel::Likely);
-                }
-                if local_known
-                    && !descriptor
-                        .map(|descriptor| descriptor.capabilities_known)
-                        .unwrap_or(false)
-                    && likely_vision_model(
-                        name,
-                        catalog_entry
-                            .as_ref()
-                            .and_then(|m| m.description.as_deref()),
-                    )
-                {
-                    capabilities.vision = capabilities
-                        .vision
-                        .max(crate::models::capabilities::CapabilityLevel::Likely);
-                    capabilities.multimodal = true;
-                }
-                if local_known
-                    && !descriptor
-                        .map(|descriptor| descriptor.capabilities_known)
-                        .unwrap_or(false)
-                    && likely_audio_model(
-                        name,
-                        catalog_entry
-                            .as_ref()
-                            .and_then(|m| m.description.as_deref()),
-                    )
-                {
-                    capabilities.audio = capabilities
-                        .audio
-                        .max(crate::models::capabilities::CapabilityLevel::Likely);
-                    capabilities.multimodal = true;
-                }
-                let multimodal = capabilities.supports_multimodal_runtime();
-                let multimodal_status = if multimodal || capabilities.multimodal_label().is_some() {
-                    Some(capabilities.multimodal_status())
-                } else {
-                    None
-                };
-                let vision = capabilities.supports_vision_runtime();
-                let vision_status = if vision || capabilities.vision_label().is_some() {
-                    Some(capabilities.vision_status())
-                } else {
-                    None
-                };
-                let audio = matches!(
-                    capabilities.audio,
-                    crate::models::capabilities::CapabilityLevel::Supported
-                        | crate::models::capabilities::CapabilityLevel::Likely
-                );
-                let audio_status = if audio || capabilities.audio_label().is_some() {
-                    Some(capabilities.audio_status())
-                } else {
-                    None
-                };
-                let reasoning = matches!(
-                    capabilities.reasoning,
-                    crate::models::capabilities::CapabilityLevel::Supported
-                        | crate::models::capabilities::CapabilityLevel::Likely
-                );
-                let reasoning_status = if reasoning || capabilities.reasoning_label().is_some() {
-                    Some(capabilities.reasoning_status())
-                } else {
-                    None
-                };
-                let tool_use = capabilities.tool_use_label().is_some();
-                let tool_use_status = capabilities
-                    .tool_use_label()
-                    .map(|_| capabilities.tool_use_status());
-                let description = catalog_entry.as_ref().and_then(|m| m.description.clone());
-                let metadata = metadata_by_name.get(name);
-                let architecture = metadata
-                    .map(|m| m.architecture.trim())
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string);
-                let context_length = metadata
-                    .map(|m| m.context_length)
-                    .filter(|value| *value > 0);
-                let quantization = metadata
-                    .map(|m| m.quantization_type.trim())
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string)
-                    .or_else(|| {
-                        catalog_entry
-                            .as_ref()
-                            .map(|m| m.file.clone())
-                            .and_then(|file| {
-                                let quant = file
-                                    .strip_suffix(".gguf")
-                                    .map(crate::models::inventory::derive_quantization_type)
-                                    .filter(|q| !q.is_empty())?;
-                                Some(quant)
-                            })
-                    });
-                let draft_model = catalog_entry
-                    .as_ref()
-                    .and_then(crate::models::remote_catalog_model_draft_ref);
-                let source_page_url =
-                    identity
-                        .and_then(source_page_url_from_identity)
-                        .or_else(|| {
-                            if local_known {
-                                catalog_entry
-                                    .as_ref()
-                                    .map(|m| format!("https://huggingface.co/{}", m.source_repo()))
-                            } else {
-                                None
-                            }
-                        });
-                let source_ref = identity
-                    .and_then(huggingface_repository_from_identity)
-                    .or_else(|| {
-                        source_page_url
-                            .as_deref()
-                            .map(|url| url.replace("https://huggingface.co/", ""))
-                    });
-                let source_revision = identity.and_then(|identity| identity.revision.clone());
-                let source_file = identity.and_then(source_file_from_identity).or_else(|| {
-                    if local_known {
-                        catalog_entry.as_ref().map(|m| m.file.clone())
-                    } else {
-                        None
-                    }
-                });
-                let command_ref = identity
-                    .and_then(|identity| identity.canonical_ref.clone())
-                    .or_else(|| {
-                        if local_known {
-                            catalog_entry
-                                .as_ref()
-                                .map(crate::models::remote_catalog_model_ref)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or_else(|| name.clone());
-                let (fit_label, fit_detail) = fit_hint_for_machine(size_gb, input.my_vram_gb);
-
-                MeshModelPayload {
-                    name: name.clone(),
-                    display_name,
-                    status: if is_warm {
-                        "warm".into()
-                    } else {
-                        "cold".into()
-                    },
-                    node_count,
-                    mesh_vram_gb,
-                    size_gb,
-                    architecture,
-                    context_length,
-                    quantization,
-                    description,
-                    multimodal,
-                    multimodal_status,
-                    vision,
-                    vision_status,
-                    audio,
-                    audio_status,
-                    reasoning,
-                    reasoning_status,
-                    tool_use,
-                    tool_use_status,
-                    draft_model,
-                    request_count,
-                    last_active_secs_ago,
-                    target_rank: None,
-                    explicit_interest_count: None,
-                    wanted: None,
-                    routing_metrics,
-                    source_page_url,
-                    source_ref,
-                    source_revision,
-                    source_file,
-                    active_nodes,
-                    fit_label,
-                    fit_detail,
-                    download_command: format!("mesh-llm models download {}", command_ref),
-                    run_command: format!("mesh-llm serve --model {}", command_ref),
-                    auto_command: format!("mesh-llm serve --auto --model {}", command_ref),
-                }
-            })
+            .map(|entry| build_model_payload_from_catalog_entry(entry, &build_ctx))
             .collect();
 
         ModelViewSnapshot { models }
@@ -731,6 +481,298 @@ impl RuntimeDataCollector {
 
         changed
     }
+}
+
+struct ModelViewBuildContext<'a> {
+    input: &'a ModelViewInput,
+    routing_metrics_by_model:
+        &'a HashMap<String, crate::network::metrics::ModelRoutingMetricsSnapshot>,
+    local_model_names: &'a HashSet<String>,
+    metadata_by_name: &'a HashMap<String, crate::proto::node::CompactModelMetadata>,
+    size_by_name: &'a HashMap<String, u64>,
+}
+
+fn build_model_payload_from_catalog_entry(
+    entry: &mesh::MeshCatalogEntry,
+    ctx: &ModelViewBuildContext<'_>,
+) -> MeshModelPayload {
+    let input = ctx.input;
+    let name = &entry.model_name;
+    let descriptor = entry.descriptor.as_ref();
+    let identity = descriptor.map(|descriptor| &descriptor.identity);
+    let catalog_entry = find_catalog_model(name);
+    let is_warm = input.served_models.iter().any(|served| served == name);
+    let local_known = ctx.local_model_names.contains(name)
+        || input.my_hosted_models.iter().any(|served| served == name)
+        || input.my_serving_models.iter().any(|served| served == name)
+        || name == &input.model_name;
+    let display_name = crate::models::installed_model_display_name(name);
+    let route_stats = is_warm.then(|| {
+        http_route_stats(
+            name,
+            &input.peers,
+            &input.my_hosted_models,
+            input.node_hostname.as_deref(),
+            input.my_vram_gb,
+        )
+    });
+    let node_count = route_stats
+        .as_ref()
+        .map(|stats| stats.node_count)
+        .unwrap_or(0);
+    let active_nodes = route_stats
+        .as_ref()
+        .map(|stats| stats.active_nodes.clone())
+        .unwrap_or_default();
+    let mesh_vram_gb = route_stats
+        .as_ref()
+        .map(|stats| stats.mesh_vram_gb)
+        .unwrap_or(0.0);
+    let size_gb = model_size_gb_for_view(name, &catalog_entry, ctx, input);
+    let (request_count, last_active_secs_ago) = match input.active_demand.get(name) {
+        Some(demand) => (
+            Some(demand.request_count),
+            Some(input.now_unix_secs.saturating_sub(demand.last_active)),
+        ),
+        None => (None, None),
+    };
+    let routing_metrics = ctx.routing_metrics_by_model.get(name).cloned();
+    let capabilities =
+        model_capabilities_for_view(name, descriptor, catalog_entry.as_ref(), local_known);
+    let description = catalog_entry
+        .as_ref()
+        .and_then(|model| model.description.clone());
+    let metadata = ctx.metadata_by_name.get(name);
+    let architecture = metadata
+        .map(|m| m.architecture.trim())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let context_length = metadata
+        .map(|m| m.context_length)
+        .filter(|value| *value > 0);
+    let quantization = model_quantization_for_view(metadata, catalog_entry.as_ref());
+    let draft_model = catalog_entry
+        .as_ref()
+        .and_then(crate::models::remote_catalog_model_draft_ref);
+    let source_page_url = model_source_page_url(identity, catalog_entry.as_ref(), local_known);
+    let source_ref = identity
+        .and_then(huggingface_repository_from_identity)
+        .or_else(|| {
+            source_page_url
+                .as_deref()
+                .map(|url| url.replace("https://huggingface.co/", ""))
+        });
+    let source_revision = identity.and_then(|identity| identity.revision.clone());
+    let source_file = identity.and_then(source_file_from_identity).or_else(|| {
+        local_known
+            .then(|| catalog_entry.as_ref().map(|model| model.file.clone()))
+            .flatten()
+    });
+    let command_ref = identity
+        .and_then(|identity| identity.canonical_ref.clone())
+        .or_else(|| {
+            local_known
+                .then(|| {
+                    catalog_entry
+                        .as_ref()
+                        .map(crate::models::remote_catalog_model_ref)
+                })
+                .flatten()
+        })
+        .unwrap_or_else(|| name.clone());
+    let (fit_label, fit_detail) = fit_hint_for_machine(size_gb, input.my_vram_gb);
+    let capability_view = model_capability_view(&capabilities);
+
+    MeshModelPayload {
+        name: name.clone(),
+        display_name,
+        status: if is_warm {
+            "warm".into()
+        } else {
+            "cold".into()
+        },
+        node_count,
+        mesh_vram_gb,
+        size_gb,
+        architecture,
+        context_length,
+        quantization,
+        description,
+        multimodal: capability_view.multimodal,
+        multimodal_status: capability_view.multimodal_status,
+        vision: capability_view.vision,
+        vision_status: capability_view.vision_status,
+        audio: capability_view.audio,
+        audio_status: capability_view.audio_status,
+        reasoning: capability_view.reasoning,
+        reasoning_status: capability_view.reasoning_status,
+        tool_use: capability_view.tool_use,
+        tool_use_status: capability_view.tool_use_status,
+        draft_model,
+        request_count,
+        last_active_secs_ago,
+        target_rank: None,
+        explicit_interest_count: None,
+        wanted: None,
+        routing_metrics,
+        source_page_url,
+        source_ref,
+        source_revision,
+        source_file,
+        active_nodes,
+        fit_label,
+        fit_detail,
+        download_command: format!("mesh-llm models download {}", command_ref),
+        run_command: format!("mesh-llm serve --model {}", command_ref),
+        auto_command: format!("mesh-llm serve --auto --model {}", command_ref),
+    }
+}
+
+fn model_size_gb_for_view(
+    name: &str,
+    catalog_entry: &Option<crate::models::remote_catalog::RemoteCatalogModel>,
+    ctx: &ModelViewBuildContext<'_>,
+    input: &ModelViewInput,
+) -> f64 {
+    if name == input.model_name && input.model_size_bytes > 0 {
+        input.model_size_bytes as f64 / 1e9
+    } else {
+        ctx.size_by_name
+            .get(name)
+            .map(|size| *size as f64 / 1e9)
+            .unwrap_or_else(|| {
+                crate::models::catalog::parse_size_gb(
+                    catalog_entry
+                        .as_ref()
+                        .and_then(|model| model.size.as_deref())
+                        .unwrap_or("0"),
+                )
+            })
+    }
+}
+
+fn model_capabilities_for_view(
+    name: &str,
+    descriptor: Option<&mesh::ServedModelDescriptor>,
+    catalog_entry: Option<&crate::models::remote_catalog::RemoteCatalogModel>,
+    local_known: bool,
+) -> crate::models::ModelCapabilities {
+    let mut capabilities = descriptor
+        .filter(|descriptor| descriptor.capabilities_known)
+        .map(|descriptor| descriptor.capabilities)
+        .unwrap_or_else(|| {
+            if local_known {
+                crate::models::installed_model_capabilities(name)
+            } else {
+                crate::models::ModelCapabilities::default()
+            }
+        });
+    let description = catalog_entry.and_then(|model| model.description.as_deref());
+    let capabilities_known = descriptor
+        .map(|descriptor| descriptor.capabilities_known)
+        .unwrap_or(false);
+    if local_known && likely_reasoning_model(name, description) {
+        capabilities.reasoning = capabilities
+            .reasoning
+            .max(crate::models::capabilities::CapabilityLevel::Likely);
+    }
+    if local_known && !capabilities_known && likely_vision_model(name, description) {
+        capabilities.vision = capabilities
+            .vision
+            .max(crate::models::capabilities::CapabilityLevel::Likely);
+        capabilities.multimodal = true;
+    }
+    if local_known && !capabilities_known && likely_audio_model(name, description) {
+        capabilities.audio = capabilities
+            .audio
+            .max(crate::models::capabilities::CapabilityLevel::Likely);
+        capabilities.multimodal = true;
+    }
+    capabilities
+}
+
+struct ModelCapabilityView {
+    multimodal: bool,
+    multimodal_status: Option<&'static str>,
+    vision: bool,
+    vision_status: Option<&'static str>,
+    audio: bool,
+    audio_status: Option<&'static str>,
+    reasoning: bool,
+    reasoning_status: Option<&'static str>,
+    tool_use: bool,
+    tool_use_status: Option<&'static str>,
+}
+
+fn model_capability_view(capabilities: &crate::models::ModelCapabilities) -> ModelCapabilityView {
+    let multimodal = capabilities.supports_multimodal_runtime();
+    let vision = capabilities.supports_vision_runtime();
+    let audio = matches!(
+        capabilities.audio,
+        crate::models::capabilities::CapabilityLevel::Supported
+            | crate::models::capabilities::CapabilityLevel::Likely
+    );
+    let reasoning = matches!(
+        capabilities.reasoning,
+        crate::models::capabilities::CapabilityLevel::Supported
+            | crate::models::capabilities::CapabilityLevel::Likely
+    );
+    let tool_use = capabilities.tool_use_label().is_some();
+    ModelCapabilityView {
+        multimodal,
+        multimodal_status: (multimodal || capabilities.multimodal_label().is_some())
+            .then_some(capabilities.multimodal_status()),
+        vision,
+        vision_status: (vision || capabilities.vision_label().is_some())
+            .then_some(capabilities.vision_status()),
+        audio,
+        audio_status: (audio || capabilities.audio_label().is_some())
+            .then_some(capabilities.audio_status()),
+        reasoning,
+        reasoning_status: (reasoning || capabilities.reasoning_label().is_some())
+            .then_some(capabilities.reasoning_status()),
+        tool_use,
+        tool_use_status: capabilities
+            .tool_use_label()
+            .map(|_| capabilities.tool_use_status()),
+    }
+}
+
+fn model_quantization_for_view(
+    metadata: Option<&crate::proto::node::CompactModelMetadata>,
+    catalog_entry: Option<&crate::models::remote_catalog::RemoteCatalogModel>,
+) -> Option<String> {
+    metadata
+        .map(|m| m.quantization_type.trim())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            catalog_entry
+                .map(|model| model.file.clone())
+                .and_then(|file| {
+                    let quant = file
+                        .strip_suffix(".gguf")
+                        .map(crate::models::inventory::derive_quantization_type)
+                        .filter(|value| !value.is_empty())?;
+                    Some(quant)
+                })
+        })
+}
+
+fn model_source_page_url(
+    identity: Option<&mesh::ServedModelIdentity>,
+    catalog_entry: Option<&crate::models::remote_catalog::RemoteCatalogModel>,
+    local_known: bool,
+) -> Option<String> {
+    identity
+        .and_then(source_page_url_from_identity)
+        .or_else(|| {
+            if local_known {
+                catalog_entry.map(|model| format!("https://huggingface.co/{}", model.source_repo()))
+            } else {
+                None
+            }
+        })
 }
 
 fn build_llama_runtime_items(
