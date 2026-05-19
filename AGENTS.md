@@ -4,6 +4,8 @@
 
 This repo (`mesh-llm`) contains mesh-llm — a Rust binary that pools GPUs over QUIC for distributed LLM inference using llama.cpp.
 
+The workspace is split across many crates under `crates/`. The shipped binary `mesh-llm` is a thin shim (`crates/mesh-llm/`) that re-exports `mesh-llm-host-runtime`, where the bulk of host-side logic lives. A lighter parallel crate `mesh-client` (`mesh-llm-client`) carries the same domain shape for client-only usage. Embedded llama.cpp staged-runtime support lives in the `skippy-*` crates.
+
 ## Key Docs
 
 | Doc | What it covers |
@@ -71,41 +73,70 @@ libraries. The only durable llama.cpp patch queue is
   `scripts/build-llama.sh`, `scripts/update-llama-pin.sh`, and
   `scripts/summarize-llama-upstream.sh`.
 
-## Project Structure
+## Workspace Crates
 
-- `crates/mesh-llm/src/` — Rust source
-- `crates/mesh-llm-ui/` — React web console and embedded asset crate (shadcn/ui patterns, see https://ui.shadcn.com/llms.txt)
-- `docs/` — Project docs, grouped by topic
-- `docs/design/` — Architecture, protocol, and testing docs
-- `docs/moe/` — MoE ranking, placement, and CLI plans
-- `docs/plugins/` — Plugin architecture docs and plans
-- `fly/` — Fly.io deployment (console + API client apps)
-- `tools/relay-fly-legacy/` — Archived self-hosted iroh relay reference; production uses services.iroh.computer
-- `evals/` — Benchmarking and evaluation scripts
+The workspace lives under `crates/`. The most important crates:
+
+- `mesh-llm/` — shipped binary; thin shim with `main.rs` building the Tokio runtime and `lib.rs` re-exporting `mesh-llm-host-runtime`. Almost no domain code here.
+- `mesh-llm-host-runtime/` — the host-side monolith. Owns runtime orchestration, mesh, inference, networking, API, CLI, plugins, models, system integration. This is where most changes land.
+- `mesh-client/` (`mesh-llm-client`) — lighter parallel client surface with its own `inference/`, `network/`, `models/`, `mesh/` modules. Used as a dev/test surface and for client-only deployments.
+- `mesh-llm-ui/` — React web console and embedded asset crate (shadcn/ui patterns, see https://ui.shadcn.com/llms.txt).
+- `mesh-llm-types/` — shared model/capability types used across crates.
+- `mesh-llm-protocol/` — wire protocol types and protobuf bindings.
+- `mesh-llm-routing/` — routing primitives shared across host and client.
+- `mesh-llm-system/` — machine-local hardware, benchmark, autoupdate, process helpers.
+- `mesh-llm-plugin/` — plugin runtime/DSL primitives.
+- `mesh-llm-identity/` — identity primitives.
+- `mesh-api/`, `mesh-api-ffi/` — management API surface and FFI bindings.
+- `mesh-host-core/` — minimal shared host core.
+- `openai-frontend/` — OpenAI-compatible HTTP frontend (chat, completions, responses, models).
+- `model-artifact/`, `model-hf/`, `model-package/`, `model-ref/`, `model-resolver/` — model catalog, HuggingFace download, packaging, reference resolution.
+- `skippy-ffi/` — Rust ABI bindings to the patched llama.cpp staged runtime.
+- `skippy-runtime/` — Rust-side staged runtime, package materialization, model info.
+- `skippy-server/` — embedded staged-runtime serving (frontend, binary transport, runtime state, embedded HTTP).
+- `skippy-protocol/`, `skippy-topology/`, `skippy-coordinator/`, `skippy-cache/`, `skippy-prompt/`, `skippy-metrics/`, `skippy-bench/`, `skippy-correctness/`, `skippy-model-package/` — supporting skippy infrastructure.
+- `metrics-server/` — standalone metrics collector binary.
+- `mesh-llm-gpu-bench/`, `llama-spec-bench/`, `mesh-llm-test-harness/` — benchmarking and test harness binaries.
+
+Other top-level directories:
+
+- `docs/` — Project docs, grouped by topic.
+- `docs/design/` — Architecture, protocol, and testing docs.
+- `docs/moe/` — MoE ranking, placement, and CLI plans.
+- `docs/plugins/` — Plugin architecture docs and plans.
+- `fly/` — Fly.io deployment (console + API client apps).
+- `tools/relay-fly-legacy/` — Archived self-hosted iroh relay reference; production uses services.iroh.computer.
+- `evals/` — Benchmarking and evaluation scripts.
+- `third_party/llama.cpp/patches/` — durable llama.cpp patch queue, pinned by `upstream.txt`.
 
 ## Module Structure Rules
 
-The crate root should stay minimal.
+These rules apply primarily inside `crates/mesh-llm-host-runtime/src/` (the main host monolith), and by analogy inside `crates/mesh-client/src/`. New peer crates should still follow the semantic-ownership principles below.
 
-- Keep `crates/mesh-llm/src/lib.rs` and `crates/mesh-llm/src/main.rs` as the only root `.rs` files unless there is a strong reason otherwise.
+The host-runtime crate root should stay minimal.
+
+- Keep `crates/mesh-llm-host-runtime/src/lib.rs` slim — it is a small entry point, not a junk drawer.
 - New code should go into an existing domain directory when possible.
 
-Use semantic ownership for module placement.
+Use semantic ownership for module placement. Inside `crates/mesh-llm-host-runtime/src/`:
 
-- `crates/mesh-llm/src/cli/` — Clap types, command parsing, command dispatch, and user-facing command handlers.
-- `crates/mesh-llm/src/runtime/` — top-level process orchestration and startup/runtime coordination.
-- `crates/mesh-llm/src/network/` — request routing, proxying, tunneling, relay/discovery networking, request-affinity logic, and endpoint rewrite support.
-- `crates/mesh-llm/src/inference/` — model-serving logic, election, launch, pipeline, and MoE behavior.
-- `crates/mesh-llm/src/system/` — machine-local environment and platform concerns such as hardware detection, benchmarking, self-update, and local system integration.
-- `crates/mesh-llm/src/models/` — model catalog, resolution, downloads, local model storage, and model metadata.
-- `crates/mesh-llm/src/mesh/` — peer membership, gossip, identity, peer state, and mesh node behavior.
-- `crates/mesh-llm/src/plugin/` — plugin host, plugin runtime, transport, config, and MCP bridge support.
-- `crates/mesh-llm/src/api/` — management API surface and route handling.
-- `crates/mesh-llm/src/protocol/` — wire protocol types, encoding/decoding, and conversions.
+- `cli/` — Clap types, command parsing, command dispatch, and user-facing command handlers.
+- `runtime/` — top-level process orchestration, startup/runtime coordination, runtime instance, capacity, split planning, proxy lifecycle.
+- `network/` — request routing, proxying, tunneling, relay/discovery networking, request-affinity logic, endpoint rewrite, target health, OpenAI transport glue.
+- `inference/` — model-serving logic, election, launch, pipeline, MoE behavior, embedded skippy integration.
+- `system/` — machine-local environment and platform concerns (hardware detection, benchmarking, self-update, local system integration).
+- `models/` — model catalog, resolution, downloads, local model storage, model metadata.
+- `mesh/` — peer membership, gossip, heartbeats, identity, peer state, mesh node behavior.
+- `plugin/` — plugin host, plugin runtime, transport, config, MCP bridge support.
+- `plugins/` — concrete plugins (blobstore, flash_moe, openai_endpoint, telemetry, blackboard).
+- `api/` — management API surface and route handling.
+- `protocol/` — wire protocol types, encoding/decoding, conversions.
+- `runtime_data/` — runtime data collection, API views, status snapshots.
+- `crypto/` — host-side crypto helpers.
 
 CLI ownership rule.
 
-- All command handlers belong under `crates/mesh-llm/src/cli/`, usually `crates/mesh-llm/src/cli/commands/`.
+- All command handlers belong under `crates/mesh-llm-host-runtime/src/cli/`, usually `cli/commands/`.
 - Domain modules should not own Clap parsing or top-level command dispatch.
 - Domain modules may expose reusable functions that CLI handlers call.
 
@@ -117,7 +148,7 @@ Do not introduce generic buckets.
 Keep shared code honest.
 
 - If code is only used by one subsystem, keep it inside that subsystem.
-- Only move code to a shared module when it is truly cross-domain.
+- Only move code to a shared module (or a shared workspace crate like `mesh-llm-types` / `mesh-llm-routing`) when it is truly cross-domain.
 - Do not create shared helpers prematurely.
 
 Prefer semantic grouping over symmetry.
@@ -150,29 +181,69 @@ Naming rule.
 - Prefer names like `affinity`, `discovery`, `transport`, `maintenance`, `warnings`.
 - Avoid vague names like `helpers`, `stuff`, `logic`, or `manager` unless the abstraction is genuinely that broad.
 
+When to add a new workspace crate.
+
+- Prefer adding modules inside an existing crate first.
+- Add a new `crates/<name>/` only when the responsibility is genuinely cross-cutting (used by host and client, or host and a separate binary) or when isolating compile time / dependencies for a specific binary or FFI surface.
+- New crates should be named after the responsibility they own, not the consumer (e.g., `model-resolver` not `mesh-llm-model-helpers`).
+
 Current structure notes.
 
-- Request-affinity code belongs with networking/routing behavior, not `system/`.
-- Plugin MCP support belongs inside `crates/mesh-llm/src/plugin/`, not as a separate root module.
-- Model command handlers belong in `crates/mesh-llm/src/cli/commands/`; `crates/mesh-llm/src/models/` should stay domain-focused.
+- Request-affinity code belongs with networking/routing behavior (`network/affinity.rs`), not `system/`.
+- Plugin MCP support belongs inside `mesh-llm-host-runtime/src/plugin/`, not as a separate root module.
+- Model command handlers belong in `mesh-llm-host-runtime/src/cli/commands/`; `models/` should stay domain-focused.
+- The shipped binary crate (`crates/mesh-llm/`) should remain a thin shim; do not move domain logic into it.
 
 ## Key Source Files
 
-- `crates/mesh-llm/src/main.rs` — Binary entrypoint; calls `mesh_llm::run()`
-- `crates/mesh-llm/src/runtime/mod.rs` — Top-level startup flows, runtime orchestration, and command dispatch
-- `crates/mesh-llm/src/mesh/mod.rs` — `Node` struct, gossip, mesh_id, peer management
-- `crates/mesh-llm/src/inference/election.rs` — Host election, tensor split calculation
-- `crates/mesh-llm/src/inference/skippy/` — Embedded staged runtime integration
-- `crates/mesh-llm/src/inference/moe.rs` — MoE detection, expert rankings, split orchestration
-- `crates/mesh-llm/src/network/proxy.rs` — HTTP proxy: request parsing, model routing, response helpers
-- `crates/mesh-llm/src/network/router.rs` — Request classification, model scoring, multimodal routing
-- `crates/mesh-llm/src/network/nostr.rs` — Nostr discovery, `score_mesh()`, `smart_auto()`
-- `crates/mesh-llm/src/network/tunnel.rs` — TCP ↔ QUIC relay (RPC + HTTP)
-- `crates/mesh-llm/src/api/mod.rs` — Management API (:3131): `/api/status`, `/api/events`, `/api/discover`
-- `crates/mesh-llm/src/models/catalog.rs` — Model catalog, HuggingFace downloads
-- `crates/mesh-llm/src/models/capabilities.rs` — Multimodal/vision/audio/reasoning capability inference
-- `crates/mesh-llm/src/plugins/blobstore/mod.rs` — Request-scoped media object storage for multimodal
-- `crates/mesh-llm/src/runtime/instance.rs` — Per-instance runtime directory management: `InstanceRuntime`, pidfiles, flock liveness, scoped orphan reaping, local instance scanning
+Host runtime (main monolith — `crates/mesh-llm-host-runtime/src/`):
+
+- `lib.rs` — crate entry; exposes `run_main` (called from `crates/mesh-llm/src/main.rs`).
+- `runtime/mod.rs` — top-level startup flows, runtime orchestration, command dispatch.
+- `runtime/instance.rs` — per-instance runtime directory management: `InstanceRuntime`, pidfiles, flock liveness, scoped orphan reaping, local instance scanning.
+- `runtime/local.rs` — local model startup loop.
+- `runtime/discovery.rs` — discovery loops and auto-mode coordination.
+- `runtime/proxy.rs`, `runtime/proxy/` — HTTP proxy lifecycle from the runtime side.
+- `runtime/capacity.rs`, `runtime/split_planning.rs`, `runtime/context_planning.rs` — placement/sizing decisions.
+- `mesh/mod.rs` — `Node` struct, mesh_id, peer management.
+- `mesh/gossip.rs` — gossip wire format and peer state updates.
+- `mesh/heartbeat.rs` — heartbeat publishing and freshness.
+- `inference/election.rs` — host election, tensor split calculation.
+- `inference/skippy/` — embedded staged runtime integration.
+- `inference/pipeline.rs` — inference pipeline coordination.
+- `inference/virtual_llm.rs` — virtual LLM (inter-model collaboration).
+- `network/proxy.rs` — HTTP proxy: request parsing, model routing, response helpers.
+- `network/router.rs` — request classification, model scoring, multimodal routing.
+- `network/nostr.rs` — Nostr discovery, `score_mesh()`, `smart_auto()`.
+- `network/tunnel.rs` — TCP ↔ QUIC relay (RPC + HTTP).
+- `network/affinity.rs` — request-affinity tracking.
+- `network/target_health.rs` — target health tracking.
+- `network/openai/` — OpenAI transport glue.
+- `api/mod.rs`, `api/routes/` — management API (:3131): `/api/status`, `/api/events`, `/api/discover`.
+- `models/catalog.rs` — model catalog, HuggingFace downloads.
+- `models/capabilities.rs` — multimodal/vision/audio/reasoning capability inference.
+- `models/resolve/` — model reference resolution.
+- `plugins/blobstore/mod.rs` — request-scoped media object storage for multimodal.
+- `plugins/flash_moe/`, `plugins/openai_endpoint/`, `plugins/telemetry/`, `plugins/blackboard/` — other in-tree plugins.
+- `cli/mod.rs`, `cli/commands/` — Clap command surface and dispatch.
+
+Shipped binary (`crates/mesh-llm/src/`):
+
+- `main.rs` — builds the Tokio runtime (custom stack size via `MESH_TOKIO_STACK_SIZE`) and calls `mesh_llm::run_main()`.
+- `lib.rs` — `pub use mesh_llm_host_runtime::*;` (transitional re-export).
+
+Embedded staged runtime (`crates/skippy-*`):
+
+- `skippy-ffi/src/lib.rs` — Rust ABI mirror of the patched llama.cpp staged runtime; `ABI_VERSION_*` constants must stay in sync with `skippy/common.h` in the patch queue.
+- `skippy-runtime/src/package.rs` — layer-package materialization, identity-bound cache.
+- `skippy-runtime/src/devices.rs` — backend device enumeration.
+- `skippy-server/src/frontend.rs`, `skippy-server/src/frontend/` — embedded chat/generation frontend.
+- `skippy-server/src/runtime_state.rs` — KV-slot, lane, session state machine.
+- `skippy-server/src/binary_transport.rs`, `binary_transport/` — binary transport to embedded server.
+
+OpenAI-compatible HTTP frontend (`crates/openai-frontend/src/`):
+
+- `router.rs`, `chat.rs`, `completions.rs`, `responses.rs`, `models.rs`, `sse.rs`, `backend.rs` — OpenAI surface.
 
 ## Mesh Protocol Compatibility
 
@@ -193,6 +264,14 @@ When iterating on the plugin protocol, always consider protocol compatibility.
 - If the change is not intended to be breaking, the previous version of the plugin protocol must continue to be supported.
 - Do not silently ship plugin protocol changes that strand older plugins or hosts without confirming that outcome is acceptable.
 
+## Skippy ABI Compatibility
+
+The patched llama.cpp staged runtime has its own ABI version, tracked in `skippy/common.h` (inside the patch queue) and mirrored by `SKIPPY_ABI_VERSION_*` constants in `crates/skippy-ffi/src/lib.rs`.
+
+- When changing the staged-runtime ABI in the patch queue, bump `SKIPPY_ABI_VERSION_PATCH` (or MINOR/MAJOR) in `skippy/common.h` AND keep the Rust constants in `skippy-ffi/src/lib.rs` in sync in the same change.
+- `skippy-runtime` consumes the ABI version for package loading and feature probing; an out-of-sync mirror will silently advertise the wrong version.
+- Treat the staged-runtime ABI the same as the mesh wire protocol: additive changes preferred, breaking changes need explicit acknowledgement.
+
 ## UI Notes
 
 For changes in `crates/mesh-llm-ui/`, use components and compose interfaces consistently with shadcn/ui patterns. Prefer extending existing primitives in `src/components/ui/` over ad-hoc markup.
@@ -208,11 +287,17 @@ Testing matters more than usual in this project because:
 - The public mesh at meshllm.cloud runs continuously. Breaking changes that pass local tests can take down live inference for real users.
 - Multimodal, MoE splitting, and multi-model routing all have complex interaction paths that are hard to reason about statically.
 
-When making changes that touch gossip, routing, proxy, election, or capability advertisement, test against at least two nodes before merging. The deploy checklist above is not optional.
+When making changes that touch gossip, routing, proxy, election, or capability advertisement, test against at least two nodes before merging. The deploy checklist below is not optional.
 
 ### Cargo Concurrency
 
 Run `cargo` commands serially. Do not run multiple `cargo` commands in parallel (including parallel test runs), because this repo frequently hits Cargo lock conflicts (`package cache` / `artifact directory`) under concurrent invocation.
+
+### Which crate to `-p`
+
+- Touched `mesh-llm-host-runtime` or the shipped `mesh-llm` binary — use `-p mesh-llm` for build/check (it pulls the host runtime through its single dep) and `-p mesh-llm-host-runtime` for focused tests.
+- Touched a specific workspace crate (e.g., `skippy-runtime`, `openai-frontend`, `mesh-client`) — run `cargo check -p <crate>` and `cargo test -p <crate> --lib` for fast iteration.
+- For broad refactors, fall back to `cargo check --workspace` (serially!).
 
 ## Running mesh-llm locally
 
@@ -243,7 +328,7 @@ Before committing, run the local checks most likely to fail in CI for the files 
 
 ### Minimum bar before every commit
 
-- Rust-only change — format the changed Rust files and run `cargo check -p mesh-llm`.
+- Rust-only change — format the changed Rust files and run `cargo check -p <touched-crate>` (and `cargo check -p mesh-llm` if you touched anything reachable from the shipped binary).
 - UI-only change — run `just build`.
 - Mixed Rust and UI change — run `just build`.
 
@@ -251,9 +336,9 @@ Before committing, run the local checks most likely to fail in CI for the files 
 
 - Format only the changed Rust files from the repo root, for example with `cargo fmt --all -- path/to/file.rs`, and include those formatting changes in the commit.
 - Before committing Rust changes, ensure the formatting check passes with `cargo fmt --all -- --check`.
-- After Rust changes, run `cargo check -p mesh-llm`.
-- If you touched tests, public APIs, routing, inference, gossip, plugin protocol, or CLI behavior, run the relevant tests before committing.
-- If you touched `proto/`, `crates/mesh-llm/src/protocol/`, `crates/mesh-llm/src/mesh/gossip.rs`, `crates/mesh-llm/src/mesh/mod.rs`, routing, election, or API serialization, do not stop at build-only validation: run at least `cargo test -p mesh-llm --lib` and wait for it to exit successfully before committing.
+- After Rust changes, run `cargo check` for each touched crate (`-p <crate>`), and at least `cargo check -p mesh-llm` if the change is reachable from the shipped binary.
+- If you touched tests, public APIs, routing, inference, gossip, plugin protocol, skippy ABI, or CLI behavior, run the relevant tests before committing.
+- If you touched `proto/`, any `protocol/` module, `mesh-llm-host-runtime/src/mesh/gossip.rs`, `mesh-llm-host-runtime/src/mesh/mod.rs`, routing, election, API serialization, or `skippy-ffi` ABI constants, do not stop at build-only validation: run at least `cargo test -p mesh-llm-host-runtime --lib` (plus `cargo test -p skippy-ffi --lib` / `-p skippy-runtime --lib` when ABI is touched) and wait for it to exit successfully before committing.
 - Do not report a build or test step as complete until the command has actually exited with code `0`.
 - Run Rust validation serially. Do not run multiple `cargo` commands at the same time.
 
@@ -317,7 +402,7 @@ pkill -f mesh-llm
 **Every deploy to test machines MUST follow this checklist.**
 
 ### Before starting nodes
-1. **Bump VERSION** in `main.rs` so you can verify the running binary is new code.
+1. **Bump VERSION** in `crates/mesh-llm/Cargo.toml` (the shipped binary crate) so you can verify the running binary is new code.
 2. `just build && just bundle`
 3. Kill ALL processes on ALL nodes — `pkill -9 -f mesh-llm`
 4. Verify clean — `ps -eo pid,args | grep -E 'mesh-llm' | grep -v grep` must be empty.
@@ -382,5 +467,7 @@ Test machine IPs, SSH details, and passwords are in `~/Documents/private-note.tx
 
 ## What NOT to add
 
-- **No `api_key_token` feature** — explicitly rejected, removed in v0.26.0
-- **No credentials in tracked files** — IPs, passwords, SSH commands belong in `~/Documents/private-note.txt` only
+- **No `api_key_token` feature** — explicitly rejected, removed in v0.26.0.
+- **No credentials in tracked files** — IPs, passwords, SSH commands belong in `~/Documents/private-note.txt` only.
+- **No domain logic in `crates/mesh-llm/src/`** — that crate is a thin shim over `mesh-llm-host-runtime`; put new code in the host-runtime crate (or a more specific peer crate).
+- **No external `llama-server` / `rpc-server` runtime lane** — the embedded staged runtime via patched llama.cpp is the only supported path.
