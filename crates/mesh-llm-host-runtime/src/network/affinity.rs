@@ -1,6 +1,7 @@
 //! Prefix affinity and sticky routing helpers for inference target selection.
 
 use crate::inference::election;
+use crate::network::target_health::{TargetHealth, TargetHealthOutcome};
 use iroh::EndpointId;
 use serde::Serialize;
 use serde_json::Value;
@@ -87,6 +88,7 @@ struct AffinityState {
 pub struct AffinityRouter {
     inner: Arc<Mutex<AffinityState>>,
     config: Arc<AffinityConfig>,
+    target_health: TargetHealth,
 }
 
 impl AffinityRouter {
@@ -94,6 +96,7 @@ impl AffinityRouter {
         Self {
             inner: Arc::new(Mutex::new(AffinityState::default())),
             config: Arc::new(AffinityConfig::from_env()),
+            target_health: TargetHealth::default(),
         }
     }
 
@@ -105,6 +108,7 @@ impl AffinityRouter {
                 prefix_enabled,
                 sticky_enabled,
             }),
+            target_health: TargetHealth::default(),
         }
     }
 
@@ -116,6 +120,23 @@ impl AffinityRouter {
         stats.prefix_enabled = self.config.prefix_enabled;
         stats.sticky_enabled = self.config.sticky_enabled;
         stats
+    }
+
+    pub(crate) fn route_eligible_candidates(
+        &self,
+        model: &str,
+        candidates: &[election::InferenceTarget],
+    ) -> Vec<election::InferenceTarget> {
+        self.target_health.eligible_candidates(model, candidates)
+    }
+
+    pub(crate) fn record_target_outcome(
+        &self,
+        model: Option<&str>,
+        target: &election::InferenceTarget,
+        outcome: TargetHealthOutcome,
+    ) {
+        self.target_health.record_outcome(model, target, outcome);
     }
 
     pub fn sticky_enabled(&self) -> bool {
@@ -590,6 +611,8 @@ pub fn select_model_target_from_candidates(
     parsed_body: Option<&Value>,
     affinity: &AffinityRouter,
 ) -> TargetSelection {
+    let eligible_candidates = affinity.route_eligible_candidates(model, candidates);
+    let candidates = eligible_candidates.as_slice();
     let routing = routing_keys(parsed_body);
 
     if let Some(session_hash) = routing.session_hash.filter(|_| affinity.sticky_enabled()) {
@@ -668,14 +691,7 @@ pub fn prepare_remote_targets_for_request(
     if let Some(session_hash) = routing.session_hash.filter(|_| affinity.sticky_enabled()) {
         affinity.record_session_route();
         rotate_targets_by_hash(&mut ordered, session_hash);
-        return PreparedTargets {
-            ordered,
-            learn_prefix_hash: None,
-            cached_target: None,
-        };
-    }
-
-    if let Some(prefix_hash) = routing.prefix_hash {
+    } else if let Some(prefix_hash) = routing.prefix_hash {
         learn_prefix_hash = Some(prefix_hash);
         if let Some(target) = affinity.lookup_target(model, prefix_hash, &ordered) {
             move_target_first(&mut ordered, &target);
@@ -692,6 +708,17 @@ pub fn prepare_remote_targets_for_request(
         rotate_targets_by_hash(&mut ordered, sticky_hash);
     }
 
+    let eligible = affinity.route_eligible_candidates(model, &ordered);
+    if eligible.len() != ordered.len() {
+        if let (Some(prefix_hash), Some(target)) = (learn_prefix_hash, cached_target.as_ref()) {
+            if !eligible.contains(target) {
+                affinity.forget_target(model, prefix_hash, target);
+                cached_target = None;
+            }
+        }
+        ordered = eligible;
+    }
+
     PreparedTargets {
         ordered,
         learn_prefix_hash,
@@ -702,6 +729,7 @@ pub fn prepare_remote_targets_for_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::network::target_health::TargetHealthOutcome;
     use iroh::SecretKey;
 
     fn make_id(seed: u8) -> EndpointId {
@@ -825,6 +853,43 @@ mod tests {
             prepared.cached_target,
             Some(election::InferenceTarget::Remote(id_b))
         );
+        affinity.record_target_outcome(
+            Some("qwen"),
+            &election::InferenceTarget::Remote(id_b),
+            TargetHealthOutcome::Unavailable,
+        );
+        let prepared = prepare_remote_targets_for_request("qwen", &hosts, Some(&req), &affinity);
+        assert_eq!(
+            prepared.ordered,
+            vec![election::InferenceTarget::Remote(id_a)]
+        );
+        assert_eq!(prepared.cached_target, None);
+    }
+
+    #[test]
+    fn test_prepare_remote_targets_filters_cooling_session_hint_target() {
+        let id_a = make_id(1);
+        let id_b = make_id(2);
+        let hosts = vec![id_a, id_b];
+        let affinity = AffinityRouter::with_config(true, true);
+        let req = parse_body(
+            r#"{"prompt_cache_key":"cache-1","messages":[{"role":"user","content":"task A"}]}"#,
+        );
+
+        let prepared = prepare_remote_targets_for_request("qwen", &hosts, Some(&req), &affinity);
+        let cooling_target = prepared.ordered.first().cloned().unwrap();
+
+        affinity.record_target_outcome(
+            Some("qwen"),
+            &cooling_target,
+            TargetHealthOutcome::Unavailable,
+        );
+
+        let prepared = prepare_remote_targets_for_request("qwen", &hosts, Some(&req), &affinity);
+        assert!(!prepared.ordered.contains(&cooling_target));
+        assert_eq!(prepared.ordered.len(), 1);
+        assert_eq!(prepared.learn_prefix_hash, None);
+        assert_eq!(prepared.cached_target, None);
     }
 
     #[test]

@@ -10,6 +10,7 @@ use crate::network::affinity::{
 };
 use crate::network::openai::response_adapter;
 use crate::network::router;
+use crate::network::target_health::TargetHealthOutcome;
 use crate::plugin;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
@@ -114,6 +115,22 @@ fn route_attempt_result_label(result: &RouteAttemptResult) -> &'static str {
         RouteAttemptResult::RetryableUnavailable => "retryable_unavailable",
         RouteAttemptResult::RetryableContextOverflow => "retryable_context_overflow",
         RouteAttemptResult::ClientDisconnected => "client_disconnected",
+    }
+}
+
+fn target_health_outcome_for_attempt(result: &RouteAttemptResult) -> TargetHealthOutcome {
+    match result {
+        RouteAttemptResult::Delivered { status_code, .. } if (200..300).contains(status_code) => {
+            TargetHealthOutcome::Success
+        }
+        RouteAttemptResult::Delivered { status_code, .. } if (500..600).contains(status_code) => {
+            TargetHealthOutcome::Unavailable
+        }
+        RouteAttemptResult::Delivered { .. } => TargetHealthOutcome::Rejected,
+        RouteAttemptResult::RetryableTimeout => TargetHealthOutcome::Timeout,
+        RouteAttemptResult::RetryableUnavailable => TargetHealthOutcome::Unavailable,
+        RouteAttemptResult::RetryableContextOverflow => TargetHealthOutcome::ContextOverflow,
+        RouteAttemptResult::ClientDisconnected => TargetHealthOutcome::ClientDisconnected,
     }
 }
 
@@ -2610,6 +2627,11 @@ pub async fn handle_mesh_request(
             ),
             RouteAttemptResult::ClientDisconnected => {}
         }
+        affinity.record_target_outcome(
+            effective_model.as_deref(),
+            &attempt_target,
+            target_health_outcome_for_attempt(&attempt_result),
+        );
         match attempt_result {
             RouteAttemptResult::Delivered {
                 status_code,
@@ -2785,6 +2807,7 @@ pub async fn route_model_request(
     let mut tcp_stream = tcp_stream;
     let ordered_candidates =
         order_targets_by_context(&node, model, required_tokens, &targets.candidates(model)).await;
+    let ordered_candidates = affinity.route_eligible_candidates(model, &ordered_candidates);
     if ordered_candidates.is_empty() {
         node.record_routed_request(
             Some(model),
@@ -2894,6 +2917,11 @@ pub async fn route_model_request(
             ),
             RouteAttemptResult::ClientDisconnected => {}
         }
+        affinity.record_target_outcome(
+            Some(model),
+            &target,
+            target_health_outcome_for_attempt(&attempt_result),
+        );
         tracing::info!(
             model = model,
             target = ?target,
@@ -3854,6 +3882,39 @@ mod tests {
         assert_eq!(
             route_attempt_result_label(&RouteAttemptResult::ClientDisconnected),
             "client_disconnected"
+        );
+    }
+
+    #[test]
+    fn test_target_health_outcome_for_attempt_values() {
+        assert_eq!(
+            target_health_outcome_for_attempt(&RouteAttemptResult::Delivered {
+                status_code: 200,
+                completion_tokens: None,
+            }),
+            TargetHealthOutcome::Success
+        );
+        assert_eq!(
+            target_health_outcome_for_attempt(&RouteAttemptResult::Delivered {
+                status_code: 503,
+                completion_tokens: None,
+            }),
+            TargetHealthOutcome::Unavailable
+        );
+        assert_eq!(
+            target_health_outcome_for_attempt(&RouteAttemptResult::Delivered {
+                status_code: 400,
+                completion_tokens: None,
+            }),
+            TargetHealthOutcome::Rejected
+        );
+        assert_eq!(
+            target_health_outcome_for_attempt(&RouteAttemptResult::RetryableContextOverflow),
+            TargetHealthOutcome::ContextOverflow
+        );
+        assert_eq!(
+            target_health_outcome_for_attempt(&RouteAttemptResult::RetryableTimeout),
+            TargetHealthOutcome::Timeout
         );
     }
 
