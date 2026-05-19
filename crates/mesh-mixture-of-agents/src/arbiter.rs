@@ -309,8 +309,15 @@ pub fn try_early_decision(
 /// fail the length / stopword filters), AND a leftover negation in either
 /// side of a comparison blocks clustering regardless of subset relation.
 const NEGATION_TOKENS: &[&str] = &[
-    "no", "not", "never", "none", "nor", "dont", "doesnt", "didnt", "wont", "wouldnt", "cant",
-    "cannot", "shouldnt", "isnt", "arent", "wasnt", "werent", "without", "neither",
+    // Standalone negations
+    "no", "not", "never", "none", "nor", "without", "neither", "cannot",
+    // Joined contractions (apostrophe stripped)
+    "dont", "doesnt", "didnt", "wont", "wouldnt", "cant", "shouldnt", "isnt", "arent", "wasnt",
+    "werent",
+    // Split contractions (apostrophe → space → two tokens; the prefix
+    // is what survives because the `t` half is <3 chars and gets filtered).
+    "don", "doesn", "didn", "won", "wouldn", "shouldn", "isn", "aren", "wasn", "weren", "hadn",
+    "haven", "hasn",
 ];
 
 /// Content-bearing tokens extracted from an answer payload.
@@ -406,6 +413,13 @@ fn largest_agreeing_cluster<'a>(answers: &[&'a WorkerOutput]) -> Option<(usize, 
             // subset of "do not use grep" by tokens, but they obviously
             // disagree.
             if has_negation_mismatch(anchor_tokens, other_tokens) {
+                continue;
+            }
+            // An empty token set means the answer was all stopwords /
+            // sub-3-char filler. That has no content signal — don't let
+            // it cluster with anything, even though `{} ⊆ X` is
+            // technically true for every X.
+            if anchor_tokens.is_empty() || other_tokens.is_empty() {
                 continue;
             }
             if other_tokens.is_subset(anchor_tokens) || anchor_tokens.is_subset(other_tokens) {
