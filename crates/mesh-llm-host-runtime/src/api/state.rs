@@ -94,15 +94,49 @@ pub struct ControlBootstrapPayload {
     pub requires_explicit_remote_endpoint: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggested_commands: Option<Vec<String>>,
 }
 
 impl Default for ControlBootstrapPayload {
     fn default() -> Self {
+        Self::missing_owner_identity()
+    }
+}
+
+impl ControlBootstrapPayload {
+    pub fn from_control_endpoint(endpoint: Option<String>) -> Self {
+        match endpoint {
+            Some(endpoint) => Self {
+                enabled: true,
+                local_only: true,
+                requires_explicit_remote_endpoint: true,
+                endpoint: Some(endpoint),
+                disabled_reason: None,
+                message: None,
+                suggested_commands: None,
+            },
+            None => Self::missing_owner_identity(),
+        }
+    }
+
+    pub fn missing_owner_identity() -> Self {
         Self {
             enabled: false,
             local_only: true,
             requires_explicit_remote_endpoint: true,
             endpoint: None,
+            disabled_reason: Some("missing_owner_identity".to_string()),
+            message: Some("Configuration saving requires a local owner identity.".to_string()),
+            suggested_commands: Some(vec![
+                "mesh-llm auth status".to_string(),
+                "mesh-llm auth init --no-passphrase".to_string(),
+                "mesh-llm serve --owner-required".to_string(),
+            ]),
         }
     }
 }

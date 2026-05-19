@@ -873,6 +873,7 @@ pub(crate) fn proto_config_to_mesh(
         defaults: None,
         models,
         plugins,
+        extra: Default::default(),
     }
 }
 

@@ -5,7 +5,7 @@ import { RootLayout } from '@/app/layout/RootLayout'
 import { parseDeveloperPlaygroundSearch } from '@/features/developer/playground/developer-playground-tabs'
 import { env } from '@/lib/env'
 
-const enableMeshVizPerfRoute = import.meta.env.DEV || import.meta.env.VITE_ENABLE_PERF_ROUTE === 'true'
+const enableMeshVizPerfRoute = env.isDevelopment || import.meta.env.VITE_ENABLE_PERF_ROUTE === 'true'
 
 const rootRoute = createRootRoute({
   component: RootLayout,
@@ -46,7 +46,7 @@ const configurationTabRoute = createRoute({
   ),
   errorComponent: FeatureErrorBoundary
 })
-const developerPlaygroundRoute = import.meta.env.DEV
+const developerPlaygroundRoute = env.isDevelopment
   ? createRoute({
       getParentRoute: () => rootRoute,
       path: '/__playground',

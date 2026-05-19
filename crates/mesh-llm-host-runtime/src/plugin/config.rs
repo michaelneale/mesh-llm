@@ -29,6 +29,8 @@ pub struct MeshConfig {
     pub models: Vec<ModelConfigEntry>,
     #[serde(rename = "plugin", default)]
     pub plugins: Vec<PluginConfigEntry>,
+    #[serde(flatten, default)]
+    pub extra: BTreeMap<String, toml::Value>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -549,6 +551,8 @@ struct RawMeshConfig {
     models: Vec<ModelConfigEntry>,
     #[serde(rename = "plugin", default)]
     plugins: Vec<PluginConfigEntry>,
+    #[serde(flatten, default)]
+    extra: BTreeMap<String, toml::Value>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -642,6 +646,7 @@ impl<'de> Deserialize<'de> for MeshConfig {
             defaults: raw.defaults,
             models: raw.models,
             plugins: raw.plugins,
+            extra: raw.extra,
         })
     }
 }

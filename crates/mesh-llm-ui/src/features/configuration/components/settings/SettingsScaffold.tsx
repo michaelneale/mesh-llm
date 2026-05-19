@@ -38,7 +38,10 @@ type SettingsSectionProps = {
 
 type SettingsRowProps = {
   className?: string
-  label: string
+  disabled?: boolean
+  disabledReason?: string
+  label: ReactNode
+  labelAccessory?: ReactNode
   hint: string
   children: ReactNode
 }
@@ -115,20 +118,37 @@ export function SettingsSection({ id, icon, title, subtitle, children }: Setting
   )
 }
 
-export function SettingsRow({ className, label, hint, children }: SettingsRowProps) {
+export function SettingsRow({
+  className,
+  disabled = false,
+  disabledReason,
+  label,
+  labelAccessory,
+  hint,
+  children
+}: SettingsRowProps) {
   return (
     <div
       className={cn(
-        'grid gap-4 border-t border-border-soft py-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center',
+        'grid gap-3 border-t border-border-soft py-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center',
+        disabled && 'opacity-55',
         className
       )}
       data-settings-row="true"
+      data-settings-row-disabled={disabled ? 'true' : undefined}
+      aria-disabled={disabled ? 'true' : undefined}
     >
       <div className="min-w-0">
-        <p className="text-[length:var(--density-type-control-lg)] font-medium leading-tight text-foreground">
-          {label}
-        </p>
-        <p className="mt-1.5 text-[length:var(--density-type-caption-lg)] leading-relaxed text-fg-faint">{hint}</p>
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-[length:var(--density-type-control)] font-medium leading-tight text-foreground">{label}</p>
+          {labelAccessory ? <div className="shrink-0">{labelAccessory}</div> : null}
+        </div>
+        <p className="mt-1 text-[length:var(--density-type-caption)] leading-relaxed text-fg-faint">{hint}</p>
+        {disabledReason ? (
+          <p className="mt-1 text-[length:var(--density-type-caption)] leading-relaxed text-fg-faint">
+            {disabledReason}
+          </p>
+        ) : null}
       </div>
       <div className="min-w-0 md:justify-self-end">{children}</div>
     </div>

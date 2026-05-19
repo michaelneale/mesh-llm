@@ -251,25 +251,59 @@ pub(crate) async fn run_control_bootstrap(port: u16, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    println!("🔐 Owner-control bootstrap");
-    println!();
-    println!("Scope: Local node only");
-    println!(
-        "Remote control requires explicit endpoint: {}",
-        yes_no(
-            payload["requires_explicit_remote_endpoint"]
-                .as_bool()
-                .unwrap_or(true)
-        )
-    );
-    if payload["enabled"].as_bool().unwrap_or(false) {
-        let endpoint = payload["endpoint"].as_str().unwrap_or("pending");
-        println!("Endpoint: {endpoint}");
-    } else {
-        println!("Endpoint: disabled");
+    for line in control_bootstrap_lines(&payload) {
+        println!("{line}");
     }
 
     Ok(())
+}
+
+fn control_bootstrap_lines(payload: &serde_json::Value) -> Vec<String> {
+    let mut lines = vec![
+        "🔐 Owner-control bootstrap".to_string(),
+        String::new(),
+        "Scope: Local node only".to_string(),
+        format!(
+            "Remote control requires explicit endpoint: {}",
+            yes_no(
+                payload["requires_explicit_remote_endpoint"]
+                    .as_bool()
+                    .unwrap_or(true)
+            )
+        ),
+    ];
+
+    if payload["enabled"].as_bool().unwrap_or(false) {
+        let endpoint = payload["endpoint"].as_str().unwrap_or("pending");
+        lines.push(format!("Endpoint: {endpoint}"));
+        return lines;
+    }
+
+    lines.push("Endpoint: disabled".to_string());
+    if let Some(reason) = payload["disabled_reason"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+    {
+        lines.push(format!("Disabled reason: {}", reason.replace('_', " ")));
+    }
+    if let Some(message) = payload["message"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+    {
+        lines.push(format!("Message: {message}"));
+    }
+    if let Some(commands) = payload["suggested_commands"].as_array() {
+        let commands: Vec<&str> = commands
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .collect();
+        if !commands.is_empty() {
+            lines.push("Suggested commands:".to_string());
+            lines.extend(commands.into_iter().map(|command| format!("  {command}")));
+        }
+    }
+    lines
 }
 
 fn build_control_endpoint_request(endpoint: &str) -> serde_json::Value {
@@ -396,7 +430,8 @@ fn find_pid(processes: &[serde_json::Value], model: &serde_json::Value) -> Optio
 #[cfg(test)]
 mod tests {
     use super::{
-        build_apply_config_request, build_control_endpoint_request, runtime_success_lines, yes_no,
+        build_apply_config_request, build_control_endpoint_request, control_bootstrap_lines,
+        runtime_success_lines, yes_no,
     };
     use crate::plugin::{GpuAssignment, GpuConfig, MeshConfig};
     use serde_json::json;
@@ -459,6 +494,39 @@ mod tests {
     }
 
     #[test]
+    fn control_plane_bootstrap_lines_explain_disabled_owner_control() {
+        let payload = json!({
+            "enabled": false,
+            "local_only": true,
+            "requires_explicit_remote_endpoint": true,
+            "disabled_reason": "missing_owner_identity",
+            "message": "Configuration saving requires a local owner identity.",
+            "suggested_commands": [
+                "mesh-llm auth status",
+                "mesh-llm auth init --no-passphrase",
+                "mesh-llm serve --owner-required"
+            ]
+        });
+
+        assert_eq!(
+            control_bootstrap_lines(&payload),
+            vec![
+                "🔐 Owner-control bootstrap".to_string(),
+                String::new(),
+                "Scope: Local node only".to_string(),
+                "Remote control requires explicit endpoint: yes".to_string(),
+                "Endpoint: disabled".to_string(),
+                "Disabled reason: missing owner identity".to_string(),
+                "Message: Configuration saving requires a local owner identity.".to_string(),
+                "Suggested commands:".to_string(),
+                "  mesh-llm auth status".to_string(),
+                "  mesh-llm auth init --no-passphrase".to_string(),
+                "  mesh-llm serve --owner-required".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn control_plane_api_cli_builds_explicit_endpoint_request_body() {
         assert_eq!(
             build_control_endpoint_request("endpoint-token"),
@@ -479,6 +547,7 @@ mod tests {
             owner_control: Default::default(),
             telemetry: Default::default(),
             defaults: None,
+            extra: Default::default(),
         };
 
         assert_eq!(

@@ -2,13 +2,15 @@ import type { ReactNode } from 'react'
 import type { LucideIcon } from 'lucide-react'
 
 type ConfigurationLayoutProps = {
+  banner?: ReactNode
   header: ReactNode
   children: ReactNode
 }
 
-export function ConfigurationLayout({ header, children }: ConfigurationLayoutProps) {
+export function ConfigurationLayout({ banner, header, children }: ConfigurationLayoutProps) {
   return (
-    <div className="flex min-w-0 flex-col gap-[14px]">
+    <div className="-mt-[18px] md:-mx-5">
+      {banner ? <div className="px-5 pt-3">{banner}</div> : null}
       {header}
       {children}
     </div>

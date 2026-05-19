@@ -1860,6 +1860,7 @@ alias = "model-alias"
                 args: vec!["--plugin".to_string()],
                 url: None,
             }],
+            extra: Default::default(),
         };
         let snapshot = mesh_config_to_proto(&config);
         let restored = proto_config_to_mesh(&snapshot);
@@ -1889,6 +1890,70 @@ alias = "model-alias"
     }
 
     #[test]
+    fn config_sync_config_toml_roundtrips_additive_defaults_sections() {
+        let mut config = crate::plugin::MeshConfig {
+            version: Some(1),
+            ..Default::default()
+        };
+        config.extra = toml::from_str(
+            r#"[defaults.throughput]
+parallel = 6
+
+[defaults.model_fit]
+flash_attention = "disabled"
+
+[defaults.request_defaults]
+reasoning_format = "qwen"
+"#,
+        )
+        .expect("parse additive defaults table");
+
+        let snapshot = mesh_config_to_proto(&config);
+        assert!(
+            snapshot
+                .config_toml
+                .as_deref()
+                .is_some_and(|toml| toml.contains("[defaults.model_fit]")),
+            "config TOML should carry additive defaults sections"
+        );
+
+        let restored = proto_config_to_mesh(&snapshot);
+        assert_eq!(
+            restored
+                .extra
+                .get("defaults")
+                .and_then(|defaults| defaults.get("throughput"))
+                .and_then(|throughput| throughput.get("parallel"))
+                .and_then(toml::Value::as_integer)
+                .or_else(|| {
+                    restored
+                        .defaults
+                        .as_ref()
+                        .and_then(|defaults| defaults.throughput.as_ref())
+                        .and_then(|throughput| throughput.parallel)
+                        .map(|parallel| parallel as i64)
+                }),
+            Some(6)
+        );
+        assert_eq!(
+            restored
+                .extra
+                .get("defaults")
+                .and_then(|defaults| defaults.get("request_defaults"))
+                .and_then(|request_defaults| request_defaults.get("reasoning_format"))
+                .and_then(toml::Value::as_str)
+                .or_else(|| {
+                    restored
+                        .defaults
+                        .as_ref()
+                        .and_then(|defaults| defaults.request_defaults.as_ref())
+                        .and_then(|request_defaults| request_defaults.reasoning_format.as_deref())
+                }),
+            Some("qwen")
+        );
+    }
+
+    #[test]
     fn config_sync_config_hash_determinism() {
         use crate::plugin::{GpuAssignment, GpuConfig, ModelConfigEntry};
         let config = crate::plugin::MeshConfig {
@@ -1914,6 +1979,7 @@ alias = "model-alias"
                 ..Default::default()
             }],
             plugins: vec![],
+            extra: Default::default(),
         };
         let snap1 = mesh_config_to_proto(&config);
         let snap2 = mesh_config_to_proto(&config);
@@ -1944,6 +2010,7 @@ alias = "model-alias"
                 ..Default::default()
             }],
             plugins: vec![],
+            extra: Default::default(),
         };
         let snap3 = mesh_config_to_proto(&config2);
         let h3 = canonical_config_hash(&snap3);
@@ -2006,6 +2073,7 @@ alias = "model-alias"
                 ..Default::default()
             }],
             plugins: vec![],
+            extra: Default::default(),
         };
 
         let snapshot = mesh_config_to_proto(&config);

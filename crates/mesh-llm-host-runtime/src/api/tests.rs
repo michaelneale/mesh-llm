@@ -5,7 +5,9 @@ use crate::plugin;
 use crate::plugins::{blackboard, blobstore};
 use base64::Engine;
 use mesh_client::proto::node::{
-    NodeConfigSnapshot, OwnerControlEnvelope, OwnerControlGetConfigResponse, OwnerControlResponse,
+    ConfigApplyMode, NodeConfigSnapshot, OwnerControlApplyConfigRequest,
+    OwnerControlApplyConfigResponse, OwnerControlConfigSnapshot, OwnerControlEnvelope,
+    OwnerControlError, OwnerControlErrorCode, OwnerControlGetConfigResponse, OwnerControlResponse,
 };
 use mesh_llm_plugin::MeshVisibility;
 use mesh_llm_protocol::{decode_owner_control_envelope, write_len_prefixed, ALPN_CONTROL_V1};
@@ -835,6 +837,9 @@ async fn control_plane_api_exposes_local_endpoint_only() {
             local_only: true,
             requires_explicit_remote_endpoint: true,
             endpoint: Some("http://127.0.0.1:7447".to_string()),
+            disabled_reason: None,
+            message: None,
+            suggested_commands: None,
         })
         .await;
     let (addr, handle) = spawn_management_test_server(state).await;
@@ -861,6 +866,38 @@ async fn control_plane_api_exposes_local_endpoint_only() {
 }
 
 #[tokio::test]
+async fn control_plane_api_explains_disabled_owner_control() {
+    let state = build_test_mesh_api().await;
+    let (addr, handle) = spawn_management_test_server(state).await;
+
+    let response = send_management_request(
+        addr,
+        "GET /api/runtime/control-bootstrap HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
+    )
+    .await;
+    let body = json_body(&response);
+
+    assert_eq!(body["enabled"], serde_json::Value::Bool(false));
+    assert_eq!(body["local_only"], serde_json::Value::Bool(true));
+    assert_eq!(body["disabled_reason"], "missing_owner_identity");
+    assert_eq!(
+        body["message"],
+        "Configuration saving requires a local owner identity."
+    );
+    assert_eq!(
+        body["suggested_commands"],
+        serde_json::json!([
+            "mesh-llm auth status",
+            "mesh-llm auth init --no-passphrase",
+            "mesh-llm serve --owner-required"
+        ])
+    );
+    assert!(body.get("endpoint").is_none());
+
+    handle.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn status_payload_control_plane_compat() {
     let state = build_test_mesh_api().await;
     state
@@ -869,6 +906,9 @@ async fn status_payload_control_plane_compat() {
             local_only: true,
             requires_explicit_remote_endpoint: true,
             endpoint: Some("control-endpoint-token".to_string()),
+            disabled_reason: None,
+            message: None,
+            suggested_commands: None,
         })
         .await;
 
@@ -904,6 +944,9 @@ async fn config_apply_does_not_emit_peer_churn() {
             local_only: true,
             requires_explicit_remote_endpoint: true,
             endpoint: Some("control-endpoint-token".to_string()),
+            disabled_reason: None,
+            message: None,
+            suggested_commands: None,
         })
         .await;
     state.push_status().await;
@@ -967,6 +1010,195 @@ async fn control_plane_api_cli_requires_explicit_endpoint_and_runs_local_orchest
 
     handle.await.unwrap().unwrap();
     control_server.task.abort();
+}
+
+#[tokio::test]
+#[serial]
+async fn control_plane_api_apply_config_uses_full_mesh_config_contract() {
+    let temp = tempfile::tempdir().unwrap();
+    std::env::set_var("HOME", temp.path());
+    let owner = OwnerKeypair::generate();
+    let keystore_path = default_keystore_path().unwrap();
+    save_keystore(&keystore_path, &owner, None, true).unwrap();
+
+    let get_server = spawn_owner_control_test_server().await;
+    let OwnerControlApplyTestServer {
+        endpoint_token: apply_endpoint_token,
+        task: control_task,
+        received_apply,
+    } = spawn_owner_control_apply_test_server(OwnerControlApplyTestResponse::Success(
+        OwnerControlApplyConfigResponse {
+            success: true,
+            current_revision: 43,
+            config_hash: vec![0xab; 32],
+            error: None,
+            apply_mode: ConfigApplyMode::Staged as i32,
+        },
+    ))
+    .await;
+    let state = build_test_mesh_api().await;
+    state.set_owner_key_path(Some(keystore_path)).await;
+    let (addr, handle) = spawn_management_test_server(state.clone()).await;
+
+    let get_request_body = json!({ "endpoint": get_server.endpoint_token }).to_string();
+    let get_response = send_management_request(
+        addr,
+        management_post_request("/api/runtime/control/get-config", &get_request_body),
+    )
+    .await;
+    let get_body = json_body(&get_response);
+    assert_eq!(
+        get_body["snapshot"]["revision"], 42,
+        "response: {get_response}"
+    );
+    let mut merged_config_json = get_body["snapshot"]["config"].clone();
+    merge_json_object(
+        &mut merged_config_json,
+        serde_json::to_value(full_mesh_config_fixture()).unwrap(),
+    );
+    let expected_config: crate::plugin::MeshConfig =
+        serde_json::from_value(merged_config_json).unwrap();
+    handle.await.unwrap().unwrap();
+
+    let (addr, handle) = spawn_management_test_server(state).await;
+
+    let apply_request_body = json!({
+        "endpoint": apply_endpoint_token,
+        "expected_revision": get_body["snapshot"]["revision"],
+        "config": expected_config.clone(),
+    })
+    .to_string();
+    let apply_response = send_management_request(
+        addr,
+        management_post_request("/api/runtime/control/apply-config", &apply_request_body),
+    )
+    .await;
+    let apply_body = json_body(&apply_response);
+    assert!(
+        apply_response.starts_with("HTTP/1.1 200"),
+        "response: {apply_response}"
+    );
+    assert_eq!(apply_body["success"], true);
+    assert_eq!(apply_body["current_revision"], 43);
+    assert_eq!(apply_body["apply_mode"], "staged");
+    assert_eq!(
+        apply_body["config_hash"],
+        "abababababababababababababababababababababababababababababababab"
+    );
+
+    let received_apply = received_apply
+        .expect("apply-config flow should capture the forwarded full MeshConfig")
+        .await
+        .unwrap();
+    assert_eq!(received_apply.expected_revision, 42);
+    assert_eq!(
+        received_apply.config,
+        Some(crate::protocol::convert::mesh_config_to_proto(
+            &expected_config
+        ))
+    );
+
+    handle.await.unwrap().unwrap();
+    get_server.task.abort();
+    control_task.await.unwrap();
+}
+
+#[tokio::test]
+#[serial]
+async fn control_plane_api_apply_config_reports_revision_conflict() {
+    let temp = tempfile::tempdir().unwrap();
+    std::env::set_var("HOME", temp.path());
+    let owner = OwnerKeypair::generate();
+    let keystore_path = default_keystore_path().unwrap();
+    save_keystore(&keystore_path, &owner, None, true).unwrap();
+
+    let OwnerControlApplyTestServer {
+        endpoint_token,
+        task: control_task,
+        received_apply,
+    } = spawn_owner_control_apply_test_server(OwnerControlApplyTestResponse::Error {
+        code: OwnerControlErrorCode::RevisionConflict,
+        message: "stale config revision".to_string(),
+        current_revision: Some(7),
+    })
+    .await;
+    let state = build_test_mesh_api().await;
+    state.set_owner_key_path(Some(keystore_path)).await;
+    let (addr, handle) = spawn_management_test_server(state).await;
+
+    let request_body = json!({
+        "endpoint": endpoint_token,
+        "expected_revision": 6,
+        "config": full_mesh_config_fixture(),
+    })
+    .to_string();
+    let response = send_management_request(
+        addr,
+        management_post_request("/api/runtime/control/apply-config", &request_body),
+    )
+    .await;
+    let body = json_body(&response);
+    assert!(response.starts_with("HTTP/1.1 409"), "response: {response}");
+    assert_eq!(body["error"]["code"], "revision_conflict");
+    assert_eq!(body["error"]["message"], "stale config revision");
+    assert_eq!(body["error"]["current_revision"], 7);
+
+    let received_apply = received_apply
+        .expect("revision conflict path should still capture apply requests")
+        .await
+        .unwrap();
+    assert_eq!(received_apply.expected_revision, 6);
+
+    handle.await.unwrap().unwrap();
+    control_task.await.unwrap();
+}
+
+#[tokio::test]
+async fn control_plane_api_apply_config_rejects_invalid_json() {
+    let state = build_test_mesh_api().await;
+    let (addr, handle) = spawn_management_test_server(state).await;
+
+    let request_body = "{\"endpoint\":";
+    let response = send_management_request(
+        addr,
+        management_post_request("/api/runtime/control/apply-config", request_body),
+    )
+    .await;
+    let body = json_body(&response);
+    assert!(response.starts_with("HTTP/1.1 400"), "response: {response}");
+    assert_eq!(body["error"], "Invalid JSON body");
+
+    handle.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn control_route_rejects_non_loopback() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let client = tokio::spawn(async move {
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        String::from_utf8(response).unwrap()
+    });
+
+    let (mut server_stream, _) = listener.accept().await.unwrap();
+    let allowed = crate::api::routes::runtime::ensure_loopback_control_caller_for_peer_addr(
+        &mut server_stream,
+        Ok(std::net::SocketAddr::from(([192, 0, 2, 10], 40123))),
+    )
+    .await
+    .unwrap();
+    assert!(!allowed);
+    drop(server_stream);
+
+    let response = client.await.unwrap();
+    let body = json_body(&response);
+    assert!(response.starts_with("HTTP/1.1 403"), "response: {response}");
+    assert_eq!(
+        body["error"],
+        "runtime control endpoints only accept localhost connections"
+    );
 }
 
 #[tokio::test]
@@ -1081,7 +1313,7 @@ async fn spawn_owner_control_test_server() -> OwnerControlTestServer {
             response: Some(OwnerControlResponse {
                 request_id,
                 get_config: Some(OwnerControlGetConfigResponse {
-                    snapshot: Some(mesh_client::proto::node::OwnerControlConfigSnapshot {
+                    snapshot: Some(OwnerControlConfigSnapshot {
                         node_id: vec![7; 32],
                         revision: 42,
                         config_hash: vec![9; 32],
@@ -1111,6 +1343,170 @@ async fn spawn_owner_control_test_server() -> OwnerControlTestServer {
         endpoint_token,
         task,
     }
+}
+
+struct OwnerControlApplyTestServer {
+    endpoint_token: String,
+    task: tokio::task::JoinHandle<()>,
+    received_apply: Option<oneshot::Receiver<OwnerControlApplyConfigRequest>>,
+}
+
+enum OwnerControlApplyTestResponse {
+    Success(OwnerControlApplyConfigResponse),
+    Error {
+        code: OwnerControlErrorCode,
+        message: String,
+        current_revision: Option<u64>,
+    },
+}
+
+async fn spawn_owner_control_apply_test_server(
+    response: OwnerControlApplyTestResponse,
+) -> OwnerControlApplyTestServer {
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(iroh::SecretKey::generate())
+        .alpns(vec![ALPN_CONTROL_V1.to_vec()])
+        .relay_mode(iroh::endpoint::RelayMode::Disabled)
+        .bind_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+        .unwrap()
+        .bind()
+        .await
+        .unwrap();
+    let endpoint_token = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(&endpoint.addr()).unwrap());
+    let (apply_tx, apply_rx) = oneshot::channel();
+    let task = tokio::spawn(async move {
+        let Some(incoming) = endpoint.accept().await else {
+            return;
+        };
+        let mut accepting = incoming.accept().unwrap();
+        let _ = accepting.alpn().await.unwrap();
+        let conn = accepting.await.unwrap();
+        let (mut send, mut recv) = conn.accept_bi().await.unwrap();
+        let handshake = mesh_llm_protocol::read_len_prefixed(&mut recv)
+            .await
+            .unwrap();
+        let _ = decode_owner_control_envelope(&handshake).unwrap();
+        let request = mesh_llm_protocol::read_len_prefixed(&mut recv)
+            .await
+            .unwrap();
+        let envelope = decode_owner_control_envelope(&request).unwrap();
+        let request = envelope
+            .request
+            .expect("owner-control request should be present");
+        let request_id = request.request_id;
+        let apply = request
+            .apply_config
+            .expect("expected apply-config request for apply response");
+        let _ = apply_tx.send(apply);
+        let envelope = match response {
+            OwnerControlApplyTestResponse::Success(response) => OwnerControlEnvelope {
+                gen: mesh_llm_protocol::NODE_PROTOCOL_GENERATION,
+                handshake: None,
+                request: None,
+                response: Some(OwnerControlResponse {
+                    request_id,
+                    get_config: None,
+                    watch_config: None,
+                    apply_config: Some(response),
+                    refresh_inventory: None,
+                }),
+                error: None,
+            },
+            OwnerControlApplyTestResponse::Error {
+                code,
+                message,
+                current_revision,
+            } => OwnerControlEnvelope {
+                gen: mesh_llm_protocol::NODE_PROTOCOL_GENERATION,
+                handshake: None,
+                request: None,
+                response: None,
+                error: Some(OwnerControlError {
+                    code: code as i32,
+                    message,
+                    request_id: Some(request_id),
+                    current_revision,
+                }),
+            },
+        };
+        write_len_prefixed(&mut send, &envelope.encode_to_vec())
+            .await
+            .unwrap();
+        let _ = send.finish();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    });
+    OwnerControlApplyTestServer {
+        endpoint_token,
+        task,
+        received_apply: Some(apply_rx),
+    }
+}
+
+fn management_post_request(path: &str, body: &str) -> String {
+    format!(
+        "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(),
+        body
+    )
+}
+
+fn full_mesh_config_fixture() -> crate::plugin::MeshConfig {
+    serde_json::from_value(json!({
+        "version": 1,
+        "gpu": {
+            "assignment": "auto",
+            "parallel": 2
+        },
+        "owner_control": {
+            "bind": "127.0.0.1:7447",
+            "advertise_addr": "127.0.0.1:7447"
+        },
+        "telemetry": {
+            "enabled": true,
+            "service_name": "mesh-llm-control",
+            "endpoint": "http://127.0.0.1:4317",
+            "headers": {
+                "authorization": "Bearer control-test"
+            },
+            "export_interval_secs": 30,
+            "queue_size": 256,
+            "prompt_shape_metrics": false,
+            "metrics": {
+                "endpoint": "http://127.0.0.1:4318"
+            }
+        },
+        "models": [
+            {
+                "model": "hf://meshllm/base@main:Q4_K_M",
+                "mmproj": "hf://meshllm/base@main:mmproj.gguf",
+                "ctx_size": 8192,
+                "parallel": 1,
+                "cache_type_k": "q8_0",
+                "cache_type_v": "q8_0",
+                "batch": 512,
+                "ubatch": 256
+            }
+        ],
+        "plugin": [
+            {
+                "name": "telemetry",
+                "enabled": true,
+                "command": "mesh-telemetry"
+            }
+        ]
+    }))
+    .unwrap()
+}
+
+fn merge_json_object(target: &mut serde_json::Value, source: serde_json::Value) {
+    let target = target
+        .as_object_mut()
+        .expect("target JSON should be an object for config merge");
+    let source = source
+        .as_object()
+        .expect("source JSON should be an object for config merge");
+    target.extend(source.clone());
 }
 
 async fn unreachable_owner_control_endpoint_token() -> String {
@@ -3361,6 +3757,8 @@ fn headless_mode_disables_ui_routes_but_preserves_api() {
     assert!(is_ui_only_route("/"));
     assert!(is_ui_only_route("/dashboard"));
     assert!(is_ui_only_route("/chat"));
+    assert!(is_ui_only_route("/configuration"));
+    assert!(is_ui_only_route("/configuration/defaults"));
 
     assert!(!is_ui_only_route("/api/status"));
     assert!(!is_ui_only_route("/api/events"));
@@ -3374,6 +3772,8 @@ fn headless_mode_returns_404_for_assets_and_dashboard_routes() {
     assert!(is_ui_only_route("/dashboard/"));
     assert!(is_ui_only_route("/chat/"));
     assert!(is_ui_only_route("/chat/some-room"));
+    assert!(is_ui_only_route("/configuration/"));
+    assert!(is_ui_only_route("/configuration/toml-review"));
     assert!(is_ui_only_route("/assets/main.js"));
     assert!(is_ui_only_route("/assets/index-abc123.css"));
     assert!(is_ui_only_route("/favicon.ico"));
@@ -3389,10 +3789,45 @@ fn default_mode_still_serves_embedded_ui_routes() {
     assert!(is_ui_only_route("/"));
     assert!(is_ui_only_route("/dashboard"));
     assert!(is_ui_only_route("/chat"));
+    assert!(is_ui_only_route("/configuration/defaults"));
     assert!(is_ui_only_route("/assets/app.js"));
 
     assert!(!is_ui_only_route("/api/status"));
     assert!(!is_ui_only_route("/api/events"));
+}
+
+#[tokio::test]
+async fn direct_configuration_deep_link_serves_embedded_ui_index() {
+    assert!(crate::api::server::is_console_index_route(
+        "/configuration/defaults"
+    ));
+
+    if mesh_llm_ui::index().is_none() {
+        return;
+    }
+
+    let state = build_test_mesh_api().await;
+    let (addr, handle) = spawn_management_test_server(state).await;
+
+    let response = send_management_request(
+        addr,
+        "GET /configuration/defaults HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
+    )
+    .await;
+
+    assert!(
+        response.starts_with("HTTP/1.1 200 OK"),
+        "expected direct configuration deep link to serve UI index, got: {response}"
+    );
+    assert!(
+        response.contains("Content-Type: text/html; charset=utf-8"),
+        "expected HTML response for UI deep link, got: {response}"
+    );
+    assert!(
+        !response.contains(r#"{"error":"Not found"}"#),
+        "UI deep link must not fall through to JSON 404"
+    );
+    handle.await.unwrap().unwrap();
 }
 
 #[test]

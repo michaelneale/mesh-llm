@@ -236,7 +236,7 @@ LLAMA_WORKDIR="$LLAMA_DIR" \
 if [[ "$SKIP_UI" == "1" ]]; then
     echo "Skipping UI build (MESH_LLM_SKIP_UI=1 or --skip-ui)."
 elif [[ -d "$UI_DIR" ]]; then
-    "$SCRIPT_DIR/build-ui.sh" "$UI_DIR"
+    MESH_LLM_BUILD_PROFILE="${MESH_LLM_BUILD_PROFILE:-debug}" "$SCRIPT_DIR/build-ui.sh" "$UI_DIR"
 fi
 
 if [[ "${MESH_LLM_BUILD_PROFILE:-debug}" == "dev" || "${MESH_LLM_BUILD_PROFILE:-debug}" == "debug" ]]; then

@@ -252,6 +252,7 @@ mod tests {
             defaults: None,
             models: vec![],
             plugins: vec![],
+            extra: Default::default(),
         }
     }
 
@@ -420,6 +421,84 @@ alias = "model-alias"
     }
 
     #[test]
+    fn config_sync_state_apply_preserves_additive_defaults_sections() {
+        let dir = test_dir();
+        let config_path = dir.join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"version = 1
+
+[defaults.throughput]
+parallel = 2
+
+[defaults.model_fit]
+flash_attention = "auto"
+
+[defaults.request_defaults]
+reasoning_format = "deepseek"
+"#,
+        )
+        .expect("write baseline config");
+
+        let mut state = ConfigState::load(&config_path).expect("load baseline config");
+        let mut config = minimal_valid_config();
+        config.extra = toml::from_str(
+            r#"[defaults.throughput]
+parallel = 6
+
+[defaults.model_fit]
+flash_attention = "disabled"
+
+[defaults.request_defaults]
+reasoning_format = "qwen"
+"#,
+        )
+        .expect("parse additive defaults table");
+
+        let result = state.apply(config, 0);
+        match result {
+            ApplyResult::Applied {
+                revision,
+                apply_mode,
+                ..
+            } => {
+                assert_eq!(revision, 1);
+                assert_eq!(apply_mode, ConfigApplyMode::Staged);
+            }
+            other => panic!("expected additive defaults to be written, got {other:?}"),
+        }
+
+        let written = std::fs::read_to_string(&config_path).expect("read written config");
+        let written: toml::Value = toml::from_str(&written).expect("written TOML parses");
+        assert_eq!(
+            written
+                .get("defaults")
+                .and_then(|defaults| defaults.get("throughput"))
+                .and_then(|throughput| throughput.get("parallel"))
+                .and_then(toml::Value::as_integer),
+            Some(6)
+        );
+        assert_eq!(
+            written
+                .get("defaults")
+                .and_then(|defaults| defaults.get("model_fit"))
+                .and_then(|model_fit| model_fit.get("flash_attention"))
+                .and_then(toml::Value::as_str),
+            Some("disabled")
+        );
+        assert_eq!(
+            written
+                .get("defaults")
+                .and_then(|defaults| defaults.get("request_defaults"))
+                .and_then(|request_defaults| request_defaults.get("reasoning_format"))
+                .and_then(toml::Value::as_str),
+            Some("qwen")
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn config_sync_state_conflict() {
         let dir = test_dir();
         let config_path = dir.join("config.toml");
@@ -498,6 +577,7 @@ alias = "model-alias"
                 ..Default::default()
             }],
             plugins: vec![],
+            extra: Default::default(),
         };
 
         assert_eq!(state.revision(), 0);
@@ -541,6 +621,7 @@ alias = "model-alias"
                 ..Default::default()
             }],
             plugins: vec![],
+            extra: Default::default(),
         };
         state.apply(config_with_model, 0);
         let new_hash = *state.config_hash();
@@ -697,6 +778,7 @@ temperature = 0.2
                 ..Default::default()
             }],
             plugins: vec![],
+            extra: Default::default(),
         };
 
         let r1 = state.apply(config_with_model.clone(), 0);
