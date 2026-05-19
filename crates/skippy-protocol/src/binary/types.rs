@@ -7,6 +7,12 @@ use super::{
 
 pub const STAGE_STATE_VERSION: i32 = 6;
 pub const MAX_STAGE_LOGIT_BIAS: usize = 256;
+pub const MAX_STAGE_PREDICTED_TOKENS: usize = 262_144;
+pub const MAX_STAGE_SIDEBAND_VALUES: usize = 1_048_576;
+pub const MAX_STAGE_CHAT_SAMPLING_METADATA_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_STAGE_STATE_IMPORT_BYTES: usize = 512 * 1024 * 1024;
+pub const MAX_STAGE_ACTIVATION_BYTES: usize = 512 * 1024 * 1024;
+pub const MAX_STAGE_DECODED_ACTIVATION_BYTES: usize = 512 * 1024 * 1024;
 pub const READY_MAGIC: i32 = 0x5352_4459; // "SRDY"
 pub const LLAMA_TOKEN_NULL: i32 = -1;
 pub const STAGE_STATE_HEADER_BYTES: usize = 10 * 4;
@@ -408,7 +414,14 @@ impl StageWireMessage {
             return Ok(Vec::new());
         }
         match self.state.dtype()? {
-            WireActivationDType::F32 => Ok(self.activation.clone()),
+            WireActivationDType::F32 => {
+                if self.activation.len() > MAX_STAGE_DECODED_ACTIVATION_BYTES {
+                    return Err(invalid_data(
+                        "decoded activation payload byte count exceeds maximum",
+                    ));
+                }
+                Ok(self.activation.clone())
+            }
             WireActivationDType::F16 => decode_f16_to_f32_bytes(&self.activation),
             WireActivationDType::Q8 => decode_q8_to_f32_bytes_with_state_flags(
                 &self.activation,

@@ -17,9 +17,11 @@ pub use types::{
     StageLogitBias, StageReply, StageReplyStats, StageSamplingConfig, StageStateHeader,
     StageWireMessage, WireActivationDType, WireMessageKind, WireReplyKind, WireStagePhase,
     ACTIVATION_FLAG_GEMMA3N_ALTUP, ACTIVATION_FLAG_RWKV7_V_FIRST, LLAMA_TOKEN_NULL,
-    MAX_STAGE_LOGIT_BIAS, READY_MAGIC, STAGE_LOGIT_BIAS_WIRE_BYTES,
-    STAGE_SAMPLING_CONFIG_BASE_BYTES, STAGE_STATE_HEADER_BYTES, STAGE_STATE_VERSION,
-    STAGE_WIRE_FIXED_HEADER_BYTES,
+    MAX_STAGE_ACTIVATION_BYTES, MAX_STAGE_CHAT_SAMPLING_METADATA_BYTES,
+    MAX_STAGE_DECODED_ACTIVATION_BYTES, MAX_STAGE_LOGIT_BIAS, MAX_STAGE_PREDICTED_TOKENS,
+    MAX_STAGE_SIDEBAND_VALUES, MAX_STAGE_STATE_IMPORT_BYTES, READY_MAGIC,
+    STAGE_LOGIT_BIAS_WIRE_BYTES, STAGE_SAMPLING_CONFIG_BASE_BYTES, STAGE_STATE_HEADER_BYTES,
+    STAGE_STATE_VERSION, STAGE_WIRE_FIXED_HEADER_BYTES,
 };
 
 pub(crate) fn invalid_data(message: &'static str) -> std::io::Error {
@@ -34,6 +36,56 @@ pub(crate) fn invalid_input(message: &'static str) -> std::io::Error {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    fn push_i32(bytes: &mut Vec<u8>, value: i32) {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_u32(bytes: &mut Vec<u8>, value: u32) {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_u64(bytes: &mut Vec<u8>, value: u64) {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_state_header(bytes: &mut Vec<u8>, state: StageStateHeader) {
+        push_i32(bytes, state.version);
+        push_i32(bytes, state.seq_id);
+        push_i32(bytes, state.phase);
+        push_i32(bytes, state.flags);
+        push_i32(bytes, state.checkpoint_generation);
+        push_i32(bytes, state.prompt_token_count);
+        push_i32(bytes, state.decode_step);
+        push_i32(bytes, state.current_token);
+        push_i32(bytes, state.source_stage_index);
+        push_i32(bytes, state.reserved);
+    }
+
+    fn stage_frame_prefix(
+        kind: WireMessageKind,
+        token_count: i32,
+        token_sideband_count: i32,
+        position_sideband_count: i32,
+        state: StageStateHeader,
+    ) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        push_i32(&mut bytes, kind as i32);
+        push_i32(&mut bytes, 0);
+        push_i32(&mut bytes, token_count);
+        push_i32(&mut bytes, token_sideband_count);
+        push_i32(&mut bytes, position_sideband_count);
+        push_state_header(&mut bytes, state);
+        push_u64(&mut bytes, 7);
+        push_u64(&mut bytes, 11);
+        bytes
+    }
+
+    fn assert_invalid_data<T: std::fmt::Debug>(result: std::io::Result<T>, expected: &str) {
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), expected);
+    }
 
     #[test]
     fn ready_round_trips() {
@@ -61,6 +113,22 @@ mod tests {
         assert_eq!(reply.kind, WireReplyKind::PredictedTokens);
         assert_eq!(reply.predicted, 1);
         assert_eq!(reply.predicted_tokens, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn reply_rejects_predicted_token_count_over_limit() {
+        let mut bytes = Vec::new();
+        push_i32(&mut bytes, WireReplyKind::PredictedTokens as i32);
+        push_i32(&mut bytes, 1);
+        push_i32(
+            &mut bytes,
+            i32::try_from(MAX_STAGE_PREDICTED_TOKENS + 1).unwrap(),
+        );
+
+        assert_invalid_data(
+            recv_reply(Cursor::new(bytes)),
+            "predicted token count exceeds maximum",
+        );
     }
 
     #[test]
@@ -156,6 +224,25 @@ mod tests {
     }
 
     #[test]
+    fn stage_message_rejects_sampling_metadata_length_over_limit() {
+        let mut state = StageStateHeader::new(
+            WireMessageKind::ConfigureGeneration,
+            WireActivationDType::F32,
+        );
+        state.flags |= state_flags::CHAT_SAMPLING_METADATA;
+        let mut bytes = stage_frame_prefix(WireMessageKind::ConfigureGeneration, 0, 0, 0, state);
+        push_u32(
+            &mut bytes,
+            u32::try_from(MAX_STAGE_CHAT_SAMPLING_METADATA_BYTES + 1).unwrap(),
+        );
+
+        assert_invalid_data(
+            read_stage_message(Cursor::new(bytes), 2048),
+            "chat sampling metadata length exceeds maximum",
+        );
+    }
+
+    #[test]
     fn driver_origin_message_round_trips_without_activation() {
         let mut state =
             StageStateHeader::new(WireMessageKind::PrefillEmbd, WireActivationDType::F32);
@@ -186,6 +273,44 @@ mod tests {
         assert_eq!(decoded.session_id, 17);
         assert_eq!(decoded.state.flags & state_flags::SAMPLING, 0);
         assert!(decoded.sampling.is_none());
+    }
+
+    #[test]
+    fn stage_message_rejects_token_sideband_count_over_limit() {
+        let mut state =
+            StageStateHeader::new(WireMessageKind::PrefillEmbd, WireActivationDType::F32);
+        state.source_stage_index = -1;
+        let bytes = stage_frame_prefix(
+            WireMessageKind::PrefillEmbd,
+            0,
+            i32::try_from(MAX_STAGE_SIDEBAND_VALUES + 1).unwrap(),
+            0,
+            state,
+        );
+
+        assert_invalid_data(
+            read_stage_message(Cursor::new(bytes), 2048),
+            "token sideband count exceeds maximum",
+        );
+    }
+
+    #[test]
+    fn stage_message_rejects_position_sideband_count_over_limit() {
+        let mut state =
+            StageStateHeader::new(WireMessageKind::PrefillEmbd, WireActivationDType::F32);
+        state.source_stage_index = -1;
+        let bytes = stage_frame_prefix(
+            WireMessageKind::PrefillEmbd,
+            0,
+            0,
+            i32::try_from(MAX_STAGE_SIDEBAND_VALUES + 1).unwrap(),
+            state,
+        );
+
+        assert_invalid_data(
+            read_stage_message(Cursor::new(bytes), 2048),
+            "position sideband count exceeds maximum",
+        );
     }
 
     #[test]
@@ -283,6 +408,47 @@ mod tests {
     }
 
     #[test]
+    fn state_import_rejects_raw_byte_count_over_limit() {
+        let state = StageStateHeader::new(WireMessageKind::StateImport, WireActivationDType::F32);
+        let bytes = stage_frame_prefix(
+            WireMessageKind::StateImport,
+            i32::try_from(MAX_STAGE_STATE_IMPORT_BYTES + 1).unwrap(),
+            0,
+            0,
+            state,
+        );
+
+        assert_invalid_data(
+            read_stage_message(Cursor::new(bytes), 2048),
+            "state import byte count exceeds maximum",
+        );
+    }
+
+    #[test]
+    fn state_import_writer_rejects_raw_byte_count_mismatch() {
+        let state = StageStateHeader::new(WireMessageKind::StateImport, WireActivationDType::F32);
+        let message = StageWireMessage {
+            kind: WireMessageKind::StateImport,
+            pos_start: 0,
+            token_count: 8,
+            state,
+            request_id: 31,
+            session_id: 37,
+            sampling: None,
+            chat_sampling_metadata: None,
+            tokens: Vec::new(),
+            positions: Vec::new(),
+            activation: Vec::new(),
+            raw_bytes: vec![1, 2, 3, 4],
+        };
+        let mut bytes = Vec::new();
+        let error = write_stage_message(&mut bytes, &message, WireActivationDType::F32)
+            .expect_err("mismatched state import byte count should fail");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "state import raw byte count mismatch");
+    }
+
+    #[test]
     fn state_export_message_round_trips_without_payload() {
         let state = StageStateHeader::new(WireMessageKind::StateExport, WireActivationDType::F32);
         let message = StageWireMessage {
@@ -306,6 +472,101 @@ mod tests {
         assert!(decoded.raw_bytes.is_empty());
         assert!(decoded.tokens.is_empty());
         assert!(decoded.activation.is_empty());
+    }
+
+    #[test]
+    fn stage_message_rejects_activation_payload_over_limit() {
+        let mut state =
+            StageStateHeader::new(WireMessageKind::DecodeEmbd, WireActivationDType::F32);
+        state.source_stage_index = 0;
+        state.flags |= state_flags::GEMMA3N_ALTUP_SIDEBAND;
+        let token_count = i32::try_from(MAX_STAGE_ACTIVATION_BYTES / 4 / 4 / 1024 + 1).unwrap();
+        let bytes = stage_frame_prefix(WireMessageKind::DecodeEmbd, token_count, 0, 0, state);
+
+        assert_invalid_data(
+            read_stage_message(Cursor::new(bytes), 1024),
+            "activation payload byte count exceeds maximum",
+        );
+    }
+
+    #[test]
+    fn stage_message_rejects_f16_activation_when_decoded_payload_exceeds_limit() {
+        let mut state =
+            StageStateHeader::new(WireMessageKind::DecodeEmbd, WireActivationDType::F16);
+        state.source_stage_index = 0;
+        let n_embd = 65_536;
+        let token_count =
+            i32::try_from(MAX_STAGE_DECODED_ACTIVATION_BYTES / 4 / n_embd as usize + 1).unwrap();
+        let wire_bytes = activation_wire_bytes_with_state_flags(
+            WireActivationDType::F16,
+            token_count,
+            n_embd,
+            0,
+        )
+        .unwrap();
+        assert!(wire_bytes <= MAX_STAGE_ACTIVATION_BYTES);
+        let bytes = stage_frame_prefix(WireMessageKind::DecodeEmbd, token_count, 0, 0, state);
+
+        assert_invalid_data(
+            read_stage_message(Cursor::new(bytes), n_embd),
+            "decoded activation payload byte count exceeds maximum",
+        );
+    }
+
+    #[test]
+    fn stage_message_rejects_q8_activation_when_decoded_payload_exceeds_limit() {
+        let mut state = StageStateHeader::new(WireMessageKind::DecodeEmbd, WireActivationDType::Q8);
+        state.source_stage_index = 0;
+        let n_embd = 65_536;
+        let token_count =
+            i32::try_from(MAX_STAGE_DECODED_ACTIVATION_BYTES / 4 / n_embd as usize + 1).unwrap();
+        let wire_bytes =
+            activation_wire_bytes_with_state_flags(WireActivationDType::Q8, token_count, n_embd, 0)
+                .unwrap();
+        assert!(wire_bytes <= MAX_STAGE_ACTIVATION_BYTES);
+        let bytes = stage_frame_prefix(WireMessageKind::DecodeEmbd, token_count, 0, 0, state);
+
+        assert_invalid_data(
+            read_stage_message(Cursor::new(bytes), n_embd),
+            "decoded activation payload byte count exceeds maximum",
+        );
+    }
+
+    #[test]
+    fn stage_message_rejects_q8_sideband_activation_when_decoded_payload_exceeds_limit() {
+        let mut state = StageStateHeader::new(WireMessageKind::DecodeEmbd, WireActivationDType::Q8);
+        state.source_stage_index = 0;
+        state.flags |= state_flags::GEMMA3N_ALTUP_SIDEBAND;
+        let n_embd = 65_536;
+        let token_count =
+            i32::try_from(MAX_STAGE_DECODED_ACTIVATION_BYTES / 4 / 4 / n_embd as usize + 1)
+                .unwrap();
+        let wire_bytes = activation_wire_bytes_with_state_flags(
+            WireActivationDType::Q8,
+            token_count,
+            n_embd,
+            state.flags,
+        )
+        .unwrap();
+        assert!(wire_bytes <= MAX_STAGE_ACTIVATION_BYTES);
+        let bytes = stage_frame_prefix(WireMessageKind::DecodeEmbd, token_count, 0, 0, state);
+
+        assert_invalid_data(
+            read_stage_message(Cursor::new(bytes), n_embd),
+            "decoded activation payload byte count exceeds maximum",
+        );
+    }
+
+    #[test]
+    fn activation_encoding_rejects_decoded_payload_over_limit_before_compression() {
+        let n_embd = 65_536;
+        let token_count =
+            i32::try_from(MAX_STAGE_DECODED_ACTIVATION_BYTES / 4 / n_embd as usize + 1).unwrap();
+
+        assert_invalid_data(
+            encode_f32_activation_payload(WireActivationDType::F16, token_count, n_embd, &[]),
+            "decoded activation payload byte count exceeds maximum",
+        );
     }
 
     #[test]
