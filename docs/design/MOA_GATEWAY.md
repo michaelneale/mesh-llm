@@ -357,243 +357,225 @@ client, no recursive hook loops.
   fewer workers but this limits model diversity.
 
 ---
-## Diverse-mesh vs split-large: the equal-VRAM trade
+## Diverse-mesh vs split-large: the operating-envelope question
 
 > **Status: research plan, not yet run.** No comparison numbers exist.
 > This section is the experimental design — including what would falsify
-> the hypothesis, so we cannot claim a win after the fact by moving the
+> the framing — so we cannot claim a win after the fact by moving the
 > goalposts.
 
-### The real question
+### What this is and is not about
 
-Given fixed aggregate (V)RAM across a mesh — say 128 GB on one machine
-and 256 GB on another, 384 GB total — there are two ways to spend it:
+This is **not** a benchmark fight. We are not trying to show that a
+diverse mix of mid-size models scores higher on a quality rubric than a
+single large model sharded across the same hardware. In a tight
+interconnect with no network constraint, split-large should win on
+quality and is the right tool — that is not in dispute.
 
-| Option | Shape | Network on hot path? |
-|---|---|---|
-| **Split-large** | One big model (e.g. 70B Q4) sharded across both machines via Skippy | **Every token.** Each layer-boundary crossing pays an RTT. |
-| **Mix-diverse** | 2–3 mid-size models (e.g. 32B + 32B different families), each fully local to one node, fanned out via `model: "mesh"` | **Once per turn.** Fan-out + collect + reducer. Workers run independently. |
+This **is** about *operating envelopes*. Split-large has a hard
+practical ceiling on a real mesh: every cross-node hop sits on the
+critical path of every output token, and that path is bounded by the
+worst link in the route. There is a point — defined by mesh size,
+network latency, packet loss, and peer reliability — beyond which
+split-large stops producing acceptable interactive performance at all.
 
-The question this eval answers is **not** "is mixture smarter than one big
-model on equal compute?" It is:
+MoA (`model: "mesh"`) has a much higher ceiling. Each worker runs
+fully local on one node, so within a single worker's inference the
+network is not on the critical path. The network is only touched at
+fan-out, output collection, and the reducer call. That changes the
+shape of the failure mode entirely: a slow link slows the *whole turn*
+slightly, instead of stalling *every token*.
 
-> At equal aggregate (V)RAM, on a real mesh with realistic network
-> conditions, **where does mix-diverse beat split-large on the
-> quality-vs-latency Pareto, and how does that frontier shift as the link
-> degrades?**
+The load-bearing claim is therefore:
 
-This is a sharper claim because it predicts when each approach should
-win, and it makes the two existing systems (Skippy split, MoA fan-out)
-**complementary** rather than competing. The network condition decides
-which one is correct.
+> **MoA stays inside the acceptable operating envelope for interactive
+> agent use across a much wider range of mesh conditions than
+> split-large does. Where both are viable, split-large generally wins
+> on quality. Where only MoA is viable, MoA produces acceptable answers
+> that split-large cannot produce at all.**
 
-### Why this is the load-bearing framing
+That is a *complementary* positioning, not a competitive one. The
+network condition decides which tool is correct. We use split when we
+can; we use mix when we can't.
 
-Split-large already wins on quality in the datacenter case. Nobody
-should claim 32B + 32B mixture beats a 70B with a fast interconnect.
-Pretending otherwise is the kind of overreach that costs the project
-credibility.
+### What "acceptable" means — pick this before measuring anything
 
-The mesh case is exactly where split-large hurts most. Every cross-node
-hop is unpredictable on real-world links — laptops, home machines,
-different ISPs, QUIC over the open internet. A 70B split across two
-homes-with-fiber will be slower and more fragile than the same model in
-a single rack, and there is no fix for that short of "stop splitting."
+Every later claim depends on a concrete definition of acceptable. For
+interactive agent use (goose, Claude Code, pi):
 
-Conversely, MoA's apparent "weaknesses" become features in mesh
-conditions: per-worker latency variance doesn't matter much when the
-alternative is variance from network-on-critical-path. A slow peer
-becomes a degraded turn, not a hung turn. A dropped peer becomes fewer
-workers, not a failed turn.
-
-### Hypothesis (sharpened)
-
-The mix-diverse path **dominates** split-large on the quality-vs-latency
-Pareto frontier when **any of these holds**:
-
-1. **Cross-node link is high-latency** (≥ 20 ms RTT between mesh peers)
-2. **Cross-node link is lossy or jittery** (≥ 1% packet loss, or RTT
-   stddev comparable to the mean)
-3. **Mesh has ≥ 3 nodes** (split's per-token latency grows with
-   boundary count; MoA's wall-clock stays bounded by slowest worker)
-
-Conversely, split-large dominates when the link is LAN-grade and the
-mesh is exactly two nodes. Both are defensible regions of operation.
-
-### What would falsify the hypothesis
-
-Pre-committed, so we don't move goalposts after seeing data:
-
-- On a degraded link (e.g. +30 ms RTT, 1% loss) at equal aggregate VRAM,
-  split-large still dominates mix-diverse on the Pareto front for **every**
-  task type → **falsified**, the network-tolerance claim was wrong.
-- Mix-diverse with N copies of the **same** model performs the same as
-  mix-diverse with N **different** models within grader noise →
-  **falsified as "diverse"**; the value is sampling-variance reduction,
-  not mixture of perspectives, and we should rename and re-pitch the
-  feature.
-- Mix-diverse's lead does not grow as mesh size increases from 2 → 3 → 4
-  nodes → **the scalability claim is wrong** and split-large's
-  multi-node story isn't actually worse.
-
-### Step 1 — measure the variance floor first
-
-Before any A/B claim is meaningful, establish the noise band. Same
-single model, same prompt, 10 runs with different sampling seeds.
-The standard deviation of grades sets the minimum detectable effect.
-If a single 32B model fluctuates by ±0.8 on a 1–5 grade across seeds,
-then a 0.3-point lead is in the noise and is not a result.
-
-Most A/B writeups skip this and claim effects smaller than their own
-measurement error. We will not.
-
-### Step 2 — the three-way comparison at equal VRAM
-
-All three configurations on the same physical hardware, fixed
-aggregate VRAM budget, fixed traffic. This is the headline experiment.
-
-| Config | Example on 128 GB + 256 GB mesh | What it represents |
-|---|---|---|
-| **Split-large** | One 70B Q4 sharded across both machines (Skippy) | "Spend the VRAM on one bigger mind" |
-| **Mix-diverse** | 32B model A on box 1, 32B model B on box 2, optional 8B on either, via `model: "mesh"` | "Spend the VRAM on multiple independent minds" |
-| **Single-mid** | `auto` picks the strongest of the mid-size models | Sanity floor — what one of the diverse models gives you alone |
-
-Single-mid is the baseline that catches "MoA = single-best + overhead"
-silently. If mix-diverse is not measurably above single-mid, the
-fan-out is paying latency for nothing.
-
-### Step 3 — the network sweep is the actual experiment
-
-Quality alone is not the headline. The deliverable is a 2-D scatter:
-quality on Y, latency p50 on X, one curve per config per network
-condition.
-
-| Network condition | How to simulate | What we expect |
-|---|---|---|
-| LAN baseline | Two boxes on same switch | Split-large wins outright |
-| +20 ms RTT | `tc qdisc add ... netem delay 20ms` on inter-node link | Crossover begins |
-| +50 ms RTT | `netem delay 50ms` | Mix-diverse leads on latency, ties on quality |
-| 1% packet loss | `netem loss 1%` | Split-large becomes flaky; mix-diverse mostly unaffected |
-| 5% packet loss | `netem loss 5%` | Split-large unusable; mix-diverse degrades gracefully |
-
-The interesting point in each plot is the **crossover** — the network
-condition at which mix-diverse starts dominating. That's the headline
-number, not raw win counts.
-
-### Step 4 — mesh-size scaling
-
-Run the same equal-VRAM comparison at 2, 3, and 4 nodes (with VRAM
-budget scaled accordingly).
-
-- **Split-large:** per-token latency should grow roughly linearly with
-  boundary count, because every additional split adds one more RTT to
-  the hot path.
-- **Mix-diverse:** wall-clock stays bounded by slowest worker. Adding
-  a fourth node gives one more independent worker for arbitration,
-  which can either improve quality or do nothing — but should not
-  materially worsen latency.
-
-If split-large's latency does *not* grow with node count, the
-"mix-diverse scales better" claim is wrong and should be retracted.
-
-### Step 5 — task-type breakdown (quality measurement)
-
-Within the equal-VRAM, network-sweep frame, the quality axis still
-needs to be measured against real task types. Adversarial design from
-the earlier draft applies here as the *implementation* of quality, not
-the headline:
-
-**Tasks mix-diverse should win on (decomposable correctness)**
-- Tool routing with strict format constraints
-- Multi-symptom bugs (two independent defects)
-- Constraint adherence ("don't touch the imports")
-
-**Tasks both should tie on (single coherent thread)**
-- Long-form prose
-- Step-by-step procedural answers
-
-**Tasks mix-diverse could lose on (failure-mode amplification)**
-- Plausible-but-wrong defaults — if multiple workers make the same
-  natural-looking mistake, consensus *amplifies* it
-- Single-dominant-fact recall — split-large's bigger weights are more
-  likely to know the fact
-- Recency-sensitive questions
-
-Without the third group the result is a confirmation exercise, not a
-test.
-
-### Step 6 — ablations to find the mechanism
-
-If mix-diverse wins, *why*? Component-by-component:
-
-| Ablation | What it isolates |
+| Dimension | Acceptable threshold (proposed) |
 |---|---|
-| Mix with early-exit disabled (always reducer) | Is the win from consensus or from reducer synthesis? |
-| Mix with reducer disabled (return best worker) | Is the reducer paying its latency cost? |
-| N=2 vs N=3 vs N=5 | Marginal value of each additional worker |
-| **All workers same model** (sampling diversity only) | Mixture vs variance reduction |
-| Random reducer choice vs strongest-first | Does reducer selection matter? |
+| Time to first token | ≤ 3 s on a fresh turn |
+| Total turn wall-clock | ≤ 45 s for typical agent tasks |
+| Turn failure rate | ≤ 2% over a representative session |
+| Quality | ≥ baseline of a single mid-size local model on the same task |
 
-The same-model-N-workers ablation is the most important: if it
-performs the same as different-model-N-workers, the feature is
-"consensus voting for variance reduction" and should be described that
-way, not as "mixture of agents."
+These numbers are starting proposals, not gospel. They should be
+ratified before any matrix run — otherwise we will retrofit
+"acceptable" to whatever the data happens to show. A configuration
+that exceeds **any** of these thresholds is **off the envelope** for
+that operating point, regardless of how it scores on the others.
 
-### Step 7 — grader robustness
+The quality floor is deliberately set at "≥ single mid-size local
+model on the same task." MoA's job in the MoA-only region is not to
+match a hypothetical 70B running in a datacenter — it is to be at
+least as good as the best thing the user could otherwise run locally,
+while staying inside the latency and reliability budget.
 
-Agent-as-judge has well-documented failure modes. Required defenses:
+### The three configurations to measure
 
-- **Position swap.** Re-grade with config order reversed; agreement
-  must hold above ~95%.
-- **Dual grader.** Two different grader models on the same outputs;
-  correlate.
-- **Manual spot-check.** Hand-grade 10% of pairs; agreement with
-  automated graders must be ≥ ~80%.
+All on the same physical hardware, fixed aggregate VRAM budget:
 
-### Step 8 — real-task replay
+| Config | What it is | Failure mode |
+|---|---|---|
+| **Split-large** | One large model (e.g. 70B Q4) sharded across nodes via Skippy | Network on every token's critical path; per-token latency grows with RTT and boundary count |
+| **Mix-diverse** | MoA over 2–3 mid-size models, each fully local on one node | Per-worker latency stays local; turn latency = slowest worker + reducer |
+| **Single-mid** | One mid-size model on one node (no mesh use of the second machine) | Sanity baseline; the floor any other config must beat to justify itself |
 
-Curated scenarios are prone to experimenter intuition. Replay a
-sample of real first-turn prompts (from contributors' own goose /
-Claude Code / pi sessions, with consent) through all three configs at
-each network condition. If mix-diverse wins on curated scenarios but
-loses on real-traffic replay, the curated set was the wrong selection.
-Real traffic is the acceptance test.
+Single-mid is the **quality floor**. If MoA isn't above it, we have no
+story — MoA is just adding latency without value. It is in the matrix
+explicitly so we cannot accidentally ship "MoA = single-best + overhead."
+
+### Primary axis: network conditions
+
+This is the real experiment. Run all three configs across:
+
+- **LAN baseline** — same switch, sub-ms RTT, no induced loss
+- **+20 ms RTT** — typical metro-to-metro link
+- **+50 ms RTT** — typical cross-region link
+- **1% packet loss** at +20 ms — flaky residential link
+- **5% packet loss** at +20 ms — broken-but-functional link
+- **Peer churn** — one peer dropped mid-turn, returned mid-turn
+
+The deliverable is **not** a Pareto curve of who's higher. It is a
+**viability map**: for each (config × network condition) cell, is the
+config inside the acceptable envelope at all?
+
+```
+                  LAN    +20ms  +50ms  1%loss  5%loss  churn
+split-large       ok     ok     warn   no      no      no
+mix-diverse       ok     ok     ok     ok      warn    ok
+single-mid        ok     ok     ok     ok      ok      n/a
+```
+
+(Cells filled in illustratively, not measured.) The interesting
+boundary is the **first column where split-large drops to `no` and
+mix-diverse stays `ok`** — that is the operating range where MoA is
+the only viable mesh-aggregated option, and the entire feature's
+justification.
+
+In cells where both are viable, the secondary question — quality
+comparison — kicks in and matters. In cells where only one is viable,
+the comparison is moot.
+
+### Secondary axis: mesh size
+
+Re-run the network sweep at 2, 3, and 4 nodes. Predictions if the
+framing is right:
+
+- Split-large's viable range **shrinks** as nodes are added — each
+  additional boundary multiplies network exposure per token
+- Mix-diverse's viable range stays roughly **flat** — adding nodes
+  adds workers but doesn't change per-worker locality
+
+If split-large's viability *doesn't* shrink with mesh size, our claim
+that "split has practical limits on a real mesh" is wrong as stated
+and needs to be retracted or qualified.
+
+### Tertiary axis: quality, only inside the viable region
+
+Quality measurement is **demoted** here. It exists to answer one
+specific question:
+
+> In the region where MoA is viable and split-large is not, are MoA's
+> answers above the single-mid quality floor?
+
+If yes, MoA's value-prop holds: it extends the operating envelope to
+mesh conditions where split-large can't go, while producing answers at
+least as good as what the user could run locally on one node.
+
+If no — if MoA stays inside the latency envelope but its answers are
+worse than a single mid-size local model would have produced — then
+the user is better off ignoring the mesh and just running locally, and
+MoA's claim collapses.
+
+The quality measurement itself uses the same machinery the earlier
+draft described: adversarial scenarios spanning decomposable
+correctness, single coherent thread, and failure-mode amplification;
+agent-as-grader with position swap and dual-grader checks; real-task
+replay as the strongest defense against scenario cherry-picking.
+Those mechanics are not the headline — they are how we estimate the
+quality dimension of the envelope.
+
+### What would falsify this framing
+
+Pre-committed, so we don't retreat to softer claims after seeing data:
+
+- **Split-large's viable region does not shrink as the mesh degrades
+  or grows.** If split-large stays inside the envelope at +50 ms,
+  modest loss, or 4-node configs, then "MoA extends the operating
+  envelope past split's limits" is wrong — there is no envelope to
+  extend.
+- **MoA's viable region does not extend past split-large's.** If both
+  fail in the same cells, MoA is not buying envelope expansion, it's
+  just a different way to fail.
+- **MoA quality in the MoA-only region falls below the single-mid
+  floor.** If MoA only "works" by producing answers worse than the
+  user's local fallback, the feature is net-negative.
+- **Same-model-N-workers performs equivalently to different-model-N-
+  workers** *and* MoA still extends the envelope past split. Then the
+  envelope extension is real but the value source is variance
+  reduction, not mixture — the feature should be re-described as such
+  and "diverse" is misleading.
+
+If any of those hold, the framing in this section is wrong and the
+doc must be updated to reflect what the data actually showed, not
+softened to fit.
 
 ### Reporting discipline
 
-Every result table must include:
+Every result must include:
 
-- N per cell
-- Variance-floor reference for the relevant model size
-- Grader version (model + rubric version)
-- Mesh composition (exact model list and node placement)
-- **Network condition (RTT, loss, jitter)**
-- Aggregate VRAM budget (so equal-VRAM claim is auditable)
-- Latency percentiles (p50, p95), not just mean
-- Early-exit rate from `x-moa-*` headers (mix-diverse only)
-- For split-large: cross-node bytes per token (so we can correlate
-  with network condition)
+- Acceptable-envelope thresholds in force (TTFT, total turn, failure
+  rate, quality floor)
+- Exact mesh composition (model list per node, total VRAM per node)
+- Network conditions in force (RTT, loss, churn schedule)
+- Per-config viability flag (`ok` / `warn` / `no`) against each
+  threshold
+- Quality numbers reported only for cells where the config is viable;
+  reporting quality for a non-viable cell is misleading
 
-A win is a result that exceeds the variance floor by ≥ 1.5×, holds
-under position swap, replicates with a second grader, and is visible
-as Pareto dominance — not just a higher mean.
+A claim like "MoA wins" is not reportable. Reportable claims look
+like: *"At +20 ms RTT with 1% loss across 3 nodes, split-large
+exceeds the TTFT threshold (measured 7.2 s, threshold 3 s) and is
+non-viable; mix-diverse stays inside all thresholds and scores 3.9 on
+the quality rubric vs single-mid's 3.6."* That sentence is concrete,
+falsifiable, and locates the result on the viability map.
 
 ### Worker-set knob (deferred, harness-side only)
 
-Several steps above (equal-VRAM mix-diverse, same-model ablation,
-composition sweep) require restricting which models MoA fans out to.
-Currently `model: "mesh"` uses every callable model. The knob belongs
-in the eval harness, not in the crate: either pre-flight filter
-`/v1/models` to the allowed set, or send a header
-(e.g. `x-moa-workers-include: A,B`) the gateway honors. The crate
-already has the machinery to filter the worker pool; no semantic
-change required, just a knob.
+To run the same-model-N-workers ablation cleanly, the eval needs a
+way to restrict MoA's worker pool. The current `model: "mesh"` uses
+every callable model.
+
+When needed, this belongs in the eval harness, not the crate: either
+pre-flight filter `/v1/models` to an allowed set before launching, or
+have the harness send a header (e.g. `x-moa-workers-include: A,B`)
+that the gateway honors. No semantic change to the crate, just a
+knob.
 
 ### Status / next step
 
-No matrix has been run. The first concrete step is **Step 1, the
-variance floor**, on whichever mesh we have available. Without it, no
-later result can be claimed significant. After variance floor, the
-priority is the **Step 2 three-way at LAN baseline** — if split-large
-doesn't dominate there, our network-condition framing is wrong and we
-need to rethink before running the network sweep.
+No matrix has been run. The concrete first step is **pinning the
+acceptable-envelope thresholds** above with the team — TTFT, total
+turn time, failure rate, quality floor — *before* any measurement
+starts. Those numbers are the load-bearing definition of the entire
+experiment. Everything else flows from them.
+
+The second step, only after thresholds are pinned, is a single-cell
+measurement at LAN baseline with the three configs, to confirm the
+machinery works and that split-large does in fact dominate quality
+when the network isn't constraining it. If split-large doesn't win
+at LAN baseline, our entire framing of "split is best when network
+allows" is wrong and we need to rethink before running the network
+sweep.
