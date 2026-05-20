@@ -171,72 +171,83 @@ Adds two regression tests:
 * `explicit_parallel_can_exceed_auto_ceiling` covers the operator
   override path.
 
-### D. Prefix-cache budget tightened for unified-KV serving (commit `32061e8c`)
+### D. Prefix-cache budget bounded by KV cell pool, not just entries/bytes (commits `32061e8c`, `8cb6fe4b`)
 
 **Symptom**: sustained agent traffic against a node serving via
-skippy's unified-KV stage runtime exhausts the shared KV cell pool.
-Observed on a Mac Studio M3 Ultra serving MiniMax-M2.5
+skippy's unified-KV stage runtime exhausted the shared KV cell
+pool. Observed on a Mac Studio M3 Ultra serving MiniMax-M2.5
 (`n_ctx = 131072`): 20 consecutive Goose `model: "auto"` runs
-against the standard `calc.py` fixture reliably fail 14 of 20 from
+against the standard `calc.py` fixture failed 14 of 20 from
 request 7 onward with `RuntimeError: llama_decode failed`. The
-embedded skippy native log shows
+embedded skippy native log showed
 `decode: failed to find a memory slot for batch of size 1805`.
 
-**Root cause**: the resident prefix cache pins each recorded
-prefix onto a dedicated sequence id in *the same* unified KV cell
-pool the active lanes use. Two coordinated bugs in the budget:
+**Root cause**: the resident prefix cache
+(`crates/skippy-cache/src/resident/prefix.rs`) only bounded itself
+by `max_entries` and `max_bytes`. Under `kv_unified = true`
+(skippy patch `0034-Add-shared-execution-lanes-to-skippy-ABI.patch`)
+the cache shares the model's single `n_ctx` cell pool with the
+active execution lanes — but the cache budget had no concept of
+the cell pool at all. Live instrumentation showed:
 
-* `estimate_stage_cache_max_bytes` in `family_policy.rs`
-  multiplied the pool size by `lane_count`. A leftover from the
-  `kv_unified = false` era — with `kv_unified = true` (patch
-  `0034-Add-shared-execution-lanes-to-skippy-ABI.patch`) lanes
-  share one pool, they do not multiply it. Cache budget was 2–4×
-  the actual KV memory.
-* `max_entries = 128` was generous for typical chat prompts but
-  catastrophic for agent prompts: Goose / OpenCode / pi record
-  prefixes averaging 1.5–2k tokens. 128 entries × ~2k tokens ≈
-  256k cells — past every model's unified pool, even MiniMax at
-  131k. Once enough cells were pinned, `find_slot` started
-  returning empty and every subsequent prefill 502'd.
+    DBG record_resident_prefix ... cache_entries=12 resident_tokens=124084 estimated_bytes=15386416 evicted=0
 
-**Fix**: two coordinated changes in
-`crates/mesh-llm-host-runtime/src/inference/skippy/family_policy.rs`:
+Twelve cached prefixes averaging ~10k tokens each fit comfortably
+under `max_entries = 16` and well under the `~9 GB max_bytes`
+budget — yet they pinned **95% of the 131072-cell pool**. Active
+lanes had nowhere to write fresh prompts.
 
-1. Drop the `lane_count` multiplier from
-   `estimate_stage_cache_max_bytes`. The total native KV memory is
-   `bytes_per_token_layer * stage_layers * n_ctx` for the unified
-   pool.
-2. Drop `max_entries` from 128 to 16 across `resident_kv_policy`
-   and `kv_recurrent_policy`, plus add
-   `derive_max_entries_from_kv_cells` which further clamps the
-   family default by `n_ctx / (2 * min_tokens)`. The cache may use
-   at most half the cell pool; the other half stays free for the
-   active lanes' fresh prompts.
+**Three coordinated fixes**:
+
+1. `family_policy.rs::estimate_stage_cache_max_bytes`: drop the
+   `lane_count` multiplier. The total native KV memory is
+   `bytes_per_token_layer * stage_layers * n_ctx` — lanes share the
+   pool under `kv_unified = true`, they don't multiply it. Cache
+   byte budget was 2–4× the actual KV memory.
+2. `family_policy.rs::resident_kv_policy` and `kv_recurrent_policy`:
+   `max_entries` 128 → 16, plus a budget-aware secondary cap
+   `derive_max_entries_from_kv_cells` that clamps by
+   `n_ctx / (2 * min_tokens)`.
+3. **`skippy-cache::ResidentPrefixCache`**: add `max_resident_tokens`
+   field to the cache config and to `evict_until_room_for`'s
+   over-budget check. `ResidentCacheConfig::from_stage` derives
+   the budget as `n_ctx / 2` so the cache may use at most half
+   the cell pool. This is the **real fix** for the leak — LRU now
+   triggers on cell pressure, not just entry/byte pressure.
 
 **Scope**: every node serving a family that the policy puts on
 `resident_kv_policy` / `kv_recurrent_policy` benefits. That is
 essentially every dense LLM family the project supports today.
-Not MoA-specific. The fix pushes the failure point further out
-under sustained traffic without disabling the cache (and losing
-its perf benefit).
+Not MoA-specific.
 
 **Verification on the live 2-node mesh**:
 
-* Pre-fix: Goose `model: "auto"` 20-run stress — 6 pass, then 14
-  consecutive `RuntimeError: llama_decode failed`. KV-exhaustion
-  log entries: 14.
-* Cache disabled completely (control): 18 of 20 pass. Confirms
-  the cache is the source of the leak.
-* With this fix: failure point shifts from request 7 to request
-  16+, depending on prompt-size variation. Single-shot runs and
-  short loops (≤5 runs) all complete cleanly.
+| Setup | Goose `model: auto` 20-run | `memory slot` failures |
+|---|---|---|
+| Pre-fix (`max_entries=128`, no cell budget) | 6 / 20 pass | 14 |
+| `max_entries=16` only (commit `32061e8c`) | 6 / 20 pass | 15 |
+| Cache disabled completely (control) | 18 / 20 pass | 0 |
+| **With cell-budget eviction (commit `8cb6fe4b`)** | **16 / 20 pass** | **0** |
 
-**Still open**: the steady-state cache lifecycle has a real bug —
-the LRU does not catch up with allocation under back-to-back
-agent traffic. The cap pushes the failure out but does not
-eliminate it. The proper fix is invasive in `skippy-server` /
-`skippy-cache` and is out of scope for PR #566. See "Known
-still-open" below for the deferred items.
+The cell-budget eviction completely eliminates `memory slot`
+failures in the studio's skippy native log. The remaining 4
+flakes are unrelated agent-loop variance (a Goose `Stream decode
+error` on one slow response, three model-quality outputs that
+returned content other than the expected exact substring) — not
+KV exhaustion.
+
+The cache still gets its perf benefit (entries are recorded and
+looked up), it just now evicts on the correct currency under
+unified-KV serving.
+
+**Tests added**:
+
+* `token_budget_triggers_lru_before_entry_cap_under_unified_kv` in
+  `crates/skippy-cache/src/resident/prefix.rs::tests`: with
+  `max_resident_tokens = 4096` and 1500-token entries, the third
+  insert evicts even though we're well under `max_entries = 16`.
+* `zero_token_budget_disables_the_check`: legacy unbounded-by-tokens
+  behavior preserved when `max_resident_tokens = 0`.
 
 ### C. Auto-router weights peers by observed throughput (commit `25248409`)
 
@@ -367,28 +378,7 @@ branch.
 
 ## Known still-open
 
-### 1. Prefix-cache LRU lags allocation under sustained agent traffic
-
-Described in detail under fix D above. The capped budget pushes the
-failure point from ~6 requests to ~16+, but does not fully
-eliminate the steady-state leak. The proper fix is invasive in
-`skippy-server::runtime_state` and `skippy-cache::resident::prefix`
-and should be a separate PR. Reproducer recipe:
-
-* 2-node mesh, studio serving MiniMax (or any large unified-KV
-  model).
-* M4 (or any node) joined to the mesh.
-* Run ≥16 consecutive `goose run --no-session -t "..."` calls with
-  `GOOSE_MODEL=auto`.
-* Around request 16, the studio's embedded skippy starts returning
-  HTTP 502 `RuntimeError: llama_decode failed`.
-
-The immediate user-facing mitigation is set
-`SKIPPY_KV_CACHE=disabled` (env var) on the worker node, which
-fully disables the prefix cache and recovers throughput at the cost
-of prefix-cache hit rate.
-
-### 2. Large MoA reducer prompts overflowing `n_ctx`
+### 1. Large MoA reducer prompts overflowing `n_ctx`
 
 The OpenCode `model: "mesh"` agent loop still does not run to
 completion on a Qwen3-8B local reducer because the cumulative MoA
@@ -435,10 +425,12 @@ PR #566 lands:
     concurrent traffic to a single-GPU-class model)
   * **C**: throughput-weighted auto-router (any `auto`-using
     client on a public mesh)
-  * **D**: tightened prefix-cache budget for unified-KV serving
-    (any node hosting a dense LLM family that the auto policy puts
-    on the resident-KV or KV-recurrent path — essentially every
-    family the project supports)
+  * **D**: prefix-cache budget bounded by KV cell pool, not just
+    entries/bytes (any node hosting a dense LLM family that the
+    auto policy puts on the resident-KV or KV-recurrent path —
+    essentially every family the project supports; eliminates the
+    "works at first then 502s under sustained agent traffic"
+    failure mode)
 
 The single open item (large MoA reducer prompts on small-`n_ctx`
 local reducers) is documented above but deferred — it should be a
