@@ -3928,12 +3928,45 @@ fn descriptor_for_model<'a>(
 }
 
 fn public_model_id(model_name: &str, descriptor: Option<&mesh::ServedModelDescriptor>) -> String {
+    // A descriptor with an `artifact` field has enough information to
+    // produce a public ID that round-trips to the same model. Without
+    // it, the HuggingFace path collapses to just the repo name and
+    // silently drops the quant-tag suffix the resolver needs (PR #566
+    // review feedback — "some IDs in /v1/models dropped quant
+    // suffixes"). Only use the descriptor-derived id when it can be
+    // lossless; otherwise prefer the on-disk file (authoritative for
+    // local models), and finally the internal model_name (which
+    // always carries the quant suffix our resolver knows how to
+    // route).
     if let Some(descriptor) = descriptor {
-        return public_model_id_from_identity(&descriptor.identity)
-            .unwrap_or_else(|| model_name.to_string());
+        if descriptor_can_produce_lossless_id(&descriptor.identity) {
+            if let Some(id) = public_model_id_from_identity(&descriptor.identity) {
+                return id;
+            }
+        }
     }
 
-    public_model_id_from_local_path(model_name).unwrap_or_else(|| model_name.to_string())
+    if let Some(id) = public_model_id_from_local_path(model_name) {
+        return id;
+    }
+
+    model_name.to_string()
+}
+
+/// A descriptor identity carries enough information for
+/// `public_model_id_from_identity` to produce an ID that round-trips
+/// to the same model. For HuggingFace that means the `artifact` field
+/// (the GGUF file name) is present so the quant selector can be
+/// derived. Catalog identities always carry a `canonical_ref` with the
+/// selector baked in.
+fn descriptor_can_produce_lossless_id(identity: &mesh::ServedModelIdentity) -> bool {
+    match identity.source_kind {
+        mesh::ModelSourceKind::HuggingFace => identity.artifact.is_some(),
+        mesh::ModelSourceKind::Catalog => identity.canonical_ref.is_some(),
+        mesh::ModelSourceKind::LocalGguf
+        | mesh::ModelSourceKind::DirectUrl
+        | mesh::ModelSourceKind::Unknown => false,
+    }
 }
 
 fn public_model_id_from_identity(identity: &mesh::ServedModelIdentity) -> Option<String> {
@@ -3972,7 +4005,16 @@ fn public_model_id_from_local_path(model_name: &str) -> Option<String> {
 }
 
 fn public_huggingface_model_ref(repo: &str, artifact: Option<&str>) -> Option<String> {
-    let selector = artifact.and_then(model_ref::quant_selector_from_gguf_file);
+    // `artifact` can be either a GGUF filename (e.g. `Falcon-Q4_K_M.gguf`)
+    // or an already-extracted quant selector (e.g. `Q4_K_M` or
+    // `qwen2.5-3b-instruct-q4_k_m`, when the descriptor was built from
+    // a parsed `ModelRef::selector`). Handle both — if the artifact
+    // looks like a quant selector use it directly; otherwise try to
+    // pull a selector out of the filename.
+    let selector = artifact.and_then(|a| {
+        model_ref::quant_selector_from_gguf_file(a)
+            .or_else(|| (!a.is_empty() && !a.ends_with(".gguf")).then(|| a.to_string()))
+    });
     Some(model_ref::format_model_ref(repo, None, selector.as_deref()))
 }
 
@@ -4383,6 +4425,62 @@ mod tests {
             "tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M"
         );
         assert_eq!(body["data"][0]["owned_by"], "mesh-llm");
+    }
+
+    #[test]
+    fn models_list_id_preserves_quant_suffix_when_descriptor_has_no_artifact() {
+        // Regression for PR #566 review feedback: the gateway's view of a
+        // model's public ID must include enough information to route a
+        // request back to that exact model. When a `ServedModelDescriptor`
+        // for a HuggingFace model has no `artifact` field (because the
+        // descriptor was built without inspecting the GGUF file on disk),
+        // `public_huggingface_model_ref` collapses the public ID to just
+        // the repo name — dropping the quant-tag suffix the internal
+        // `model_name` carries. The model is then advertised in `/v1/models`
+        // under a shorter ID than the resolver knows how to route.
+        //
+        // Symptom on a real 2-node mesh: the studio's Qwen3-0.6B-GGUF
+        // shows as `unsloth/Qwen3-0.6B-GGUF:BF16` (descriptor has
+        // artifact), but the gateway-local Qwen2.5-3B-Instruct-GGUF
+        // shows as `Qwen/Qwen2.5-3B-Instruct-GGUF` (descriptor has no
+        // artifact). A client doing the natural thing — read /v1/models,
+        // call /v1/chat/completions with the listed id — then 404s on
+        // remote models because the resolver doesn't know the short id.
+        //
+        // Acceptable behaviour: the public ID either round-trips to the
+        // same model, OR includes the quant suffix the internal name
+        // carries.
+        let models = vec!["Qwen/Qwen2.5-3B-Instruct-GGUF:qwen2.5-3b-instruct-q4_k_m".to_string()];
+        let descriptor = mesh::ServedModelDescriptor {
+            identity: mesh::ServedModelIdentity {
+                model_name: models[0].clone(),
+                source_kind: mesh::ModelSourceKind::HuggingFace,
+                repository: Some("Qwen/Qwen2.5-3B-Instruct-GGUF".to_string()),
+                // No artifact — this is the field whose absence loses the
+                // quant suffix.
+                artifact: None,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let descriptors = vec![descriptor];
+
+        let body = models_list_json(&models, &descriptors);
+        let public_id = body["data"][0]["id"].as_str().unwrap_or_default();
+
+        // The public ID must NOT silently drop the quant suffix that the
+        // internal model_name carries. Acceptable IDs:
+        //   * the full internal name, OR
+        //   * the repo with a quant tag we can route back to.
+        assert!(
+            public_id == models[0]
+                || public_id
+                    .strip_prefix("Qwen/Qwen2.5-3B-Instruct-GGUF:")
+                    .is_some_and(|tag| !tag.is_empty()),
+            "public id must keep enough information to route back; got {public_id:?}, \
+             internal model_name was {:?}",
+            models[0]
+        );
     }
 
     #[test]
