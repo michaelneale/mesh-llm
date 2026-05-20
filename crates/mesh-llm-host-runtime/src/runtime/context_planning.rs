@@ -3,7 +3,38 @@ use crate::models::gguf::{GgufCompactMeta, GgufKvCacheQuant};
 const DEFAULT_CONTEXT_LENGTH: u32 = 4096;
 const DEFAULT_PARALLEL_SLOTS: usize = 4;
 const MIN_AUTO_CONTEXT_LENGTH: u32 = 512;
-const MAX_AUTO_PARALLEL_SLOTS: usize = 16;
+/// Auto-planner ceiling on concurrent lanes.
+///
+/// Matches upstream llama-server: when `--parallel` is left to auto,
+/// llama-server picks `n_parallel = 4` and turns on `kv_unified = true`
+/// (see `tools/server/server.cpp`,
+/// `"n_parallel is set to auto, using n_parallel = 4 and kv_unified = true"`).
+///
+/// Skippy's stage-runtime patches also set `kv_unified = true` whenever
+/// `lane_count > 1` (`third_party/llama.cpp/patches/0034-*.patch`). In
+/// unified mode llama allocates exactly `n_ctx` cells total, shared
+/// across all `n_seq_max` sequences. The previous ceiling of 16 was
+/// inherited from a VRAM-based slot calculation that pretended each
+/// lane carved off its own `n_ctx × bytes_per_token` allocation —
+/// which is the `kv_unified = false` semantics, not what skippy
+/// actually does. On any node with comfortable VRAM that math
+/// happily picked 16 lanes even though all 16 raced for the *same*
+/// pool of `n_ctx` cells.
+///
+/// Concrete failure mode that prompted this change: Qwen3-8B on a
+/// 32k `n_ctx` got `slots = 16`. Three concurrent agent-shape
+/// requests (~14k tokens each — OpenCode system prompt plus tools
+/// plus a tool-result follow-up) need ~45k cells in the shared 32k
+/// pool; llama's `find_slot` fails on the third request and skippy
+/// surfaces it as an HTTP 502 with body `skippy ABI call failed:
+/// RuntimeError: llama_decode failed`.
+///
+/// 4 is the same conservative ceiling llama-server uses for the
+/// same `kv_unified = true` reason. Operators who know their
+/// workload (e.g. all short chat turns, or a single-user MoA host)
+/// can still go higher via `parallel_override` /
+/// `[models.throughput] parallel = N` in the TOML config.
+const MAX_AUTO_PARALLEL_SLOTS: usize = 4;
 const KV_CACHE_BUDGET_NUMERATOR: u64 = 85;
 const KV_CACHE_BUDGET_DENOMINATOR: u64 = 100;
 
@@ -262,6 +293,59 @@ mod tests {
 
         assert_eq!(plan.context_length, 32_768);
         assert_eq!(plan.slots, 2);
+    }
+
+    #[test]
+    fn auto_slots_capped_at_llama_server_default() {
+        // Regression: a small model on a huge-VRAM box used to plan
+        // `slots = 16` because the VRAM-derived per-lane math pretended
+        // each lane carved off its own `n_ctx × bytes/token` allocation.
+        // With `kv_unified = true` (skippy patch 0034) those 16 lanes
+        // race for the same `n_ctx` cell pool, and 3 concurrent agent
+        // requests at ~14k tokens each blow it up with
+        // `find_slot` failures → HTTP 502
+        // `RuntimeError: llama_decode failed`.
+        //
+        // Match llama-server's auto default of 4 (see
+        // `.deps/llama.cpp/tools/server/server.cpp`: "n_parallel is
+        // set to auto, using n_parallel = 4 and kv_unified = true").
+        let metadata = gqa_metadata(32_768);
+        let plan = plan_runtime_resources(RuntimeResourcePlanInput {
+            ctx_size_override: None,
+            parallel_override: None,
+            model_bytes: 5_000_000_000,
+            // 128GB free — plenty for many "per-lane" slots under the
+            // old broken math.
+            vram_bytes: 128_000_000_000,
+            metadata: Some(&metadata),
+            kv_cache_quant: GgufKvCacheQuant::Q8_0,
+            local_layer_fraction: None,
+        });
+
+        assert_eq!(plan.context_length, 32_768);
+        assert!(
+            plan.slots <= 4,
+            "auto-planner should not exceed llama-server's 4-lane unified-KV ceiling; got {}",
+            plan.slots
+        );
+    }
+
+    #[test]
+    fn explicit_parallel_can_exceed_auto_ceiling() {
+        // Operators who know their workload can still go higher than
+        // the auto ceiling via `parallel_override`.
+        let metadata = gqa_metadata(131_072);
+        let plan = plan_runtime_resources(RuntimeResourcePlanInput {
+            ctx_size_override: None,
+            parallel_override: Some(8),
+            model_bytes: 5_000_000_000,
+            vram_bytes: 128_000_000_000,
+            metadata: Some(&metadata),
+            kv_cache_quant: GgufKvCacheQuant::Q8_0,
+            local_layer_fraction: None,
+        });
+
+        assert_eq!(plan.slots, 8);
     }
 
     #[test]
