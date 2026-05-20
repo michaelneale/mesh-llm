@@ -742,6 +742,45 @@ textarea:focus-visible,
   box-shadow: none;
 }
 
+.ui-field {
+  border-color: var(--color-border);
+  background: var(--color-panel);
+  color: var(--color-foreground);
+  box-shadow: inset 0 0 0 0 color-mix(in oklab, var(--color-accent) 0%, transparent);
+}
+
+.ui-field::placeholder {
+  color: var(--color-fg-faint);
+}
+
+.ui-field:hover:not(:disabled) {
+  border-color: color-mix(in oklab, var(--color-accent) 28%, var(--color-border));
+  background: color-mix(in oklab, var(--color-panel-strong) 76%, var(--color-panel));
+}
+
+.ui-field:focus-visible {
+  outline: none;
+  border-color: color-mix(in oklab, var(--color-accent) 42%, var(--color-border));
+  background: var(--color-panel);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--color-accent) 16%, transparent);
+}
+
+.ui-field[aria-invalid='true'],
+.ui-field[data-invalid='true'] {
+  border-color: color-mix(in oklab, var(--color-destructive) 72%, var(--color-border));
+}
+
+.ui-field[aria-invalid='true']:focus-visible,
+.ui-field[data-invalid='true']:focus-visible {
+  border-color: color-mix(in oklab, var(--color-destructive) 78%, var(--color-border));
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--color-destructive) 18%, transparent);
+}
+
+.ui-field:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .ui-control-destructive-hover:hover:not(:disabled),
 .ui-control-destructive-hover:focus-visible:not(:disabled) {
   border-color: color-mix(in oklab, var(--color-destructive) 76%, var(--color-border));

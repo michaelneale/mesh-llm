@@ -13,6 +13,7 @@ type InfoBannerProps = {
   leadingIcon?: ReactNode
   leadingIconClassName?: string
   status?: ReactNode
+  titleClassName?: string
   titleId?: string
   titleLevel?: 'h1' | 'h2' | 'h3'
 }
@@ -28,6 +29,7 @@ export function InfoBanner({
   leadingIcon,
   leadingIconClassName,
   status,
+  titleClassName,
   titleId,
   titleLevel = 'h2'
 }: InfoBannerProps) {
@@ -53,7 +55,8 @@ export function InfoBanner({
             className={cn(
               titleLevel === 'h1'
                 ? 'type-headline'
-                : 'text-[length:var(--density-type-title)] font-semibold leading-tight text-foreground'
+                : 'text-[length:var(--density-type-title)] font-semibold leading-tight text-foreground',
+              titleClassName
             )}
           >
             {title}

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Binary, Blocks, Brackets, Computer, LockKeyhole, ShieldCheck } from 'lucide-react'
+import { Binary, Blocks, Brackets, Computer, LockKeyhole, ShieldCheck, SlidersHorizontal } from 'lucide-react'
 import { LiveDataUnavailableOverlay } from '@/components/ui/LiveDataUnavailableOverlay'
 import { CatalogPopover } from '@/features/configuration/components/CatalogPopover'
 import { ConfigurationHeader } from '@/features/configuration/components/ConfigurationHeader'
 import { ConfigurationLiveLoadingGhost } from '@/features/configuration/components/ConfigurationLiveLoadingGhost'
 import { ConfigurationTabs, type ConfigurationTabItem } from '@/features/configuration/components/ConfigurationTabs'
+import { ConfigurationWakePolicyTab } from '@/features/configuration/components/ConfigurationWakePolicyTab'
 import type { ConfigurationTabId } from '@/features/configuration/components/configuration-tab-ids'
 import { jumpCtxPower, stepCtx } from '@/features/configuration/components/ctx-slider-utils'
 import { DefaultsTab } from '@/features/configuration/components/DefaultsTab'
@@ -73,6 +74,7 @@ export function ConfigurationPageContent({
   const liveMode = mode === 'live'
   const signingAttestationEnabled = useBooleanFeatureFlag('configuration/signingAttestation')
   const integrationsEnabled = useBooleanFeatureFlag('configuration/integrations')
+  const wakePolicyConfigurationEnabled = useBooleanFeatureFlag('configuration/wakePolicyConfiguration')
   const { data: liveData, isFetching, isError, modelsQuery, statusQuery } = useConfigQuery({ enabled: liveMode })
   const resolvedData = liveMode ? liveData : data
   const displayData = resolvedData ?? data
@@ -422,6 +424,16 @@ export function ConfigurationPageContent({
       dirty: localDeploymentDirty,
       content: localDeployment
     },
+    ...(wakePolicyConfigurationEnabled
+      ? [
+          {
+            id: 'wake-policy',
+            label: 'Reserves',
+            icon: SlidersHorizontal,
+            content: <ConfigurationWakePolicyTab />
+          } satisfies ConfigurationTabItem
+        ]
+      : []),
     ...(signingAttestationEnabled
       ? [
           {

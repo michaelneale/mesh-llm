@@ -15,7 +15,8 @@ const routerMocks = vi.hoisted(() => {
 const featureFlagMocks = vi.hoisted(() => ({
   integrationsEnabled: false,
   newConfigurationPageEnabled: true,
-  signingAttestationEnabled: false
+  signingAttestationEnabled: false,
+  wakePolicyConfigurationEnabled: false
 }))
 
 vi.mock('@tanstack/react-router', () => ({
@@ -54,6 +55,7 @@ vi.mock('@/lib/feature-flags', () => ({
   useBooleanFeatureFlag: vi.fn((path: string) => {
     if (path === 'configuration/integrations') return featureFlagMocks.integrationsEnabled
     if (path === 'configuration/signingAttestation') return featureFlagMocks.signingAttestationEnabled
+    if (path === 'configuration/wakePolicyConfiguration') return featureFlagMocks.wakePolicyConfigurationEnabled
     return featureFlagMocks.newConfigurationPageEnabled
   })
 }))
@@ -66,6 +68,7 @@ describe('ConfigurationRoutePage', () => {
     featureFlagMocks.integrationsEnabled = false
     featureFlagMocks.newConfigurationPageEnabled = true
     featureFlagMocks.signingAttestationEnabled = false
+    featureFlagMocks.wakePolicyConfigurationEnabled = false
     routerMocks.useNavigate.mockReturnValue(routerMocks.navigate)
     routerMocks.useParams.mockReturnValue({})
   })
@@ -113,9 +116,14 @@ describe('ConfigurationRoutePage', () => {
   })
 
   it('redirects gated temporary section paths back to defaults', () => {
-    routerMocks.useParams.mockReturnValue({ configurationTab: 'signing' })
+    routerMocks.useParams.mockReturnValue({ configurationTab: 'wake-policy' })
 
     const { rerender } = render(<ConfigurationRoutePage />)
+
+    expect(screen.getByTestId('redirect')).toHaveTextContent('defaults')
+
+    routerMocks.useParams.mockReturnValue({ configurationTab: 'signing' })
+    rerender(<ConfigurationRoutePage />)
 
     expect(screen.getByTestId('redirect')).toHaveTextContent('defaults')
 
@@ -128,9 +136,15 @@ describe('ConfigurationRoutePage', () => {
   it('restores gated temporary section paths when their flags are enabled', () => {
     featureFlagMocks.integrationsEnabled = true
     featureFlagMocks.signingAttestationEnabled = true
-    routerMocks.useParams.mockReturnValue({ configurationTab: 'signing' })
+    featureFlagMocks.wakePolicyConfigurationEnabled = true
+    routerMocks.useParams.mockReturnValue({ configurationTab: 'wake-policy' })
 
     const { rerender } = render(<ConfigurationRoutePage />)
+
+    expect(screen.getByRole('button', { name: 'Active tab: wake-policy' })).toBeInTheDocument()
+
+    routerMocks.useParams.mockReturnValue({ configurationTab: 'signing' })
+    rerender(<ConfigurationRoutePage />)
 
     expect(screen.getByRole('button', { name: 'Active tab: signing' })).toBeInTheDocument()
 

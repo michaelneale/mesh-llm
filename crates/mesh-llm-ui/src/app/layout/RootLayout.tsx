@@ -7,6 +7,7 @@ import { Footer } from '@/features/shell/components/Footer'
 import { TopNav } from '@/features/shell/components/TopNav'
 import { PreferencesPanel } from '@/features/shell/components/PreferencesPanel'
 import {
+  getEnabledConfigurationTabIds,
   isConfigurationTabId,
   type ConfigurationTabId
 } from '@/features/configuration/components/configuration-tab-ids'
@@ -21,33 +22,29 @@ import type { ShellHarnessData, AppTab } from '@/features/app-tabs/types'
 
 function pathToTab(pathname: string): AppTab | null {
   if (pathname.startsWith('/chat')) return 'chat'
+  if (pathname.startsWith('/reserves')) return 'reserves'
   if (pathname.startsWith('/configuration')) return 'configuration'
   if (import.meta.env.DEV && pathname.startsWith('/__playground')) return null
   return 'network'
 }
 
-function tabToPath(tab: Exclude<AppTab, 'configuration'>): '/' | '/chat' {
+function tabToPath(tab: Exclude<AppTab, 'configuration'>): '/' | '/chat' | '/reserves' {
   if (tab === 'chat') return '/chat'
+  if (tab === 'reserves') return '/reserves'
   return '/'
 }
 
-function pathToConfigurationTab(pathname: string): ConfigurationTabId | null {
+function pathToConfigurationTab(
+  pathname: string,
+  enabledTabs: readonly ConfigurationTabId[] = CONFIGURATION_TAB_IDS_FALLBACK
+): ConfigurationTabId | null {
   const [, section, configurationTab] = pathname.split('/')
-  if (section !== 'configuration' || !isConfigurationTabId(configurationTab)) return null
+  if (section !== 'configuration' || !isConfigurationTabId(configurationTab) || !enabledTabs.includes(configurationTab))
+    return null
   return configurationTab
 }
 
-function configurationTabHref(pathname: string) {
-  return `/configuration/${pathToConfigurationTab(pathname) ?? 'defaults'}`
-}
-
-function tabHrefsForPath(pathname: string) {
-  return {
-    network: hrefWithBasePath('/'),
-    chat: hrefWithBasePath('/chat'),
-    configuration: hrefWithBasePath(configurationTabHref(pathname))
-  }
-}
+const CONFIGURATION_TAB_IDS_FALLBACK = getEnabledConfigurationTabIds()
 
 type RootLayoutProps = { data?: ShellHarnessData }
 
@@ -67,6 +64,10 @@ export function RootLayout({ data = SHELL_HARNESS }: RootLayoutProps = {}) {
   const statusQuery = useStatusQuery({ enabled: liveMode })
   const { theme, accent, density, panelStyle, setTheme, setAccent, setDensity, setPanelStyle } = useUIPreferences()
   const newConfigurationPageEnabled = useBooleanFeatureFlag('global/newConfigurationPage')
+  const newReservesPageEnabled = useBooleanFeatureFlag('global/newReservesPage')
+  const signingAttestationEnabled = useBooleanFeatureFlag('configuration/signingAttestation')
+  const integrationsEnabled = useBooleanFeatureFlag('configuration/integrations')
+  const wakePolicyConfigurationEnabled = useBooleanFeatureFlag('configuration/wakePolicyConfiguration')
   const activeTab = pathToTab(pathname)
   const [preferencesOpen, setPreferencesOpen] = useState(false)
   const topNavData = useMemo(
@@ -75,22 +76,48 @@ export function RootLayout({ data = SHELL_HARNESS }: RootLayoutProps = {}) {
   )
   const displayVersion = liveMode ? (statusQuery.data?.version ?? env.appVersion) : env.appVersion
   const apiTargetLiveness = resolveApiTargetLiveness(statusQuery, liveMode)
-  const tabHrefs = useMemo(() => tabHrefsForPath(pathname), [pathname])
+  const enabledConfigurationTabs = useMemo(
+    () =>
+      getEnabledConfigurationTabIds({
+        integrationsEnabled,
+        signingAttestationEnabled,
+        wakePolicyEnabled: wakePolicyConfigurationEnabled
+      }),
+    [integrationsEnabled, signingAttestationEnabled, wakePolicyConfigurationEnabled]
+  )
+  const tabHrefs = useMemo(
+    () => ({
+      network: hrefWithBasePath('/'),
+      reserves: hrefWithBasePath('/reserves'),
+      chat: hrefWithBasePath('/chat'),
+      configuration: hrefWithBasePath(
+        `/configuration/${pathToConfigurationTab(pathname, enabledConfigurationTabs) ?? 'defaults'}`
+      )
+    }),
+    [enabledConfigurationTabs, pathname]
+  )
   const showDevelopmentNavControls = import.meta.env.DEV
+  const visibleActiveTab =
+    activeTab === 'configuration' && !newConfigurationPageEnabled
+      ? null
+      : activeTab === 'reserves' && !newReservesPageEnabled
+        ? null
+        : activeTab
 
   const onTabChange = useCallback(
     (tab: AppTab | null) => {
+      if (tab === 'reserves' && !newReservesPageEnabled) return
       if (tab === 'configuration' && !newConfigurationPageEnabled) return
       if (tab === 'configuration') {
         void router.navigate({
           to: '/configuration/$configurationTab',
-          params: { configurationTab: pathToConfigurationTab(pathname) ?? 'defaults' }
+          params: { configurationTab: pathToConfigurationTab(pathname, enabledConfigurationTabs) ?? 'defaults' }
         })
         return
       }
       void router.navigate({ to: tabToPath(tab!) })
     },
-    [router, pathname, newConfigurationPageEnabled]
+    [router, pathname, enabledConfigurationTabs, newConfigurationPageEnabled, newReservesPageEnabled]
   )
 
   const onTogglePreferences = useCallback(() => setPreferencesOpen((value) => !value), [])
@@ -101,7 +128,10 @@ export function RootLayout({ data = SHELL_HARNESS }: RootLayoutProps = {}) {
 
   const onOpenIdentity = useCallback(() => setPreferencesOpen(true), [])
 
-  const enabledTabs = useMemo(() => ({ configuration: newConfigurationPageEnabled }), [newConfigurationPageEnabled])
+  const enabledTabs = useMemo(
+    () => ({ reserves: newReservesPageEnabled, configuration: newConfigurationPageEnabled }),
+    [newConfigurationPageEnabled, newReservesPageEnabled]
+  )
 
   return (
     <>
@@ -110,7 +140,7 @@ export function RootLayout({ data = SHELL_HARNESS }: RootLayoutProps = {}) {
       <div className="flex h-dvh flex-col overflow-hidden">
         <TopNav
           enabledTabs={enabledTabs}
-          tab={activeTab === 'configuration' && !newConfigurationPageEnabled ? null : activeTab}
+          tab={visibleActiveTab}
           tabHrefs={tabHrefs}
           onTabChange={onTabChange}
           apiUrl={topNavData.apiUrl}

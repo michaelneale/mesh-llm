@@ -1,13 +1,16 @@
 import type { ReactNode } from 'react'
 import type { LatencySource } from '@/lib/api/types'
 import type { ChatMessage } from '@/features/chat/lib/chat-types'
+import type { WakeableNode } from '@/features/app-shell/lib/status-types'
+
+export type { WakeableNode }
 
 export type ResolvedTheme = 'light' | 'dark'
 export type Theme = 'auto' | ResolvedTheme
 export type Accent = 'blue' | 'cyan' | 'violet' | 'green' | 'amber' | 'pink'
 export type Density = 'compact' | 'normal' | 'sparse'
 export type PanelStyle = 'solid' | 'soft'
-export type AppTab = 'network' | 'chat' | 'configuration'
+export type AppTab = 'network' | 'reserves' | 'chat' | 'configuration'
 
 export type StatusBadgeTone = 'good' | 'warn' | 'bad' | 'muted' | 'accent'
 export type StatusMetric = {
@@ -200,6 +203,7 @@ export type DashboardHarnessData = {
   meshNodeSeeds: MeshNode[]
   meshId: string
   connect: DashboardConnectData
+  wakeableNodes?: WakeableNode[]
 }
 export type ChatActionMetric = { id: string; icon: 'cpu' | 'hard-drive'; label: string }
 export type ConversationGroup = { title: string; conversationIds: string[] }

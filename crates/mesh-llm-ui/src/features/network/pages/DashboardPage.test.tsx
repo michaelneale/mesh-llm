@@ -59,10 +59,12 @@ const RUNTIME: LlamaRuntimePayload = {
 
 describe('DashboardPage self-node runtime wiring', () => {
   beforeEach(() => {
+    localStorage.clear()
     mockedUseLlamaRuntime.mockReturnValue({ data: RUNTIME, loading: false, error: null })
   })
 
   afterEach(() => {
+    localStorage.clear()
     mockedUseLlamaRuntime.mockReset()
   })
 
@@ -95,6 +97,17 @@ describe('DashboardPage self-node runtime wiring', () => {
 
     expect(dot).toHaveClass('bg-current')
     expect(statusPill).toHaveAttribute('style', expect.stringContaining('var(--color-warn)'))
+  })
+
+  it('keeps reserve inventory out of the Network dashboard', () => {
+    render(
+      <AppProviders initialDataMode="harness" persistDataMode={false}>
+        <DashboardPage />
+      </AppProviders>
+    )
+
+    expect(screen.queryByTestId('reserves-section')).not.toBeInTheDocument()
+    expect(screen.queryByText('vast-a100-1')).not.toBeInTheDocument()
   })
 
   it('passes hovered peer rows to the matching mesh node', async () => {
