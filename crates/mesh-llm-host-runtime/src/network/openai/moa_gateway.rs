@@ -66,25 +66,32 @@ async fn run_moa_turn(
 
     let moa_result = moa::handle_turn(config, &moa_body).await;
     let extra_headers = build_moa_headers(&moa_result);
-    write_moa_response(
-        tcp_stream,
-        &moa_result.response_body,
-        &extra_headers,
-        was_streaming,
-    )
-    .await;
+    write_moa_response(tcp_stream, &moa_result, &extra_headers, was_streaming).await;
 }
 
 /// Write the MoA response on the chosen transport (JSON or SSE), logging
 /// (but not propagating) any I/O error.
+///
+/// When the gateway reports `TurnKind::Failed` we send an HTTP 502 (Bad
+/// Gateway) with the structured error body, rather than HTTP 200. The
+/// crate's `error_response` already carries an OpenAI-shape top-level
+/// `error` object and `finish_reason: "error"`, but unsophisticated
+/// clients that only check the HTTP status need that status to actually
+/// reflect failure.
 async fn write_moa_response(
     tcp_stream: TcpStream,
-    body: &serde_json::Value,
+    moa_result: &moa::TurnResult,
     extra_headers: &[(&str, String)],
     was_streaming: bool,
 ) {
+    let body = &moa_result.response_body;
     let result = if was_streaming {
+        // SSE always uses 200: the failure signal rides in the streamed
+        // chunks (the body includes `error` and `finish_reason: "error"`).
+        // Once the headers are sent we cannot change the status code.
         send_moa_as_sse(tcp_stream, body, extra_headers).await
+    } else if moa_result.turn_kind == moa::TurnKind::Failed {
+        proxy::send_json_with_status_and_headers(tcp_stream, 502, body, extra_headers).await
     } else {
         proxy::send_json_ok_with_headers(tcp_stream, body, extra_headers).await
     };

@@ -4013,6 +4013,47 @@ pub async fn send_json_ok_with_headers(
     Ok(())
 }
 
+/// Send a JSON body with a non-200 status and the given extra headers.
+///
+/// The body is sent verbatim — caller controls the shape. Use for cases
+/// where the in-band payload is already a structured error (e.g. MoA's
+/// `error_response`) and we still want to attach observability headers
+/// while signalling failure via the HTTP status line.
+pub async fn send_json_with_status_and_headers(
+    mut stream: TcpStream,
+    code: u16,
+    data: &serde_json::Value,
+    extra_headers: &[(&str, String)],
+) -> std::io::Result<()> {
+    let status = match code {
+        400 => "Bad Request",
+        404 => "Not Found",
+        409 => "Conflict",
+        422 => "Unprocessable Content",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        504 => "Gateway Timeout",
+        _ => "Error",
+    };
+    let body = data.to_string();
+    let mut headers = format!("HTTP/1.1 {code} {status}\r\nContent-Type: application/json\r\n");
+    for (name, value) in extra_headers {
+        // Strip CR/LF defensively against header-injection.
+        let safe_value: String = value.chars().filter(|c| *c != '\r' && *c != '\n').collect();
+        headers.push_str(name);
+        headers.push_str(": ");
+        headers.push_str(&safe_value);
+        headers.push_str("\r\n");
+    }
+    headers.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));
+    stream.write_all(headers.as_bytes()).await?;
+    stream.write_all(body.as_bytes()).await?;
+    stream.shutdown().await?;
+    Ok(())
+}
+
 pub async fn send_400(mut stream: TcpStream, msg: &str) -> std::io::Result<()> {
     let body = serde_json::to_vec(&serde_json::json!({ "error": msg }))
         .expect("serializing JSON error response should not fail");

@@ -457,15 +457,34 @@ fn best_answer(outputs: &[WorkerOutput]) -> String {
         .unwrap_or_default()
 }
 
+/// Build a response body that signals MoA-level failure to the client.
+///
+/// Distinguishable from a successful `chat.completion` in three ways:
+///
+///   * Top-level `error` object (OpenAI error-shape) so SDKs that read
+///     `response.error` see the failure without parsing `choices`.
+///   * `choices[0].finish_reason == "error"` (instead of `"stop"`) so
+///     SDKs that branch on `finish_reason` see the failure too.
+///   * The error text is still placed in `choices[0].message.content`
+///     so unstructured clients still surface a useful string to the
+///     human, just not as a successful assistant reply.
+///
+/// The ingress layer is responsible for choosing the HTTP status; this
+/// body is the in-band signal.
 fn error_response(message: &str) -> Value {
     json!({
         "id": format!("chatcmpl-moa-{}", short_id()),
         "object": "chat.completion",
         "model": VIRTUAL_MODEL_NAME,
+        "error": {
+            "message": message,
+            "type": "moa_failure",
+            "code": "all_workers_failed",
+        },
         "choices": [{
             "index": 0,
             "message": { "role": "assistant", "content": message },
-            "finish_reason": "stop"
+            "finish_reason": "error"
         }],
         "usage": { "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0 }
     })
