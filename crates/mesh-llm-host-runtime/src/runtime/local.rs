@@ -37,6 +37,10 @@ pub(super) enum RuntimeEvent {
         model: String,
         port: u16,
     },
+    ModelTargetReconciliationLoadFinished {
+        model_ref: String,
+        result: std::result::Result<api::RuntimeLoadResponse, String>,
+    },
 }
 
 pub(super) enum LocalRuntimeBackendHandle {

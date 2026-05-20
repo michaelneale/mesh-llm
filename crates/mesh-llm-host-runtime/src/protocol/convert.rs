@@ -859,6 +859,7 @@ pub(crate) fn proto_config_to_mesh(
         },
         owner_control: Default::default(),
         telemetry: Default::default(),
+        runtime: Default::default(),
         models,
         plugins,
     }

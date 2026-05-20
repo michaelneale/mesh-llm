@@ -1702,6 +1702,7 @@ mod tests {
             },
             owner_control: Default::default(),
             telemetry: Default::default(),
+            runtime: Default::default(),
             models: vec![ModelConfigEntry {
                 model: "Qwen3-8B.gguf".to_string(),
                 mmproj: Some("mm.gguf".to_string()),
@@ -1760,6 +1761,7 @@ mod tests {
             },
             owner_control: Default::default(),
             telemetry: Default::default(),
+            runtime: Default::default(),
             models: vec![ModelConfigEntry {
                 model: "test.gguf".to_string(),
                 mmproj: None,
@@ -1788,6 +1790,7 @@ mod tests {
             },
             owner_control: Default::default(),
             telemetry: Default::default(),
+            runtime: Default::default(),
             models: vec![ModelConfigEntry {
                 model: "other.gguf".to_string(),
                 mmproj: None,
@@ -1819,6 +1822,7 @@ mod tests {
             },
             owner_control: Default::default(),
             telemetry: Default::default(),
+            runtime: Default::default(),
             models: vec![ModelConfigEntry {
                 model: "Qwen3-8B-Q4_K_M".to_string(),
                 mmproj: Some("mmproj-f16.gguf".to_string()),

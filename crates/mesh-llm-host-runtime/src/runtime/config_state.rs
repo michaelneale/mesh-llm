@@ -246,6 +246,7 @@ mod tests {
             },
             owner_control: Default::default(),
             telemetry: Default::default(),
+            runtime: Default::default(),
             models: vec![],
             plugins: vec![],
         }
@@ -366,6 +367,7 @@ mod tests {
             },
             owner_control: Default::default(),
             telemetry: Default::default(),
+            runtime: Default::default(),
             models: vec![crate::plugin::ModelConfigEntry {
                 model: model.to_string(),
                 mmproj: None,
@@ -407,6 +409,7 @@ mod tests {
             },
             owner_control: Default::default(),
             telemetry: Default::default(),
+            runtime: Default::default(),
             models: vec![crate::plugin::ModelConfigEntry {
                 model: "test.gguf".to_string(),
                 mmproj: None,
@@ -455,6 +458,7 @@ mod tests {
             },
             owner_control: Default::default(),
             telemetry: Default::default(),
+            runtime: Default::default(),
             models: vec![crate::plugin::ModelConfigEntry {
                 model: "noop-test.gguf".to_string(),
                 mmproj: None,
