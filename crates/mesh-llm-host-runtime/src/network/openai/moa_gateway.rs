@@ -204,10 +204,17 @@ pub async fn build_moa_config(
     Some(moa::GatewayConfig {
         backends,
         models,
-        worker_timeout: std::time::Duration::from_secs(15),
+        // Bumped from 15s → 60s. 15s was tight for big-context interactive
+        // turns: a large model with a 10–20k-token prompt and tool schema
+        // (typical for agent harnesses like OpenCode/Goose) can need 20–30s
+        // just to produce a first tool-call. Workers were getting killed
+        // mid-inference and MoA reported `kind=early-exit` with the small
+        // worker, never the strong one. 60s gives the strong worker room
+        // to land without making the no-progress wait painful.
+        worker_timeout: std::time::Duration::from_secs(60),
         // Per-attempt cap; hedged_reducer_call hedges across candidates so the
         // end-to-end wait is roughly reducer_timeout + a couple of hedge delays.
-        reducer_timeout: std::time::Duration::from_secs(15),
+        reducer_timeout: std::time::Duration::from_secs(60),
         // Start a second reducer candidate after 5s if the first hasn't replied
         // (or sooner on outright failure). Cheap on the happy path, big win on
         // the cold-KV / stale-peer tail.
