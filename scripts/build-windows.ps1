@@ -339,7 +339,17 @@ function Invoke-CmakeBuild {
         }
 
         Write-Warning "CUDA ABI build failed while using sccache; restarting sccache and retrying once."
-        & $compilerCacheBin --stop-server 2>&1 | Out-Null
+        # `sccache --stop-server` exits non-zero when the server is already dead
+        # (which is precisely the case this retry path exists to handle). Tolerate
+        # that instead of letting $ErrorActionPreference='Stop' turn it into a
+        # terminating error that aborts the retry before cmake runs again.
+        $previousErrorActionPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            & $compilerCacheBin --stop-server 2>&1 | Out-Null
+        } finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+        }
         Start-Sleep -Seconds 2
         Reset-SccacheStats
         Invoke-NativeCommand "cmake" $arguments
