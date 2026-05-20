@@ -362,25 +362,8 @@ impl Node {
             || self
                 .discovered_peer_already_known(peer_id, known_peer_check_uses_connections)
                 .await
+            || Self::discovered_peer_is_filtered(peer_id, ann)
         {
-            return;
-        }
-        // Skip dialing peers we would reject at ingest. Without this skip,
-        // `update_transitive_peer` removes the peer from `state.peers` (so
-        // `connect_to_peer`'s already-known fast-path does not fire), and we
-        // would spend 30 s per host walking through an entire payload of
-        // unreachable ghost addresses sequentially, wedging the surrounding
-        // gossip exchange. The same gates that filter the local table also
-        // gate the outbound dial here.
-        if !version_allowed_for_rebroadcast(ann.version.as_deref())
-            || peer_is_idle_transitive_client(ann)
-        {
-            tracing::debug!(
-                "Skipping discovered peer {} (filtered: version={:?} role={:?})",
-                peer_id.fmt_short(),
-                ann.version,
-                ann.role
-            );
             return;
         }
         if let Err(error) = Box::pin(self.connect_to_peer(addr)).await {
@@ -393,6 +376,26 @@ impl Node {
                 );
             }
         }
+    }
+
+    /// Returns `true` if the announcement would be rejected by the same
+    /// gates that filter ingest. Skipping the dial here avoids spending
+    /// 30s per host walking through unreachable ghost addresses
+    /// sequentially in the gossip exchange dial loop — the wedge that
+    /// caused `--auto` startup to hang.
+    fn discovered_peer_is_filtered(peer_id: EndpointId, ann: &PeerAnnouncement) -> bool {
+        if !version_allowed_for_rebroadcast(ann.version.as_deref())
+            || peer_is_idle_transitive_client(ann)
+        {
+            tracing::debug!(
+                "Skipping discovered peer {} (filtered: version={:?} role={:?})",
+                peer_id.fmt_short(),
+                ann.version,
+                ann.role
+            );
+            return true;
+        }
+        false
     }
 
     fn should_skip_discovered_peer(
