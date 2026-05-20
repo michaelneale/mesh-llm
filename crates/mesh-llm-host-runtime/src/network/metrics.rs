@@ -3,7 +3,7 @@
 
 use serde::Serialize;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -14,6 +14,10 @@ const MAX_TRACKED_MODELS: usize = 128;
 const MAX_TARGETS_PER_MODEL: usize = 16;
 const DEFAULT_MODEL_SHARDS: usize = 32;
 const THROUGHPUT_SCALE_MILLI: u64 = 1000;
+pub(crate) const MAX_ADVERTISED_MODEL_THROUGHPUT_HINTS: usize = 64;
+pub(crate) const MAX_ADVERTISED_MODEL_NAME_BYTES: usize = 256;
+pub(crate) const MAX_ADVERTISED_TPS_MILLI: u64 = 100_000 * THROUGHPUT_SCALE_MILLI;
+pub(crate) const MAX_ADVERTISED_THROUGHPUT_SAMPLES: u64 = 256;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MetricLayer {
@@ -209,6 +213,48 @@ pub struct ModelRoutingMetricsSnapshot {
 pub(crate) struct RoutingCollectorSnapshot {
     pub status: RoutingMetricsStatusSnapshot,
     pub models: HashMap<String, ModelRoutingMetricsSnapshot>,
+}
+
+/// Soft peer-advertised model throughput hint.
+///
+/// Values are fixed-point milli tokens/second to keep gossip deterministic and
+/// avoid protobuf floating-point edge cases. They are advisory only; routing
+/// clamps and local observations take precedence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ModelThroughputHint {
+    pub(crate) model_name: String,
+    pub(crate) avg_tokens_per_second_milli: u64,
+    pub(crate) throughput_samples: u64,
+}
+
+pub(crate) fn sanitize_model_throughput_hints<I>(hints: I) -> Vec<ModelThroughputHint>
+where
+    I: IntoIterator<Item = ModelThroughputHint>,
+{
+    let mut seen = HashSet::new();
+    let mut sanitized = Vec::new();
+    for mut hint in hints {
+        hint.model_name = hint.model_name.trim().to_string();
+        if hint.model_name.is_empty()
+            || hint.model_name.len() > MAX_ADVERTISED_MODEL_NAME_BYTES
+            || hint.avg_tokens_per_second_milli == 0
+            || hint.throughput_samples == 0
+            || !seen.insert(hint.model_name.clone())
+        {
+            continue;
+        }
+        hint.avg_tokens_per_second_milli = hint
+            .avg_tokens_per_second_milli
+            .min(MAX_ADVERTISED_TPS_MILLI);
+        hint.throughput_samples = hint
+            .throughput_samples
+            .min(MAX_ADVERTISED_THROUGHPUT_SAMPLES);
+        sanitized.push(hint);
+        if sanitized.len() >= MAX_ADVERTISED_MODEL_THROUGHPUT_HINTS {
+            break;
+        }
+    }
+    sanitized
 }
 
 /// Local-only per-target routing outcome memory exposed on `/api/models`.
@@ -440,6 +486,89 @@ impl RoutingMetrics {
         }
         let tps = average_milli(metrics.throughput_tps_milli_sum, samples)?;
         Some((tps, samples))
+    }
+
+    /// Return bounded local-throughput hints that this node can safely advertise.
+    ///
+    /// Only local targets for currently hosted models are included. Remote and
+    /// endpoint observations are measurements this node made while routing, not
+    /// proof of this node's serving speed, so they are intentionally excluded.
+    pub(crate) fn advertisable_model_throughput(
+        &self,
+        hosted_models: &[String],
+    ) -> Vec<ModelThroughputHint> {
+        let now = Instant::now();
+        let mut seen = HashSet::new();
+        let mut hints = Vec::new();
+
+        for model in hosted_models {
+            let model = model.trim();
+            if model.is_empty() || !seen.insert(model.to_string()) {
+                continue;
+            }
+
+            let shard_index = self.shard_index(model);
+            let mut shard = self.shards[shard_index].lock().unwrap();
+            shard.compact(now, &self.config);
+            let Some(metrics) = shard.models.get(model) else {
+                continue;
+            };
+
+            let mut tps_milli_sum = 0_u64;
+            let mut samples = 0_u64;
+            for (target, target_metrics) in &metrics.targets {
+                if target.kind != TargetKind::Local || target_metrics.throughput_samples == 0 {
+                    continue;
+                }
+                tps_milli_sum =
+                    tps_milli_sum.saturating_add(target_metrics.throughput_tps_milli_sum);
+                samples = samples.saturating_add(target_metrics.throughput_samples);
+            }
+
+            if samples == 0 {
+                continue;
+            }
+            let Some(avg_tokens_per_second_milli) = average_milli_raw(tps_milli_sum, samples)
+            else {
+                continue;
+            };
+            hints.push(ModelThroughputHint {
+                model_name: model.to_string(),
+                avg_tokens_per_second_milli: avg_tokens_per_second_milli
+                    .min(MAX_ADVERTISED_TPS_MILLI),
+                throughput_samples: samples.min(MAX_ADVERTISED_THROUGHPUT_SAMPLES),
+            });
+            if hints.len() >= MAX_ADVERTISED_MODEL_THROUGHPUT_HINTS {
+                break;
+            }
+        }
+
+        sanitize_model_throughput_hints(hints)
+    }
+
+    pub(crate) fn throughput_hint_for_target(
+        &self,
+        model: &str,
+        target: AttemptTarget,
+    ) -> Option<ModelThroughputHint> {
+        let now = Instant::now();
+        let shard_index = self.shard_index(model);
+        let mut shard = self.shards[shard_index].lock().unwrap();
+        shard.compact(now, &self.config);
+        let metrics = shard.models.get(model)?;
+        let target = target.key();
+        let metrics = metrics.targets.get(&target)?;
+        let samples = metrics.throughput_samples;
+        if samples == 0 {
+            return None;
+        }
+        let avg_tokens_per_second_milli =
+            average_milli_raw(metrics.throughput_tps_milli_sum, samples)?;
+        Some(ModelThroughputHint {
+            model_name: model.to_string(),
+            avg_tokens_per_second_milli,
+            throughput_samples: samples,
+        })
     }
 
     fn shard_index(&self, model: &str) -> usize {
@@ -1055,11 +1184,12 @@ fn average(total: u64, count: u64) -> f64 {
 }
 
 fn average_milli(total_milli: u64, count: u64) -> Option<f64> {
-    if count == 0 {
-        None
-    } else {
-        Some(total_milli as f64 / THROUGHPUT_SCALE_MILLI as f64 / count as f64)
-    }
+    average_milli_raw(total_milli, count)
+        .map(|avg_milli| avg_milli as f64 / THROUGHPUT_SCALE_MILLI as f64)
+}
+
+fn average_milli_raw(total_milli: u64, count: u64) -> Option<u64> {
+    (count != 0).then(|| total_milli / count)
 }
 
 fn tokens_per_second_milli(tokens: u64, elapsed: Duration) -> Option<u64> {
@@ -1286,6 +1416,115 @@ mod tests {
         assert_eq!(status.request_count, 1);
         assert_eq!(status.successful_requests, 1);
         assert!(metrics.model_snapshots().is_empty());
+    }
+
+    #[test]
+    fn routing_metrics_advertises_only_local_hosted_model_throughput() {
+        let metrics = RoutingMetrics::new();
+        metrics.record_attempt(
+            Some("qwen"),
+            AttemptTarget::Local("127.0.0.1:9337".into()),
+            Duration::from_millis(2),
+            Duration::from_millis(1_000),
+            AttemptOutcome::Success,
+            Some(42),
+        );
+        metrics.record_attempt(
+            Some("remote-only"),
+            AttemptTarget::Remote("peer-a".into()),
+            Duration::from_millis(2),
+            Duration::from_millis(1_000),
+            AttemptOutcome::Success,
+            Some(200),
+        );
+        metrics.record_attempt(
+            Some("failed-local"),
+            AttemptTarget::Local("127.0.0.1:9338".into()),
+            Duration::from_millis(2),
+            Duration::from_millis(1_000),
+            AttemptOutcome::Timeout,
+            None,
+        );
+
+        let hosted = vec![
+            "qwen".to_string(),
+            "remote-only".to_string(),
+            "failed-local".to_string(),
+        ];
+        let hints = metrics.advertisable_model_throughput(&hosted);
+
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].model_name, "qwen");
+        assert_eq!(hints[0].avg_tokens_per_second_milli, 42_000);
+        assert_eq!(hints[0].throughput_samples, 1);
+    }
+
+    #[test]
+    fn throughput_hint_for_target_ignores_expired_metrics() {
+        let metrics = RoutingMetrics::new();
+        let target = AttemptTarget::Local("127.0.0.1:9337".into());
+        metrics.record_attempt(
+            Some("qwen"),
+            target.clone(),
+            Duration::from_millis(2),
+            Duration::from_millis(1_000),
+            AttemptOutcome::Success,
+            Some(42),
+        );
+
+        assert!(metrics
+            .throughput_hint_for_target("qwen", target.clone())
+            .is_some());
+        metrics.age_model_for_test("qwen", METRICS_TTL + Duration::from_secs(1));
+
+        assert!(metrics.throughput_hint_for_target("qwen", target).is_none());
+    }
+
+    #[test]
+    fn sanitize_model_throughput_hints_drops_invalid_and_clamps_values() {
+        let hints = sanitize_model_throughput_hints([
+            ModelThroughputHint {
+                model_name: "  qwen  ".to_string(),
+                avg_tokens_per_second_milli: MAX_ADVERTISED_TPS_MILLI + 1,
+                throughput_samples: MAX_ADVERTISED_THROUGHPUT_SAMPLES + 1,
+            },
+            ModelThroughputHint {
+                model_name: "qwen".to_string(),
+                avg_tokens_per_second_milli: 42_000,
+                throughput_samples: 7,
+            },
+            ModelThroughputHint {
+                model_name: "".to_string(),
+                avg_tokens_per_second_milli: 42_000,
+                throughput_samples: 7,
+            },
+            ModelThroughputHint {
+                model_name: "x".repeat(MAX_ADVERTISED_MODEL_NAME_BYTES + 1),
+                avg_tokens_per_second_milli: 42_000,
+                throughput_samples: 7,
+            },
+            ModelThroughputHint {
+                model_name: "empty-speed".to_string(),
+                avg_tokens_per_second_milli: 0,
+                throughput_samples: 7,
+            },
+            ModelThroughputHint {
+                model_name: "empty-samples".to_string(),
+                avg_tokens_per_second_milli: 42_000,
+                throughput_samples: 0,
+            },
+        ]);
+
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].model_name, "qwen");
+        assert_eq!(
+            hints[0].avg_tokens_per_second_milli,
+            MAX_ADVERTISED_TPS_MILLI
+        );
+        assert_eq!(
+            hints[0].throughput_samples,
+            MAX_ADVERTISED_THROUGHPUT_SAMPLES
+        );
     }
 
     #[test]

@@ -3,7 +3,7 @@ use crate::mesh::RouteEntry;
 use crate::mesh::{ModelDemand, NodeRole, PeerAnnouncement, RoutingTable};
 use crate::protocol::NODE_PROTOCOL_GENERATION;
 use iroh::{EndpointAddr, EndpointId};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 fn skippy_stage_subprotocols(
     artifact_transfer_supported: bool,
@@ -414,7 +414,45 @@ pub(crate) fn sanitize_gossip_announcement_for_wire(ann: &PeerAnnouncement) -> P
     sanitized.available_models.clear();
     sanitized.available_model_metadata.clear();
     sanitized.available_model_sizes.clear();
+    sanitized.advertised_model_throughput = sanitize_model_throughput_hints_for_ann(&sanitized);
     sanitized
+}
+
+fn routable_model_names(ann: &PeerAnnouncement) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for model in ann
+        .hosted_models
+        .iter()
+        .flatten()
+        .chain(&ann.serving_models)
+    {
+        let model = model.trim();
+        if !model.is_empty() {
+            names.insert(model.to_string());
+        }
+    }
+    for descriptor in &ann.served_model_descriptors {
+        let model = descriptor.identity.model_name.trim();
+        if !model.is_empty() {
+            names.insert(model.to_string());
+        }
+    }
+    names
+}
+
+fn sanitize_model_throughput_hints_for_ann(
+    ann: &PeerAnnouncement,
+) -> Vec<crate::network::metrics::ModelThroughputHint> {
+    let routable = routable_model_names(ann);
+    if routable.is_empty() {
+        return Vec::new();
+    }
+    crate::network::metrics::sanitize_model_throughput_hints(
+        ann.advertised_model_throughput.clone(),
+    )
+    .into_iter()
+    .filter(|hint| routable.contains(&hint.model_name))
+    .collect()
 }
 
 pub(crate) fn local_role_to_proto(role: &NodeRole) -> (i32, Option<u32>) {
@@ -435,6 +473,26 @@ pub(crate) fn proto_role_to_local(role_int: i32, http_port: Option<u32>) -> Node
         },
         crate::proto::node::NodeRole::Client => NodeRole::Client,
         _ => NodeRole::Worker,
+    }
+}
+
+fn local_throughput_hint_to_proto(
+    hint: &crate::network::metrics::ModelThroughputHint,
+) -> crate::proto::node::AdvertisedModelThroughput {
+    crate::proto::node::AdvertisedModelThroughput {
+        model_name: hint.model_name.clone(),
+        avg_tokens_per_second_milli: hint.avg_tokens_per_second_milli,
+        throughput_samples: hint.throughput_samples,
+    }
+}
+
+fn proto_throughput_hint_to_local(
+    hint: &crate::proto::node::AdvertisedModelThroughput,
+) -> crate::network::metrics::ModelThroughputHint {
+    crate::network::metrics::ModelThroughputHint {
+        model_name: hint.model_name.clone(),
+        avg_tokens_per_second_milli: hint.avg_tokens_per_second_milli,
+        throughput_samples: hint.throughput_samples,
     }
 }
 
@@ -553,6 +611,10 @@ pub(crate) fn local_ann_to_proto_ann(
             .latency_observer_id
             .as_ref()
             .map(|id| id.as_bytes().to_vec()),
+        advertised_model_throughput: sanitize_model_throughput_hints_for_ann(&ann)
+            .iter()
+            .map(local_throughput_hint_to_proto)
+            .collect(),
         subprotocols: skippy_stage_subprotocols(
             ann.artifact_transfer_supported,
             ann.stage_protocol_generation_supported,
@@ -727,6 +789,11 @@ pub(crate) fn proto_ann_to_local(
         artifact_transfer_supported: supports_skippy_artifact_transfer(&pa.subprotocols),
         stage_protocol_generation_supported: supports_skippy_stage_generation(&pa.subprotocols),
         stage_status_list_supported: supports_skippy_status_list(&pa.subprotocols),
+        advertised_model_throughput: pa
+            .advertised_model_throughput
+            .iter()
+            .map(proto_throughput_hint_to_local)
+            .collect(),
         latency_ms: pa.latency_ms,
         latency_source: crate::proto::node::LatencySource::try_from(pa.latency_source).ok(),
         latency_age_ms: pa.latency_age_ms.map(|v| v as u64),
@@ -736,6 +803,7 @@ pub(crate) fn proto_ann_to_local(
         }),
     };
     crate::mesh::backfill_legacy_descriptors(&mut ann);
+    ann.advertised_model_throughput = sanitize_model_throughput_hints_for_ann(&ann);
     Some((addr, ann))
 }
 

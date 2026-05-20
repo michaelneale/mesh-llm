@@ -977,6 +977,7 @@ pub(crate) struct PeerAnnouncement {
     pub(crate) artifact_transfer_supported: bool,
     pub(crate) stage_protocol_generation_supported: bool,
     pub(crate) stage_status_list_supported: bool,
+    pub(crate) advertised_model_throughput: Vec<crate::network::metrics::ModelThroughputHint>,
     pub(crate) latency_ms: Option<u32>,
     pub(crate) latency_source: Option<crate::proto::node::LatencySource>,
     pub(crate) latency_age_ms: Option<u64>,
@@ -1069,6 +1070,7 @@ pub struct PeerInfo {
     pub artifact_transfer_supported: bool,
     pub stage_protocol_generation_supported: bool,
     pub stage_status_list_supported: bool,
+    pub(crate) advertised_model_throughput: Vec<crate::network::metrics::ModelThroughputHint>,
     /// Most recent direct RTT sample for display purposes (refreshed periodically).
     pub display_rtt: Option<DirectLatencyObservation>,
     /// Latency propagated via transitive gossip.
@@ -1141,6 +1143,7 @@ impl PeerInfo {
             artifact_transfer_supported: ann.artifact_transfer_supported,
             stage_protocol_generation_supported: ann.stage_protocol_generation_supported,
             stage_status_list_supported: ann.stage_status_list_supported,
+            advertised_model_throughput: ann.advertised_model_throughput.clone(),
             display_rtt: None,
             propagated_latency: None,
             owner_summary,
@@ -3254,6 +3257,20 @@ impl Node {
             .peers
             .get(&peer_id)
             .and_then(|peer| peer.advertised_context_length(model_name))
+    }
+
+    pub(crate) async fn peer_model_throughput_hint(
+        &self,
+        peer_id: EndpointId,
+        model_name: &str,
+    ) -> Option<crate::network::metrics::ModelThroughputHint> {
+        let state = self.state.lock().await;
+        state.peers.get(&peer_id).and_then(|peer| {
+            peer.advertised_model_throughput
+                .iter()
+                .find(|hint| hint.model_name == model_name)
+                .cloned()
+        })
     }
 
     pub async fn served_model_descriptors(&self) -> Vec<ServedModelDescriptor> {

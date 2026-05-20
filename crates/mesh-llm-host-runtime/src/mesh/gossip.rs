@@ -126,6 +126,7 @@ struct LocalAnnouncementData {
     served_model_runtime: Vec<ModelRuntimeDescriptor>,
     owner_attestation: Option<SignedNodeOwnership>,
     artifact_transfer_supported: bool,
+    advertised_model_throughput: Vec<crate::network::metrics::ModelThroughputHint>,
     gpu_mem_bandwidth_gbps: Option<String>,
     gpu_compute_tflops_fp32: Option<String>,
     gpu_compute_tflops_fp16: Option<String>,
@@ -247,6 +248,7 @@ pub(super) fn apply_transitive_ann(
     existing.artifact_transfer_supported = ann.artifact_transfer_supported;
     existing.stage_protocol_generation_supported = ann.stage_protocol_generation_supported;
     existing.stage_status_list_supported = ann.stage_status_list_supported;
+    existing.advertised_model_throughput = ann.advertised_model_throughput.clone();
     if ann.experts_summary.is_some() {
         existing.experts_summary = ann.experts_summary.clone();
     }
@@ -481,6 +483,7 @@ impl Node {
         existing.artifact_transfer_supported = ann.artifact_transfer_supported;
         existing.stage_protocol_generation_supported = ann.stage_protocol_generation_supported;
         existing.stage_status_list_supported = ann.stage_status_list_supported;
+        existing.advertised_model_throughput = ann.advertised_model_throughput.clone();
         if ann.version.is_some() {
             existing.version = ann.version.clone();
         }
@@ -655,13 +658,17 @@ impl Node {
 
     async fn snapshot_local_announcement_data(&self) -> LocalAnnouncementData {
         let owner_summary = self.owner_summary.lock().await.clone();
+        let hosted_models = self.hosted_models.lock().await.clone();
+        let advertised_model_throughput = self
+            .routing_metrics
+            .advertisable_model_throughput(&hosted_models);
         LocalAnnouncementData {
             role: self.role.lock().await.clone(),
             first_joined_mesh_ts: *self.first_joined_mesh_ts.lock().await,
             models: self.models.lock().await.clone(),
             model_source: self.model_source.lock().await.clone(),
             serving_models: self.serving_models.lock().await.clone(),
-            hosted_models: self.hosted_models.lock().await.clone(),
+            hosted_models,
             available_models: self.available_models.lock().await.clone(),
             requested_models: self.requested_models.lock().await.clone(),
             explicit_model_interests: self.explicit_model_interests.lock().await.clone(),
@@ -674,6 +681,7 @@ impl Node {
             owner_attestation: self.owner_attestation.lock().await.clone(),
             artifact_transfer_supported:
                 crate::models::artifact_transfer::artifact_transfer_advertised(&owner_summary),
+            advertised_model_throughput,
             gpu_mem_bandwidth_gbps: Self::format_optional_locked_f32_list(
                 &self.gpu_mem_bandwidth_gbps,
             )
@@ -723,6 +731,7 @@ impl Node {
             artifact_transfer_supported: peer.artifact_transfer_supported,
             stage_protocol_generation_supported: peer.stage_protocol_generation_supported,
             stage_status_list_supported: peer.stage_status_list_supported,
+            advertised_model_throughput: peer.advertised_model_throughput.clone(),
             latency_ms: latency.latency_ms,
             latency_source: Some(match latency.source {
                 DisplayLatencySource::Direct => crate::proto::node::LatencySource::Direct,
@@ -782,6 +791,7 @@ impl Node {
             artifact_transfer_supported: data.artifact_transfer_supported,
             stage_protocol_generation_supported: true,
             stage_status_list_supported: true,
+            advertised_model_throughput: data.advertised_model_throughput,
             latency_ms: None,
             latency_source: None,
             latency_age_ms: None,
@@ -1181,6 +1191,7 @@ mod tests {
             artifact_transfer_supported: true,
             stage_protocol_generation_supported: true,
             stage_status_list_supported: true,
+            advertised_model_throughput: vec![],
             latency_ms: None,
             latency_source: None,
             latency_age_ms: None,
@@ -1361,6 +1372,29 @@ mod tests {
         assert!(existing.stage_protocol_generation_supported);
     }
 
+    #[test]
+    fn test_apply_transitive_ann_refreshes_advertised_model_throughput() {
+        let mut existing = test_peer(Some(100));
+        let mut ann = test_announcement(Some(100));
+        ann.advertised_model_throughput = vec![crate::network::metrics::ModelThroughputHint {
+            model_name: "qwen".to_string(),
+            avg_tokens_per_second_milli: 35_000,
+            throughput_samples: 4,
+        }];
+
+        apply_transitive_ann(
+            &mut existing,
+            &test_addr(0x33),
+            &ann,
+            test_endpoint_id(0xee),
+        );
+
+        assert_eq!(
+            existing.advertised_model_throughput,
+            ann.advertised_model_throughput
+        );
+    }
+
     #[tokio::test]
     async fn test_add_peer_refreshes_stage_status_list_support() {
         let node = Node::new_for_tests(NodeRole::Worker).await.unwrap();
@@ -1393,6 +1427,31 @@ mod tests {
         let state = node.state.lock().await;
         let peer = state.peers.get(&peer_id).expect("peer should be tracked");
         assert!(peer.stage_protocol_generation_supported);
+    }
+
+    #[tokio::test]
+    async fn test_add_peer_refreshes_advertised_model_throughput() {
+        let node = Node::new_for_tests(NodeRole::Worker).await.unwrap();
+        let peer_id = test_endpoint_id(0x46);
+        let addr = test_addr(0x46);
+        let mut ann = test_announcement(Some(100));
+        ann.advertised_model_throughput = vec![crate::network::metrics::ModelThroughputHint {
+            model_name: "qwen".to_string(),
+            avg_tokens_per_second_milli: 20_000,
+            throughput_samples: 2,
+        }];
+
+        node.add_peer(peer_id, addr.clone(), &ann).await;
+        ann.advertised_model_throughput[0].avg_tokens_per_second_milli = 48_000;
+        ann.advertised_model_throughput[0].throughput_samples = 9;
+        node.add_peer(peer_id, addr, &ann).await;
+
+        let state = node.state.lock().await;
+        let peer = state.peers.get(&peer_id).expect("peer should be tracked");
+        assert_eq!(
+            peer.advertised_model_throughput,
+            ann.advertised_model_throughput
+        );
     }
 
     #[tokio::test]
