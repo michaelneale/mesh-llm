@@ -10,6 +10,31 @@ and return one coherent OpenAI-compatible response.
 
 ---
 
+## Why MoA exists
+
+If you have N nodes on a mesh, the obvious thing is to shard one large
+model across them (Skippy split). That gives the best quality per
+VRAM-dollar when the network is good — but the network sits on the
+critical path of every output token. Past a certain RTT, loss, or peer-
+flakiness, split-large stops producing interactive performance at all.
+
+MoA is the "use the mesh anyway" path for that region. Each worker runs
+fully local on one node, so per-token latency stays local. The network
+is only touched at fan-out, output collection, and the reducer. A slow
+link slightly slows the whole turn instead of stalling every token.
+
+The aim is **not** to beat split-large on quality. The aim is to keep
+the mesh useful when split can't be — by mixing several mid-size models
+in parallel and arbitrating one coherent answer, at quality at least as
+good as a single mid-size local model would have produced.
+
+Split and MoA are complementary, not competitive. Network conditions
+decide which is appropriate. See [Diverse-mesh vs split-large: the
+operating-envelope question](#diverse-mesh-vs-split-large-the-operating-envelope-question)
+for the experimental framing.
+
+---
+
 ## How it works
 
 ```
