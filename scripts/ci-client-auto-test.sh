@@ -120,16 +120,17 @@ if [ "$API_UP" = true ]; then
         echo "⚠️  /v1/models not reachable (may be expected with no live peers)"
     fi
 
-    # Best-effort "actually joined a mesh" signal.
+    # Required "actually joined a mesh" signal.
     # `mesh_id` is only Some(...) once the node has joined a mesh (either as
     # originator or by adopting a peer's id via gossip). `peers` is non-empty
     # iff at least one peer is known. `first_joined_mesh_ts` is sticky and only
     # set on the first successful join.
     #
-    # We poll for up to JOIN_WAIT seconds. If the public mesh has no reachable
-    # peers in this CI run, we fall back to the existing "inconclusive" path.
+    # Predicate: mesh_id set AND (peers non-empty OR first_joined_mesh_ts set).
+    # We poll for up to JOIN_WAIT seconds; if the predicate is never satisfied,
+    # this step fails (no inconclusive fallback).
     JOIN_WAIT=60
-    echo "Polling /api/status for a join signal (mesh_id + peers, up to ${JOIN_WAIT}s)..."
+    echo "Polling /api/status for a join signal (mesh_id AND (peers OR first_joined_mesh_ts), up to ${JOIN_WAIT}s)..."
     JOINED=false
     for j in $(seq 1 "$JOIN_WAIT"); do
         STATUS=$(curl -sf --max-time 5 "http://localhost:${CONSOLE_PORT}/api/status" 2>/dev/null || echo "")
