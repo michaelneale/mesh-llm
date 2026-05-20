@@ -136,6 +136,47 @@ fn try_json_parse(
     let json_str = extract_json_object(raw)?;
     let obj: Value = serde_json::from_str(&json_str).ok()?;
 
+    // First, recognise the OpenAI tool-call shape that models commonly
+    // emit even without our `kind`/`confidence` envelope:
+    //
+    //   {"function": "read_file", "arguments": {"path": "README.md"}}
+    //   {"name": "read_file",     "arguments": {...}}
+    //   {"tool": "read_file",     "arguments": {...}}
+    //
+    // Agent harnesses (Goose, OpenCode) only act on real `tool_calls`
+    // — if the worker writes inline tool JSON and we miss it, MoA leaks
+    // the JSON back as `content` and the agent does nothing. This is
+    // the failure mode PR #566 review called out.
+    if obj.get("kind").is_none() {
+        let openai_tool_name = obj
+            .get("function")
+            .and_then(|v| v.as_str())
+            .or_else(|| obj.get("name").and_then(|v| v.as_str()))
+            .or_else(|| obj.get("tool").and_then(|v| v.as_str()));
+        if let Some(tname) = openai_tool_name {
+            let args = obj.get("arguments").cloned().or_else(|| {
+                obj.get("arguments")
+                    .and_then(|a| a.as_str())
+                    .and_then(|s| serde_json::from_str(s).ok())
+            });
+            return Some(WorkerOutput {
+                kind: OutputKind::ToolProposal,
+                // OpenAI-shape tool calls have no native confidence
+                // marker, but a structurally well-formed proposal is a
+                // stronger signal than a heuristic catch — score it
+                // higher than the heuristic's 0.6 so the arbiter
+                // prefers it on tie.
+                confidence: 0.75,
+                tool_name: Some(tname.to_string()),
+                tool_arguments: args,
+                payload: raw.to_string(),
+                model: model.to_string(),
+                role,
+                elapsed_ms,
+            });
+        }
+    }
+
     let kind = match obj.get("kind").and_then(|k| k.as_str()) {
         Some("tool_proposal") => OutputKind::ToolProposal,
         Some("critique") => OutputKind::Critique,
