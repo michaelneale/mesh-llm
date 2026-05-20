@@ -59,10 +59,24 @@ impl FamilyPolicy {
                 max_entries,
             } => {
                 let max_bytes = derive_stage_cache_max_bytes(config)?;
+                // The family policy's `max_entries` is a generous
+                // upper bound on cache cardinality. The real ceiling
+                // is the unified KV cell pool size: each resident
+                // prefix pins `token_count` cells across `stage_layers`
+                // in the same `n_ctx` pool the active lanes use. If
+                // we let the cache fill to `max_entries` it can
+                // starve the active lanes of cells and surface as
+                // HTTP 502 `RuntimeError: llama_decode failed`
+                // (`decode: failed to find a memory slot`).
+                //
+                // Cap entries so the cache cannot overcommit the
+                // pool. See `derive_max_entries_from_kv_cells` below.
+                let bounded_entries =
+                    derive_max_entries_from_kv_cells(config, min_tokens, max_entries);
                 Some(StageKvCacheConfig {
                     mode: StageKvCacheMode::LookupRecord,
                     payload: payload.as_stage_payload(),
-                    max_entries,
+                    max_entries: bounded_entries,
                     max_bytes,
                     min_tokens,
                     shared_prefix_stride_tokens: 128,
@@ -71,6 +85,42 @@ impl FamilyPolicy {
             }
         }
     }
+}
+
+/// Cap the prefix-cache `max_entries` so resident prefixes cannot
+/// exhaust the unified KV cell pool.
+///
+/// Skippy's stage runtime serves with `kv_unified = true` whenever
+/// `lane_count > 1` (patch `0034-Add-shared-execution-lanes-to-skippy-ABI.patch`).
+/// In unified mode the KV cache is a single pool of `n_ctx` cells
+/// shared across all `n_seq_max` sequences. The resident-prefix cache
+/// pins prefixes onto dedicated sequence ids in *the same pool*, so
+/// every cached entry consumes cells that the active lanes can no
+/// longer use. Without a cap, the family default of 128 entries can
+/// accumulate enough pinned prefixes to starve the active lanes,
+/// surfacing as HTTP 502 `RuntimeError: llama_decode failed`
+/// (`decode: failed to find a memory slot`) after a dozen or so
+/// agent-style requests.
+///
+/// Budget: the cache may use at most half the cell pool. Each entry
+/// is at least `min_tokens` cells, so `max_entries ≤ n_ctx / (2 *
+/// min_tokens)`. The LRU in `ResidentPrefixCache` evicts when this
+/// ceiling is hit. The other half of the pool stays available for
+/// the active lanes' fresh prompts.
+///
+/// Never lifted above the family-policy default; never below 1.
+fn derive_max_entries_from_kv_cells(
+    config: &StageConfig,
+    min_tokens: u64,
+    family_default: usize,
+) -> usize {
+    if min_tokens == 0 {
+        return family_default;
+    }
+    let n_ctx = u64::from(config.ctx_size.max(1));
+    let cache_budget_cells = n_ctx / 2;
+    let kv_capped = (cache_budget_cells / min_tokens) as usize;
+    kv_capped.clamp(1, family_default)
 }
 
 pub(crate) fn family_policy_for_stage_config(config: &StageConfig) -> FamilyPolicy {
@@ -193,7 +243,32 @@ fn resident_kv_policy(activation_wire_dtype: StageWireDType) -> FamilyPolicy {
         prefix_cache: FamilyPrefixCachePolicy::Auto {
             payload: FamilyPrefixCachePayload::ResidentKv,
             min_tokens: 256,
-            max_entries: 128,
+            // Was 128. Real-world OpenAI surface workloads (Goose,
+            // OpenCode, pi) record prefixes that average 1.5–2k
+            // tokens — much larger than `min_tokens`. 128 entries at
+            // ~2k tokens each pins ~256k cells, which exceeds even a
+            // 131k-`n_ctx` model's unified KV pool. The active lanes
+            // then can't find a slot and the embedded runtime
+            // returns HTTP 502
+            // `RuntimeError: llama_decode failed`
+            // (`decode: failed to find a memory slot`).
+            //
+            // 16 entries at ~2k tokens ≈ 32k cells; comfortable
+            // headroom under any model that gets `kv_unified = true`
+            // serving (`lane_count > 1`). The LRU in
+            // `ResidentPrefixCache` evicts older entries as new
+            // prefixes are recorded, so cache hit rate for the
+            // recent workload is preserved.
+            //
+            // Live observation: even at 16, sustained Goose `auto`
+            // traffic eventually starves the lanes — see the
+            // `prefix cache leak under sustained agent traffic`
+            // section in `docs/design/MOA_BRANCH_REPORT.md`. The
+            // 16-entry cap pushes the failure point from ~6 to ~16+
+            // requests but does not fully eliminate it. The proper
+            // fix is more invasive in `skippy-server` and out of
+            // scope for PR #566.
+            max_entries: 16,
         },
     }
 }
@@ -204,7 +279,10 @@ fn kv_recurrent_policy(activation_wire_dtype: StageWireDType) -> FamilyPolicy {
         prefix_cache: FamilyPrefixCachePolicy::Auto {
             payload: FamilyPrefixCachePayload::KvRecurrent,
             min_tokens: 256,
-            max_entries: 128,
+            // See `resident_kv_policy` for the rationale; recurrent
+            // state lanes share the same n_ctx cell pool under
+            // `kv_unified = true`.
+            max_entries: 16,
         },
     }
 }
@@ -282,11 +360,29 @@ fn estimate_stage_cache_max_bytes(config: &StageConfig, meta: &GgufCompactMeta) 
     let value_bytes_per_token = dtype_bytes(value_elems_per_token, &config.cache_type_v)?;
     let bytes_per_token_layer = key_bytes_per_token.checked_add(value_bytes_per_token)?;
 
-    bytes_per_token_layer
+    // The prefix cache shares the same `n_ctx` cell pool the active
+    // lanes use (skippy patches set `kv_unified = true` whenever
+    // `lane_count > 1`; see patch 0034). The total native KV memory
+    // is `bytes_per_token_layer * stage_layers * n_ctx` — NOT
+    // multiplied by `lane_count` (lanes share, they do not multiply
+    // the budget). Cap the cache at *half* that total so the other
+    // half stays free for the lanes' fresh prompts.
+    //
+    // The previous code (a) included the lane_count multiplier (so
+    // budget was 2–4× the actual pool) and (b) didn't reserve any
+    // pool for active lanes. Under sustained agent-style traffic
+    // (Goose, OpenCode, pi against `model: auto`) the cache filled
+    // until it crowded the lanes out and the embedded runtime
+    // returned HTTP 502 `RuntimeError: llama_decode failed`
+    // (`decode: failed to find a memory slot`).
+    let full_pool_bytes = bytes_per_token_layer
         .checked_mul(u64::from(stage_layers))?
-        .checked_mul(u64::from(config.ctx_size.max(1)))?
-        .checked_mul(u64::from(config.lane_count.max(1)))
-        .filter(|bytes| *bytes > 0)
+        .checked_mul(u64::from(config.ctx_size.max(1)))?;
+    let cache_budget_bytes = full_pool_bytes / 2;
+    if cache_budget_bytes == 0 {
+        return None;
+    }
+    Some(cache_budget_bytes)
 }
 
 fn dtype_bytes(elements: u64, dtype: &str) -> Option<u64> {
@@ -379,7 +475,7 @@ mod tests {
             FamilyPrefixCachePolicy::Auto {
                 payload: FamilyPrefixCachePayload::ResidentKv,
                 min_tokens: 256,
-                max_entries: 128,
+                max_entries: 16,
             }
         );
     }
@@ -515,7 +611,7 @@ mod tests {
                         FamilyPrefixCachePolicy::Auto {
                             payload: FamilyPrefixCachePayload::ResidentKv,
                             min_tokens: 256,
-                            max_entries: 128,
+                            max_entries: 16,
                         },
                         "{family_id}"
                     )
@@ -527,7 +623,7 @@ mod tests {
                     FamilyPrefixCachePolicy::Auto {
                         payload: FamilyPrefixCachePayload::KvRecurrent,
                         min_tokens: 256,
-                        max_entries: 128,
+                        max_entries: 16,
                     },
                     "{family_id}"
                 ),
@@ -564,7 +660,7 @@ mod tests {
                 FamilyPrefixCachePolicy::Auto {
                     payload: expected_payload,
                     min_tokens: 256,
-                    max_entries: 128,
+                    max_entries: 16,
                 },
                 "{} ({})",
                 expected.llama_architecture,
@@ -621,12 +717,23 @@ mod tests {
     }
 
     #[test]
-    fn stage_cache_cap_tracks_ctx_lanes_layers_and_kv_types() {
+    fn stage_cache_cap_tracks_ctx_layers_and_kv_types() {
         let config = stage_config();
 
         let bytes = estimate_stage_cache_max_bytes(&config, &kv_meta()).unwrap();
 
-        assert_eq!(bytes, 12_845_056);
+        // 4096 bytes/token/layer * 2 stage_layers * 1024 ctx_size /
+        // 2 (cache may use at most half the unified KV pool).
+        //
+        // Crucially does NOT include lane_count: skippy's unified KV
+        // shares one cell pool across all lanes (`kv_unified = true`
+        // patch 0034), so the cache budget is independent of lane
+        // count. The previous formula multiplied by lane_count AND
+        // didn't reserve any of the pool for active lanes, which
+        // produced an over-generous cache budget that surfaced as
+        // `decode: failed to find a memory slot` failures under
+        // sustained agent traffic.
+        assert_eq!(bytes, 3_211_264);
     }
 
     #[test]
@@ -637,7 +744,11 @@ mod tests {
 
         let bytes = estimate_stage_cache_max_bytes(&config, &kv_meta()).unwrap();
 
-        assert_eq!(bytes, 4_718_592);
+        // q4_0 packs 32 elements into 18 bytes (= 0.5625 bytes/element
+        // vs 2.0 for f16). Same `2 stage_layers * 1024 ctx_size / 2`
+        // and no lane_count multiplier; see
+        // `stage_cache_cap_tracks_ctx_layers_and_kv_types` for why.
+        assert_eq!(bytes, 1_179_648);
     }
 
     #[test]
