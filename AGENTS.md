@@ -38,14 +38,37 @@ The workspace is split across many crates under `crates/`. The shipped binary `m
 Always use `just`. Never build manually.
 
 ```bash
-just build    # llama.cpp fork + mesh-llm + UI
-just bundle   # portable tarball
-just stop     # stop tracked mesh-llm runtime processes
-just test     # quick inference test against :9337
-just auto     # build + stop + start with --auto
-just ui-dev   # vite dev server with HMR
-just clean-ui # nuke node_modules + dist (fixes stale npm state)
+just build         # DEBUG build → ./target/debug/mesh-llm (fast, for iteration)
+just release-build # RELEASE build → ./target/release/mesh-llm (slow, for serious testing / deploy)
+just bundle        # portable tarball (uses the release binary)
+just stop          # stop tracked mesh-llm runtime processes
+just test          # quick inference test against :9337
+just auto          # build + stop + start with --auto
+just ui-dev        # vite dev server with HMR
+just clean-ui      # nuke node_modules + dist (fixes stale npm state)
 ```
+
+**Which build to use:**
+
+- `just build` → produces `./target/debug/mesh-llm`. Use for fast local iteration
+  and sanity-checking that the code compiles end-to-end (llama.cpp ABI + UI +
+  mesh-llm). Do **not** use this binary for serious behavior testing, perf
+  testing, or deploying to test machines — debug builds are slow and can hide
+  or surface bugs that release builds don't.
+- `just release-build` → produces `./target/release/mesh-llm`. Use this for any
+  serious testing, deploying to test machines, bundling, or releases. This is
+  what `just bundle` consumes and what CI builds.
+- `./target/release/mesh-llm` may exist from a *previous* `just release-build`
+  or `just build-dev` invocation even after you run only `just build` — its
+  presence is **not** evidence that your latest code is in it. When in doubt,
+  check `stat ./target/release/mesh-llm` against the time you last ran
+  `just release-build`, or just re-run `just release-build`.
+- `cargo check` / `cargo build` do **not** count as a build for this repo —
+  they skip llama.cpp ABI prep and the UI, and `cargo check` produces no
+  binary at all.
+
+When in doubt for testing or shipping changes: use `just release-build` and
+then copy `./target/release/mesh-llm`.
 
 ### npm "Exit handler never called" error
 

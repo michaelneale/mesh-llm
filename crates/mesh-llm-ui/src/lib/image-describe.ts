@@ -4,9 +4,27 @@
  * The model is loaded only when an image attachment needs description. Its
  * output is injected as text so regular text models can still reason about
  * attached images, matching the legacy console behavior.
+ *
+ * Bundle policy: the Transformers.js JS module is dynamic-imported (lazy code
+ * split). The ONNX Runtime WASM (~21 MB) is NOT bundled — we point
+ * Transformers.js at a jsDelivr CDN URL so the runtime fetches it on first
+ * use. This keeps the embedded UI dist small (the WASM is the single biggest
+ * file in the binary's `include_dir!` blob) at the cost of one CDN fetch the
+ * first time a user attaches an image. The model weights themselves were
+ * already CDN-streamed from HuggingFace; this just applies the same policy
+ * to the runtime.
+ *
+ * Kept in sync with the @huggingface/transformers version in package.json so
+ * the CDN URL serves the matching wasm/jsep artifacts.
  */
 
 import type { Tensor } from '@huggingface/transformers'
+
+// Must match the @huggingface/transformers dependency in package.json. The
+// jsDelivr CDN serves the WASM and JSEP shader assets from the same dist/
+// directory the npm package uses, so we just point at the pinned version.
+const TRANSFORMERS_JS_VERSION = '3.8.1'
+const TRANSFORMERS_WASM_CDN_BASE = `https://cdn.jsdelivr.net/npm/@huggingface/transformers@${TRANSFORMERS_JS_VERSION}/dist/`
 
 let pipelineCache: DescriptionPipeline | null = null
 let loadingPromise: Promise<DescriptionPipeline> | null = null
@@ -17,8 +35,17 @@ type DescriptionPipeline = Awaited<ReturnType<typeof createDescriptionPipeline>>
 type SliceableTensor = { slice: (start: null, end: [number, null]) => Tensor }
 
 async function createDescriptionPipeline() {
-  const { Florence2ForConditionalGeneration, AutoProcessor, AutoTokenizer, RawImage } =
-    await import('@huggingface/transformers')
+  const transformers = await import('@huggingface/transformers')
+  // Redirect the ONNX Runtime WASM lookup away from Vite's bundle and toward
+  // the CDN copy. Doing this before any model load — and before the first
+  // reference to a static asset path — is what convinces Rollup to drop the
+  // WASM from dist/. The `wasm` backend object is optional in the upstream
+  // typings (some builds omit it), so we guard before assigning.
+  const wasmBackend = transformers.env.backends.onnx.wasm
+  if (wasmBackend) {
+    wasmBackend.wasmPaths = TRANSFORMERS_WASM_CDN_BASE
+  }
+  const { Florence2ForConditionalGeneration, AutoProcessor, AutoTokenizer, RawImage } = transformers
 
   const [model, processor, tokenizer] = await Promise.all([
     Florence2ForConditionalGeneration.from_pretrained(MODEL_ID, {
