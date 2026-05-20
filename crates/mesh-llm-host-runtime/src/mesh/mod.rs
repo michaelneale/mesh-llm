@@ -1380,8 +1380,37 @@ async fn startup_secret_key(role: &NodeRole) -> Result<SecretKey> {
 }
 
 fn startup_transport_config() -> iroh::endpoint::QuicTransportConfig {
+    // Keep QUIC connections alive during long inference calls.
+    //
+    // noq-proto's default `max_idle_timeout` is ~30s and `keep_alive_interval`
+    // is `None`. A non-streaming inference request (e.g. MoA reducer or any
+    // `stream:false` call) sends nothing on the wire while the remote model is
+    // generating tokens. Under concurrent load (multiple in-flight model
+    // requests + gossip + heartbeats) noq's multipath bookkeeping will close
+    // an idle path, and if it is the last open path the whole connection
+    // drops mid-stream. The in-flight stream errors with `connection lost`
+    // and the caller has to retry from scratch.
+    //
+    // A 10s keep-alive sends a small PING every 10s on each path, keeping
+    // paths and the connection healthy during long compute. The 5-minute idle
+    // timeout is defense in depth for truly silent connections (paused
+    // agents, suspended laptops); short-term silence is handled by
+    // keep-alive.
+    let max_idle = iroh::endpoint::IdleTimeout::try_from(std::time::Duration::from_secs(300))
+        .expect("5-minute idle timeout fits in a VarInt");
+    let keep_alive = std::time::Duration::from_secs(10);
+    let path_idle = std::time::Duration::from_secs(300);
     iroh::endpoint::QuicTransportConfig::builder()
         .max_concurrent_bidi_streams(1024u32.into())
+        .keep_alive_interval(keep_alive)
+        .max_idle_timeout(Some(max_idle))
+        // noq-proto's multipath uses per-path idle timers independent of the
+        // connection-level idle. Without these, a path can be torn down while
+        // the connection idle timer is fine, and when the last path closes the
+        // connection dies with `LastOpenPath`. Mirror connection-level
+        // settings onto the default per-path config.
+        .default_path_max_idle_timeout(path_idle)
+        .default_path_keep_alive_interval(keep_alive)
         .build()
 }
 
