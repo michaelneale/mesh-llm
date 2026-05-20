@@ -400,6 +400,12 @@ jobs:
     runs-on: windows-2022
     env:
       ROCM_HIP_SDK_FILENAME: AMD-Software-PRO-Edition-25.Q3-WinSvr2022-For-HIP.exe
+      # Pin Windows CUDA to a version sccache 0.15.0 supports.
+      # `choco install cuda` (used previously via install-windows-sdk.ps1)
+      # pulls latest = CUDA 13.2, which deterministically crashes sccache
+      # on nvcc output (see mozilla/sccache#2470). CI pins to the same
+      # version via Jimver/cuda-toolkit; mirror that here.
+      WINDOWS_CUDA_VERSION: ${{ vars.CUDA_VERSION || '12.6.3' }}
     strategy:
       fail-fast: false
       matrix:
@@ -435,11 +441,31 @@ jobs:
       - uses: taiki-e/install-action@just
       - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Cache Windows SDK installers
+        if: ${{ matrix.backend != 'cuda' }}
         uses: actions/cache@v5
         with:
           path: ~/sdk-installer-cache/${{ matrix.backend }}
           key: windows-sdk-installers-${{ matrix.backend }}-${{ env.ROCM_HIP_SDK_FILENAME }}-${{ hashFiles('scripts/install-windows-sdk.ps1') }}
+      - name: Install CUDA toolkit
+        if: ${{ matrix.backend == 'cuda' }}
+        uses: Jimver/cuda-toolkit@v0.2.35
+        with:
+          cuda: ${{ env.WINDOWS_CUDA_VERSION }}
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "visual_studio_integration"]'
+          use-github-cache: true
+          use-local-cache: true
+          log-file-suffix: windows-cuda-release
+      - name: Verify CUDA toolkit
+        if: ${{ matrix.backend == 'cuda' }}
+        shell: pwsh
+        run: |
+          if (-not $env:CUDA_PATH -or -not (Test-Path $env:CUDA_PATH)) {
+            throw "CUDA_PATH was not configured by Jimver/cuda-toolkit."
+          }
+          & nvcc --version
       - name: Install backend SDK
+        if: ${{ matrix.backend != 'cuda' }}
         shell: pwsh
         run: |
           .\scripts\install-windows-sdk.ps1 `
