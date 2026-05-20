@@ -311,6 +311,31 @@ mod tests {
     }
 
     #[test]
+    fn small_ctx_smoke_test_scenario_records_without_eviction_loop() {
+        // Regression for skippy-ci-smoke `prompt exact-prefix hit and
+        // live-session reuse` (CI run 26193173851). The smoke test
+        // ships SmolLM2-135M with `PROMPT_CTX_SIZE=768` and a 533-token
+        // prompt. With a naive `n_ctx / 2 = 384` cap, the cap was
+        // *smaller than a single prompt*, so the first record attempt
+        // would call `evict_until_room_for` with `over_tokens`
+        // permanently true on an empty cache and bail with
+        // "no releasable entries".
+        //
+        // `ResidentCacheConfig::from_stage` derives the cap with a
+        // 4*min_tokens floor (see `derive_max_resident_tokens`). For
+        // the smoke-test config the cap therefore comes through as 0
+        // (disabled). This unit test pins that path: cap=0, record a
+        // 533-token prompt against a 256-token min, no eviction loop.
+        let mut cache = ResidentPrefixCache::new(cfg(16, 0, 0));
+        let alloc = cache
+            .allocate_for_record("page-0", 533, 100, |_| Ok(()))
+            .unwrap();
+        cache.commit_record("page-0".to_string(), alloc.seq_id, 533, 100);
+        assert_eq!(cache.stats().resident_tokens, 533);
+        assert_eq!(cache.stats().entries, 1);
+    }
+
+    #[test]
     fn zero_token_budget_disables_the_check() {
         // max_resident_tokens = 0 means "unlimited" — legacy behavior.
         // 12 entries at 10k tokens each = 120k tokens, which the

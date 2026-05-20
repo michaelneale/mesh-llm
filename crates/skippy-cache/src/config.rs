@@ -19,7 +19,9 @@ pub struct ResidentCacheConfig {
     ///
     /// Set this to a fraction of the model's `n_ctx` (typically
     /// `n_ctx / 2` or similar). A value of 0 disables the cap and
-    /// behaves like the legacy unbounded-by-tokens cache.
+    /// behaves like the legacy unbounded-by-tokens cache. The cap is
+    /// only useful when `n_ctx` is comfortably larger than
+    /// `min_tokens`; see [`derive_max_resident_tokens`] for the floor.
     pub max_resident_tokens: u64,
 }
 
@@ -28,12 +30,8 @@ impl ResidentCacheConfig {
         let reserved_seq_count = i32::try_from(config.lane_count.saturating_mul(2))
             .unwrap_or(i32::MAX)
             .max(2);
-        // Cap the cache at half the model's `n_ctx` cell pool so the
-        // active lanes always have room to prefill fresh prompts.
-        // The other half is the cache budget. See the doc comment on
-        // `max_resident_tokens` above for the failure mode this
-        // prevents.
-        let max_resident_tokens = u64::from(config.ctx_size).saturating_div(2);
+        let max_resident_tokens =
+            derive_max_resident_tokens(u64::from(config.ctx_size), cache.min_tokens);
         Self {
             max_entries: cache.max_entries.clamp(1, 512),
             max_bytes: cache.max_bytes,
@@ -41,6 +39,63 @@ impl ResidentCacheConfig {
             reserved_seq_count,
             max_resident_tokens,
         }
+    }
+}
+
+/// Derive `max_resident_tokens` from the model's `n_ctx` cell pool.
+///
+/// The cache shares the `n_ctx` cell pool with the active lanes under
+/// `kv_unified = true`. The cap reserves half of the pool for in-flight
+/// lane prefills and lets the cache use at most the other half.
+///
+/// For very small contexts (smoke-test / tiny-model configs) the cap
+/// can be smaller than a single prompt, which defeats the cache
+/// without preventing any real wedge. The cap is therefore disabled
+/// when `n_ctx / 2` cannot hold at least four minimum-sized cache
+/// entries (`min_tokens * 4`). At that point the cache is small
+/// enough relative to the cell pool that `max_entries` and
+/// `max_bytes` already keep cell pressure bounded. The original
+/// failure mode this cap fixes is large-context unified-KV serving
+/// (e.g. `n_ctx = 131072`), where this floor is comfortably cleared.
+fn derive_max_resident_tokens(ctx_size: u64, min_tokens: u64) -> u64 {
+    let half = ctx_size.saturating_div(2);
+    let min_floor = min_tokens.saturating_mul(4).max(1);
+    if half < min_floor {
+        return 0;
+    }
+    half
+}
+
+#[cfg(test)]
+mod resident_cache_config_tests {
+    use super::*;
+
+    #[test]
+    fn cap_disabled_when_ctx_smaller_than_four_min_entries() {
+        // Smoke-test / SmolLM2 scenario: ctx_size=768, min_tokens=256.
+        // half=384, floor=1024 -> cap disabled (0).
+        assert_eq!(derive_max_resident_tokens(768, 256), 0);
+    }
+
+    #[test]
+    fn cap_enabled_when_ctx_has_room_for_four_min_entries() {
+        // Production scenario: large unified-KV pool.
+        assert_eq!(derive_max_resident_tokens(131072, 256), 65536);
+        // Right at the boundary.
+        assert_eq!(derive_max_resident_tokens(2048, 256), 1024);
+    }
+
+    #[test]
+    fn cap_disabled_just_below_floor() {
+        // half=1023, floor=1024 -> disabled.
+        assert_eq!(derive_max_resident_tokens(2046, 256), 0);
+    }
+
+    #[test]
+    fn zero_min_tokens_treats_floor_as_one() {
+        // Defensive: min_tokens=0 should not divide by zero or disable
+        // the cap on real-sized contexts.
+        assert_eq!(derive_max_resident_tokens(8192, 0), 4096);
     }
 }
 
