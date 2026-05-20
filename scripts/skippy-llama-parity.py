@@ -467,6 +467,7 @@ def validate_stage_abi_allowlist() -> int:
             "glm-dsa",
             "lfm2moe",
             "minicpm",
+            "mistral4",
             "nemotron_h_moe",
         }
     )

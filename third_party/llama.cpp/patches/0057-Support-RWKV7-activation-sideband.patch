@@ -1,4 +1,4 @@
-From 645ed16bb29f31c753e2e327c961e7ae33276180 Mon Sep 17 00:00:00 2001
+From 9b6746585096adcc9f1c080204e193d978c219ed Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Wed, 6 May 2026 11:23:13 +1000
 Subject: [PATCH 57/80] Support RWKV7 activation sideband
@@ -28,10 +28,10 @@ index 84169398..1c6d2c9f 100644
  struct skippy_session;
  struct skippy_model_info;
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 71a59395..a4d2d788 100644
+index ad36c066..1320495b 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
-@@ -2084,6 +2084,10 @@ llm_graph_result * llama_context::get_gf_res_reserve() const {
+@@ -2219,6 +2219,10 @@ llm_graph_result * llama_context::get_gf_res_reserve() const {
      return static_cast<llm_graph_result *>(gf_res_reserve.get());
  }
  
@@ -43,10 +43,10 @@ index 71a59395..a4d2d788 100644
          uint32_t n_tokens, uint32_t n_seqs, uint32_t n_outputs, const llama_memory_context_i * mctx, bool split_only, size_t * sizes) {
      LLAMA_LOG_DEBUG("%s: reserving a graph for ubatch with n_tokens = %4u, n_seqs = %2u, n_outputs = %4u\n", __func__, n_tokens, n_seqs, n_outputs);
 diff --git a/src/llama-context.h b/src/llama-context.h
-index 92d1b0cf..61a7fce6 100644
+index d03f681d..df95602f 100644
 --- a/src/llama-context.h
 +++ b/src/llama-context.h
-@@ -230,6 +230,7 @@ public:
+@@ -234,6 +234,7 @@ public:
  
      // can reuse the llm_graph_result instance of the context (for example to update a memory module)
      llm_graph_result * get_gf_res_reserve() const;
@@ -55,7 +55,7 @@ index 92d1b0cf..61a7fce6 100644
      // returns the result of ggml_backend_sched_graph_compute_async execution
      ggml_status graph_compute(ggml_cgraph * gf, bool batched);
 diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
-index f8b224a6..3d0a86b9 100644
+index 34988b77..06488a2d 100644
 --- a/src/llama-graph.cpp
 +++ b/src/llama-graph.cpp
 @@ -20,6 +20,7 @@
@@ -113,9 +113,9 @@ index f8b224a6..3d0a86b9 100644
      t_sampled.clear();
      t_sampled_probs.clear();
      t_sampled_logits.clear();
-@@ -897,6 +924,9 @@ void llm_graph_result::set_outputs() {
-     if (t_embd_pooled != nullptr) {
-         ggml_set_output(t_embd_pooled);
+@@ -900,6 +927,9 @@ void llm_graph_result::set_outputs() {
+     if (t_h_pre_norm != nullptr) {
+         ggml_set_output(t_h_pre_norm);
      }
 +    if (t_skippy_rwkv7_v_first != nullptr) {
 +        ggml_set_output(t_skippy_rwkv7_v_first);
@@ -124,7 +124,7 @@ index f8b224a6..3d0a86b9 100644
          if (t != nullptr) {
              ggml_set_output(t);
 diff --git a/src/llama-graph.h b/src/llama-graph.h
-index d2ba2188..5673a2a8 100644
+index c2d429e0..8bd370f7 100644
 --- a/src/llama-graph.h
 +++ b/src/llama-graph.h
 @@ -40,12 +40,21 @@ struct skippy_activation_tokens {
@@ -149,7 +149,7 @@ index d2ba2188..5673a2a8 100644
  
  // certain models (typically multi-modal) can produce different types of graphs
  enum llm_graph_type {
-@@ -152,6 +161,21 @@ public:
+@@ -153,6 +162,21 @@ public:
      ggml_tensor * tokens = nullptr; // I32 [n_batch]
  };
  
@@ -171,24 +171,24 @@ index d2ba2188..5673a2a8 100644
  class llm_graph_input_pos : public llm_graph_input_i {
  public:
      llm_graph_input_pos(uint32_t n_pos_per_embd) : n_pos_per_embd(n_pos_per_embd) {}
-@@ -676,6 +700,7 @@ public:
-     ggml_tensor * get_logits()      const { return t_logits; }
+@@ -679,6 +703,7 @@ public:
      ggml_tensor * get_embd()        const { return t_embd; }
      ggml_tensor * get_embd_pooled() const { return t_embd_pooled; }
+     ggml_tensor * get_h_pre_norm()  const { return t_h_pre_norm; }
 +    ggml_tensor * get_skippy_rwkv7_v_first() const { return t_skippy_rwkv7_v_first; }
  
      ggml_cgraph  * get_gf()  const { return gf; }
      ggml_context * get_ctx() const { return ctx_compute.get(); }
-@@ -704,6 +729,7 @@ public:
-     ggml_tensor * t_logits      = nullptr;
+@@ -708,6 +733,7 @@ public:
      ggml_tensor * t_embd        = nullptr;
      ggml_tensor * t_embd_pooled = nullptr;
+     ggml_tensor * t_h_pre_norm  = nullptr; // [n_embd, n_outputs] hidden state before final output norm
 +    ggml_tensor * t_skippy_rwkv7_v_first = nullptr;
  
      std::map<llama_seq_id, ggml_tensor*> t_sampled_logits;
      std::map<llama_seq_id, ggml_tensor*> t_candidates;
 diff --git a/src/models/arwkv7.cpp b/src/models/arwkv7.cpp
-index 79aa8c90..396f0fe6 100644
+index 9bd04127..9fc3454d 100644
 --- a/src/models/arwkv7.cpp
 +++ b/src/models/arwkv7.cpp
 @@ -124,7 +124,12 @@ llama_model_arwkv7::graph::graph(const llama_model & model, const llm_graph_para
@@ -259,7 +259,7 @@ index 79aa8c90..396f0fe6 100644
      cur = build_norm(cur, model.output_norm, model.output_norm_b, LLM_NORM_RMS, -1);
  
 diff --git a/src/models/rwkv7.cpp b/src/models/rwkv7.cpp
-index b205e393..c3dc9eb0 100644
+index 7574b252..2dfe2c76 100644
 --- a/src/models/rwkv7.cpp
 +++ b/src/models/rwkv7.cpp
 @@ -129,8 +129,15 @@ llama_model_rwkv7::graph::graph(const llama_model & model, const llm_graph_param
@@ -334,7 +334,7 @@ index b205e393..c3dc9eb0 100644
      cur = build_norm(cur, model.output_norm, model.output_norm_b, LLM_NORM, -1);
  
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 940b420a..18bbebf0 100644
+index dbbd504b..85f01123 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -631,6 +631,34 @@ struct skippy_activation_tokens_scope {
@@ -563,7 +563,7 @@ index 940b420a..18bbebf0 100644
              model->arch != LLM_ARCH_GEMMA &&
              model->arch != LLM_ARCH_GEMMA2 &&
              model->arch != LLM_ARCH_GEMMA3 &&
-@@ -2141,6 +2258,7 @@ enum skippy_status skippy_prefill_chunk_frame(
+@@ -2147,6 +2264,7 @@ enum skippy_status skippy_prefill_chunk_frame(
              output_payload_capacity,
              out_output_payload_bytes,
              output_desc,
@@ -571,7 +571,7 @@ index 940b420a..18bbebf0 100644
              out_error);
      if (status != SKIPPY_STATUS_OK) {
          return status;
-@@ -2155,7 +2273,7 @@ enum skippy_status skippy_prefill_chunk_frame(
+@@ -2161,7 +2279,7 @@ enum skippy_status skippy_prefill_chunk_frame(
          return status;
      }
  
@@ -580,7 +580,7 @@ index 940b420a..18bbebf0 100644
  }
  
  enum skippy_status skippy_decode_step_frame(
-@@ -2212,6 +2330,7 @@ enum skippy_status skippy_decode_step_frame_sampled(
+@@ -2218,6 +2336,7 @@ enum skippy_status skippy_decode_step_frame_sampled(
              output_payload_capacity,
              out_output_payload_bytes,
              output_desc,
@@ -588,7 +588,7 @@ index 940b420a..18bbebf0 100644
              out_error);
      if (status != SKIPPY_STATUS_OK) {
          return status;
-@@ -2230,7 +2349,7 @@ enum skippy_status skippy_decode_step_frame_sampled(
+@@ -2236,7 +2355,7 @@ enum skippy_status skippy_decode_step_frame_sampled(
          *out_predicted_token = session->stage_model->config.include_output ? skippy_sample_token(session, sampling) : -1;
      }
  
@@ -597,7 +597,7 @@ index 940b420a..18bbebf0 100644
  }
  
  enum skippy_status skippy_verify_tokens_frame(
-@@ -2280,6 +2399,7 @@ enum skippy_status skippy_verify_tokens_frame(
+@@ -2286,6 +2405,7 @@ enum skippy_status skippy_verify_tokens_frame(
              output_payload_capacity,
              out_output_payload_bytes,
              output_desc,
@@ -605,7 +605,7 @@ index 940b420a..18bbebf0 100644
              out_error);
      if (status != SKIPPY_STATUS_OK) {
          return status;
-@@ -2310,7 +2430,7 @@ enum skippy_status skippy_verify_tokens_frame(
+@@ -2316,7 +2436,7 @@ enum skippy_status skippy_verify_tokens_frame(
          return status;
      }
  
@@ -614,7 +614,7 @@ index 940b420a..18bbebf0 100644
      if (status != SKIPPY_STATUS_OK) {
          return status;
      }
-@@ -2344,11 +2464,12 @@ enum skippy_status skippy_session_copy_output_activation_frame(
+@@ -2350,11 +2470,12 @@ enum skippy_status skippy_session_copy_output_activation_frame(
              output_payload_capacity,
              out_output_payload_bytes,
              output_desc,
