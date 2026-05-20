@@ -6,6 +6,21 @@ pub struct ResidentCacheConfig {
     pub max_bytes: u64,
     pub min_tokens: u64,
     pub reserved_seq_count: i32,
+    /// Maximum number of native KV cell positions the cache may hold
+    /// at one time, in tokens. Under `kv_unified = true` (skippy patch
+    /// 0034) the resident prefix cache shares one `n_ctx` cell pool
+    /// with the active execution lanes. Without this cap the cache
+    /// budget is bounded only by `max_entries` and `max_bytes`, both
+    /// of which can easily allow more pinned tokens than the cell
+    /// pool has cells — the lanes then can't find a free slot and
+    /// the embedded runtime surfaces HTTP 502
+    /// `RuntimeError: llama_decode failed`
+    /// (`decode: failed to find a memory slot`).
+    ///
+    /// Set this to a fraction of the model's `n_ctx` (typically
+    /// `n_ctx / 2` or similar). A value of 0 disables the cap and
+    /// behaves like the legacy unbounded-by-tokens cache.
+    pub max_resident_tokens: u64,
 }
 
 impl ResidentCacheConfig {
@@ -13,11 +28,18 @@ impl ResidentCacheConfig {
         let reserved_seq_count = i32::try_from(config.lane_count.saturating_mul(2))
             .unwrap_or(i32::MAX)
             .max(2);
+        // Cap the cache at half the model's `n_ctx` cell pool so the
+        // active lanes always have room to prefill fresh prompts.
+        // The other half is the cache budget. See the doc comment on
+        // `max_resident_tokens` above for the failure mode this
+        // prevents.
+        let max_resident_tokens = u64::from(config.ctx_size).saturating_div(2);
         Self {
             max_entries: cache.max_entries.clamp(1, 512),
             max_bytes: cache.max_bytes,
             min_tokens: cache.min_tokens,
             reserved_seq_count,
+            max_resident_tokens,
         }
     }
 }

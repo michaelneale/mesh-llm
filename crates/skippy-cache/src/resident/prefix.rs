@@ -8,6 +8,8 @@ use crate::ResidentCacheConfig;
 pub struct ResidentPrefixCache {
     max_entries: usize,
     max_bytes: u64,
+    /// 0 means "unlimited (legacy)".
+    max_resident_tokens: u64,
     min_tokens: u64,
     reserved_seq_count: i32,
     next_seq_id: i32,
@@ -61,6 +63,7 @@ impl ResidentPrefixCache {
         Self {
             max_entries: config.max_entries,
             max_bytes: config.max_bytes,
+            max_resident_tokens: config.max_resident_tokens,
             min_tokens: config.min_tokens,
             reserved_seq_count: config.reserved_seq_count,
             next_seq_id: config.reserved_seq_count,
@@ -128,7 +131,8 @@ impl ResidentPrefixCache {
             });
         }
 
-        let evictions = self.evict_until_room_for(estimated_bytes, &mut drop_evicted)?;
+        let evictions =
+            self.evict_until_room_for(estimated_bytes, token_count, &mut drop_evicted)?;
         let seq_id = self.next_sequence_id()?;
         Ok(ResidentPrefixAllocation {
             seq_id,
@@ -178,6 +182,7 @@ impl ResidentPrefixCache {
     fn evict_until_room_for(
         &mut self,
         estimated_bytes: u64,
+        token_count: u64,
         drop_evicted: &mut impl FnMut(i32) -> Result<()>,
     ) -> Result<Vec<ResidentPrefixEviction>> {
         let mut evictions = Vec::new();
@@ -185,7 +190,16 @@ impl ResidentPrefixCache {
             let over_entries = self.entries.len().saturating_add(1) > self.max_entries;
             let over_bytes = self.max_bytes > 0
                 && self.estimated_bytes.saturating_add(estimated_bytes) > self.max_bytes;
-            if !over_entries && !over_bytes {
+            // Under unified-KV serving the prefix cache shares the
+            // `n_ctx` cell pool with the active lanes. `max_entries`
+            // and `max_bytes` alone do not bound the cell footprint:
+            // 12 entries averaging 10k tokens each pin 120k cells in
+            // a 131k-`n_ctx` pool with no LRU pressure. Add an
+            // explicit token budget so eviction kicks in before the
+            // cells run out.
+            let over_tokens = self.max_resident_tokens > 0
+                && self.resident_tokens.saturating_add(token_count) > self.max_resident_tokens;
+            if !over_entries && !over_bytes && !over_tokens {
                 break;
             }
             let Some(victim) = self
@@ -225,5 +239,99 @@ impl ResidentPrefixCache {
             bail!("resident prefix sequence id capacity exhausted");
         }
         Ok(seq_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(max_entries: usize, max_bytes: u64, max_resident_tokens: u64) -> ResidentCacheConfig {
+        ResidentCacheConfig {
+            max_entries,
+            max_bytes,
+            max_resident_tokens,
+            min_tokens: 256,
+            reserved_seq_count: 2,
+        }
+    }
+
+    #[test]
+    fn token_budget_triggers_lru_before_entry_cap_under_unified_kv() {
+        // Regression: under skippy `kv_unified = true` the prefix cache
+        // shares the model's `n_ctx` cell pool with the active lanes.
+        // Before this fix, the cache only evicted on `max_entries` and
+        // `max_bytes`. Live data on a 131k-`n_ctx` MiniMax showed the
+        // cache happily filling to ~124k pinned tokens (~95% of the
+        // pool) across just 12 entries with no LRU pressure, starving
+        // the lanes and surfacing as HTTP 502
+        // `RuntimeError: llama_decode failed`.
+        //
+        // With `max_resident_tokens = 4096` and entries of 1500 tokens
+        // each, the third record must trigger eviction even though
+        // we're well under `max_entries = 16`.
+        let mut cache = ResidentPrefixCache::new(cfg(16, 0, 4096));
+        let mut dropped: Vec<i32> = Vec::new();
+
+        let alloc1 = cache
+            .allocate_for_record("page-1", 1500, 100, |sid| {
+                dropped.push(sid);
+                Ok(())
+            })
+            .unwrap();
+        assert!(alloc1.should_save);
+        cache.commit_record("page-1".to_string(), alloc1.seq_id, 1500, 100);
+        assert_eq!(cache.stats().entries, 1);
+        assert_eq!(cache.stats().resident_tokens, 1500);
+
+        let alloc2 = cache
+            .allocate_for_record("page-2", 1500, 100, |sid| {
+                dropped.push(sid);
+                Ok(())
+            })
+            .unwrap();
+        cache.commit_record("page-2".to_string(), alloc2.seq_id, 1500, 100);
+        assert_eq!(cache.stats().entries, 2);
+        assert_eq!(cache.stats().resident_tokens, 3000);
+        // Two entries fit; we are at 3000 / 4096 tokens.
+        assert!(dropped.is_empty(), "should not have evicted yet");
+
+        let alloc3 = cache
+            .allocate_for_record("page-3", 1500, 100, |sid| {
+                dropped.push(sid);
+                Ok(())
+            })
+            .unwrap();
+        cache.commit_record("page-3".to_string(), alloc3.seq_id, 1500, 100);
+        // 3000 + 1500 = 4500 > 4096 — must have evicted at least one
+        // entry to make room. LRU picks page-1.
+        assert_eq!(dropped, vec![alloc1.seq_id], "LRU should evict oldest");
+        assert_eq!(cache.stats().entries, 2);
+        assert_eq!(cache.stats().resident_tokens, 3000);
+    }
+
+    #[test]
+    fn zero_token_budget_disables_the_check() {
+        // max_resident_tokens = 0 means "unlimited" — legacy behavior.
+        // 12 entries at 10k tokens each = 120k tokens, which the
+        // previous unbounded cache happily accepted.
+        let mut cache = ResidentPrefixCache::new(cfg(64, 0, 0));
+        let mut dropped: Vec<i32> = Vec::new();
+
+        for i in 0..12 {
+            let alloc = cache
+                .allocate_for_record(&format!("page-{i}"), 10_000, 100, |sid| {
+                    dropped.push(sid);
+                    Ok(())
+                })
+                .unwrap();
+            cache.commit_record(format!("page-{i}"), alloc.seq_id, 10_000, 100);
+        }
+        assert!(
+            dropped.is_empty(),
+            "zero token budget should not trigger evictions"
+        );
+        assert_eq!(cache.stats().entries, 12);
+        assert_eq!(cache.stats().resident_tokens, 120_000);
     }
 }
