@@ -203,6 +203,7 @@ async fn handle_query(
     );
 
     let mut join_set = tokio::task::JoinSet::new();
+    let mut dispatched: Vec<fanout::DispatchedWorker> = Vec::with_capacity(assignments.len());
 
     for assignment in &assignments {
         let packed = context::pack_for_worker(session, assignment.role, has_tools);
@@ -210,6 +211,11 @@ async fn handle_query(
         let role = assignment.role;
         let backend = config.backends[assignment.backend_index].clone();
         let timeout = config.worker_timeout;
+
+        dispatched.push(fanout::DispatchedWorker {
+            model: model_name.clone(),
+            role,
+        });
 
         join_set.spawn(async move {
             let t0 = Instant::now();
@@ -228,9 +234,8 @@ async fn handle_query(
         });
     }
 
-    let total_workers = join_set.len();
     let (outputs, summaries, early_decision) =
-        gather_workers_incremental(&mut join_set, total_workers, has_tools, allowed_tools).await;
+        gather_workers_incremental(&mut join_set, &dispatched, has_tools, allowed_tools).await;
 
     if outputs.is_empty() {
         return TurnResult {
