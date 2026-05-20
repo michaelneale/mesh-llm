@@ -120,15 +120,40 @@ impl Session {
     }
 
     /// Classify what kind of turn this is.
+    ///
+    /// Anything that ends with an unsynthesised tool result is a
+    /// `ToolResult` turn: the gateway must skip fan-out and go
+    /// straight to the reducer, so the workers don't re-broadcast
+    /// the same tool call whose result we already have in context.
+    ///
+    /// We scan from the end of the conversation backwards. The first
+    /// message we hit decides:
+    ///
+    ///   * `role: "tool"` first — OpenAI canonical: classify as
+    ///     `ToolResult`.
+    ///   * `role: "assistant"` first — the assistant has already
+    ///     spoken since the last tool result. Hand the next turn
+    ///     to fan-out normally.
+    ///   * `role: "user"` first — keep scanning past it. A user
+    ///     nudge after an unsynthesised tool result is still a
+    ///     tool-result turn; the model needs to consume the tool
+    ///     output and answer the nudge in one synthesis pass. A
+    ///     user message that *predates* any tool result reaches the
+    ///     start of the history and we fall through to the normal
+    ///     Fresh/Continuation classification.
     pub fn classify_turn(&self) -> TurnType {
-        // If the last message is a tool result, this is a tool-result turn
-        if let Some(last) = self.messages.last() {
-            if last.get("role").and_then(|r| r.as_str()) == Some("tool") {
-                return TurnType::ToolResult;
+        for msg in self.messages.iter().rev() {
+            let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+            match role {
+                "tool" => return TurnType::ToolResult,
+                "assistant" => break,
+                _ => continue,
             }
         }
 
-        // Also check if we just got tool results back after our tool_call
+        // Also check the session-state fallback (set by
+        // record_assistant_response, which the gateway doesn't invoke
+        // yet but tests do).
         if self.last_was_tool_call && self.has_unprocessed_tool_results() {
             return TurnType::ToolResult;
         }
