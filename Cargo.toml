@@ -58,6 +58,7 @@ sha2 = "0.10"
 
 [workspace.lints.clippy]
 cognitive_complexity = "warn"
+too_many_lines = "warn"
 
 # Do not remove this section: direct GGUF debug startup spends most of its time
 # hashing the source model via sha2/sha2-asm before native skippy model open,
@@ -67,3 +68,24 @@ opt-level = 3
 
 [profile.dev.package.sha2-asm]
 opt-level = 3
+
+# Tightened release profile for shipped binaries.
+#
+# - `lto = "thin"`: parallel link-time optimization across the crate graph.
+#   Roughly 80% of fat-LTO's binary-size and perf benefit at ~30% of the
+#   link cost. Fat LTO would shave a few more MB but pushes release link
+#   from ~30 s to several minutes on this codebase.
+# - `codegen-units = 1`: pairs with thin LTO so the optimizer can inline
+#   across the whole crate without re-link boundaries. Trades parallelism
+#   in codegen for output quality; cargo still parallelises the dep graph.
+# - `strip = "debuginfo"`: drops DWARF from the Mach-O / ELF output. We
+#   keep function symbols so backtraces from production nodes remain
+#   readable (`nm`, `addr2line` on the symbol table still works). DWARF
+#   on macOS arm64 alone is several MB of dead weight in the binary.
+# - panic stays at the default ("unwind"). Plugin / MCP error recovery
+#   relies on unwinding; the AGENTS.md notes explicitly forbid switching
+#   to `abort`.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

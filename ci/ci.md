@@ -102,7 +102,8 @@ subgraph PRCI["pr_builds.yml · PR Builds"]
   and macOS CPU rows upload the binaries that downstream smoke jobs consume.
 - `pr_docker.yml` validates the PR Docker client image without publishing.
 - `pr_cleanup.yml` deletes PR merge-ref caches and artifacts from positively
-  matched PR workflow runs when a pull request closes.
+  matched PR workflow runs when a pull request closes. Cleanup-only workflow
+  edits do not fan out into Rust/build/smoke jobs.
 - Non-PR workflows (`ci.yml`, `docker.yml`, `release.yml`) own main, dispatch,
   tag, and release-grade publishing behavior.
 
@@ -112,6 +113,9 @@ subgraph PRCI["pr_builds.yml · PR Builds"]
   reusable workflows instead of rebuilding `mesh-llm` or patched llama.cpp.
 - Linux CPU artifacts feed inference, two-node, native SDK, and Kotlin SDK
   smokes. macOS CPU artifacts feed Swift SDK smokes.
+- Artifact-consuming smokes are additionally gated on the matching CPU producer
+  being eligible, so backend-only or cleanup-only PRs skip those jobs natively
+  instead of attempting to download an artifact that was never uploaded.
 - PR and smoke-only CI artifacts use `retention-days: 1`; PR cleanup removes
   matched PR-run artifacts proactively.
 - Direct `mesh-llm` invocations in workflows and CI scripts must include

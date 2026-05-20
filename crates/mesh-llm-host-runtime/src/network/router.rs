@@ -46,6 +46,16 @@ impl MediaRequirements {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct RouterSignalScores {
+    code: usize,
+    reasoning: usize,
+    creative: usize,
+    info: usize,
+    image: usize,
+    deep: usize,
+}
+
 // ── Model capabilities for routing ──────────────────────────────────
 
 /// Strip split GGUF suffix like "-00001-of-00004" from a model name.
@@ -80,25 +90,36 @@ pub fn strip_split_suffix_owned(name: &str) -> String {
 /// Tools presence is an attribute, not a category override — a code request
 /// with tools is still Code (with needs_tools=true), not ToolCall.
 pub fn classify(body: &Value) -> Classification {
-    // Collect all text from messages for keyword analysis
     let text = collect_message_text(body);
     let lower = text.to_lowercase();
     let media = media_requirements(body);
+    let needs_tools = detect_tool_requirement(body);
+    let last_user_len = last_user_message_len(body);
+    let scores = router_signal_scores(&lower);
+    let category = classify_category(scores, detect_system_code_hint(body), media, needs_tools);
+    let complexity = classify_complexity(scores, last_user_len, message_count(body));
 
-    // Check if the request actually needs tool execution.
-    // If the client sends a tools schema, this is an agentic session (Claude Code,
-    // Goose, etc.) — always prefer the strongest tool-capable model regardless of
-    // what the first message says.  Keyword matching on content is a secondary signal
-    // but not required when tools are present.
-    let has_tools_schema = body
-        .get("tools")
+    Classification {
+        category,
+        complexity,
+        needs_tools,
+        has_media_inputs: media.has_media,
+    }
+}
+
+fn detect_tool_requirement(body: &Value) -> bool {
+    has_tools_schema(body) || has_tool_blocks(body)
+}
+
+fn has_tools_schema(body: &Value) -> bool {
+    body.get("tools")
         .and_then(|t| t.as_array())
         .map(|a| !a.is_empty())
-        .unwrap_or(false);
-    // Anthropic-style requests may include structured content blocks with
-    // explicit tool_use/tool_result blocks — definitely tool-driven.
-    let has_tool_blocks = body
-        .get("messages")
+        .unwrap_or(false)
+}
+
+fn has_tool_blocks(body: &Value) -> bool {
+    body.get("messages")
         .and_then(|m| m.as_array())
         .map(|msgs| {
             msgs.iter().any(|msg| {
@@ -115,216 +136,227 @@ pub fn classify(body: &Value) -> Classification {
                     .unwrap_or(false)
             })
         })
-        .unwrap_or(false);
-    let needs_tools = has_tools_schema || has_tool_blocks;
+        .unwrap_or(false)
+}
 
-    // Count last user message tokens (rough proxy for complexity)
-    let last_user_len = last_user_message_len(body);
-
-    // Code signals
-    let code_signals = [
-        "```",
-        "def ",
-        "fn ",
-        "func ",
-        "class ",
-        "import ",
-        "function",
-        "const ",
-        "let ",
-        "var ",
-        "return ",
-        "write a program",
-        "write code",
-        "implement",
-        "refactor",
-        "debug",
-        "fix the bug",
-        "write a script",
-        "code review",
-        "pull request",
-        "git ",
-        "compile",
-        "syntax",
-        "python",
-        "javascript",
-        "typescript",
-        " rust ",
-        "golang",
-        "java ",
-        "c++",
-        " ruby ",
-        " swift ",
-        "kotlin",
-        "algorithm",
-        "binary search",
-        " sort ",
-        "regex",
-        " api ",
-        " http ",
-        " sql ",
-        "database",
-        " query ",
-    ];
-    let code_score: usize = code_signals.iter().filter(|s| lower.contains(*s)).count();
-
-    // Reasoning signals
-    let reasoning_signals = [
-        "prove",
-        "explain why",
-        "step by step",
-        "calculate",
-        "solve",
-        "derive",
-        "what is the probability",
-        "how many",
-        "analyze",
-        "compare and contrast",
-        "evaluate",
-        "mathematical",
-        "theorem",
-        "equation",
-        "logic",
-        "think carefully",
-        "reason about",
-    ];
-    let reasoning_score: usize = reasoning_signals
+fn count_signals(lower: &str, signals: &[&str]) -> usize {
+    signals
         .iter()
-        .filter(|s| lower.contains(*s))
-        .count();
+        .filter(|signal| lower.contains(*signal))
+        .count()
+}
 
-    // Creative signals
-    let creative_signals = [
-        "write a story",
-        "write a poem",
-        "creative",
-        "imagine",
-        "fiction",
-        "narrative",
-        "compose",
-        "brainstorm",
-        "write a song",
-        "screenplay",
-        "dialogue",
-    ];
-    let creative_score: usize = creative_signals
-        .iter()
-        .filter(|s| lower.contains(*s))
-        .count();
-
-    // Info/knowledge signals — factual lookup, summarization
-    let info_signals = [
-        "what is",
-        "who is",
-        "when did",
-        "where is",
-        "how does",
-        "define ",
-        "explain ",
-        "summarize",
-        "summary",
-        "overview",
-        "tell me about",
-        "describe ",
-        "what are the",
-        "list the",
-        "difference between",
-        "compare ",
-        "history of",
-    ];
-    let info_score: usize = info_signals.iter().filter(|s| lower.contains(*s)).count();
-
-    // Image signals — generation or analysis (future)
-    let image_signals = [
-        "image",
-        "picture",
-        "photo",
-        "draw",
-        "generate an image",
-        "visualize",
-        "diagram",
-        "screenshot",
-        "describe this image",
-    ];
-    let image_score: usize = image_signals.iter().filter(|s| lower.contains(*s)).count();
-
-    // Deep-thinking signals (want the biggest brain)
-    let deep_signals = [
-        "architect",
-        "design a system",
-        "trade-off",
-        "tradeoff",
-        "in depth",
-        "comprehensive",
-        "thorough",
-        "detailed analysis",
-        "long-term",
-        "strategy",
-        "plan for",
-        "review this codebase",
-        "rewrite",
-        "from scratch",
-    ];
-    let deep_score: usize = deep_signals.iter().filter(|s| lower.contains(*s)).count();
-
-    // System prompt hints
-    let mut system_code = false;
-    if let Some(messages) = body.get("messages").and_then(|m| m.as_array()) {
-        for msg in messages {
-            if msg.get("role").and_then(|r| r.as_str()) == Some("system") {
-                if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
-                    let sys = content.to_lowercase();
-                    if sys.contains("developer")
-                        || sys.contains("coding")
-                        || sys.contains("programmer")
-                    {
-                        system_code = true;
-                    }
-                }
-            }
-        }
+fn router_signal_scores(lower: &str) -> RouterSignalScores {
+    RouterSignalScores {
+        code: count_signals(
+            lower,
+            &[
+                "```",
+                "def ",
+                "fn ",
+                "func ",
+                "class ",
+                "import ",
+                "function",
+                "const ",
+                "let ",
+                "var ",
+                "return ",
+                "write a program",
+                "write code",
+                "implement",
+                "refactor",
+                "debug",
+                "fix the bug",
+                "write a script",
+                "code review",
+                "pull request",
+                "git ",
+                "compile",
+                "syntax",
+                "python",
+                "javascript",
+                "typescript",
+                " rust ",
+                "golang",
+                "java ",
+                "c++",
+                " ruby ",
+                " swift ",
+                "kotlin",
+                "algorithm",
+                "binary search",
+                " sort ",
+                "regex",
+                " api ",
+                " http ",
+                " sql ",
+                "database",
+                " query ",
+            ],
+        ),
+        reasoning: count_signals(
+            lower,
+            &[
+                "prove",
+                "explain why",
+                "step by step",
+                "calculate",
+                "solve",
+                "derive",
+                "what is the probability",
+                "how many",
+                "analyze",
+                "compare and contrast",
+                "evaluate",
+                "mathematical",
+                "theorem",
+                "equation",
+                "logic",
+                "think carefully",
+                "reason about",
+            ],
+        ),
+        creative: count_signals(
+            lower,
+            &[
+                "write a story",
+                "write a poem",
+                "creative",
+                "imagine",
+                "fiction",
+                "narrative",
+                "compose",
+                "brainstorm",
+                "write a song",
+                "screenplay",
+                "dialogue",
+            ],
+        ),
+        info: count_signals(
+            lower,
+            &[
+                "what is",
+                "who is",
+                "when did",
+                "where is",
+                "how does",
+                "define ",
+                "explain ",
+                "summarize",
+                "summary",
+                "overview",
+                "tell me about",
+                "describe ",
+                "what are the",
+                "list the",
+                "difference between",
+                "compare ",
+                "history of",
+            ],
+        ),
+        image: count_signals(
+            lower,
+            &[
+                "image",
+                "picture",
+                "photo",
+                "draw",
+                "generate an image",
+                "visualize",
+                "diagram",
+                "screenshot",
+                "describe this image",
+            ],
+        ),
+        deep: count_signals(
+            lower,
+            &[
+                "architect",
+                "design a system",
+                "trade-off",
+                "tradeoff",
+                "in depth",
+                "comprehensive",
+                "thorough",
+                "detailed analysis",
+                "long-term",
+                "strategy",
+                "plan for",
+                "review this codebase",
+                "rewrite",
+                "from scratch",
+            ],
+        ),
     }
+}
 
-    // Pick category — tools don't override, content wins
-    let category = if system_code
-        || code_score >= 2
-        || (code_score >= 1 && reasoning_score == 0 && creative_score == 0)
+fn detect_system_code_hint(body: &Value) -> bool {
+    body.get("messages")
+        .and_then(|m| m.as_array())
+        .map(|messages| {
+            messages.iter().any(|msg| {
+                msg.get("role").and_then(|r| r.as_str()) == Some("system")
+                    && msg
+                        .get("content")
+                        .and_then(|c| c.as_str())
+                        .map(|content| {
+                            let sys = content.to_lowercase();
+                            sys.contains("developer")
+                                || sys.contains("coding")
+                                || sys.contains("programmer")
+                        })
+                        .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn classify_category(
+    scores: RouterSignalScores,
+    system_code: bool,
+    media: MediaRequirements,
+    needs_tools: bool,
+) -> Category {
+    if system_code
+        || scores.code >= 2
+        || (scores.code >= 1 && scores.reasoning == 0 && scores.creative == 0)
     {
         Category::Code
-    } else if reasoning_score >= 2 {
+    } else if scores.reasoning >= 2 {
         Category::Reasoning
-    } else if creative_score >= 1 {
+    } else if scores.creative >= 1 {
         Category::Creative
-    } else if media.needs_vision || image_score >= 1 {
+    } else if media.needs_vision || scores.image >= 1 {
         Category::Image
-    } else if needs_tools && code_score == 0 && reasoning_score == 0 && creative_score == 0 {
-        // Only ToolCall if tools present AND no other signal dominates
+    } else if needs_tools && scores.code == 0 && scores.reasoning == 0 && scores.creative == 0 {
         Category::ToolCall
-    } else if info_score >= 2 && code_score == 0 {
+    } else if scores.info >= 2 && scores.code == 0 {
         Category::Info
     } else {
         Category::Chat
-    };
+    }
+}
 
-    // Complexity: Quick / Moderate / Deep
-    let total_messages = body
-        .get("messages")
+fn message_count(body: &Value) -> usize {
+    body.get("messages")
         .and_then(|m| m.as_array())
         .map(|a| a.len())
-        .unwrap_or(0);
-    let complexity = if deep_score >= 1 || last_user_len > 500 || total_messages > 10 {
+        .unwrap_or(0)
+}
+
+fn classify_complexity(
+    scores: RouterSignalScores,
+    last_user_len: usize,
+    total_messages: usize,
+) -> Complexity {
+    if scores.deep >= 1 || last_user_len > 500 || total_messages > 10 {
         Complexity::Deep
-    } else if last_user_len < 60 && total_messages <= 2 && reasoning_score == 0 && deep_score == 0 {
+    } else if last_user_len < 60 && total_messages <= 2 && scores.reasoning == 0 && scores.deep == 0
+    {
         Complexity::Quick
     } else {
         Complexity::Moderate
-    };
-
-    Classification {
-        category,
-        complexity,
-        needs_tools,
-        has_media_inputs: media.has_media,
     }
 }
 
