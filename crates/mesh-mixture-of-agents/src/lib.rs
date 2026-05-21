@@ -333,11 +333,18 @@ async fn handle_tool_result(
 
     let (reducer_name, succeeded, response_body) = match chosen {
         Some((name, reduced)) => {
+            // Be consistent with the fanout/arbiter path: emit a real
+            // `tool_calls` response whenever the reducer named a tool,
+            // even if `arguments` is missing. The fanout path emits `{}`
+            // for empty arguments; this path used to fall back to a
+            // chat_response carrying the reducer's prose, which broke
+            // agent harnesses (Goose, OpenCode) that only act on
+            // `tool_calls`. `tool_call_response` already collapses
+            // missing / non-object arguments to `"{}"`.
             let body = match reduced.kind {
                 normalize::OutputKind::ToolProposal => {
-                    if let (Some(tname), Some(args)) =
-                        (reduced.tool_name.as_ref(), reduced.tool_arguments.as_ref())
-                    {
+                    if let Some(tname) = reduced.tool_name.as_ref() {
+                        let args = reduced.tool_arguments.as_ref().unwrap_or(&Value::Null);
                         tool_call_response(tname, args)
                     } else {
                         chat_response(&reduced.payload)
@@ -427,9 +434,16 @@ async fn resolve_decision(
             match chosen {
                 Some(reduced) => match reduced.kind {
                     normalize::OutputKind::ToolProposal => {
-                        if let (Some(name), Some(args)) =
-                            (reduced.tool_name.as_ref(), reduced.tool_arguments.as_ref())
-                        {
+                        // See the matching block in `handle_tool_result`:
+                        // emit `tool_calls` whenever `tool_name` is present,
+                        // defaulting `arguments` to `{}` via
+                        // `tool_call_response`. Agent harnesses key on
+                        // `tool_calls` rather than scanning prose, so the
+                        // previous "both name AND args required" gate would
+                        // silently fall back to a chat_response and break
+                        // the calling agent's tool loop.
+                        if let Some(name) = reduced.tool_name.as_ref() {
+                            let args = reduced.tool_arguments.as_ref().unwrap_or(&Value::Null);
                             (tool_call_response(name, args), true, attempts)
                         } else {
                             (chat_response(&reduced.payload), true, attempts)

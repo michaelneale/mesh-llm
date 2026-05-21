@@ -72,12 +72,34 @@ async fn run_moa_turn(
 /// Write the MoA response on the chosen transport (JSON or SSE), logging
 /// (but not propagating) any I/O error.
 ///
-/// When the gateway reports `TurnKind::Failed` we send an HTTP 502 (Bad
-/// Gateway) with the structured error body, rather than HTTP 200. The
-/// crate's `error_response` already carries an OpenAI-shape top-level
-/// `error` object and `finish_reason: "error"`, but unsophisticated
-/// clients that only check the HTTP status need that status to actually
-/// reflect failure.
+/// Detect whether a MoA response body is signalling failure.
+///
+/// Two signals, either of which means "failure":
+///
+///   * Top-level `error` object — OpenAI-shape error envelope produced
+///     by `moa::error_response`.
+///   * `choices[0].finish_reason == "error"` — same convention applied
+///     by the crate's response builder for in-band failure signalling.
+///
+/// Previously the HTTP-status decision was based on `TurnKind == Failed`,
+/// but the tool-result reducer path can produce an error_response with
+/// `TurnKind::ToolResult` when every reducer candidate fails. Tying the
+/// status to the body's failure signal instead means *all* error-shaped
+/// MoA responses get a non-200 status, regardless of which sub-flow
+/// produced them.
+fn is_moa_failure_body(body: &serde_json::Value) -> bool {
+    if body.get("error").is_some() {
+        return true;
+    }
+    body.pointer("/choices/0/finish_reason")
+        .and_then(|v| v.as_str())
+        == Some("error")
+}
+
+/// When the response body signals MoA failure (top-level `error` field or
+/// `choices[0].finish_reason == "error"`) we send an HTTP 502 (Bad
+/// Gateway), not HTTP 200. Unsophisticated clients that only check the
+/// HTTP status need that status to actually reflect failure.
 async fn write_moa_response(
     tcp_stream: TcpStream,
     moa_result: &moa::TurnResult,
@@ -85,12 +107,14 @@ async fn write_moa_response(
     was_streaming: bool,
 ) {
     let body = &moa_result.response_body;
+    let is_failure = is_moa_failure_body(body);
     let result = if was_streaming {
-        // SSE always uses 200: the failure signal rides in the streamed
-        // chunks (the body includes `error` and `finish_reason: "error"`).
-        // Once the headers are sent we cannot change the status code.
+        // SSE always uses 200: once the headers are flushed we cannot
+        // change the status code. The failure signal rides inside the
+        // emitted SSE chunks (`finish_reason: "error"`) — see
+        // `send_moa_as_sse` for the propagation.
         send_moa_as_sse(tcp_stream, body, extra_headers).await
-    } else if moa_result.turn_kind == moa::TurnKind::Failed {
+    } else if is_failure {
         proxy::send_json_with_status_and_headers(tcp_stream, 502, body, extra_headers).await
     } else {
         proxy::send_json_ok_with_headers(tcp_stream, body, extra_headers).await
@@ -494,11 +518,22 @@ async fn send_moa_as_sse(
         .and_then(|v| v.as_array())
         .cloned();
 
-    let finish_reason = if tool_calls.is_some() {
-        "tool_calls"
-    } else {
-        "stop"
+    // Propagate the actual finish_reason rather than always emitting `stop`.
+    // For failure-shaped bodies the inner `finish_reason` is `"error"` and
+    // the body carries a top-level `error` object — SSE clients keyed on
+    // `finish_reason` (Goose, OpenAI SDKs) need that signal to detect
+    // failure. Previously the SSE adapter hard-coded `"stop"`, which made
+    // MoA failures look like successful completions to streaming consumers.
+    let inner_finish_reason = response
+        .pointer("/choices/0/finish_reason")
+        .and_then(|v| v.as_str());
+    let finish_reason: &str = match inner_finish_reason {
+        Some("error") => "error",
+        _ if tool_calls.is_some() => "tool_calls",
+        Some(other) => other,
+        None => "stop",
     };
+    let is_failure = is_moa_failure_body(response);
 
     let delta = if let Some(ref tcs) = tool_calls {
         serde_json::json!({
@@ -529,6 +564,27 @@ async fn send_moa_as_sse(
     let data = format!("data: {}\n\n", chunk);
     let framed = format!("{:x}\r\n{}\r\n", data.len(), data);
     stream.write_all(framed.as_bytes()).await?;
+
+    // For failure-shaped bodies, emit an explicit error chunk before the
+    // final `finish_reason` chunk so SSE clients that scan deltas for an
+    // `error` field can see the failure signal even if they ignore the
+    // finish_reason itself. This mirrors the OpenAI-compatible shape used
+    // by some upstream servers (an in-stream chunk carrying a structured
+    // `error` payload).
+    if is_failure {
+        if let Some(err) = response.get("error") {
+            let err_chunk = serde_json::json!({
+                "id": id,
+                "object": "chat.completion.chunk",
+                "model": model,
+                "choices": [],
+                "error": err,
+            });
+            let data = format!("data: {}\n\n", err_chunk);
+            let framed = format!("{:x}\r\n{}\r\n", data.len(), data);
+            stream.write_all(framed.as_bytes()).await?;
+        }
+    }
 
     let stop = serde_json::json!({
         "id": id,
@@ -610,5 +666,49 @@ mod tests {
             strip_think_from_content("answer prefix<think>never closed"),
             "answer prefix"
         );
+    }
+
+    #[test]
+    fn is_moa_failure_body_detects_top_level_error() {
+        // Regression for PR #566 review (item #7): the HTTP status was
+        // gated on `TurnKind == Failed`, but reducer-failure tool-result
+        // turns produce an error_response with `TurnKind::ToolResult`.
+        // The body still carries the canonical failure signals, so
+        // status now follows the body.
+        let body = serde_json::json!({
+            "error": { "message": "reducer failed", "type": "moa_failure" },
+            "choices": [{ "finish_reason": "error", "message": { "content": "oops" } }],
+        });
+        assert!(is_moa_failure_body(&body));
+    }
+
+    #[test]
+    fn is_moa_failure_body_detects_finish_reason_error() {
+        let body = serde_json::json!({
+            "choices": [{ "finish_reason": "error", "message": { "content": "oops" } }],
+        });
+        assert!(is_moa_failure_body(&body));
+    }
+
+    #[test]
+    fn is_moa_failure_body_returns_false_for_success() {
+        let body = serde_json::json!({
+            "choices": [{ "finish_reason": "stop", "message": { "content": "hello" } }],
+        });
+        assert!(!is_moa_failure_body(&body));
+    }
+
+    #[test]
+    fn is_moa_failure_body_returns_false_for_tool_calls() {
+        let body = serde_json::json!({
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [{"id": "x", "type": "function", "function": {"name": "f", "arguments": "{}"}}]
+                },
+            }],
+        });
+        assert!(!is_moa_failure_body(&body));
     }
 }
