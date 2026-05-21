@@ -8,6 +8,8 @@
 
 FROM node:24-alpine AS ui-builder
 ARG VITE_API_URL=https://meshllm.cloud
+ARG NODE_ENV=production
+ENV NODE_ENV=$NODE_ENV
 ENV VITE_API_URL=$VITE_API_URL
 RUN npm install -g pnpm
 WORKDIR /app
@@ -87,5 +89,6 @@ COPY --from=builder /usr/local/bin/mesh-llm /usr/local/bin/mesh-llm
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 ENV APP_MODE=console
+ENV NODE_ENV=production
 EXPOSE 3131 9337
 ENTRYPOINT ["/entrypoint.sh"]

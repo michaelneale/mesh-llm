@@ -34,7 +34,7 @@ import { ChatComposer } from '@/features/chat/components/composer/ChatComposer'
 import { ChatBubble } from '@/features/chat/components/messages/ChatBubble'
 import { ConversationList } from '@/features/chat/components/sidebar/ConversationList'
 
-const DOCS_URL = 'https://docs.anarchai.org'
+const DOCS_URL = 'https://docs.meshllm.cloud'
 
 function visionBadge(model?: MeshModel | null) {
   if (!model) return null

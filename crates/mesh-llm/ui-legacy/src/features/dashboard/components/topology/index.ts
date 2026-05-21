@@ -1,1 +1,0 @@
-export { MeshTopologyDiagram } from "./MeshTopologyDiagram";
