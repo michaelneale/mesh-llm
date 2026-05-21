@@ -771,8 +771,23 @@ async fn send_moa_as_responses_sse(
 
     use openai_frontend::responses as resp;
 
+    // The created/completed events must share the same `response.id`
+    // so clients can correlate the stream by id. Overwrite the
+    // auto-generated `resp_{created_at}` placeholder with the MoA
+    // response id we'll also use on the completed event.
+    let mut created = resp::responses_stream_created_event(&model, created_at);
+    if let Some(obj) = created
+        .get_mut("response")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        obj.insert(
+            "id".to_string(),
+            serde_json::Value::String(response_id.clone()),
+        );
+    }
+
     let events = [
-        resp::responses_stream_created_event(&model, created_at),
+        created,
         resp::responses_stream_delta_event(&item_id, &content),
         resp::responses_stream_text_done_event(&item_id, &content),
         resp::responses_stream_completed_event(
@@ -1105,9 +1120,12 @@ mod tests {
         assert!(out.is_object());
     }
 
-    /// Capture the body of `send_moa_as_responses_sse` against a real
-    /// TCP loopback pair, strip HTTP/chunked framing, return the
-    /// concatenated `data: ...` payloads.
+    /// Run `send_moa_as_responses_sse` against a real TCP loopback
+    /// pair and return the raw bytes the client received as a string.
+    /// Includes HTTP/1.1 headers and the chunked-transfer framing
+    /// around each SSE event. Callers in this module match by
+    /// `.contains(...)`, which is robust to framing without needing
+    /// to parse it.
     async fn capture_responses_sse_body(response: serde_json::Value) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -1127,6 +1145,56 @@ mod tests {
         client.read_to_end(&mut bytes).await.expect("read");
         server.await.expect("server task");
         String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    #[tokio::test]
+    async fn responses_sse_uses_same_response_id_for_created_and_completed() {
+        // Regression: created and completed events used different
+        // `response.id` values (one auto-generated, one from the chat
+        // body), breaking clients that correlate by id.
+        let response = serde_json::json!({
+            "id": "chatcmpl-moa-correlation",
+            "object": "chat.completion",
+            "model": "mesh",
+            "choices": [{
+                "index": 0,
+                "message": { "role": "assistant", "content": "hi" },
+                "finish_reason": "stop"
+            }]
+        });
+
+        let raw = capture_responses_sse_body(response).await;
+
+        // Extract every `data: { ... }` JSON blob and look at
+        // (event.type, event.response.id).
+        let mut ids = Vec::<(String, String)>::new();
+        for line in raw.lines() {
+            let Some(payload) = line.strip_prefix("data: ") else {
+                continue;
+            };
+            if payload.trim() == "[DONE]" {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) else {
+                continue;
+            };
+            let event_type = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            if event_type == "response.created" || event_type == "response.completed" {
+                let id = v
+                    .pointer("/response/id")
+                    .and_then(|i| i.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                ids.push((event_type.to_string(), id));
+            }
+        }
+
+        assert_eq!(ids.len(), 2, "need created + completed; got {ids:?}");
+        assert_eq!(ids[0].1, "chatcmpl-moa-correlation");
+        assert_eq!(
+            ids[0].1, ids[1].1,
+            "created and completed must share response.id: {ids:?}"
+        );
     }
 
     #[tokio::test]

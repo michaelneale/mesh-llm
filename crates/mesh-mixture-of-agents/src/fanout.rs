@@ -216,8 +216,16 @@ mod tests {
     /// Build a MoA normalization envelope (the `{"kind":"answer",...}`
     /// shape that `normalize_worker_output` parses via strategy #1)
     /// for use as a stubbed worker payload. Not a chat-completion JSON.
+    ///
+    /// Uses `serde_json::json!` so payloads containing quotes,
+    /// backslashes, or newlines round-trip correctly.
     fn answer_text(payload: &str, confidence: f32) -> String {
-        format!(r#"{{"kind":"answer","confidence":{confidence},"payload":"{payload}"}}"#)
+        serde_json::json!({
+            "kind": "answer",
+            "confidence": confidence,
+            "payload": payload,
+        })
+        .to_string()
     }
 
     fn spawn_worker(
