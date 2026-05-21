@@ -107,8 +107,12 @@ callable in the mesh.
 Models are tier-sorted before role assignment:
 single-digit-B names ("Qwen3-8B", "llama-3-7b") form the small tier and
 get `Fast`; everything else (multi-digit B, or names without an explicit
-size) forms the big tier — the largest of those gets `Strong` and also
-heads the reducer pool.
+size) forms the big tier. Within the big tier, role assignment is
+*first-encountered*, not deterministically by parameter count — we don't
+parse parameter sizes from the alias string, only the broad small-vs-big
+bucket. `Strong` and the reducer head both come from the big tier; if
+deterministic largest-first ordering becomes important, a size-aware
+sort within the big tier would go here.
 
 **The reducer is not a separate fan-out slot.** It's the same strong
 model (or next-strongest if the primary is slow/broken), invoked
@@ -294,14 +298,34 @@ never re-enters a worker call.
 
 ## Test & evaluation plan
 
-### Unit tests (29 tests, run in CI)
+### Unit tests (run in CI)
 
 ```bash
 cargo test -p mesh-mixture-of-agents --lib
 ```
 
-Covers: arbiter voting (10 scenarios), normalizer parsing (12 scenarios),
-session turn classification (3), worker role assignment (3).
+Currently 86 unit tests across the crate. Coverage areas:
+
+* `arbiter` voting and decision rules.
+* `normalize` parsing across JSON, KV, and heuristic strategies
+  (including NaN/Inf confidence sanitization and OpenAI-shape inline
+  tool-call extraction).
+* `session` turn classification (Fresh vs ToolResult) on caller-provided
+  history.
+* `worker` role assignment (small vs big tier) and `strip_thinking`.
+* `reducer` hedged-attempt scheduling.
+* `backend` response extraction and retry-after parsing.
+* `lib::response_builder_tests` for `best_answer` NaN safety and
+  `tool_call_response` argument coercion.
+
+Integration tests under `crates/mesh-mixture-of-agents/tests/` exercise
+fan-out simulation, all-workers-fail handling, tool-result routing, and
+worker accounting.
+
+When adding tests, update this count by running
+`cargo test -p mesh-mixture-of-agents --lib` and copying the final
+`test result: ok. N passed` value here so future readers see the real
+number.
 
 ### Local smoke test
 

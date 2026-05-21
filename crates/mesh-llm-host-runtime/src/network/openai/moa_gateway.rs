@@ -18,12 +18,19 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 
 /// Detect `model: "mesh"`, build a mesh-wide MoA config, run the turn,
-/// send the HTTP response (JSON or SSE), and return `true` if the request
-/// was handled. Returns `false` if the request is not for MoA, so the
-/// caller can fall through to normal routing.
+/// and write the HTTP response (JSON or SSE) directly to the stream.
 ///
-/// On MoA failure (e.g. <2 models in the mesh) sends a 503 and still
-/// returns `true` — the caller must not also try to respond.
+/// Return value carries the un-consumed `TcpStream` so the caller knows
+/// what to do next:
+///
+/// * `Some(stream)` — the request is *not* MoA-shaped (effective model
+///   is not the virtual `"mesh"` name). The stream is returned unused
+///   and the caller should fall through to normal routing.
+///
+/// * `None` — MoA owns the response. The stream has been consumed: a
+///   successful MoA response, a 503 (when fewer than 2 models are
+///   reachable), or a 400 (when the request body wasn't JSON) was
+///   already written. The caller must *not* attempt to respond again.
 pub async fn try_handle_moa(
     node: &mesh::Node,
     tcp_stream: TcpStream,

@@ -260,14 +260,15 @@ fn resident_kv_policy(activation_wire_dtype: StageWireDType) -> FamilyPolicy {
             // prefixes are recorded, so cache hit rate for the
             // recent workload is preserved.
             //
-            // Live observation: even at 16, sustained Goose `auto`
-            // traffic eventually starves the lanes — see the
-            // `prefix cache leak under sustained agent traffic`
-            // section in `docs/design/MOA_BRANCH_REPORT.md`. The
-            // 16-entry cap pushes the failure point from ~6 to ~16+
-            // requests but does not fully eliminate it. The proper
-            // fix is more invasive in `skippy-server` and out of
-            // scope for PR #566.
+            // The entry-count cap is the *coarse* lever: it bounds
+            // how many distinct prefixes the cache can hold, but with
+            // `kv_unified = true` even 16 long prefixes can pin the
+            // full cell pool. The complementary fine-grained cell
+            // budget (`max_resident_tokens` in
+            // `ResidentCacheConfig::from_stage`, landed in PR #566)
+            // closes the remaining gap by evicting on token pressure
+            // before the cell pool runs out. The 16-entry cap is
+            // still useful as a structural ceiling.
             max_entries: 16,
         },
     }
