@@ -5,7 +5,13 @@ primary_region = "syd"
   dockerfile = "../Dockerfile"
 
 [build.args]
+  NODE_ENV = "production"
   VITE_API_URL = "https://meshllm.cloud"
+  VITE_STORAGE_NAMESPACE = "mesh-llm-ui-production"
+
+[env]
+  APP_MODE = "console"
+  NODE_ENV = "production"
 
 [http_service]
   internal_port = 3131
