@@ -247,6 +247,29 @@ struct HandleState {
     last_error: Option<String>,
 }
 
+/// Wrap the inner OpenAI backend in the small-model guardrail and
+/// small-context compaction decorators when the host's
+/// (model name, n_ctx) shape warrants it.
+///
+/// First-pass policy:
+/// - `guardrails` engages when the model name is in the single-digit-B
+///   small tier (`mesh_llm_routing::is_small_tier_name`) and the
+///   request has tools. Default off otherwise.
+/// - `compaction` engages when the host's `n_ctx` is at or below
+///   `small_ctx_threshold` (default 8192). On larger-context hosts
+///   the decorator is not constructed.
+///
+/// The result is the same `Arc<dyn OpenAiBackend>` shape — callers
+/// don't need to know whether wrapping happened.
+fn wrap_backend_with_guardrails(
+    inner: Arc<dyn OpenAiBackend>,
+    model_id: &str,
+    n_ctx: u32,
+) -> Arc<dyn OpenAiBackend> {
+    let config = mesh_llm_guardrails::WrapConfig::default();
+    mesh_llm_guardrails::maybe_wrap_backend(inner, model_id, n_ctx, &config)
+}
+
 pub(crate) struct SkippyModelHandle {
     runtime: SkippyRuntimeHandle,
     backend: Arc<dyn OpenAiBackend>,
@@ -330,9 +353,14 @@ impl SkippyModelHandle {
             hook_policy,
         })
         .context("construct skippy OpenAI backend")?;
+        let backend = wrap_backend_with_guardrails(
+            binding.backend,
+            &stage_config.model_id,
+            stage_config.ctx_size,
+        );
         Ok(Self {
             runtime,
-            backend: binding.backend,
+            backend,
             config: stage_config,
             started_at_unix_nanos: now_unix_nanos(),
             status: Arc::new(Mutex::new(HandleState {
@@ -432,9 +460,11 @@ impl SkippyModelHandle {
             hook_policy,
         })
         .context("construct skippy stage 0 OpenAI backend")?;
+        let backend =
+            wrap_backend_with_guardrails(binding.backend, &config.model_id, config.ctx_size);
         Ok(Self {
             runtime,
-            backend: binding.backend,
+            backend,
             config,
             started_at_unix_nanos: now_unix_nanos(),
             status: Arc::new(Mutex::new(HandleState {

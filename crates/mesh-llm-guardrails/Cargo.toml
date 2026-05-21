@@ -1,0 +1,19 @@
+[package]
+name = "mesh-llm-guardrails"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+description = "Small-model tool-calling reliability and small-context compaction for Mesh LLM"
+
+[dependencies]
+async-trait = "0.1"
+futures-core = "0.3"
+mesh-llm-routing = { path = "../mesh-llm-routing" }
+openai-frontend = { path = "../openai-frontend" }
+regex = "1"
+serde.workspace = true
+serde_json.workspace = true
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

@@ -82,3 +82,77 @@ impl ModelTargets {
         }
     }
 }
+
+/// Return true if `name` advertises a single-digit billion-parameter
+/// count, e.g. `"Qwen3.5-2B-Q4_K_M"` or `"llama-3-7b-instruct"`.
+///
+/// Accepts: a standalone digit 1-9 immediately followed by `b` or `B`,
+/// at a word boundary (not part of a multi-digit number, decimal, or
+/// alphanumeric run like `"BF16"` or `"A3B"`).
+///
+/// This is the "small tier" gate shared by the MoA worker, the
+/// guardrails backend decorator, and the main router. Keep one
+/// implementation here so they cannot drift.
+pub fn is_small_tier_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    for i in 0..bytes.len() {
+        let c = bytes[i];
+        if !c.is_ascii_digit() {
+            continue;
+        }
+        // Must be a single digit at a word boundary: previous char must
+        // not be another digit, a '.', or an ASCII letter.
+        if i > 0 {
+            let prev = bytes[i - 1];
+            if prev.is_ascii_digit() || prev == b'.' || prev.is_ascii_alphabetic() {
+                continue;
+            }
+        }
+        // Digit must be 1-9
+        if c == b'0' {
+            continue;
+        }
+        // Next byte must be b or B
+        let Some(&next) = bytes.get(i + 1) else {
+            continue;
+        };
+        if next != b'b' && next != b'B' {
+            continue;
+        }
+        // Byte after must not be another digit (avoid BF16-like continuations)
+        if let Some(&after) = bytes.get(i + 2) {
+            if after.is_ascii_digit() {
+                continue;
+            }
+        }
+        return true;
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_small_tier_name;
+
+    #[test]
+    fn small_tier_matches_single_digit_b() {
+        assert!(is_small_tier_name("Qwen3.5-2B-Q4_K_M"));
+        assert!(is_small_tier_name("llama-3-7b-instruct"));
+        assert!(is_small_tier_name("Qwen3-8B"));
+        assert!(is_small_tier_name("Ministral-3B"));
+    }
+
+    #[test]
+    fn small_tier_rejects_big_and_unsized() {
+        assert!(!is_small_tier_name("MiniMax-M2.5"));
+        assert!(!is_small_tier_name("Qwen3-70B"));
+        assert!(!is_small_tier_name("Qwen3-31B"));
+        assert!(!is_small_tier_name("Coder-Next"));
+        // BF16-style continuations must not match.
+        assert!(!is_small_tier_name("model-BF16"));
+        // A3B-style suffixes (e.g. activation count) must not match.
+        assert!(!is_small_tier_name("Qwen3-Coder-480B-A35B-Instruct"));
+        // Multi-digit B should not match as small tier.
+        assert!(!is_small_tier_name("llama-13b"));
+    }
+}
