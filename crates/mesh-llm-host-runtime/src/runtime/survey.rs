@@ -993,6 +993,7 @@ mod tests {
                 args: Vec::new(),
                 url: None,
             }],
+            defaults: None,
             ..Default::default()
         }
     }

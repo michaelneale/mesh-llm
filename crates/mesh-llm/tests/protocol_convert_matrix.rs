@@ -31,6 +31,7 @@ fn minimal_config() -> NodeConfigSnapshot {
             mmproj_ref: None,
         }],
         plugins: vec![],
+        config_toml: None,
     }
 }
 

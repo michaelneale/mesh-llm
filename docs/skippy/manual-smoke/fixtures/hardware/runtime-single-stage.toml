@@ -1,0 +1,28 @@
+version = 1
+
+[defaults.hardware]
+model_runtime = "cpu"
+device = "auto"
+gpu_layers = "auto"
+placement = "auto"
+tensor_split = "1"
+split_mode = "auto"
+main_gpu = 0
+cpu_moe = false
+n_cpu_moe = 0
+fit_target_mib = 4096
+fit_context = true
+check_tensors = false
+mmap = "auto"
+mlock = false
+direct_io = false
+repack = false
+op_offload = false
+no_host_buffer = false
+warmup = false
+
+[[models]]
+model = "unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL"
+
+[models.hardware]
+model_path = "__LOCAL_MODEL_PATH__"

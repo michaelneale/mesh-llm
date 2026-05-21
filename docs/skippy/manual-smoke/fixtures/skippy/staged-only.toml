@@ -1,0 +1,24 @@
+version = 1
+
+[defaults.hardware]
+stage_layer_start = 0
+stage_layer_end = 8
+
+[defaults.skippy]
+stage_model_path = "/tmp/manual-smoke/stage-0.gguf"
+stage_role = "prefill"
+stage_topology = "manual-smoke-topology"
+activation_wire_dtype = "f16"
+binary_stage_transport = "auto"
+lifecycle_startup_timeout_ms = 1000
+lifecycle_readiness_interval_ms = 1000
+lifecycle_health_interval_ms = 1000
+prefill_chunking = "schedule"
+prefill_chunk_size = 64
+prefill_chunk_schedule = "64,128"
+
+[[models]]
+model = "unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL"
+
+[models.hardware]
+model_path = "__LOCAL_MODEL_PATH__"

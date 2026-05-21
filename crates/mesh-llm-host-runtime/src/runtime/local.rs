@@ -15,12 +15,13 @@ use crate::inference::{election, skippy};
 use crate::mesh::{self, NodeRole};
 use crate::models;
 use crate::network::router;
+use crate::plugin;
 use crate::runtime_data::{
     RuntimeLlamaEndpointStatus, RuntimeLlamaSlotSnapshot, RuntimeLlamaSlotsSnapshot,
 };
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
-use skippy_protocol::{FlashAttentionType, LoadMode, PeerConfig, StageConfig};
+use skippy_protocol::{FlashAttentionType, LoadMode, PeerConfig};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -142,6 +143,8 @@ pub(super) struct ManagedModelController {
 
 pub(super) struct LocalRuntimeModelStartSpec<'a> {
     pub(super) node: &'a mesh::Node,
+    pub(super) mesh_config: &'a plugin::MeshConfig,
+    pub(super) config_model_id: Option<&'a str>,
     pub(super) model_path: &'a Path,
     pub(super) model_bytes: u64,
     pub(super) mmproj_override: Option<&'a Path>,
@@ -243,17 +246,89 @@ fn mmproj_path_for_model(model_name: &str) -> Option<PathBuf> {
     models::find_mmproj_path(model_name, &model_path)
 }
 
-fn effective_flash_attention(
-    override_value: FlashAttentionType,
-    effective_cache_type_v: &str,
-) -> FlashAttentionType {
-    if override_value != FlashAttentionType::Auto {
-        return override_value;
+fn pinned_skippy_device(
+    gpu: &crate::runtime::StartupPinnedGpuTarget,
+) -> skippy::SkippyDeviceDescriptor {
+    skippy::SkippyDeviceDescriptor {
+        backend_device: gpu.backend_device.clone(),
+        stable_id: Some(gpu.stable_id.clone()),
+        index: Some(gpu.index),
+        vram_bytes: Some(gpu.vram_bytes),
     }
+}
 
-    match effective_cache_type_v {
-        "f16" => FlashAttentionType::Auto,
-        _ => FlashAttentionType::Enabled,
+fn pinned_stage_device(
+    gpu: &crate::runtime::StartupPinnedGpuTarget,
+) -> skippy_protocol::StageDevice {
+    skippy_protocol::StageDevice {
+        backend_device: gpu.backend_device.clone(),
+        stable_id: Some(gpu.stable_id.clone()),
+        index: Some(gpu.index),
+        vram_bytes: Some(gpu.vram_bytes),
+    }
+}
+
+fn resolve_runtime_skippy_config(
+    spec: &LocalRuntimeModelStartSpec<'_>,
+    model_name: &str,
+    model_bytes: u64,
+    context_length: u32,
+    slots: usize,
+    fallback_projector_path: Option<PathBuf>,
+) -> Result<skippy::ResolvedSkippyConfig> {
+    let allocatable_memory_bytes = spec
+        .capacity_budget_bytes
+        .or_else(|| spec.pinned_gpu.map(|gpu| gpu.vram_bytes));
+    let mut resolved = skippy::resolve_skippy_config(skippy::SkippyConfigResolveRequest {
+        mesh_config: spec.mesh_config,
+        model_id: spec.config_model_id.unwrap_or(model_name),
+        model_path: spec.model_path,
+        model_bytes,
+        allocatable_memory_bytes,
+        request_defaults: None,
+    })?;
+    resolved.model_id = model_name.to_string();
+    apply_runtime_skippy_launch_overrides(
+        &mut resolved,
+        spec,
+        context_length,
+        slots,
+        fallback_projector_path,
+    );
+    Ok(resolved)
+}
+
+fn apply_runtime_skippy_launch_overrides(
+    resolved: &mut skippy::ResolvedSkippyConfig,
+    spec: &LocalRuntimeModelStartSpec<'_>,
+    context_length: u32,
+    slots: usize,
+    fallback_projector_path: Option<PathBuf>,
+) {
+    resolved.model_fit.ctx_size = context_length;
+    resolved.throughput.parallel = slots;
+    if let Some(cache_type_k) = spec.cache_type_k_override {
+        resolved.model_fit.cache_type_k = cache_type_k.to_string();
+    }
+    if let Some(cache_type_v) = spec.cache_type_v_override {
+        resolved.model_fit.cache_type_v = cache_type_v.to_string();
+    }
+    if let Some(n_batch) = spec.n_batch_override {
+        resolved.model_fit.batch = n_batch;
+    }
+    if let Some(n_ubatch) = spec.n_ubatch_override {
+        resolved.model_fit.ubatch = n_ubatch;
+    }
+    if spec.flash_attention_override != FlashAttentionType::Auto {
+        resolved.model_fit.flash_attention = spec.flash_attention_override;
+    }
+    if let Some(mmproj_override) = spec.mmproj_override {
+        resolved.hardware.projector_path = Some(mmproj_override.to_path_buf());
+    } else if resolved.hardware.projector_path.is_none() {
+        resolved.hardware.projector_path = fallback_projector_path;
+    }
+    if let Some(gpu) = spec.pinned_gpu {
+        resolved.hardware.device = Some(gpu.backend_device.clone());
     }
 }
 
@@ -642,6 +717,7 @@ pub(super) async fn start_runtime_split_model(
     );
     let mut loaded = load_split_runtime_generation(SplitGenerationLoadSpec {
         node: spec.node,
+        mesh_config: spec.mesh_config,
         model_ref,
         model_path: spec.model_path,
         package: &package,
@@ -662,6 +738,7 @@ pub(super) async fn start_runtime_split_model(
     loaded.coordinator_rx = Some(coordinator_rx);
     loaded.coordinator_task = Some(spawn_split_topology_coordinator(SplitTopologyCoordinator {
         node: spec.node.clone(),
+        mesh_config: spec.mesh_config.clone(),
         model_name: model_ref.to_string(),
         model_path: spec.model_path.to_path_buf(),
         model_ref: model_ref.to_string(),
@@ -963,6 +1040,7 @@ impl SplitParticipantExclusionReason {
 
 struct SplitGenerationLoadSpec<'a> {
     node: &'a mesh::Node,
+    mesh_config: &'a plugin::MeshConfig,
     model_ref: &'a str,
     model_path: &'a Path,
     package: &'a skippy::SkippyPackageIdentity,
@@ -981,12 +1059,11 @@ struct SplitGenerationLoadSpec<'a> {
 
 struct SplitGenerationLoadSettings<'a> {
     stage0: &'a RuntimeSliceStagePlan,
-    kv_cache: skippy::KvCachePolicy,
-    effective_cache_type_k: String,
-    effective_cache_type_v: String,
-    resolved_flash_attn_type: FlashAttentionType,
+    runtime_options: skippy_server::EmbeddedRuntimeOptions,
+    embedded_openai: skippy::ResolvedEmbeddedOpenAiArgs,
     load_mode: LoadMode,
     activation_width: i32,
+    activation_wire_dtype: skippy::StageWireDType,
 }
 
 async fn load_split_runtime_generation(
@@ -1030,7 +1107,6 @@ async fn load_split_runtime_generation_inner(
 
     let mut ready_by_stage: HashMap<String, skippy::StageStatusSnapshot> = HashMap::new();
     let mut downstream: Option<skippy::StagePeerDescriptor> = None;
-    let family_policy = skippy::family_policy_for_model_path(spec.model_path, Some(spec.model_ref));
 
     if settings.load_mode == LoadMode::LayerPackage {
         spec.node
@@ -1048,7 +1124,6 @@ async fn load_split_runtime_generation_inner(
     let downstream = Box::pin(load_downstream_split_runtime_stages(
         spec,
         &settings,
-        family_policy.activation_wire_dtype,
         cleanup_on_error,
         &mut ready_by_stage,
         &mut downstream,
@@ -1068,29 +1143,45 @@ async fn load_split_runtime_generation_inner(
             )
             .await?
     };
-    let config = split_stage0_config(
-        &spec.generation.topology_id,
-        &spec.generation.run_id,
-        spec.model_ref,
-        spec.model_path,
-        spec.package,
-        settings.stage0,
-        downstream.stage_id,
-        downstream.stage_index,
-        downstream_endpoint,
-        spec.projector_path.clone(),
-        spec.ctx_size,
-        spec.slots as u32,
-        settings.kv_cache,
-        spec.cache_type_k_override,
-        spec.cache_type_v_override,
-        spec.n_batch_override,
-        spec.n_ubatch_override,
-        spec.flash_attention_override,
-        spec.pinned_gpu,
+    let mut runtime_options = settings.runtime_options.clone();
+    runtime_options.config.run_id = spec.generation.run_id.clone();
+    runtime_options.config.topology_id = spec.generation.topology_id.clone();
+    runtime_options.config.model_id = spec.model_ref.to_string();
+    runtime_options.config.package_ref = Some(spec.package.package_ref.clone());
+    runtime_options.config.manifest_sha256 = Some(spec.package.manifest_sha256.clone());
+    let effective_model_path = stage_load_model_path(
         settings.load_mode.clone(),
+        &spec.package.package_ref,
+        spec.model_path,
     );
-    let slots = spec.slots;
+    runtime_options.config.source_model_path = Some(effective_model_path.clone());
+    runtime_options.config.source_model_sha256 = Some(spec.package.source_model_sha256.clone());
+    runtime_options.config.source_model_bytes = Some(spec.package.source_model_bytes);
+    runtime_options.config.materialized_path = None;
+    runtime_options.config.materialized_pinned = false;
+    runtime_options.config.model_path = Some(effective_model_path);
+    if runtime_options.config.projector_path.is_none() {
+        runtime_options.config.projector_path = spec.projector_path.clone();
+    }
+    runtime_options.config.stage_id = settings.stage0.stage_id.clone();
+    runtime_options.config.stage_index = settings.stage0.stage_index;
+    runtime_options.config.layer_start = settings.stage0.layer_start;
+    runtime_options.config.layer_end = settings.stage0.layer_end;
+    runtime_options.config.ctx_size = spec.ctx_size;
+    runtime_options.config.lane_count = spec.slots as u32;
+    runtime_options.config.filter_tensors_on_load = true;
+    if let Some(gpu) = spec.pinned_gpu {
+        runtime_options.config.selected_device = Some(pinned_stage_device(gpu));
+    }
+    runtime_options.config.load_mode = settings.load_mode.clone();
+    runtime_options.config.bind_addr = "127.0.0.1:0".to_string();
+    runtime_options.config.upstream = None;
+    runtime_options.config.downstream = Some(PeerConfig {
+        stage_id: downstream.stage_id,
+        stage_index: downstream.stage_index,
+        endpoint: downstream_endpoint,
+    });
+    let vision_projector_loaded = runtime_options.config.projector_path.is_some();
     let node_for_hook = spec.node.clone();
     let model_ref = spec.model_ref.to_string();
     let skippy_telemetry = spec.skippy_telemetry.clone();
@@ -1099,11 +1190,9 @@ async fn load_split_runtime_generation_inner(
         source: None,
     });
     let handle = tokio::task::spawn_blocking(move || {
-        skippy::SkippyModelHandle::load_stage0_config(
-            config,
-            settings.activation_width,
-            slots,
-            skippy_server::DEFAULT_EMBEDDED_MAX_TOKENS,
+        skippy::SkippyModelHandle::load_stage0_runtime_options_with_openai_args(
+            runtime_options,
+            settings.embedded_openai.clone(),
             Some(skippy::MeshAutoHookPolicy::new(node_for_hook)),
             skippy_telemetry,
         )
@@ -1120,7 +1209,7 @@ async fn load_split_runtime_generation_inner(
         spec.model_ref,
         spec.model_path,
         models::RuntimeMediaCapabilityEvidence {
-            vision_projector_loaded: spec.projector_path.is_some(),
+            vision_projector_loaded,
         },
     );
 
@@ -1161,20 +1250,13 @@ async fn load_split_runtime_generation_inner(
 async fn load_downstream_split_runtime_stages(
     spec: &SplitGenerationLoadSpec<'_>,
     settings: &SplitGenerationLoadSettings<'_>,
-    activation_wire_dtype: skippy::StageWireDType,
     cleanup_on_error: &mut bool,
     ready_by_stage: &mut HashMap<String, skippy::StageStatusSnapshot>,
     downstream: &mut Option<skippy::StagePeerDescriptor>,
 ) -> Result<skippy::StagePeerDescriptor> {
     for stage in spec.generation.stages.iter().skip(1).rev() {
         *cleanup_on_error = true;
-        let load = split_runtime_stage_load_request(
-            spec,
-            settings,
-            activation_wire_dtype,
-            stage,
-            downstream.clone(),
-        );
+        let load = split_runtime_stage_load_request(spec, settings, stage, downstream.clone());
         prepare_split_stage(spec.node, stage.node_id, load.clone()).await?;
         wait_for_split_stage_source(
             spec.node,
@@ -1235,10 +1317,10 @@ async fn load_downstream_split_runtime_stages(
 fn split_runtime_stage_load_request(
     spec: &SplitGenerationLoadSpec<'_>,
     settings: &SplitGenerationLoadSettings<'_>,
-    activation_wire_dtype: skippy::StageWireDType,
     stage: &RuntimeSliceStagePlan,
     downstream: Option<skippy::StagePeerDescriptor>,
 ) -> skippy::StageLoadRequest {
+    let resolved_config = &settings.runtime_options.config;
     skippy::StageLoadRequest {
         topology_id: spec.generation.topology_id.clone(),
         run_id: spec.generation.run_id.clone(),
@@ -1260,15 +1342,15 @@ fn split_runtime_stage_load_request(
         selected_device: None,
         bind_addr: "127.0.0.1:0".to_string(),
         activation_width: settings.activation_width,
-        wire_dtype: activation_wire_dtype,
+        wire_dtype: settings.activation_wire_dtype,
         ctx_size: spec.ctx_size,
         lane_count: spec.slots as u32,
-        n_batch: spec.n_batch_override,
-        n_ubatch: spec.n_ubatch_override,
-        n_gpu_layers: -1,
-        cache_type_k: settings.effective_cache_type_k.clone(),
-        cache_type_v: settings.effective_cache_type_v.clone(),
-        flash_attn_type: settings.resolved_flash_attn_type,
+        n_batch: resolved_config.n_batch,
+        n_ubatch: resolved_config.n_ubatch,
+        n_gpu_layers: resolved_config.n_gpu_layers,
+        cache_type_k: resolved_config.cache_type_k.clone(),
+        cache_type_v: resolved_config.cache_type_v.clone(),
+        flash_attn_type: resolved_config.flash_attn_type,
         shutdown_generation: spec.generation.generation,
         coordinator_term: spec.generation.coordinator_term,
         coordinator_id: Some(spec.node.id()),
@@ -1287,30 +1369,59 @@ fn split_generation_load_settings<'a>(
         .stages
         .first()
         .context("split topology did not produce stage 0")?;
-    let kv_cache = skippy::KvCachePolicy::for_model_size(spec.package.source_model_bytes);
-    let effective_cache_type_k = spec
-        .cache_type_k_override
-        .unwrap_or(kv_cache.cache_type_k())
-        .to_string();
-    let effective_cache_type_v = spec
-        .cache_type_v_override
-        .unwrap_or(kv_cache.cache_type_v())
-        .to_string();
-    tracing::info!(model = spec.model_ref, "KV cache: {}", kv_cache.label());
+    let load_mode = split_generation_load_mode(spec.package);
+    let activation_width =
+        skippy_stage_activation_width(spec.package.activation_width, spec.model_ref)?;
+    let mut resolved = skippy::resolve_skippy_config(skippy::SkippyConfigResolveRequest {
+        mesh_config: spec.mesh_config,
+        model_id: spec.model_ref,
+        model_path: spec.model_path,
+        model_bytes: spec.package.source_model_bytes,
+        allocatable_memory_bytes: spec.pinned_gpu.map(|gpu| gpu.vram_bytes),
+        request_defaults: None,
+    })?;
+    resolved.model_fit.ctx_size = spec.ctx_size;
+    resolved.throughput.parallel = spec.slots;
+    if let Some(cache_type_k) = spec.cache_type_k_override {
+        resolved.model_fit.cache_type_k = cache_type_k.to_string();
+    }
+    if let Some(cache_type_v) = spec.cache_type_v_override {
+        resolved.model_fit.cache_type_v = cache_type_v.to_string();
+    }
+    if let Some(n_batch) = spec.n_batch_override {
+        resolved.model_fit.batch = n_batch;
+    }
+    if let Some(n_ubatch) = spec.n_ubatch_override {
+        resolved.model_fit.ubatch = n_ubatch;
+    }
+    if spec.flash_attention_override != FlashAttentionType::Auto {
+        resolved.model_fit.flash_attention = spec.flash_attention_override;
+    }
+    if resolved.hardware.projector_path.is_none() {
+        resolved.hardware.projector_path = spec.projector_path.as_ref().map(PathBuf::from);
+    }
+    if let Some(gpu) = spec.pinned_gpu {
+        resolved.hardware.device = Some(gpu.backend_device.clone());
+    }
+    let embedded_openai = resolved.to_embedded_openai_args(activation_width, true)?;
+    let runtime_options = resolved.to_embedded_runtime_options(
+        &spec.skippy_telemetry,
+        Some(spec.package.clone()),
+        load_mode.clone(),
+    )?;
+    tracing::info!(
+        model = spec.model_ref,
+        "KV cache: {} K + {} V",
+        runtime_options.config.cache_type_k.to_ascii_uppercase(),
+        runtime_options.config.cache_type_v.to_ascii_uppercase(),
+    );
     Ok(SplitGenerationLoadSettings {
         stage0,
-        kv_cache,
-        effective_cache_type_k,
-        effective_cache_type_v: effective_cache_type_v.clone(),
-        resolved_flash_attn_type: effective_flash_attention(
-            spec.flash_attention_override,
-            &effective_cache_type_v,
-        ),
-        load_mode: split_generation_load_mode(spec.package),
-        activation_width: skippy_stage_activation_width(
-            spec.package.activation_width,
-            spec.model_ref,
-        )?,
+        runtime_options,
+        embedded_openai,
+        load_mode,
+        activation_width,
+        activation_wire_dtype: resolved.skippy.activation_wire_dtype,
     })
 }
 
@@ -1584,6 +1695,7 @@ impl SplitTopologyGeneration {
 
 struct SplitTopologyCoordinator {
     node: mesh::Node,
+    mesh_config: plugin::MeshConfig,
     model_name: String,
     model_path: PathBuf,
     model_ref: String,
@@ -2070,6 +2182,7 @@ impl SplitTopologyCoordinator {
         let previous = self.active.clone();
         let loaded = load_split_runtime_generation(SplitGenerationLoadSpec {
             node: &self.node,
+            mesh_config: &self.mesh_config,
             model_ref: &self.model_ref,
             model_path: &self.model_path,
             package: &self.package,
@@ -2889,89 +3002,6 @@ fn log_topology_plan_diagnostics(topology_id: &str, model_ref: &str, diagnostics
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn split_stage0_config(
-    topology_id: &str,
-    run_id: &str,
-    model_ref: &str,
-    model_path: &Path,
-    package: &skippy::SkippyPackageIdentity,
-    stage0: &RuntimeSliceStagePlan,
-    downstream_stage_id: String,
-    downstream_stage_index: u32,
-    downstream_endpoint: String,
-    projector_path: Option<String>,
-    ctx_size: u32,
-    lane_count: u32,
-    kv_cache: skippy::KvCachePolicy,
-    cache_type_k_override: Option<&str>,
-    cache_type_v_override: Option<&str>,
-    n_batch_override: Option<u32>,
-    n_ubatch_override: Option<u32>,
-    flash_attention_override: FlashAttentionType,
-    pinned_gpu: Option<&crate::runtime::StartupPinnedGpuTarget>,
-    load_mode: LoadMode,
-) -> StageConfig {
-    let effective_cache_type_k = cache_type_k_override
-        .unwrap_or(kv_cache.cache_type_k())
-        .to_string();
-    let effective_cache_type_v = cache_type_v_override
-        .unwrap_or(kv_cache.cache_type_v())
-        .to_string();
-    let resolved_flash_attn_type =
-        effective_flash_attention(flash_attention_override, &effective_cache_type_v);
-    let family_policy = skippy::family_policy_for_model_path(model_path, Some(model_ref));
-    let effective_model_path = if load_mode == LoadMode::LayerPackage {
-        package.package_ref.clone()
-    } else {
-        model_path.to_string_lossy().to_string()
-    };
-    let mut config = StageConfig {
-        run_id: run_id.to_string(),
-        topology_id: topology_id.to_string(),
-        model_id: model_ref.to_string(),
-        package_ref: Some(package.package_ref.clone()),
-        manifest_sha256: Some(package.manifest_sha256.clone()),
-        source_model_path: Some(effective_model_path.clone()),
-        source_model_sha256: Some(package.source_model_sha256.clone()),
-        source_model_bytes: Some(package.source_model_bytes),
-        materialized_path: None,
-        materialized_pinned: false,
-        model_path: Some(effective_model_path),
-        projector_path,
-        stage_id: stage0.stage_id.clone(),
-        stage_index: stage0.stage_index,
-        layer_start: stage0.layer_start,
-        layer_end: stage0.layer_end,
-        ctx_size,
-        lane_count,
-        n_batch: n_batch_override,
-        n_ubatch: n_ubatch_override,
-        n_gpu_layers: -1,
-        cache_type_k: effective_cache_type_k,
-        cache_type_v: effective_cache_type_v,
-        flash_attn_type: resolved_flash_attn_type,
-        filter_tensors_on_load: true,
-        selected_device: pinned_gpu.map(|gpu| skippy_protocol::StageDevice {
-            backend_device: gpu.backend_device.clone(),
-            stable_id: Some(gpu.stable_id.clone()),
-            index: Some(gpu.index),
-            vram_bytes: Some(gpu.vram_bytes),
-        }),
-        kv_cache: None,
-        load_mode,
-        bind_addr: "127.0.0.1:0".to_string(),
-        upstream: None,
-        downstream: Some(PeerConfig {
-            stage_id: downstream_stage_id,
-            stage_index: downstream_stage_index,
-            endpoint: downstream_endpoint,
-        }),
-    };
-    config.kv_cache = family_policy.stage_kv_cache_config_for_stage(&config);
-    config
-}
-
 async fn prepare_split_stage(
     node: &mesh::Node,
     stage_node_id: iroh::EndpointId,
@@ -3124,53 +3154,35 @@ async fn start_runtime_skippy_model(
 )> {
     let port = alloc_local_port().await?;
     let context_length = plan.context_length;
-    let kv_cache = skippy::KvCachePolicy::for_model_size(spec.model_bytes);
-    let effective_cache_type_k = spec
-        .cache_type_k_override
-        .unwrap_or(kv_cache.cache_type_k());
-    let effective_cache_type_v = spec
-        .cache_type_v_override
-        .unwrap_or(kv_cache.cache_type_v());
-    let resolved_flash_attn_type =
-        effective_flash_attention(spec.flash_attention_override, effective_cache_type_v);
+    let fallback_projector_path = mmproj_path_for_model(&model_name).filter(|path| path.exists());
+    let resolved = resolve_runtime_skippy_config(
+        &spec,
+        &model_name,
+        spec.model_bytes,
+        context_length,
+        plan.slots,
+        fallback_projector_path,
+    )?;
     tracing::info!(
         model = model_name,
         "KV cache: {} K + {} V, {}K context",
-        effective_cache_type_k.to_ascii_uppercase(),
-        effective_cache_type_v.to_ascii_uppercase(),
+        resolved.model_fit.cache_type_k.to_ascii_uppercase(),
+        resolved.model_fit.cache_type_v.to_ascii_uppercase(),
         context_length / 1024,
     );
-    let projector_path = spec
-        .mmproj_override
-        .map(Path::to_path_buf)
-        .or_else(|| mmproj_path_for_model(&model_name))
-        .filter(|path| path.exists());
     let capabilities = models::runtime_verified_model_capabilities(
         &model_name,
         spec.model_path,
         models::RuntimeMediaCapabilityEvidence {
-            vision_projector_loaded: projector_path.is_some(),
+            vision_projector_loaded: resolved.hardware.projector_path.is_some(),
         },
     );
-    let mut options = skippy::SkippyModelLoadOptions::for_direct_gguf(&model_name, spec.model_path)
-        .with_ctx_size(context_length)
-        .with_generation_concurrency(plan.slots)
-        .with_cache_types(effective_cache_type_k, effective_cache_type_v)
-        .with_flash_attn_type(resolved_flash_attn_type)
-        .with_telemetry(spec.skippy_telemetry.clone());
-    if spec.n_batch_override.is_some() || spec.n_ubatch_override.is_some() {
-        options = options.with_batch_sizes(spec.n_batch_override, spec.n_ubatch_override);
-    }
-    if let Some(projector_path) = projector_path {
-        options = options.with_projector_path(projector_path);
-    }
+    let embedded_openai = resolved.to_embedded_openai_args(0, false)?;
+    let mut options = resolved
+        .to_model_load_options(spec.skippy_telemetry.clone())?
+        .with_embedded_openai(embedded_openai);
     if let Some(gpu) = spec.pinned_gpu {
-        options = options.with_selected_device(skippy::SkippyDeviceDescriptor {
-            backend_device: gpu.backend_device.clone(),
-            stable_id: Some(gpu.stable_id.clone()),
-            index: Some(gpu.index),
-            vram_bytes: Some(gpu.vram_bytes),
-        });
+        options = options.with_selected_device(pinned_skippy_device(gpu));
     }
     let _ = emit_event(OutputEvent::ModelLoading {
         model: model_name.clone(),
@@ -3221,79 +3233,63 @@ async fn start_runtime_layer_package_model(
     tokio::sync::oneshot::Receiver<()>,
 )> {
     let context_length = plan.context_length;
-    let kv_cache = skippy::KvCachePolicy::for_model_size(package.source_model_bytes);
-    let effective_cache_type_k = spec
-        .cache_type_k_override
-        .unwrap_or(kv_cache.cache_type_k())
-        .to_string();
-    let effective_cache_type_v = spec
-        .cache_type_v_override
-        .unwrap_or(kv_cache.cache_type_v())
-        .to_string();
-    let resolved_flash_attn_type =
-        effective_flash_attention(spec.flash_attention_override, &effective_cache_type_v);
+    let fallback_projector_path = mmproj_path_for_model(&model_name).filter(|path| path.exists());
+    let resolved = resolve_runtime_skippy_config(
+        &spec,
+        &model_name,
+        package.source_model_bytes,
+        context_length,
+        plan.slots,
+        fallback_projector_path,
+    )?;
     tracing::info!(
         model = model_name,
         "KV cache: {} K + {} V, {}K context",
-        effective_cache_type_k.to_ascii_uppercase(),
-        effective_cache_type_v.to_ascii_uppercase(),
+        resolved.model_fit.cache_type_k.to_ascii_uppercase(),
+        resolved.model_fit.cache_type_v.to_ascii_uppercase(),
         context_length / 1024,
     );
-    let projector_path = spec
-        .mmproj_override
-        .map(|path| path.to_string_lossy().to_string())
-        .or_else(|| {
-            mmproj_path_for_model(&model_name).map(|path| path.to_string_lossy().to_string())
-        })
-        .filter(|path| Path::new(path).exists());
     let capabilities = models::runtime_verified_model_capabilities(
         &model_name,
         spec.model_path,
         models::RuntimeMediaCapabilityEvidence {
-            vision_projector_loaded: projector_path.is_some(),
+            vision_projector_loaded: resolved.hardware.projector_path.is_some(),
         },
     );
     let activation_width = skippy_stage_activation_width(package.activation_width, &model_name)?;
     let run_id = format!("mesh-skippy-{}", now_unix_nanos());
-    let config = StageConfig {
-        run_id: run_id.clone(),
-        topology_id: format!("topology-{run_id}"),
-        model_id: model_name.clone(),
-        package_ref: Some(package.package_ref.clone()),
-        manifest_sha256: Some(package.manifest_sha256.clone()),
-        source_model_path: Some(package.package_ref.clone()),
-        source_model_sha256: Some(package.source_model_sha256.clone()),
-        source_model_bytes: Some(package.source_model_bytes),
-        materialized_path: None,
-        materialized_pinned: false,
-        model_path: Some(package.package_ref.clone()),
-        projector_path,
-        stage_id: "stage-0".to_string(),
-        stage_index: 0,
-        layer_start: 0,
-        layer_end: package.layer_count,
-        ctx_size: context_length,
-        lane_count: plan.slots as u32,
-        n_batch: spec.n_batch_override,
-        n_ubatch: spec.n_ubatch_override,
-        n_gpu_layers: -1,
-        cache_type_k: effective_cache_type_k,
-        cache_type_v: effective_cache_type_v,
-        flash_attn_type: resolved_flash_attn_type,
-        filter_tensors_on_load: true,
-        selected_device: spec.pinned_gpu.map(|gpu| skippy_protocol::StageDevice {
-            backend_device: gpu.backend_device.clone(),
-            stable_id: Some(gpu.stable_id.clone()),
-            index: Some(gpu.index),
-            vram_bytes: Some(gpu.vram_bytes),
-        }),
-        kv_cache: None,
-        load_mode: LoadMode::LayerPackage,
-        bind_addr: "127.0.0.1:0".to_string(),
-        upstream: None,
-        downstream: None,
-    };
-    let slots = plan.slots;
+    let embedded_openai = resolved.to_embedded_openai_args(activation_width, true)?;
+    let mut runtime_options = resolved.to_embedded_runtime_options(
+        &spec.skippy_telemetry,
+        Some(package.clone()),
+        LoadMode::LayerPackage,
+    )?;
+    runtime_options.config.run_id = run_id.clone();
+    runtime_options.config.topology_id = format!("topology-{run_id}");
+    runtime_options.config.model_id = model_name.clone();
+    runtime_options.config.package_ref = Some(package.package_ref.clone());
+    runtime_options.config.manifest_sha256 = Some(package.manifest_sha256.clone());
+    runtime_options.config.source_model_path = Some(package.package_ref.clone());
+    runtime_options.config.source_model_sha256 = Some(package.source_model_sha256.clone());
+    runtime_options.config.source_model_bytes = Some(package.source_model_bytes);
+    runtime_options.config.model_path = Some(package.package_ref.clone());
+    runtime_options.config.stage_id = "stage-0".to_string();
+    runtime_options.config.stage_index = 0;
+    if resolved.hardware.stage_layer_start.is_none() && resolved.hardware.stage_layer_end.is_none()
+    {
+        runtime_options.config.layer_start = 0;
+        runtime_options.config.layer_end = package.layer_count;
+    }
+    runtime_options.config.ctx_size = context_length;
+    runtime_options.config.lane_count = plan.slots as u32;
+    runtime_options.config.filter_tensors_on_load = true;
+    if let Some(gpu) = spec.pinned_gpu {
+        runtime_options.config.selected_device = Some(pinned_stage_device(gpu));
+    }
+    runtime_options.config.load_mode = LoadMode::LayerPackage;
+    runtime_options.config.bind_addr = "127.0.0.1:0".to_string();
+    runtime_options.config.upstream = None;
+    runtime_options.config.downstream = None;
     let node_for_hook = spec.node.clone();
     let model_ref = model_name.clone();
     let skippy_telemetry = spec.skippy_telemetry.clone();
@@ -3302,11 +3298,9 @@ async fn start_runtime_layer_package_model(
         source: None,
     });
     let handle = tokio::task::spawn_blocking(move || {
-        skippy::SkippyModelHandle::load_stage0_config(
-            config,
-            activation_width,
-            slots,
-            skippy_server::DEFAULT_EMBEDDED_MAX_TOKENS,
+        skippy::SkippyModelHandle::load_stage0_runtime_options_with_openai_args(
+            runtime_options,
+            embedded_openai,
             Some(skippy::MeshAutoHookPolicy::new(node_for_hook)),
             skippy_telemetry,
         )
@@ -3473,6 +3467,40 @@ mod tests {
         format!("{:x}", Sha256::digest(bytes))
     }
 
+    fn push_gguf_string(bytes: &mut Vec<u8>, value: &str) {
+        bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(value.as_bytes());
+    }
+
+    fn push_u32_kv(bytes: &mut Vec<u8>, key: &str, value: u32) {
+        push_gguf_string(bytes, key);
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_string_kv(bytes: &mut Vec<u8>, key: &str, value: &str) {
+        push_gguf_string(bytes, key);
+        bytes.extend_from_slice(&8u32.to_le_bytes());
+        push_gguf_string(bytes, value);
+    }
+
+    fn write_fake_gguf_model(path: &Path) {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"GGUF");
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&0i64.to_le_bytes());
+        bytes.extend_from_slice(&8i64.to_le_bytes());
+        push_string_kv(&mut bytes, "general.architecture", "llama");
+        push_string_kv(&mut bytes, "tokenizer.ggml.model", "gpt2");
+        push_u32_kv(&mut bytes, "llama.context_length", 8192);
+        push_u32_kv(&mut bytes, "llama.embedding_length", 4096);
+        push_u32_kv(&mut bytes, "llama.block_count", 24);
+        push_u32_kv(&mut bytes, "llama.attention.head_count", 32);
+        push_u32_kv(&mut bytes, "llama.attention.head_count_kv", 8);
+        push_u32_kv(&mut bytes, "llama.attention.key_length", 128);
+        fs::write(path, bytes).unwrap();
+    }
+
     fn write_test_layer_package(dir: &Path, source_model_bytes: u64) {
         fs::create_dir_all(dir.join("layers")).unwrap();
         fs::write(dir.join("metadata.gguf"), b"metadata").unwrap();
@@ -3606,6 +3634,197 @@ mod tests {
             layer_end,
             parameter_bytes: u64::from(layer_end.saturating_sub(layer_start)) * 1_000_000,
         }
+    }
+
+    #[tokio::test]
+    async fn split_generation_load_settings_consumes_resolved_skippy_config() {
+        let node = mesh::Node::new_for_tests(NodeRole::Host { http_port: 9337 })
+            .await
+            .unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let model_path = temp_dir.path().join("qwen.gguf");
+        let projector_path = temp_dir.path().join("config-mmproj.gguf");
+        write_fake_gguf_model(&model_path);
+        fs::write(&projector_path, b"mmproj").unwrap();
+        let mesh_config: plugin::MeshConfig = toml::from_str(&format!(
+            r#"
+[[models]]
+model = "Qwen"
+
+[models.model_fit]
+ctx_size = 2048
+batch = 768
+ubatch = 192
+cache_type_k = "q4_0"
+cache_type_v = "q5_0"
+
+[models.hardware]
+model_path = "{model_path}"
+device = "CUDA0"
+gpu_layers = 77
+mmproj = "{projector_path}"
+
+[models.throughput]
+parallel = 2
+threads = 6
+threads_batch = 3
+
+[models.skippy]
+activation_wire_dtype = "q8"
+prefill_chunking = "fixed"
+prefill_chunk_size = 96
+
+[models.speculative]
+mode = "draft"
+draft_model_path = "/models/draft.gguf"
+draft_max_tokens = 7
+draft_gpu_layers = 11
+
+[models.request_defaults]
+max_tokens = 321
+temperature = 0.35
+stop = ["END"]
+"#,
+            model_path = model_path.display(),
+            projector_path = projector_path.display()
+        ))
+        .expect("test mesh config should parse");
+        let mut package = package(40);
+        package.package_ref = "hf://Mesh-LLM/test-split-package".to_string();
+        let local_id = node.id();
+        let generation = SplitTopologyGeneration::new(
+            "resolver-topology".into(),
+            "resolver-run".into(),
+            1,
+            vec![SplitParticipant::new(local_id, 24_000_000_000, None)],
+            vec![
+                local_stage(local_id, 0, 0, 12),
+                local_stage(local_id, 1, 12, 40),
+            ],
+        );
+
+        let spec = SplitGenerationLoadSpec {
+            node: &node,
+            mesh_config: &mesh_config,
+            model_ref: "Qwen",
+            model_path: &model_path,
+            package: &package,
+            generation: &generation,
+            projector_path: Some("/models/fallback-mmproj.gguf".to_string()),
+            ctx_size: 8192,
+            pinned_gpu: None,
+            slots: 4,
+            cache_type_k_override: None,
+            cache_type_v_override: None,
+            n_batch_override: None,
+            n_ubatch_override: None,
+            flash_attention_override: FlashAttentionType::Auto,
+            skippy_telemetry: skippy::SkippyTelemetryOptions::off(),
+        };
+        let settings =
+            split_generation_load_settings(&spec).expect("split settings should resolve");
+
+        assert_eq!(settings.load_mode, LoadMode::LayerPackage);
+        assert_eq!(settings.activation_width, 2048);
+        assert_eq!(settings.activation_wire_dtype, skippy::StageWireDType::Q8);
+        assert_eq!(settings.runtime_options.n_threads, Some(6));
+        assert_eq!(settings.runtime_options.n_threads_batch, Some(3));
+        assert_eq!(settings.runtime_options.config.ctx_size, 8192);
+        assert_eq!(settings.runtime_options.config.lane_count, 4);
+        assert_eq!(settings.runtime_options.config.n_batch, Some(768));
+        assert_eq!(settings.runtime_options.config.n_ubatch, Some(192));
+        assert_eq!(settings.runtime_options.config.n_gpu_layers, 77);
+        assert_eq!(
+            settings
+                .runtime_options
+                .config
+                .selected_device
+                .as_ref()
+                .map(|device| device.backend_device.as_str()),
+            Some("CUDA0")
+        );
+        assert_eq!(settings.runtime_options.config.cache_type_k, "q4_0");
+        assert_eq!(settings.runtime_options.config.cache_type_v, "q5_0");
+        assert_eq!(
+            settings.runtime_options.config.projector_path.as_deref(),
+            Some(projector_path.to_string_lossy().as_ref())
+        );
+        assert_eq!(settings.embedded_openai.generation_concurrency, 4);
+        assert_eq!(settings.embedded_openai.default_max_tokens, 321);
+        assert_eq!(
+            settings.embedded_openai.request_defaults.temperature,
+            Some(0.35)
+        );
+        assert_eq!(
+            settings.embedded_openai.request_defaults.stop.as_deref(),
+            Some(["END".to_string()].as_slice())
+        );
+        assert_eq!(settings.embedded_openai.prefill_chunk_policy, "fixed");
+        assert_eq!(settings.embedded_openai.prefill_chunk_size, 96);
+        assert_eq!(
+            settings.embedded_openai.draft_model_path.as_deref(),
+            Some(Path::new("/models/draft.gguf"))
+        );
+        assert_eq!(settings.embedded_openai.speculative_window, 7);
+        assert_eq!(settings.embedded_openai.draft_n_gpu_layers, Some(11));
+    }
+
+    #[tokio::test]
+    async fn runtime_resolver_uses_config_model_id_but_preserves_served_model_id() {
+        let node = mesh::Node::new_for_tests(NodeRole::Host { http_port: 9337 })
+            .await
+            .unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let model_path = temp_dir.path().join("alias-target.gguf");
+        write_fake_gguf_model(&model_path);
+        let mesh_config: plugin::MeshConfig = toml::from_str(&format!(
+            r#"
+[[models]]
+model = "configured/model-ref"
+
+[models.hardware]
+model_path = "{model_path}"
+
+[models.throughput]
+threads = 9
+threads_batch = 5
+
+[models.request_defaults]
+max_tokens = 222
+"#,
+            model_path = model_path.display()
+        ))
+        .expect("test mesh config should parse");
+        let model_bytes = fs::metadata(&model_path).unwrap().len();
+        let spec = LocalRuntimeModelStartSpec {
+            node: &node,
+            mesh_config: &mesh_config,
+            config_model_id: Some("configured/model-ref"),
+            model_path: &model_path,
+            model_bytes,
+            mmproj_override: None,
+            ctx_size_override: None,
+            pinned_gpu: None,
+            capacity_budget_bytes: None,
+            cache_type_k_override: None,
+            cache_type_v_override: None,
+            n_batch_override: None,
+            n_ubatch_override: None,
+            flash_attention_override: FlashAttentionType::Auto,
+            parallel_override: None,
+            skippy_telemetry: skippy::SkippyTelemetryOptions::off(),
+        };
+
+        let resolved =
+            resolve_runtime_skippy_config(&spec, "runtime/served-name", model_bytes, 4096, 3, None)
+                .expect("runtime config should resolve through configured model id");
+
+        assert_eq!(resolved.model_id, "runtime/served-name");
+        assert_eq!(resolved.throughput.threads, Some(9));
+        assert_eq!(resolved.throughput.threads_batch, Some(5));
+        assert_eq!(resolved.request_defaults.max_tokens, 222);
+        assert_eq!(resolved.model_fit.ctx_size, 4096);
+        assert_eq!(resolved.throughput.parallel, 3);
     }
 
     #[test]
@@ -4462,9 +4681,11 @@ mod tests {
                 local_stage(local_id, 2, 24, 40),
             ],
         );
+        let mesh_config = plugin::MeshConfig::default();
 
         let error = match Box::pin(load_split_runtime_generation(SplitGenerationLoadSpec {
             node: &node,
+            mesh_config: &mesh_config,
             model_ref: "Qwen",
             model_path: Path::new("/models/qwen.gguf"),
             package: &package,

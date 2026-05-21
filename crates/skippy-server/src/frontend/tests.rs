@@ -149,6 +149,28 @@ fn unsupported_code(error: OpenAiError) -> Option<String> {
     error.body().error.code
 }
 
+fn test_request_defaults() -> EmbeddedOpenAiRequestDefaults {
+    EmbeddedOpenAiRequestDefaults {
+        stop: Some(vec!["</stop>".to_string()]),
+        temperature: Some(0.2),
+        top_p: Some(0.9),
+        presence_penalty: Some(1.25),
+        frequency_penalty: Some(0.5),
+        seed: Some(77),
+        logit_bias: Some(std::collections::BTreeMap::from([
+            ("123".to_string(), json!(-50.0)),
+            ("456".to_string(), json!(12.5)),
+        ])),
+        top_k: Some(12),
+        min_p: Some(0.1),
+        repeat_penalty: Some(1.2),
+        repeat_last_n: Some(64),
+        reasoning_format: Some(EmbeddedReasoningFormat::Hidden),
+        reasoning_enabled: Some(EmbeddedReasoningEnabled::Enabled),
+        reasoning_budget: Some(EmbeddedReasoningBudget::Tokens(256)),
+    }
+}
+
 fn assert_generation_rate_limit(error: OpenAiError, message_fragment: &str) {
     assert_eq!(error.status(), StatusCode::TOO_MANY_REQUESTS);
     let body = error.body();
@@ -613,6 +635,7 @@ fn local_openai_backend(config: StageConfig) -> Result<StageOpenAiBackend> {
         config,
         model_id: "mm-smoke".to_string(),
         default_max_tokens: 16,
+        request_defaults: EmbeddedOpenAiRequestDefaults::default(),
         ctx_size,
         mode: OpenAiBackendMode::LocalRuntime,
         draft: None,
@@ -786,6 +809,7 @@ async fn real_multimodal_split_smoke_when_fixture_is_set() -> Result<()> {
         config: stage0_config.clone(),
         model_id: "mm-smoke".to_string(),
         default_max_tokens: 16,
+        request_defaults: EmbeddedOpenAiRequestDefaults::default(),
         ctx_size,
         mode: OpenAiBackendMode::EmbeddedStageZero {
             config: stage0_config,
@@ -1045,6 +1069,227 @@ fn extra_sampling_fields_are_enabled() {
     let sampling = chat_sampling_config(&request).unwrap();
     assert!(sampling.enabled);
     assert_eq!(sampling.top_k, 40);
+}
+
+#[test]
+fn request_defaults_fill_omitted_chat_fields_only() {
+    let mut request: ChatCompletionRequest = serde_json::from_value(json!({
+        "model": "jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF:Q4_K_M",
+        "messages": [{"role": "user", "content": "hello"}]
+    }))
+    .unwrap();
+
+    apply_chat_request_defaults(&mut request, &test_request_defaults());
+
+    let sampling = chat_sampling_config(&request).unwrap();
+    assert_eq!(request.temperature, Some(0.2));
+    assert_eq!(request.top_p, Some(0.9));
+    assert_eq!(request.presence_penalty, Some(1.25));
+    assert_eq!(request.frequency_penalty, Some(0.5));
+    assert_eq!(request.seed, Some(77));
+    assert_eq!(request.logit_bias, test_request_defaults().logit_bias);
+    assert_eq!(
+        request.stop,
+        Some(openai_frontend::StopSequence::One("</stop>".to_string()))
+    );
+    assert_eq!(sampling.temperature, 0.2);
+    assert_eq!(sampling.top_p, 0.9);
+    assert_eq!(sampling.presence_penalty, 1.25);
+    assert_eq!(sampling.frequency_penalty, 0.5);
+    assert_eq!(sampling.seed, 77);
+    assert_eq!(sampling.top_k, 12);
+    assert_eq!(sampling.min_p, 0.1);
+    assert_eq!(sampling.repeat_penalty, 1.2);
+    assert_eq!(sampling.penalty_last_n, 64);
+    assert_eq!(sampling.logit_bias.len(), 2);
+    assert_eq!(
+        chat_template_options(&request).unwrap().enable_thinking,
+        Some(true)
+    );
+    assert_eq!(
+        request
+            .reasoning
+            .as_ref()
+            .and_then(|value| value.max_tokens),
+        Some(256)
+    );
+    assert_eq!(
+        GenerationTokenLimit::from_request(request.effective_max_tokens(), 64),
+        GenerationTokenLimit::Default(64)
+    );
+}
+
+#[test]
+fn request_defaults_fill_omitted_completion_fields_and_nulls() {
+    let mut request: CompletionRequest = serde_json::from_value(json!({
+        "model": "jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF:Q4_K_M",
+        "prompt": "hello",
+        "top_k": null,
+        "repeat_last_n": null,
+        "min_p": null
+    }))
+    .unwrap();
+
+    apply_completion_request_defaults(&mut request, &test_request_defaults());
+
+    let sampling = completion_sampling_config(&request).unwrap();
+    assert_eq!(request.temperature, Some(0.2));
+    assert_eq!(request.top_p, Some(0.9));
+    assert_eq!(request.presence_penalty, Some(1.25));
+    assert_eq!(request.frequency_penalty, Some(0.5));
+    assert_eq!(request.seed, Some(77));
+    assert_eq!(request.logit_bias, test_request_defaults().logit_bias);
+    assert_eq!(
+        request.stop,
+        Some(openai_frontend::StopSequence::One("</stop>".to_string()))
+    );
+    assert_eq!(sampling.seed, 77);
+    assert_eq!(sampling.presence_penalty, 1.25);
+    assert_eq!(sampling.frequency_penalty, 0.5);
+    assert_eq!(sampling.top_k, 12);
+    assert_eq!(sampling.min_p, 0.1);
+    assert_eq!(sampling.repeat_penalty, 1.2);
+    assert_eq!(sampling.penalty_last_n, 64);
+    assert_eq!(sampling.logit_bias.len(), 2);
+    assert_eq!(
+        GenerationTokenLimit::from_request(request.max_tokens, 48),
+        GenerationTokenLimit::Default(48)
+    );
+}
+
+#[test]
+fn explicit_chat_request_values_override_request_defaults() {
+    let mut request: ChatCompletionRequest = serde_json::from_value(json!({
+        "model": "jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF:Q4_K_M",
+        "messages": [{"role": "user", "content": "hello"}],
+        "max_tokens": 32,
+        "temperature": 0.8,
+        "top_p": 0.7,
+        "presence_penalty": 0.1,
+        "frequency_penalty": 0.2,
+        "seed": 9,
+        "logit_bias": {"7": 1.0},
+        "stop": ["USER"],
+        "repetition_penalty": 1.8,
+        "repeat_last_n": 24,
+        "reasoning": {"enabled": false}
+    }))
+    .unwrap();
+
+    apply_chat_request_defaults(&mut request, &test_request_defaults());
+
+    let sampling = chat_sampling_config(&request).unwrap();
+    assert_eq!(request.temperature, Some(0.8));
+    assert_eq!(request.top_p, Some(0.7));
+    assert_eq!(request.presence_penalty, Some(0.1));
+    assert_eq!(request.frequency_penalty, Some(0.2));
+    assert_eq!(request.seed, Some(9));
+    assert_eq!(request.effective_max_tokens(), Some(32));
+    assert_eq!(
+        request.stop,
+        Some(openai_frontend::StopSequence::Many(
+            vec!["USER".to_string()]
+        ))
+    );
+    assert_eq!(sampling.top_p, 0.7);
+    assert_eq!(sampling.presence_penalty, 0.1);
+    assert_eq!(sampling.frequency_penalty, 0.2);
+    assert_eq!(sampling.seed, 9);
+    assert_eq!(sampling.repeat_penalty, 1.8);
+    assert_eq!(sampling.penalty_last_n, 24);
+    assert_eq!(sampling.logit_bias.len(), 1);
+    assert_eq!(
+        chat_template_options(&request).unwrap().enable_thinking,
+        Some(false)
+    );
+    assert_eq!(
+        GenerationTokenLimit::from_request(request.effective_max_tokens(), 64),
+        GenerationTokenLimit::Explicit(32)
+    );
+}
+
+#[test]
+fn explicit_completion_request_values_override_request_defaults() {
+    let mut request: CompletionRequest = serde_json::from_value(json!({
+        "model": "jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF:Q4_K_M",
+        "prompt": "hello",
+        "max_tokens": 12,
+        "temperature": 0.6,
+        "top_p": 0.4,
+        "presence_penalty": 0.25,
+        "frequency_penalty": 0.75,
+        "seed": 12,
+        "logit_bias": {"8": -3.0},
+        "stop": ["DONE"],
+        "repeat_penalty": 1.4,
+        "repeat_last_n": 16,
+        "reasoning": {"enabled": false}
+    }))
+    .unwrap();
+
+    apply_completion_request_defaults(&mut request, &test_request_defaults());
+
+    let sampling = completion_sampling_config(&request).unwrap();
+    assert_eq!(request.temperature, Some(0.6));
+    assert_eq!(request.top_p, Some(0.4));
+    assert_eq!(request.presence_penalty, Some(0.25));
+    assert_eq!(request.frequency_penalty, Some(0.75));
+    assert_eq!(request.seed, Some(12));
+    assert_eq!(request.max_tokens, Some(12));
+    assert_eq!(sampling.repeat_penalty, 1.4);
+    assert_eq!(sampling.penalty_last_n, 16);
+    assert_eq!(sampling.logit_bias.len(), 1);
+    assert_eq!(
+        GenerationTokenLimit::from_request(request.max_tokens, 48),
+        GenerationTokenLimit::Explicit(12)
+    );
+}
+
+#[test]
+fn request_defaults_do_not_make_structured_output_or_logprobs_executable() {
+    let mut request: ChatCompletionRequest = serde_json::from_value(json!({
+        "model": "test",
+        "messages": [{"role": "user", "content": "hi"}],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {"name": "answer", "schema": {"type": "object"}}
+        },
+        "logprobs": true,
+        "top_logprobs": 2
+    }))
+    .unwrap();
+
+    apply_chat_request_defaults(&mut request, &test_request_defaults());
+
+    let error = ensure_chat_runtime_features_supported(&request).unwrap_err();
+    assert_eq!(
+        unsupported_code(error),
+        Some("unsupported_model_feature".to_string())
+    );
+}
+
+#[test]
+fn deepseek_legacy_request_default_enables_chat_template_thinking() {
+    let mut request: ChatCompletionRequest = serde_json::from_value(json!({
+        "model": "jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF:Q4_K_M",
+        "messages": [{"role": "user", "content": "hello"}]
+    }))
+    .unwrap();
+
+    let defaults = EmbeddedOpenAiRequestDefaults {
+        reasoning_format: Some(EmbeddedReasoningFormat::DeepseekLegacy),
+        ..EmbeddedOpenAiRequestDefaults::default()
+    };
+    apply_chat_request_defaults(&mut request, &defaults);
+
+    assert_eq!(
+        request.reasoning.as_ref().and_then(|value| value.enabled),
+        Some(true)
+    );
+    assert_eq!(
+        chat_template_options(&request).unwrap().enable_thinking,
+        Some(true)
+    );
 }
 
 #[test]

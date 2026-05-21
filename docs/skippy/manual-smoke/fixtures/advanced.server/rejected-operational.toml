@@ -1,0 +1,14 @@
+version = 1
+
+[defaults.advanced.server]
+host = "127.0.0.1"
+port = 9337
+reuse_port = true
+timeout = 60
+metrics = true
+slots = true
+props = true
+api_prefix = "/v1"
+
+[[models]]
+model = "unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL"

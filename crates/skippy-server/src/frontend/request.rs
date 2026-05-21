@@ -1,5 +1,60 @@
 use super::*;
 
+struct SharedRequestFields<'a> {
+    presence_penalty: &'a mut Option<f32>,
+    frequency_penalty: &'a mut Option<f32>,
+    seed: &'a mut Option<u64>,
+    logit_bias: &'a mut Option<std::collections::BTreeMap<String, serde_json::Value>>,
+    temperature: &'a mut Option<f32>,
+    top_p: &'a mut Option<f32>,
+    stop: &'a mut Option<openai_frontend::StopSequence>,
+    reasoning: &'a mut Option<openai_frontend::ReasoningConfig>,
+    reasoning_effort: &'a mut Option<openai_frontend::ReasoningEffort>,
+    extra: &'a mut std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+pub(super) fn apply_chat_request_defaults(
+    request: &mut ChatCompletionRequest,
+    defaults: &EmbeddedOpenAiRequestDefaults,
+) {
+    apply_shared_request_defaults(
+        SharedRequestFields {
+            presence_penalty: &mut request.presence_penalty,
+            frequency_penalty: &mut request.frequency_penalty,
+            seed: &mut request.seed,
+            logit_bias: &mut request.logit_bias,
+            temperature: &mut request.temperature,
+            top_p: &mut request.top_p,
+            stop: &mut request.stop,
+            reasoning: &mut request.reasoning,
+            reasoning_effort: &mut request.reasoning_effort,
+            extra: &mut request.extra,
+        },
+        defaults,
+    );
+}
+
+pub(super) fn apply_completion_request_defaults(
+    request: &mut CompletionRequest,
+    defaults: &EmbeddedOpenAiRequestDefaults,
+) {
+    apply_shared_request_defaults(
+        SharedRequestFields {
+            presence_penalty: &mut request.presence_penalty,
+            frequency_penalty: &mut request.frequency_penalty,
+            seed: &mut request.seed,
+            logit_bias: &mut request.logit_bias,
+            temperature: &mut request.temperature,
+            top_p: &mut request.top_p,
+            stop: &mut request.stop,
+            reasoning: &mut request.reasoning,
+            reasoning_effort: &mut request.reasoning_effort,
+            extra: &mut request.extra,
+        },
+        defaults,
+    );
+}
+
 pub(super) fn message_content_to_generation_text(
     content: &MessageContent,
     marker: &str,
@@ -101,6 +156,165 @@ pub(super) fn decode_base64_payload(payload: &str) -> OpenAiResult<Vec<u8>> {
         .map_err(|error| OpenAiError::invalid_request(format!("invalid media base64: {error}")))
 }
 
+fn apply_shared_request_defaults(
+    fields: SharedRequestFields<'_>,
+    defaults: &EmbeddedOpenAiRequestDefaults,
+) {
+    let SharedRequestFields {
+        presence_penalty,
+        frequency_penalty,
+        seed,
+        logit_bias,
+        temperature,
+        top_p,
+        stop,
+        reasoning,
+        reasoning_effort,
+        extra,
+    } = fields;
+    if presence_penalty.is_none() {
+        *presence_penalty = defaults.presence_penalty;
+    }
+    if frequency_penalty.is_none() {
+        *frequency_penalty = defaults.frequency_penalty;
+    }
+    if seed.is_none() {
+        *seed = defaults.seed;
+    }
+    if logit_bias.is_none() {
+        *logit_bias = defaults.logit_bias.clone();
+    }
+    if temperature.is_none() {
+        *temperature = defaults.temperature;
+    }
+    if top_p.is_none() {
+        *top_p = defaults.top_p;
+    }
+    if stop.is_none() {
+        *stop = defaults
+            .stop
+            .as_ref()
+            .map(|values| stop_sequence_from_defaults(values.clone()));
+    }
+    if extra_value_is_omitted(extra, "top_k") {
+        if let Some(value) = defaults.top_k {
+            extra.insert("top_k".to_string(), serde_json::json!(value));
+        }
+    }
+    if extra_value_is_omitted(extra, "min_p") {
+        if let Some(value) = defaults.min_p {
+            extra.insert("min_p".to_string(), serde_json::json!(value));
+        }
+    }
+    if extra_value_is_omitted(extra, "repeat_penalty")
+        && extra_value_is_omitted(extra, "repetition_penalty")
+    {
+        if let Some(value) = defaults.repeat_penalty {
+            extra.insert("repeat_penalty".to_string(), serde_json::json!(value));
+        }
+    }
+    if extra_value_is_omitted(extra, "repeat_last_n") {
+        if let Some(value) = defaults.repeat_last_n {
+            extra.insert("repeat_last_n".to_string(), serde_json::json!(value));
+        }
+    }
+    apply_reasoning_defaults(reasoning, reasoning_effort, extra, defaults);
+}
+
+fn apply_reasoning_defaults(
+    reasoning: &mut Option<openai_frontend::ReasoningConfig>,
+    reasoning_effort: &mut Option<openai_frontend::ReasoningEffort>,
+    extra: &mut std::collections::BTreeMap<String, serde_json::Value>,
+    defaults: &EmbeddedOpenAiRequestDefaults,
+) {
+    if explicit_reasoning_toggle_present(reasoning.as_ref(), *reasoning_effort, extra) {
+        return;
+    }
+
+    match defaults.reasoning_enabled {
+        Some(EmbeddedReasoningEnabled::Disabled) => {
+            reasoning.get_or_insert_with(Default::default).enabled = Some(false);
+            return;
+        }
+        Some(EmbeddedReasoningEnabled::Enabled) => {
+            reasoning.get_or_insert_with(Default::default).enabled = Some(true);
+        }
+        Some(EmbeddedReasoningEnabled::Auto) | None => {}
+    }
+
+    match defaults.reasoning_format {
+        Some(EmbeddedReasoningFormat::None) => {
+            reasoning.get_or_insert_with(Default::default).enabled = Some(false);
+            return;
+        }
+        Some(EmbeddedReasoningFormat::Deepseek)
+        | Some(EmbeddedReasoningFormat::DeepseekLegacy)
+        | Some(EmbeddedReasoningFormat::Hidden) => {
+            reasoning.get_or_insert_with(Default::default).enabled = Some(true);
+        }
+        Some(EmbeddedReasoningFormat::Auto) | None => {}
+    }
+
+    if explicit_reasoning_budget_present(reasoning.as_ref(), *reasoning_effort, extra) {
+        return;
+    }
+
+    match defaults.reasoning_budget {
+        Some(EmbeddedReasoningBudget::Tokens(value)) => {
+            reasoning.get_or_insert_with(Default::default).max_tokens = Some(value);
+        }
+        Some(EmbeddedReasoningBudget::Effort(value)) => {
+            reasoning.get_or_insert_with(Default::default).effort = Some(value);
+        }
+        Some(EmbeddedReasoningBudget::Auto) | None => {}
+    }
+}
+
+fn explicit_reasoning_toggle_present(
+    reasoning: Option<&openai_frontend::ReasoningConfig>,
+    reasoning_effort: Option<openai_frontend::ReasoningEffort>,
+    extra: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> bool {
+    reasoning.is_some_and(|value| value.enabled.is_some() || value.effort.is_some())
+        || reasoning_effort.is_some()
+        || openai_frontend::THINKING_BOOLEAN_ALIASES
+            .iter()
+            .any(|field| !extra_value_is_omitted(extra, field))
+        || extra
+            .get("chat_template_kwargs")
+            .and_then(Value::as_object)
+            .is_some_and(|object| {
+                openai_frontend::THINKING_BOOLEAN_ALIASES
+                    .iter()
+                    .any(|field| object.get(*field).is_some_and(|value| !value.is_null()))
+            })
+}
+
+fn explicit_reasoning_budget_present(
+    reasoning: Option<&openai_frontend::ReasoningConfig>,
+    reasoning_effort: Option<openai_frontend::ReasoningEffort>,
+    extra: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> bool {
+    reasoning.is_some_and(|value| value.max_tokens.is_some() || value.effort.is_some())
+        || reasoning_effort.is_some()
+        || !extra_value_is_omitted(extra, "thinking_budget")
+}
+
+fn extra_value_is_omitted(
+    extra: &std::collections::BTreeMap<String, serde_json::Value>,
+    field: &str,
+) -> bool {
+    extra.get(field).is_none_or(Value::is_null)
+}
+
+fn stop_sequence_from_defaults(values: Vec<String>) -> openai_frontend::StopSequence {
+    if values.len() == 1 {
+        openai_frontend::StopSequence::One(values.into_iter().next().unwrap_or_default())
+    } else {
+        openai_frontend::StopSequence::Many(values)
+    }
+}
+
 pub(super) fn chat_sampling_config(
     request: &ChatCompletionRequest,
 ) -> OpenAiResult<SamplingConfig> {
@@ -189,7 +403,21 @@ pub(super) fn requires_structured_output(value: &Value) -> bool {
 pub(super) fn ensure_extra_generation_fields_absent(
     extra: &std::collections::BTreeMap<String, serde_json::Value>,
 ) -> OpenAiResult<()> {
-    const UNSUPPORTED_FIELDS: &[&str] = &["typical_p"];
+    const UNSUPPORTED_FIELDS: &[&str] = &[
+        "typical_p",
+        "top_nsigma",
+        "dynatemp_range",
+        "dynatemp_exponent",
+        "dry",
+        "xtc",
+        "adaptive",
+        "mirostat_mode",
+        "mirostat_entropy",
+        "mirostat_learning_rate",
+        "samplers",
+        "sampler_sequence",
+        "ignore_eos",
+    ];
 
     for field in UNSUPPORTED_FIELDS {
         if extra.get(*field).is_some_and(|value| !value.is_null()) {
@@ -220,6 +448,7 @@ pub(super) fn sampling_config(
     let repeat_penalty = optional_f32_extra(extra, "repeat_penalty")?
         .or(optional_f32_extra(extra, "repetition_penalty")?)
         .unwrap_or(1.0);
+    let penalty_last_n = optional_i32_extra(extra, "repeat_last_n")?.unwrap_or(-1);
     validate_sampling_range("temperature", temperature, 0.0..=100.0)?;
     validate_sampling_range("top_p", top_p, 0.0..=1.0)?;
     validate_sampling_range("presence_penalty", presence_penalty, -2.0..=2.0)?;
@@ -229,6 +458,11 @@ pub(super) fn sampling_config(
     if top_k < 0 {
         return Err(OpenAiError::invalid_request(
             "top_k must be greater than or equal to zero",
+        ));
+    }
+    if penalty_last_n < -1 {
+        return Err(OpenAiError::invalid_request(
+            "repeat_last_n must be greater than or equal to -1",
         ));
     }
     let seed = match seed {
@@ -246,6 +480,7 @@ pub(super) fn sampling_config(
         || presence_penalty.abs() > f32::EPSILON
         || frequency_penalty.abs() > f32::EPSILON
         || (repeat_penalty - 1.0).abs() > f32::EPSILON
+        || penalty_last_n != -1
         || !logit_bias.is_empty();
     Ok(SamplingConfig {
         enabled,
@@ -257,7 +492,7 @@ pub(super) fn sampling_config(
         presence_penalty,
         frequency_penalty,
         repeat_penalty,
-        penalty_last_n: -1,
+        penalty_last_n,
         logit_bias,
     })
 }

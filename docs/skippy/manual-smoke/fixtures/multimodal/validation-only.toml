@@ -1,0 +1,17 @@
+version = 1
+
+[defaults.multimodal]
+mmproj = "__LOCAL_MMPROJ_PATH__"
+mmproj_offload = true
+image_min_tokens = 0
+image_max_tokens = 512
+
+[defaults.hardware]
+mmproj = "__LOCAL_MMPROJ_PATH__"
+mmproj_offload = true
+
+[[models]]
+model = "multimodal-placeholder"
+
+[models.hardware]
+model_path = "__LOCAL_MODEL_PATH__"

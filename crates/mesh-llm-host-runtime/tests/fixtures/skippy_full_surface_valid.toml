@@ -1,0 +1,127 @@
+version = 1
+
+[gpu]
+assignment = "pinned"
+parallel = 2
+
+[owner_control]
+bind = "127.0.0.1:7447"
+advertise_addr = "203.0.113.10:18443"
+
+[defaults.model_fit]
+ctx_size = 8192
+batch = 512
+ubatch = 128
+cache_type_k = "auto"
+cache_type_v = "auto"
+kv_cache_policy = "balanced"
+kv_offload = "auto"
+kv_unified = "auto"
+prompt_cache = true
+
+[defaults.model_fit.prefix_cache]
+enabled = true
+max_entries = 9
+min_tokens = 96
+shared_stride_tokens = 48
+shared_record_limit = 3
+payload_mode = "resident-kv"
+
+[defaults.hardware]
+model_runtime = "cuda"
+device = "CUDA0"
+gpu_layers = "auto"
+split_mode = "auto"
+safety_margin_gb = 2.0
+mmap = "auto"
+warmup = "auto"
+
+[defaults.throughput]
+parallel = 2
+continuous_batching = "auto"
+threads = 8
+threads_batch = 4
+tuning_profile = "balanced"
+
+[defaults.skippy]
+activation_wire_dtype = "auto"
+binary_stage_transport = "auto"
+
+[defaults.speculative]
+mode = "auto"
+pairing_fault = "warn_disable"
+
+[defaults.request_defaults]
+max_tokens = 128
+temperature = 0.2
+top_p = 0.95
+presence_penalty = 1.0
+frequency_penalty = 0.5
+seed = 7
+logit_bias = { "12" = -4.0 }
+repeat_penalty = 1.2
+repeat_last_n = 32
+stop = ["</stop>"]
+reasoning_enabled = "on"
+reasoning_format = "hidden"
+reasoning_budget = 256
+
+[defaults.multimodal]
+mmproj = "defaults-projector.gguf"
+mmproj_offload = "auto"
+image_max_tokens = 4096
+
+[defaults.advanced.server]
+alias = "defaults-alias"
+
+[[models]]
+model = "Qwen/Qwen3-0.6B:Q4_K_M"
+
+[models.model_fit]
+ctx_size = 16384
+batch = 1024
+cache_type_k = "f16"
+
+[models.hardware]
+model_path = "/models/qwen.gguf"
+device = "CUDA1"
+gpu_layers = 99
+stage_layer_start = 12
+stage_layer_end = 24
+mmproj = "model-projector.gguf"
+
+[models.throughput]
+parallel = 3
+threads = 10
+threads_batch = 6
+
+[models.skippy]
+activation_wire_dtype = "q8"
+prefill_chunking = "schedule"
+prefill_chunk_size = 128
+prefill_chunk_schedule = "128,256,384"
+
+[models.speculative]
+mode = "draft"
+draft_model_path = "/models/qwen-draft.gguf"
+draft_selection_policy = "manual"
+pairing_fault = "fail-open"
+draft_max_tokens = 8
+draft_gpu_layers = 12
+
+[models.request_defaults]
+temperature = 0.4
+top_p = 0.9
+
+[models.multimodal]
+mmproj = "model-projector.gguf"
+
+[models.advanced.server]
+alias = "model-alias"
+
+[[models]]
+model = "ggml-org/gemma-3-270m-it-GGUF:Q8_0"
+
+[models.hardware]
+model_path = "/models/gemma.gguf"
+device = "CUDA2"

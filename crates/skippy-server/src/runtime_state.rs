@@ -15,6 +15,12 @@ use skippy_runtime::{
 
 use crate::package::select_package_parts;
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RuntimeLaunchOverrides {
+    pub n_threads: Option<usize>,
+    pub n_threads_batch: Option<usize>,
+}
+
 pub struct RuntimeState {
     pub model: StageModel,
     layer_start: u32,
@@ -844,7 +850,14 @@ impl Drop for RuntimeState {
 }
 
 pub fn load_runtime(config: &StageConfig) -> Result<Option<Arc<Mutex<RuntimeState>>>> {
-    let mut runtime_config = runtime_config_from_stage_config(config)?;
+    load_runtime_with_overrides(config, &RuntimeLaunchOverrides::default())
+}
+
+pub fn load_runtime_with_overrides(
+    config: &StageConfig,
+    overrides: &RuntimeLaunchOverrides,
+) -> Result<Option<Arc<Mutex<RuntimeState>>>> {
+    let mut runtime_config = runtime_config_from_stage_config(config, overrides)?;
 
     let model = match config.load_mode {
         _ if std::env::var("MESH_LLM_BYPASS_SKIPPY_MODEL_LOAD").is_ok() => {
@@ -888,11 +901,24 @@ fn should_attach_package_projector(config: &StageConfig) -> bool {
     config.stage_index == 0 && config.layer_start == 0
 }
 
-fn runtime_config_from_stage_config(config: &StageConfig) -> Result<RuntimeConfig> {
+fn runtime_config_from_stage_config(
+    config: &StageConfig,
+    overrides: &RuntimeLaunchOverrides,
+) -> Result<RuntimeConfig> {
     let cache_type_k = parse_cache_type(&config.cache_type_k)
         .with_context(|| format!("parse cache_type_k for {}", config.stage_id))?;
     let cache_type_v = parse_cache_type(&config.cache_type_v)
         .with_context(|| format!("parse cache_type_v for {}", config.stage_id))?;
+    let n_threads = overrides
+        .n_threads
+        .map(u32::try_from)
+        .transpose()
+        .with_context(|| format!("n_threads exceeds u32 for {}", config.stage_id))?;
+    let n_threads_batch = overrides
+        .n_threads_batch
+        .map(u32::try_from)
+        .transpose()
+        .with_context(|| format!("n_threads_batch exceeds u32 for {}", config.stage_id))?;
     Ok(RuntimeConfig {
         stage_index: config.stage_index,
         layer_start: config.layer_start,
@@ -901,8 +927,8 @@ fn runtime_config_from_stage_config(config: &StageConfig) -> Result<RuntimeConfi
         lane_count: config.lane_count,
         n_batch: config.n_batch,
         n_ubatch: config.n_ubatch,
-        n_threads: None,
-        n_threads_batch: None,
+        n_threads,
+        n_threads_batch,
         n_gpu_layers: config.n_gpu_layers,
         selected_backend_device: config
             .selected_device
@@ -946,7 +972,7 @@ mod tests {
 
     use super::{
         create_indexed_lane_resource, runtime_config_from_stage_config,
-        should_attach_package_projector,
+        should_attach_package_projector, RuntimeLaunchOverrides,
     };
 
     #[test]
@@ -1068,7 +1094,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_config_preserves_selected_backend_device() {
+    fn runtime_config_preserves_selected_backend_device_and_thread_overrides() {
         let config = StageConfig {
             run_id: "run-a".to_string(),
             topology_id: "topology-a".to_string(),
@@ -1108,7 +1134,12 @@ mod tests {
             downstream: None,
         };
 
-        let runtime_config = runtime_config_from_stage_config(&config).unwrap();
+        let overrides = RuntimeLaunchOverrides {
+            n_threads: Some(8),
+            n_threads_batch: Some(4),
+        };
+
+        let runtime_config = runtime_config_from_stage_config(&config, &overrides).unwrap();
 
         assert_eq!(
             runtime_config.selected_backend_device.as_deref(),
@@ -1117,6 +1148,8 @@ mod tests {
         assert_eq!(runtime_config.lane_count, 2);
         assert_eq!(runtime_config.n_batch, Some(1024));
         assert_eq!(runtime_config.n_ubatch, Some(256));
+        assert_eq!(runtime_config.n_threads, Some(8));
+        assert_eq!(runtime_config.n_threads_batch, Some(4));
         assert_eq!(
             runtime_config.flash_attn_type,
             RuntimeFlashAttentionType::Enabled
@@ -1163,10 +1196,101 @@ mod tests {
             downstream: None,
         };
 
-        let runtime_config = runtime_config_from_stage_config(&config).unwrap();
+        let runtime_config =
+            runtime_config_from_stage_config(&config, &RuntimeLaunchOverrides::default()).unwrap();
 
         assert!(!runtime_config.include_embeddings);
         assert!(runtime_config.include_output);
+    }
+
+    #[test]
+    fn runtime_config_preserves_default_runtime_threads_when_omitted() {
+        let config = StageConfig {
+            run_id: "run-a".to_string(),
+            topology_id: "topology-a".to_string(),
+            model_id: "model-a".to_string(),
+            package_ref: None,
+            manifest_sha256: None,
+            source_model_path: None,
+            source_model_sha256: None,
+            source_model_bytes: None,
+            materialized_path: None,
+            materialized_pinned: false,
+            model_path: Some("/tmp/model.gguf".to_string()),
+            projector_path: None,
+            stage_id: "stage-0".to_string(),
+            stage_index: 0,
+            layer_start: 0,
+            layer_end: 24,
+            ctx_size: 512,
+            lane_count: 1,
+            n_batch: None,
+            n_ubatch: None,
+            n_gpu_layers: -1,
+            cache_type_k: "f16".to_string(),
+            cache_type_v: "f16".to_string(),
+            flash_attn_type: FlashAttentionType::Auto,
+            filter_tensors_on_load: false,
+            selected_device: None,
+            kv_cache: None,
+            load_mode: LoadMode::RuntimeSlice,
+            bind_addr: "127.0.0.1:0".to_string(),
+            upstream: None,
+            downstream: None,
+        };
+
+        let runtime_config =
+            runtime_config_from_stage_config(&config, &RuntimeLaunchOverrides::default()).unwrap();
+
+        assert_eq!(runtime_config.n_threads, None);
+        assert_eq!(runtime_config.n_threads_batch, None);
+        assert_eq!(runtime_config.n_batch, None);
+        assert_eq!(runtime_config.n_ubatch, None);
+    }
+
+    #[test]
+    fn runtime_config_rejects_unsupported_cache_type_before_launch() {
+        let config = StageConfig {
+            run_id: "run-a".to_string(),
+            topology_id: "topology-a".to_string(),
+            model_id: "model-a".to_string(),
+            package_ref: None,
+            manifest_sha256: None,
+            source_model_path: None,
+            source_model_sha256: None,
+            source_model_bytes: None,
+            materialized_path: None,
+            materialized_pinned: false,
+            model_path: Some("/tmp/model.gguf".to_string()),
+            projector_path: None,
+            stage_id: "stage-0".to_string(),
+            stage_index: 0,
+            layer_start: 0,
+            layer_end: 24,
+            ctx_size: 512,
+            lane_count: 1,
+            n_batch: None,
+            n_ubatch: None,
+            n_gpu_layers: -1,
+            cache_type_k: "auto".to_string(),
+            cache_type_v: "f16".to_string(),
+            flash_attn_type: FlashAttentionType::Auto,
+            filter_tensors_on_load: false,
+            selected_device: None,
+            kv_cache: None,
+            load_mode: LoadMode::RuntimeSlice,
+            bind_addr: "127.0.0.1:0".to_string(),
+            upstream: None,
+            downstream: None,
+        };
+
+        let error = runtime_config_from_stage_config(&config, &RuntimeLaunchOverrides::default())
+            .expect_err("unsupported cache types should fail during runtime config construction");
+
+        assert!(
+            error.to_string().contains("parse cache_type_k for stage-0"),
+            "unexpected error: {error:#}"
+        );
     }
 
     #[test]

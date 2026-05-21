@@ -230,6 +230,9 @@ mod tests {
     use super::*;
     use crate::plugin::{GpuAssignment, GpuConfig, MeshConfig};
 
+    const FULL_SURFACE_VALID_FIXTURE: &str =
+        include_str!("../../tests/fixtures/skippy_full_surface_valid.toml");
+
     fn test_dir() -> PathBuf {
         let dir =
             std::env::temp_dir().join(format!("mesh-llm-config-state-{}", rand::random::<u64>()));
@@ -246,9 +249,123 @@ mod tests {
             },
             owner_control: Default::default(),
             telemetry: Default::default(),
+            defaults: None,
             models: vec![],
             plugins: vec![],
         }
+    }
+
+    fn representative_nested_config() -> MeshConfig {
+        toml::from_str(
+            r#"version = 1
+
+[gpu]
+assignment = "auto"
+parallel = 2
+
+[defaults.model_fit]
+ctx_size = 8192
+kv_unified = "auto"
+
+[defaults.hardware]
+gpu_layers = "auto"
+tensor_split = []
+
+[defaults.throughput]
+parallel = 3
+
+[defaults.skippy]
+activation_wire_dtype = "auto"
+
+[defaults.speculative]
+mode = "auto"
+pairing_fault = "warn_disable"
+
+[defaults.request_defaults]
+reasoning_budget = "auto"
+reasoning_format = "auto"
+
+[defaults.multimodal]
+mmproj = "defaults-projector.gguf"
+
+[defaults.advanced.server]
+alias = "defaults-alias"
+
+[[models]]
+model = "Qwen3-8B-Q4_K_M"
+
+[models.model_fit]
+ctx_size = 16384
+cache_type_k = "q8_0"
+
+[models.hardware]
+gpu_layers = 99
+tensor_split = [0.7, 0.3]
+
+[models.throughput]
+parallel = 4
+
+[models.skippy]
+binary_stage_transport = "auto"
+
+[models.speculative]
+mode = "auto"
+draft_selection_policy = "auto"
+
+[models.request_defaults]
+top_p = 0.95
+reasoning_budget = "auto"
+
+[models.multimodal]
+mmproj = "model-projector.gguf"
+
+[models.advanced.server]
+alias = "model-alias"
+"#,
+        )
+        .expect("representative nested config should parse")
+    }
+
+    fn assert_representative_nested_fields(config: &MeshConfig) {
+        let json = serde_json::to_value(config).expect("config should serialize");
+        assert_eq!(json["defaults"]["model_fit"]["kv_unified"], "auto");
+        assert_eq!(json["defaults"]["hardware"]["gpu_layers"], "auto");
+        assert_eq!(json["defaults"]["throughput"]["parallel"], 3);
+        assert_eq!(json["defaults"]["skippy"]["activation_wire_dtype"], "auto");
+        assert_eq!(json["defaults"]["speculative"]["mode"], "auto");
+        assert_eq!(
+            json["defaults"]["request_defaults"]["reasoning_budget"],
+            "auto"
+        );
+        assert_eq!(
+            json["defaults"]["multimodal"]["mmproj"],
+            "defaults-projector.gguf"
+        );
+        assert_eq!(
+            json["defaults"]["advanced"]["server"]["alias"],
+            "defaults-alias"
+        );
+
+        assert_eq!(json["models"][0]["model_fit"]["ctx_size"], 16384);
+        assert_eq!(json["models"][0]["hardware"]["gpu_layers"], 99);
+        assert_eq!(json["models"][0]["throughput"]["parallel"], 4);
+        assert_eq!(
+            json["models"][0]["skippy"]["binary_stage_transport"],
+            "auto"
+        );
+        assert_eq!(
+            json["models"][0]["speculative"]["draft_selection_policy"],
+            "auto"
+        );
+        assert_eq!(json["models"][0]["request_defaults"]["top_p"], 0.95);
+        assert_eq!(
+            json["models"][0]["multimodal"]["mmproj"],
+            "model-projector.gguf"
+        );
+        assert_eq!(
+            json["models"][0]["advanced"]["server"]["alias"],
+            "model-alias"
+        );
     }
 
     #[test]
@@ -366,6 +483,7 @@ mod tests {
             },
             owner_control: Default::default(),
             telemetry: Default::default(),
+            defaults: None,
             models: vec![crate::plugin::ModelConfigEntry {
                 model: model.to_string(),
                 mmproj: None,
@@ -377,6 +495,7 @@ mod tests {
                 batch: None,
                 ubatch: None,
                 flash_attention: None,
+                ..Default::default()
             }],
             plugins: vec![],
         };
@@ -407,6 +526,7 @@ mod tests {
             },
             owner_control: Default::default(),
             telemetry: Default::default(),
+            defaults: None,
             models: vec![crate::plugin::ModelConfigEntry {
                 model: "test.gguf".to_string(),
                 mmproj: None,
@@ -418,6 +538,7 @@ mod tests {
                 batch: None,
                 ubatch: None,
                 flash_attention: None,
+                ..Default::default()
             }],
             plugins: vec![],
         };
@@ -432,12 +553,118 @@ mod tests {
     }
 
     #[test]
+    fn config_sync_state_apply_preserves_nested_sections_and_updates_hash() {
+        let dir = test_dir();
+        let config_path = dir.join("config.toml");
+        let mut state = ConfigState::load(&config_path).expect("load");
+
+        let first = representative_nested_config();
+        let first_result = state.apply(first.clone(), 0);
+        let first_hash = match first_result {
+            ApplyResult::Applied {
+                revision,
+                hash,
+                apply_mode,
+            } => {
+                assert_eq!(revision, 1);
+                assert_eq!(apply_mode, ConfigApplyMode::Staged);
+                hash
+            }
+            other => panic!("expected Applied, got {other:?}"),
+        };
+        assert_representative_nested_fields(state.config());
+
+        let persisted = ConfigState::load(&config_path).expect("reload persisted config");
+        assert_representative_nested_fields(persisted.config());
+
+        let mut changed = first;
+        changed
+            .models
+            .first_mut()
+            .expect("model")
+            .advanced
+            .get_or_insert_with(Default::default)
+            .server
+            .get_or_insert_with(Default::default)
+            .alias = Some("model-alias-updated".to_string());
+
+        let second_result = state.apply(changed, 1);
+        match second_result {
+            ApplyResult::Applied { revision, hash, .. } => {
+                assert_eq!(revision, 2);
+                assert_ne!(first_hash, hash, "nested field change must change hash");
+            }
+            other => panic!("expected Applied, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn config_sync_load_propagates_invalid_toml_error() {
         let dir = test_dir();
         let config_path = dir.join("config.toml");
         std::fs::write(&config_path, "this is [not valid toml !!!\n").expect("write bad toml");
         let result = ConfigState::load(&config_path);
         assert!(result.is_err(), "load must return Err on malformed TOML");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn config_sync_load_nested_validation_error_is_stable() {
+        let dir = test_dir();
+        let config_path = dir.join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"version = 1
+
+[[models]]
+model = "Qwen3-8B-Q4_K_M"
+
+[models.request_defaults]
+reasoning_format = "mystery"
+"#,
+        )
+        .expect("write invalid config");
+
+        let error = match ConfigState::load(&config_path) {
+            Ok(_) => panic!("load must fail"),
+            Err(error) => error,
+        };
+        let message = format!("{error:#}");
+        assert!(
+            message.contains(
+                "models[0].request_defaults.reasoning_format must be one of: auto, none, deepseek, deepseek-legacy, hidden"
+            ),
+            "unexpected error: {message}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn config_sync_load_malformed_nested_toml_still_errors() {
+        let dir = test_dir();
+        let config_path = dir.join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"version = 1
+
+[[models]]
+model = "Qwen3-8B-Q4_K_M"
+
+[models.request_defaults
+temperature = 0.2
+"#,
+        )
+        .expect("write malformed config");
+
+        let result = ConfigState::load(&config_path);
+        assert!(
+            result.is_err(),
+            "load must return Err on malformed nested TOML"
+        );
+
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -455,6 +682,7 @@ mod tests {
             },
             owner_control: Default::default(),
             telemetry: Default::default(),
+            defaults: None,
             models: vec![crate::plugin::ModelConfigEntry {
                 model: "noop-test.gguf".to_string(),
                 mmproj: None,
@@ -466,6 +694,7 @@ mod tests {
                 batch: None,
                 ubatch: None,
                 flash_attention: None,
+                ..Default::default()
             }],
             plugins: vec![],
         };
@@ -588,6 +817,63 @@ mod tests {
             revision, 42,
             "must fall back to legacy config-revision file"
         );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn config_sync_state_apply_persists_integrated_fixture_sections_and_hashes_changes() {
+        let dir = test_dir();
+        let config_path = dir.join("config.toml");
+        let mut state = ConfigState::load(&config_path).expect("load");
+        let config: MeshConfig =
+            toml::from_str(FULL_SURFACE_VALID_FIXTURE).expect("fixture parses");
+
+        let first = state.apply(config.clone(), 0);
+        let first_hash = match first {
+            ApplyResult::Applied {
+                revision,
+                hash,
+                apply_mode,
+            } => {
+                assert_eq!(revision, 1);
+                assert_eq!(apply_mode, ConfigApplyMode::Staged);
+                hash
+            }
+            other => panic!("expected Applied, got {other:?}"),
+        };
+
+        let persisted = std::fs::read_to_string(&config_path).expect("persisted config");
+        assert!(persisted.contains("[models.skippy]"));
+        assert!(persisted.contains("prefill_chunk_schedule = \"128,256,384\""));
+        assert!(persisted.contains("reasoning_budget = 256"));
+
+        let reloaded = ConfigState::load(&config_path).expect("reload config");
+        assert_eq!(reloaded.config().models.len(), 2);
+        assert_eq!(
+            reloaded.config().models[0]
+                .advanced
+                .as_ref()
+                .and_then(|advanced| advanced.server.as_ref())
+                .and_then(|server| server.alias.as_deref()),
+            Some("model-alias")
+        );
+
+        let mut changed = config;
+        changed
+            .defaults
+            .as_mut()
+            .and_then(|defaults| defaults.request_defaults.as_mut())
+            .expect("request defaults")
+            .temperature = Some(0.6);
+        let second = state.apply(changed, 1);
+        match second {
+            ApplyResult::Applied { revision, hash, .. } => {
+                assert_eq!(revision, 2);
+                assert_ne!(first_hash, hash, "request-default change must update hash");
+            }
+            other => panic!("expected Applied, got {other:?}"),
+        }
 
         std::fs::remove_dir_all(&dir).ok();
     }

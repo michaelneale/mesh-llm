@@ -20,7 +20,8 @@ import type {
   ConfigurationDefaultsControl,
   ConfigurationDefaultsHarnessData,
   ConfigurationDefaultsSetting,
-  ConfigurationDefaultsValues
+  ConfigurationDefaultsValues,
+  ConfigurationTomlSectionId
 } from '@/features/app-tabs/types'
 import { cn } from '@/lib/cn'
 
@@ -28,7 +29,7 @@ const categoryIcons: Record<ConfigurationDefaultsCategoryId, LucideIcon> = {
   runtime: Cpu,
   memory: MemoryStick,
   'speculative-decoding': BrainCircuit,
-  advanced: Cog
+  'request-defaults': Cog
 }
 
 const slotOptions = Array.from({ length: 16 }, (_, index) => index + 1)
@@ -56,15 +57,23 @@ function LlamaFlavorOption({ option, selected }: { option: SegmentedControlOptio
 }
 
 const draftModelModeSettingId = 'speculation-mode'
-const draftModelModeValue = 'draft_model'
+const draftModelModeValue = 'draft'
 const incompatiblePairingBehaviorSettingId = 'incompatible-pairing-behavior'
 const draftModelOnlySettingIds = new Set([
   'draft-selection-policy',
   'draft-max-tokens',
-  'draft-min-tokens',
-  'draft-acceptance-threshold',
   incompatiblePairingBehaviorSettingId
 ])
+const defaultsSectionOrder: readonly ConfigurationTomlSectionId[] = [
+  'defaults.model_fit',
+  'defaults.hardware',
+  'defaults.throughput',
+  'defaults.skippy',
+  'defaults.speculative',
+  'defaults.request_defaults',
+  'defaults.multimodal',
+  'defaults.advanced.server'
+]
 
 type DefaultsTabProps = {
   data: ConfigurationDefaultsHarnessData
@@ -76,10 +85,6 @@ type DefaultsTabProps = {
 
 function getSettingValue(setting: ConfigurationDefaultsSetting, values: ConfigurationDefaultsValues) {
   return values[setting.id] ?? setting.control.value
-}
-
-function settingKey(control: ConfigurationDefaultsControl, fallback: string) {
-  return control.kind === 'metric' ? fallback.replaceAll('-', '_') : control.name
 }
 
 function tomlValue(value: string) {
@@ -106,15 +111,15 @@ type DefaultsPreviewLine =
 
 function formatRangeValue(setting: ConfigurationDefaultsSetting, value: string) {
   if (setting.id === 'memory-margin') return Number(value).toFixed(1)
-  if (setting.id === 'draft-acceptance-threshold') return Number(value).toFixed(2)
-  if (setting.id === 'repeat-penalty') return Number(value).toFixed(2)
+  if (setting.id === 'temperature' || setting.id === 'top-p' || setting.id === 'repeat-penalty')
+    return Number(value).toFixed(2)
   return value
 }
 
 function rangeUnit(setting: ConfigurationDefaultsSetting, value: string) {
   if (setting.id === 'parallel-slots') return `slot${value === '1' ? '' : 's'}`
   if (setting.id === 'memory-margin') return 'GB'
-  if (setting.id === 'draft-acceptance-threshold' || setting.id === 'repeat-penalty') return undefined
+  if (setting.id === 'temperature' || setting.id === 'top-p' || setting.id === 'repeat-penalty') return undefined
   if (setting.control.kind === 'range') return setting.control.unit
   return undefined
 }
@@ -134,7 +139,7 @@ function choiceItemClassName(setting: ConfigurationDefaultsSetting) {
     setting.id === 'speculation-mode' && 'min-w-[72px]',
     setting.id === 'draft-selection-policy' && 'min-w-[86px]',
     setting.id === 'incompatible-pairing-behavior' && 'min-w-[104px]',
-    setting.id === 'reasoning-format' && 'min-w-[58px]',
+    setting.id === 'reasoning-format' && 'min-w-[118px]',
     setting.id === 'llamacpp-flavor' &&
       'min-w-[52px] gap-1.5 font-mono normal-case max-[420px]:min-w-[72px] max-[420px]:flex-1'
   )
@@ -150,28 +155,21 @@ function choiceControlClassName(setting: ConfigurationDefaultsSetting) {
 function tomlPreviewValue(setting: ConfigurationDefaultsSetting, value: string) {
   if (isBooleanToggleChoice(setting)) return toggleTomlValue(value)
   if (setting.id === 'memory-margin') return Number(value).toFixed(1)
-  if (setting.id === 'draft-acceptance-threshold') return Number(value).toFixed(2)
-  if (setting.id === 'repeat-penalty') return Number(value).toFixed(2)
+  if (setting.id === 'temperature' || setting.id === 'top-p' || setting.id === 'repeat-penalty')
+    return Number(value).toFixed(2)
   return tomlValue(value)
-}
-
-function defaultsSectionId(categoryId: ConfigurationDefaultsCategoryId) {
-  if (categoryId === 'advanced') return 'runtime'
-  if (categoryId === 'speculative-decoding') return 'speculative_decoding'
-  return null
 }
 
 function buildDefaultsPreviewLines(
   data: ConfigurationDefaultsHarnessData,
   values: ConfigurationDefaultsValues
 ): DefaultsPreviewLine[] {
-  const mainLines: DefaultsPreviewLine[] = [{ kind: 'section', id: 'defaults-section', value: '[defaults]' }]
   const sectionGroups = new Map<string, DefaultsPreviewLine[]>()
   const speculationModeSetting = data.settings.find((setting) => setting.id === draftModelModeSettingId)
   const speculationMode = speculationModeSetting ? getSettingValue(speculationModeSetting, values) : null
 
   for (const setting of data.settings) {
-    if (setting.id === incompatiblePairingBehaviorSettingId && speculationMode !== draftModelModeValue) continue
+    if (draftModelOnlySettingIds.has(setting.id) && speculationMode !== draftModelModeValue) continue
 
     const value = getSettingValue(setting, values)
     if (setting.control.kind === 'text' && value.trim().length === 0) continue
@@ -179,27 +177,26 @@ function buildDefaultsPreviewLines(
     const line: DefaultsPreviewLine = {
       kind: 'pair',
       id: setting.id,
-      keyName: settingKey(setting.control, setting.id),
+      keyName: setting.tomlKey,
       value: tomlPreviewValue(setting, value)
     }
-    const sectionId = defaultsSectionId(setting.categoryId)
-    if (!sectionId) {
-      mainLines.push(line)
-      continue
-    }
-
-    const groupLines = sectionGroups.get(sectionId) ?? [
-      { kind: 'section', id: `defaults-${sectionId}-section`, value: `[defaults.${sectionId}]` }
+    const groupLines = sectionGroups.get(setting.tomlSection) ?? [
+      { kind: 'section', id: `defaults-${setting.tomlSection}-section`, value: `[${setting.tomlSection}]` }
     ]
     groupLines.push(line)
-    sectionGroups.set(sectionId, groupLines)
+    sectionGroups.set(setting.tomlSection, groupLines)
   }
 
-  const groupedLines = Array.from(sectionGroups.entries()).flatMap(([sectionId, lines]) => [
-    { kind: 'blank' as const, id: `defaults-preview-${sectionId}-spacer` },
-    ...lines
-  ])
-  return [...mainLines, ...groupedLines]
+  let emittedSections = 0
+
+  return defaultsSectionOrder.flatMap((sectionId) => {
+    const lines = sectionGroups.get(sectionId)
+    if (!lines) return []
+    const renderedLines =
+      emittedSections === 0 ? lines : [{ kind: 'blank' as const, id: `defaults-preview-${sectionId}-spacer` }, ...lines]
+    emittedSections += 1
+    return renderedLines
+  })
 }
 
 function renderDefaultsPreview(lines: readonly DefaultsPreviewLine[]) {
@@ -218,8 +215,8 @@ function settingDescription(setting: ConfigurationDefaultsSetting) {
 
 function sectionSubtitle(category: ConfigurationDefaultsCategory) {
   if (category.id === 'memory') return 'VRAM accounting and KV cache policy'
-  if (category.id === 'speculative-decoding') return 'Speculative draft model and acceptance defaults'
-  if (category.id === 'advanced') return 'Reasoning and sampling defaults'
+  if (category.id === 'speculative-decoding') return 'Speculative draft policy defaults'
+  if (category.id === 'request-defaults') return 'Request-time sampling and reasoning defaults'
   return category.help
 }
 
@@ -558,9 +555,13 @@ export function DefaultsTab({ data, values, onSettingValueChange, onResetAll, co
           <>
             These values flow into every{' '}
             <span className="rounded border border-border-soft bg-surface px-1 font-mono text-foreground">
+              [defaults.*]
+            </span>{' '}
+            section, and every{' '}
+            <span className="rounded border border-border-soft bg-surface px-1 font-mono text-foreground">
               [[models]]
             </span>{' '}
-            placement unless that placement explicitly overrides them. Per-placement overrides surface as{' '}
+            entry can override them with matching nested model sections. Per-placement overrides surface as{' '}
             <span className="rounded border border-border-soft bg-surface px-1 font-mono text-accent">OVERRIDE</span>{' '}
             badges in Model Deployment.
           </>

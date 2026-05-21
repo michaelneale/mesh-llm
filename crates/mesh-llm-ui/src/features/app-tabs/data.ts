@@ -538,32 +538,34 @@ export const CONFIGURATION_DEFAULTS = {
     {
       id: 'runtime',
       label: 'Runtime',
-      summary: 'Request shape, kernels, and runtime policy.',
-      help: 'Default request shape and concurrency'
+      summary: 'Model fit, hardware, and throughput defaults.',
+      help: 'Load-time runtime behavior and concurrency defaults'
     },
     {
       id: 'memory',
       label: 'Memory',
       summary: 'KV cache policy and fit headroom.',
-      help: 'VRAM accounting and KV cache policy'
+      help: 'VRAM accounting and fit headroom'
     },
     {
       id: 'speculative-decoding',
       label: 'Speculative Decoding',
       summary: 'Draft acceleration defaults.',
-      help: 'Speculative draft model and acceptance defaults'
+      help: 'Speculative draft policy defaults'
     },
     {
-      id: 'advanced',
-      label: 'Reasoning',
-      summary: 'Reasoning and repetition controls.',
-      help: 'Reasoning and sampling defaults'
+      id: 'request-defaults',
+      label: 'Request Defaults',
+      summary: 'Sampling, reasoning, and request-time fallback defaults.',
+      help: 'Request-time sampling and reasoning defaults'
     }
   ],
   settings: [
     {
       id: 'parallel-slots',
       categoryId: 'runtime',
+      tomlSection: 'defaults.throughput',
+      tomlKey: 'parallel',
       icon: 'cpu',
       label: 'Default slots / parallel requests',
       description:
@@ -574,6 +576,8 @@ export const CONFIGURATION_DEFAULTS = {
     {
       id: 'tuning-profile',
       categoryId: 'runtime',
+      tomlSection: 'defaults.throughput',
+      tomlKey: 'tuning_profile',
       icon: 'gauge',
       label: 'Default tuning profile',
       description: 'Choose the starting balance between throughput, batch size, and memory use.',
@@ -592,6 +596,8 @@ export const CONFIGURATION_DEFAULTS = {
     {
       id: 'flash-attention',
       categoryId: 'runtime',
+      tomlSection: 'defaults.model_fit',
+      tomlKey: 'flash_attention',
       icon: 'layers',
       label: 'Flash attention policy',
       description: 'Choose the default attention kernel policy for compatible runtimes.',
@@ -599,17 +605,19 @@ export const CONFIGURATION_DEFAULTS = {
       control: {
         kind: 'choice',
         name: 'flash_attention',
-        value: 'on',
+        value: 'auto',
         options: [
           { value: 'auto', label: 'auto' },
-          { value: 'on', label: 'on' },
-          { value: 'off', label: 'off' }
+          { value: 'enabled', label: 'enabled' },
+          { value: 'disabled', label: 'disabled' }
         ]
       }
     },
     {
       id: 'llamacpp-flavor',
       categoryId: 'runtime',
+      tomlSection: 'defaults.hardware',
+      tomlKey: 'model_runtime',
       icon: 'binary',
       label: 'Model Runtime',
       description: 'Select the default runtime target for new placements.',
@@ -630,6 +638,8 @@ export const CONFIGURATION_DEFAULTS = {
     {
       id: 'kv-cache',
       categoryId: 'memory',
+      tomlSection: 'defaults.model_fit',
+      tomlKey: 'kv_cache_policy',
       icon: 'filter',
       label: 'KV cache policy',
       description: 'Select how aggressively KV cache precision is reduced to fit larger contexts.',
@@ -649,6 +659,8 @@ export const CONFIGURATION_DEFAULTS = {
     {
       id: 'memory-margin',
       categoryId: 'memory',
+      tomlSection: 'defaults.hardware',
+      tomlKey: 'safety_margin_gb',
       icon: 'memory',
       label: 'Memory / safety margin',
       description: 'Keep this much GPU memory free before placement fit checks pass.',
@@ -658,19 +670,21 @@ export const CONFIGURATION_DEFAULTS = {
     {
       id: 'speculation-mode',
       categoryId: 'speculative-decoding',
+      tomlSection: 'defaults.speculative',
+      tomlKey: 'mode',
       icon: 'brain',
       label: 'Default speculation mode',
-      description: 'Choose the default speculation method, or turn speculation off.',
+      description: 'Choose the default speculation method, or leave the runtime in auto mode.',
       inheritedLabel: 'Inherited by compatible placements unless a model pins a mode',
       control: {
         kind: 'choice',
         name: 'mode',
-        value: 'draft_model',
+        value: 'auto',
         presentation: 'segmented',
         options: [
-          { value: 'off', label: 'off' },
-          { value: 'draft_model', label: 'draft model' },
-          { value: 'prompt_lookup', label: 'prompt lookup' },
+          { value: 'auto', label: 'auto' },
+          { value: 'disabled', label: 'disabled' },
+          { value: 'draft', label: 'draft' },
           { value: 'ngram', label: 'n-gram' }
         ]
       }
@@ -678,6 +692,8 @@ export const CONFIGURATION_DEFAULTS = {
     {
       id: 'draft-selection-policy',
       categoryId: 'speculative-decoding',
+      tomlSection: 'defaults.speculative',
+      tomlKey: 'draft_selection_policy',
       icon: 'filter',
       label: 'Default draft selection policy',
       description: 'Choose how draft models are selected when draft-model speculation is active.',
@@ -689,14 +705,15 @@ export const CONFIGURATION_DEFAULTS = {
         presentation: 'toggle',
         options: [
           { value: 'auto', label: 'auto' },
-          { value: 'manual_only', label: 'Manual only' },
-          { value: 'disabled', label: 'Disabled' }
+          { value: 'manual', label: 'manual' }
         ]
       }
     },
     {
       id: 'incompatible-pairing-behavior',
       categoryId: 'speculative-decoding',
+      tomlSection: 'defaults.speculative',
+      tomlKey: 'pairing_fault',
       icon: 'shield',
       label: 'Incompatible pairing behavior',
       description: 'Choose what happens when the draft and target models cannot pair.',
@@ -708,13 +725,15 @@ export const CONFIGURATION_DEFAULTS = {
         presentation: 'toggle',
         options: [
           { value: 'warn_disable', label: 'Warn & Disable' },
-          { value: 'fail_launch', label: 'Fail Launch' }
+          { value: 'fail_closed', label: 'Fail launch' }
         ]
       }
     },
     {
       id: 'draft-max-tokens',
       categoryId: 'speculative-decoding',
+      tomlSection: 'defaults.speculative',
+      tomlKey: 'draft_max_tokens',
       icon: 'gauge',
       label: 'Default draft max tokens',
       description: 'Limit how many draft tokens can be proposed before verification.',
@@ -722,26 +741,32 @@ export const CONFIGURATION_DEFAULTS = {
       control: { kind: 'range', name: 'draft_max_tokens', value: '16', min: 1, max: 64, step: 1, unit: 'tokens' }
     },
     {
-      id: 'draft-min-tokens',
-      categoryId: 'speculative-decoding',
+      id: 'temperature',
+      categoryId: 'request-defaults',
+      tomlSection: 'defaults.request_defaults',
+      tomlKey: 'temperature',
       icon: 'gauge',
-      label: 'Default draft minimum tokens',
-      description: 'Set the smallest draft batch attempted before verification.',
-      inheritedLabel: '0 lets the runtime verify as soon as the draft becomes uncertain',
-      control: { kind: 'range', name: 'draft_min_tokens', value: '0', min: 0, max: 16, step: 1, unit: 'tokens' }
+      label: 'Temperature',
+      description: 'Fallback sampling temperature for requests that do not provide one.',
+      inheritedLabel: 'Request payload temperature always wins when it is present',
+      control: { kind: 'range', name: 'temperature', value: '0.70', min: 0, max: 2, step: 0.05 }
     },
     {
-      id: 'draft-acceptance-threshold',
-      categoryId: 'speculative-decoding',
+      id: 'top-p',
+      categoryId: 'request-defaults',
+      tomlSection: 'defaults.request_defaults',
+      tomlKey: 'top_p',
       icon: 'gauge',
-      label: 'Default draft acceptance threshold',
-      description: 'Set the confidence needed before draft tokens are accepted.',
-      inheritedLabel: 'Lower values speculate more aggressively; higher values reject earlier',
-      control: { kind: 'range', name: 'draft_acceptance_threshold', value: '0.70', min: 0, max: 1, step: 0.05 }
+      label: 'Top-p',
+      description: 'Fallback nucleus sampling threshold for requests that omit one.',
+      inheritedLabel: 'Request payload top-p wins over this default',
+      control: { kind: 'range', name: 'top_p', value: '0.95', min: 0, max: 1, step: 0.05 }
     },
     {
       id: 'reasoning-format',
-      categoryId: 'advanced',
+      categoryId: 'request-defaults',
+      tomlSection: 'defaults.request_defaults',
+      tomlKey: 'reasoning_format',
       icon: 'cog',
       label: 'Reasoning format',
       description: 'Choose how thinking tokens appear in the response stream.',
@@ -749,17 +774,20 @@ export const CONFIGURATION_DEFAULTS = {
       control: {
         kind: 'choice',
         name: 'reasoning_format',
-        value: 'deepseek',
+        value: 'auto',
         options: [
+          { value: 'auto', label: 'auto' },
+          { value: 'none', label: 'none' },
           { value: 'deepseek', label: 'deepseek' },
-          { value: 'qwen', label: 'qwen' },
-          { value: 'off', label: 'off' }
+          { value: 'deepseek-legacy', label: 'deepseek-legacy' }
         ]
       }
     },
     {
       id: 'reasoning-budget',
-      categoryId: 'advanced',
+      categoryId: 'request-defaults',
+      tomlSection: 'defaults.request_defaults',
+      tomlKey: 'reasoning_budget',
       icon: 'gauge',
       label: 'Reasoning budget',
       description: 'Cap the reasoning tokens reserved before the final answer.',
@@ -768,7 +796,9 @@ export const CONFIGURATION_DEFAULTS = {
     },
     {
       id: 'repeat-penalty',
-      categoryId: 'advanced',
+      categoryId: 'request-defaults',
+      tomlSection: 'defaults.request_defaults',
+      tomlKey: 'repeat_penalty',
       icon: 'filter',
       label: 'Repeat penalty',
       description: 'Adjust how strongly repeated tokens are discouraged.',
@@ -777,7 +807,9 @@ export const CONFIGURATION_DEFAULTS = {
     },
     {
       id: 'repeat-last-n',
-      categoryId: 'advanced',
+      categoryId: 'request-defaults',
+      tomlSection: 'defaults.request_defaults',
+      tomlKey: 'repeat_last_n',
       icon: 'layers',
       label: 'Repeat last-n window',
       description: 'Set how much recent token history the repeat penalty checks.',

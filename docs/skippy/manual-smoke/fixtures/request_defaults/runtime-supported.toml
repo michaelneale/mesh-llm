@@ -1,0 +1,24 @@
+version = 1
+
+[defaults.request_defaults]
+max_tokens = 24
+stop = ["</done>"]
+temperature = 0.2
+top_p = 0.95
+top_k = 20
+min_p = 0.05
+repeat_penalty = 1.05
+repeat_last_n = 32
+presence_penalty = 0.0
+frequency_penalty = 0.0
+seed = 7
+logit_bias = { "12" = -1.0 }
+reasoning_format = "auto"
+reasoning_enabled = "off"
+reasoning_budget = 0
+
+[[models]]
+model = "unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL"
+
+[models.hardware]
+model_path = "__LOCAL_MODEL_PATH__"

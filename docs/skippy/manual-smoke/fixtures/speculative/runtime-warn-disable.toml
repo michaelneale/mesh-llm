@@ -1,0 +1,15 @@
+version = 1
+
+[defaults.speculative]
+mode = "draft"
+draft_model_path = "__LOCAL_INCOMPATIBLE_DRAFT_PATH__"
+draft_selection_policy = "manual"
+pairing_fault = "warn_disable"
+draft_max_tokens = 8
+draft_gpu_layers = 0
+
+[[models]]
+model = "unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL"
+
+[models.hardware]
+model_path = "__LOCAL_MODEL_PATH__"

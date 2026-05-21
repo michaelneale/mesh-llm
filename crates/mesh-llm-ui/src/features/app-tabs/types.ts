@@ -251,7 +251,16 @@ export type ConfigModel = {
   tags: string[]
 }
 export type ConfigAssign = { id: string; modelId: string; nodeId: string; containerIdx: number; ctx: number }
-export type ConfigurationDefaultsCategoryId = 'runtime' | 'memory' | 'speculative-decoding' | 'advanced'
+export type ConfigurationDefaultsCategoryId = 'runtime' | 'memory' | 'speculative-decoding' | 'request-defaults'
+export type ConfigurationTomlSectionId =
+  | 'defaults.model_fit'
+  | 'defaults.hardware'
+  | 'defaults.throughput'
+  | 'defaults.skippy'
+  | 'defaults.speculative'
+  | 'defaults.request_defaults'
+  | 'defaults.multimodal'
+  | 'defaults.advanced.server'
 export type ConfigurationDefaultsCategory = {
   id: ConfigurationDefaultsCategoryId
   label: string
@@ -284,6 +293,8 @@ export type ConfigurationDefaultsSettingIcon =
 export type ConfigurationDefaultsSetting = {
   id: string
   categoryId: ConfigurationDefaultsCategoryId
+  tomlSection: ConfigurationTomlSectionId
+  tomlKey: string
   icon: ConfigurationDefaultsSettingIcon
   label: string
   description: string
