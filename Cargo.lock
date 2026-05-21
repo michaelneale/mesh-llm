@@ -3874,13 +3874,11 @@ name = "mesh-mixture-of-agents"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "regex",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
