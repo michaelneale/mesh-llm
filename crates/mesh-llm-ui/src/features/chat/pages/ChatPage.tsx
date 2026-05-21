@@ -88,6 +88,11 @@ type FailedSubmission = ComposerSubmission & {
 type DeleteConversationOptions = { returnFocusElement?: HTMLElement | null }
 
 const AUTO_MODEL_VALUE = 'auto'
+// The web UI's default "Auto" pick routes through the Mixture-of-Agents
+// gateway. Users still see the "Auto" label; the backend model id sent
+// for chat requests is the virtual `mesh` model so MoA can fan out
+// across the mesh, arbitrate, and return one answer.
+const AUTO_BACKEND_MODEL = 'mesh'
 const AUTO_MODEL_OPTION: ModelSelectOption = {
   value: AUTO_MODEL_VALUE,
   label: 'Auto',
@@ -478,7 +483,8 @@ export function ChatPageContent({ data = CHAT_HARNESS }: ChatPageProps) {
   const [composerDrafts, setComposerDrafts] = useState<Record<string, ConversationComposerDraft>>({})
   const [model, setModel] = useState('')
   const modelExists = selectableModels.some((item) => item.name === model)
-  const activeModelName = model === AUTO_MODEL_VALUE ? AUTO_MODEL_VALUE : modelExists ? model : AUTO_MODEL_VALUE
+  const activeModelName =
+    model === AUTO_MODEL_VALUE ? AUTO_BACKEND_MODEL : modelExists ? model : AUTO_BACKEND_MODEL
   const [queuedSubmissions, setQueuedSubmissions] = useState<QueuedSubmission[]>([])
   const [attachmentProcessingStatus, setAttachmentProcessingStatus] = useState<AttachmentProcessingStatus | null>(null)
   const [submittedAttachmentsByMessageId, setSubmittedAttachmentsByMessageId] = useState<
