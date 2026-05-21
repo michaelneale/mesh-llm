@@ -84,7 +84,13 @@ mesh-llm serve --auto --headless
 For a deeper operator guide, see [docs/USAGE.md](docs/USAGE.md). For every CLI
 command and switch, see [docs/CLI.md](docs/CLI.md).
 
-## Mixture-of-Agents (`model: "mesh"`)
+## Mixture-of-Agents (`model: "mesh"`) — experimental
+
+> ⚠️ **Experimental.** The MoA gateway is new in this release. Behavior,
+> routing heuristics, error shapes, and tuning knobs may change between
+> versions while we tune it. Treat `model: "mesh"` as a preview feature
+> rather than a stable production path; use a specific model id when you
+> need stable semantics.
 
 Send a request with `"model": "mesh"` and the proxy fans it out to every
 model available in the mesh in parallel, arbitrates their responses with

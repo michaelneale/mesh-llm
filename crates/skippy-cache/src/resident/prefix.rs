@@ -321,11 +321,14 @@ mod tests {
         // permanently true on an empty cache and bail with
         // "no releasable entries".
         //
-        // `ResidentCacheConfig::from_stage` derives the cap with a
-        // 4*min_tokens floor (see `derive_max_resident_tokens`). For
-        // the smoke-test config the cap therefore comes through as 0
-        // (disabled). This unit test pins that path: cap=0, record a
-        // 533-token prompt against a 256-token min, no eviction loop.
+        // `ResidentCacheConfig::from_stage` derives the cap from the
+        // model's `n_ctx` via `derive_max_resident_tokens`, which uses
+        // a hard `MIN_CTX_FOR_CELL_CAP = 8192` floor: below that, the
+        // cap is 0 (disabled) regardless of `min_tokens`. The smoke
+        // test runs with `ctx_size = 768`, well below the floor, so
+        // its derived cap is 0. This unit test pins that path: cap=0,
+        // record a 533-token prompt against a 256-token min, no
+        // eviction loop.
         let mut cache = ResidentPrefixCache::new(cfg(16, 0, 0));
         let alloc = cache
             .allocate_for_record("page-0", 533, 100, |_| Ok(()))

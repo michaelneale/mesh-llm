@@ -604,20 +604,21 @@ async fn try_handle_moa_intercept(
     if decision.effective_model.as_deref() != Some(moa::VIRTUAL_MODEL_NAME) {
         return MoaInterceptResult::NotMoa(tcp_stream);
     }
-    // try_handle_moa self-gates on the model name; the Some(_) return path
-    // means it declined to handle despite our outer gate — log and treat as
-    // handled (we can't reliably re-use the stream after the handoff).
-    if let Some(_unused_stream) = crate::network::openai::moa_gateway::try_handle_moa(
+    // `try_handle_moa` self-gates on the model name and consumes the
+    // stream when it accepts. The outer gate above guarantees the gate
+    // matches, so the inner call always returns `None` here — the stream
+    // is gone, either with the MoA response, a 503, or a 400. Discard
+    // the return value explicitly. The previous shape kept an
+    // `if let Some(_) = … { tracing::error!(...) }` branch that could
+    // never fire and made the control flow confusing to read.
+    let _ = crate::network::openai::moa_gateway::try_handle_moa(
         ctx.route.node,
         tcp_stream,
         request,
         decision.effective_model.as_deref(),
         Some(ctx.route.targets),
     )
-    .await
-    {
-        tracing::error!("moa: try_handle_moa returned unused stream despite outer model gate");
-    }
+    .await;
     proxy::release_request_objects(ctx.route.node, &request.request_object_request_ids).await;
     MoaInterceptResult::Handled
 }

@@ -4030,9 +4030,58 @@ pub async fn send_json_ok(mut stream: TcpStream, data: &serde_json::Value) -> st
     Ok(())
 }
 
+/// RFC 7230 tchar set for header field names: ASCII alphanumeric plus
+/// `!#$%&'*+-.^_`|~`. We additionally forbid `:` because it terminates
+/// the field-name in the wire grammar. Used to reject caller-provided
+/// header names that could carry CR/LF or other injection bytes.
+pub(crate) fn is_valid_header_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.bytes().all(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(
+                    b,
+                    b'!' | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'.'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'|'
+                        | b'~'
+                )
+        })
+}
+
+/// Append a single `name: value` header line if `name` is a valid HTTP
+/// header field name. CR/LF in `value` is stripped defensively. Used by
+/// the `*_with_headers` writers below so a malformed header from a
+/// future caller can't inject extra headers / smuggle a response.
+pub(crate) fn append_safe_header(headers: &mut String, name: &str, value: &str) {
+    if !is_valid_header_name(name) {
+        tracing::warn!(
+            "openai transport: dropping header with invalid name `{name}` (RFC 7230 tchar required)"
+        );
+        return;
+    }
+    let safe_value: String = value.chars().filter(|c| *c != '\r' && *c != '\n').collect();
+    headers.push_str(name);
+    headers.push_str(": ");
+    headers.push_str(&safe_value);
+    headers.push_str("\r\n");
+}
+
 /// Like `send_json_ok` but allows the caller to append arbitrary response
-/// headers (e.g. `x-moa-*` observability headers). Header names and values
-/// must be plain ASCII without CR/LF; values are not validated further.
+/// headers (e.g. `x-moa-*` observability headers).
+///
+/// Header names must satisfy the RFC 7230 tchar grammar (ASCII
+/// alphanumeric + a small symbol set); invalid names are dropped with a
+/// warning rather than written verbatim. Values are stripped of CR/LF.
 pub async fn send_json_ok_with_headers(
     mut stream: TcpStream,
     data: &serde_json::Value,
@@ -4041,12 +4090,7 @@ pub async fn send_json_ok_with_headers(
     let body = data.to_string();
     let mut headers = String::from("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n");
     for (name, value) in extra_headers {
-        // Strip CR/LF defensively against header-injection bugs creeping in later.
-        let safe_value: String = value.chars().filter(|c| *c != '\r' && *c != '\n').collect();
-        headers.push_str(name);
-        headers.push_str(": ");
-        headers.push_str(&safe_value);
-        headers.push_str("\r\n");
+        append_safe_header(&mut headers, name, value);
     }
     headers.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));
     stream.write_all(headers.as_bytes()).await?;
@@ -4082,12 +4126,7 @@ pub async fn send_json_with_status_and_headers(
     let body = data.to_string();
     let mut headers = format!("HTTP/1.1 {code} {status}\r\nContent-Type: application/json\r\n");
     for (name, value) in extra_headers {
-        // Strip CR/LF defensively against header-injection.
-        let safe_value: String = value.chars().filter(|c| *c != '\r' && *c != '\n').collect();
-        headers.push_str(name);
-        headers.push_str(": ");
-        headers.push_str(&safe_value);
-        headers.push_str("\r\n");
+        append_safe_header(&mut headers, name, value);
     }
     headers.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));
     stream.write_all(headers.as_bytes()).await?;
@@ -4326,6 +4365,46 @@ async fn relay_pipeline_non_streaming_response(
 mod tests {
     use super::*;
     use tokio::net::TcpListener;
+
+    // ── Header-name validation ──────────────────────────────────────
+
+    #[test]
+    fn is_valid_header_name_accepts_normal_observability_headers() {
+        assert!(is_valid_header_name("x-moa-elapsed-ms"));
+        assert!(is_valid_header_name("X-MoA-Workers"));
+        assert!(is_valid_header_name("Content-Type"));
+        assert!(is_valid_header_name("x-request-id"));
+    }
+
+    #[test]
+    fn is_valid_header_name_rejects_injection_attempts() {
+        // Regression for PR #566 review item #5c: header NAMES were not
+        // sanitized, only values. A name carrying CR/LF or a colon would
+        // smuggle extra headers / split the response.
+        assert!(!is_valid_header_name("x-evil\r\nSet-Cookie"));
+        assert!(!is_valid_header_name("x-evil\nSet-Cookie"));
+        assert!(!is_valid_header_name("x-evil: hijacked"));
+        assert!(!is_valid_header_name("x evil")); // space inside name
+        assert!(!is_valid_header_name(""));
+    }
+
+    #[test]
+    fn append_safe_header_drops_invalid_name() {
+        let mut buf = String::new();
+        append_safe_header(&mut buf, "x-evil\r\nSet-Cookie", "bad");
+        assert!(buf.is_empty(), "invalid name must be dropped, got {buf:?}");
+    }
+
+    #[test]
+    fn append_safe_header_strips_crlf_from_value() {
+        let mut buf = String::new();
+        append_safe_header(&mut buf, "x-ok", "ok\r\nSet-Cookie: hijack");
+        assert!(
+            buf.starts_with("x-ok: okSet-Cookie: hijack\r\n"),
+            "value CRLF must be stripped; got {buf:?}"
+        );
+        assert_eq!(buf.matches("\r\n").count(), 1);
+    }
 
     fn hf_descriptor(model_name: &str) -> mesh::ServedModelDescriptor {
         mesh::ServedModelDescriptor {
