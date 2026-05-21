@@ -91,6 +91,13 @@ type DeleteConversationOptions = { returnFocusElement?: HTMLElement | null }
 // keeps `model === AUTO_MODEL_VALUE` in UI state (so the Radix Select
 // can highlight it correctly) but sends `AUTO_BACKEND_MODEL` on the
 // wire so requests fan out through the Mixture-of-Agents gateway.
+//
+// To flip the chat default back to the single-model router when peer
+// health is reliable enough, change AUTO_BACKEND_MODEL to 'auto'. The
+// two-variable split (selectedModelValue for UI, activeModelName for
+// the wire) is already in place exactly so this stays a one-line
+// change with no other UI surgery. See PR #615 and Issue #617 for the
+// trade-offs that led to the current 'mesh' default.
 const AUTO_MODEL_VALUE = 'auto'
 const AUTO_BACKEND_MODEL = 'mesh'
 const AUTO_MODEL_LABEL = 'Mesh — automatic'
