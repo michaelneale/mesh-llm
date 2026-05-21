@@ -8,16 +8,19 @@
 
 FROM node:24-alpine AS ui-builder
 ARG VITE_API_URL=https://meshllm.cloud
+ARG VITE_APP_VERSION=
+ARG VITE_STORAGE_NAMESPACE=mesh-llm-ui-production
 ARG NODE_ENV=production
 ENV NODE_ENV=$NODE_ENV
 ENV VITE_API_URL=$VITE_API_URL
+ENV VITE_STORAGE_NAMESPACE=$VITE_STORAGE_NAMESPACE
 RUN npm install -g pnpm
 WORKDIR /app
 COPY crates/mesh-llm-ui/package.json crates/mesh-llm-ui/pnpm-lock.yaml crates/mesh-llm-ui/pnpm-workspace.yaml ./
 RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
     pnpm install --frozen-lockfile
 COPY crates/mesh-llm-ui/ ./
-RUN pnpm run build
+RUN VITE_APP_VERSION="${VITE_APP_VERSION:-$(node -p 'JSON.parse(require("fs").readFileSync("package.json", "utf8")).version')}" pnpm run build
 
 FROM debian:bookworm-slim AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends \

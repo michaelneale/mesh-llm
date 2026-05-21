@@ -36,9 +36,13 @@ function writeStoredDataMode(storageKey: string, mode: DataMode, persist: boolea
   }
 }
 
+function defaultInitialMode(): DataMode {
+  return env.isDevelopment ? 'harness' : 'live'
+}
+
 export function DataModeProvider({
   children,
-  initialMode = 'harness',
+  initialMode = defaultInitialMode(),
   persist = true,
   storageKey = DATA_MODE_STORAGE_KEY
 }: DataModeProviderProps) {
