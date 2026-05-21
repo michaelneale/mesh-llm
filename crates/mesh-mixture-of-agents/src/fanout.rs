@@ -213,9 +213,9 @@ mod tests {
     use super::*;
     use crate::worker::WorkerRole;
 
-    /// Build a chat-completion JSON body that `normalize_worker_output`
-    /// will parse as an Answer with the requested confidence. Easier
-    /// than constructing the kv-envelope shape by hand.
+    /// Build a MoA normalization envelope (the `{"kind":"answer",...}`
+    /// shape that `normalize_worker_output` parses via strategy #1)
+    /// for use as a stubbed worker payload. Not a chat-completion JSON.
     fn answer_text(payload: &str, confidence: f32) -> String {
         format!(r#"{{"kind":"answer","confidence":{confidence},"payload":"{payload}"}}"#)
     }

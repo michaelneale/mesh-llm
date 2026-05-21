@@ -757,7 +757,12 @@ async fn send_moa_as_responses_sse(
         .and_then(|v| v.as_str())
         .unwrap_or("");
     let content = strip_think_from_content(raw_content);
-    let usage = response.get("usage").cloned();
+    // MoA's body is chat-shape; the Responses-API completed event
+    // expects input_tokens / output_tokens. Translate before emitting
+    // so downstream consumers (chat UI, billing) see the right keys.
+    let usage = response
+        .get("usage")
+        .map(openai_frontend::responses::chat_usage_to_responses_usage);
     let item_id = format!("msg_moa_{}", short_id_from_response(response));
     let created_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1098,5 +1103,79 @@ mod tests {
         // response) or fall back to the input; both behaviours are
         // acceptable, what matters is no panic and a JSON value.
         assert!(out.is_object());
+    }
+
+    /// Capture the body of `send_moa_as_responses_sse` against a real
+    /// TCP loopback pair, strip HTTP/chunked framing, return the
+    /// concatenated `data: ...` payloads.
+    async fn capture_responses_sse_body(response: serde_json::Value) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback");
+        let addr = listener.local_addr().expect("local_addr");
+
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("accept");
+            send_moa_as_responses_sse(socket, &response, &[])
+                .await
+                .expect("sse write");
+        });
+
+        let mut client = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        use tokio::io::AsyncReadExt;
+        let mut bytes = Vec::new();
+        client.read_to_end(&mut bytes).await.expect("read");
+        server.await.expect("server task");
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    #[tokio::test]
+    async fn responses_sse_emits_responses_shape_usage_not_chat_shape() {
+        // Regression: MoA was forwarding the chat-completion `usage`
+        // object (prompt_tokens/completion_tokens) straight into the
+        // Responses-API completed event, which expects
+        // input_tokens/output_tokens. Downstream consumers that read
+        // `response.usage.input_tokens` saw `undefined`.
+        let response = serde_json::json!({
+            "id": "chatcmpl-moa-fixture",
+            "object": "chat.completion",
+            "model": "mesh",
+            "choices": [{
+                "index": 0,
+                "message": { "role": "assistant", "content": "hi" },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 11,
+                "completion_tokens": 13,
+                "total_tokens": 24
+            }
+        });
+
+        let raw = capture_responses_sse_body(response).await;
+
+        // The completed event carries the response object including
+        // usage. We assert by string match so we're robust to
+        // serializer ordering.
+        assert!(
+            raw.contains("\"input_tokens\":11"),
+            "expected input_tokens=11 in SSE; got: {raw}"
+        );
+        assert!(
+            raw.contains("\"output_tokens\":13"),
+            "expected output_tokens=13 in SSE; got: {raw}"
+        );
+        assert!(
+            raw.contains("\"total_tokens\":24"),
+            "expected total_tokens=24 in SSE; got: {raw}"
+        );
+        assert!(
+            !raw.contains("\"prompt_tokens\":"),
+            "chat-shape prompt_tokens must NOT leak into Responses-API SSE; got: {raw}"
+        );
+        assert!(
+            !raw.contains("\"completion_tokens\":"),
+            "chat-shape completion_tokens must NOT leak into Responses-API SSE; got: {raw}"
+        );
     }
 }
