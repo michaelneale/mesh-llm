@@ -53,7 +53,7 @@ pub async fn try_handle_moa(
         return None;
     };
 
-    run_moa_turn(tcp_stream, body_json, &config).await;
+    run_moa_turn(tcp_stream, body_json, &config, request.response_adapter).await;
     None
 }
 
@@ -63,6 +63,7 @@ async fn run_moa_turn(
     tcp_stream: TcpStream,
     body_json: serde_json::Value,
     config: &moa::GatewayConfig,
+    response_adapter: proxy::ResponseAdapter,
 ) {
     let was_streaming = body_json
         .get("stream")
@@ -73,7 +74,14 @@ async fn run_moa_turn(
 
     let moa_result = moa::handle_turn(config, &moa_body).await;
     let extra_headers = build_moa_headers(&moa_result);
-    write_moa_response(tcp_stream, &moa_result, &extra_headers, was_streaming).await;
+    write_moa_response(
+        tcp_stream,
+        &moa_result,
+        &extra_headers,
+        was_streaming,
+        response_adapter,
+    )
+    .await;
 }
 
 /// Write the MoA response on the chosen transport (JSON or SSE), logging
@@ -112,26 +120,43 @@ async fn write_moa_response(
     moa_result: &moa::TurnResult,
     extra_headers: &[(&str, String)],
     was_streaming: bool,
+    response_adapter: proxy::ResponseAdapter,
 ) {
     let body = &moa_result.response_body;
     let is_failure = is_moa_failure_body(body);
     // Streaming + failure: respond as non-streaming HTTP 502 with the
-    // structured error body instead of streaming a 200 SSE that happens
-    // to carry `finish_reason: "error"`. The OpenAI API behaves this
-    // way (failures on streaming endpoints come back as a single
-    // non-streaming JSON error response with the right HTTP status), so
-    // stream=true MoA failures now match non-stream failures at the
-    // HTTP layer. SSE clients see a clean connection-level error
-    // (5xx + JSON) instead of a misleading 200 with an in-band signal.
+    // structured error body. Failure path doesn't go through SSE in any
+    // adapter mode — callers want a clean connection-level error.
     let (mode, result) = if was_streaming && !is_failure {
-        (
-            "SSE",
-            send_moa_as_sse(tcp_stream, body, extra_headers).await,
-        )
+        match response_adapter {
+            proxy::ResponseAdapter::OpenAiResponsesStream => (
+                "SSE-responses",
+                send_moa_as_responses_sse(tcp_stream, body, extra_headers).await,
+            ),
+            // None, OpenAiChatCompletionsStream, OpenAiResponsesJson all
+            // get the chat.completion.chunk SSE shape — the JSON-mode
+            // adapter caller will never set was_streaming=true.
+            _ => (
+                "SSE-chat",
+                send_moa_as_sse(tcp_stream, body, extra_headers).await,
+            ),
+        }
     } else if is_failure {
         (
             "JSON-502",
             proxy::send_json_with_status_and_headers(tcp_stream, 502, body, extra_headers).await,
+        )
+    } else if response_adapter == proxy::ResponseAdapter::OpenAiResponsesJson {
+        // Non-streaming Responses-API request: emit a Responses-shape
+        // JSON body instead of the chat.completion shape.
+        (
+            "JSON-responses",
+            proxy::send_json_ok_with_headers(
+                tcp_stream,
+                &chat_completion_to_responses_json(body),
+                extra_headers,
+            )
+            .await,
         )
     } else {
         (
@@ -267,6 +292,8 @@ pub async fn build_moa_config(
         // (or sooner on outright failure). Cheap on the happy path, big win on
         // the cold-KV / stale-peer tail.
         hedge_delay: std::time::Duration::from_secs(5),
+        // Chat-only sole-answer grace. Tool turns ignore this.
+        first_answer_grace: std::time::Duration::from_secs(6),
     })
 }
 
@@ -689,6 +716,105 @@ async fn send_moa_as_sse(
 /// Thin wrapper over the canonical implementation in moa::worker.
 fn strip_think_from_content(text: &str) -> String {
     moa::strip_thinking(text)
+}
+
+/// Emit the MoA response as a one-shot OpenAI Responses-API SSE stream
+/// so callers that hit `/v1/responses` with `stream:true` (the chat UI)
+/// get event shapes their parser understands.
+///
+/// We synthesize the minimum set the standard Responses-API stream
+/// emits: `response.created`, `response.output_text.delta` (one chunk
+/// with the full content), `response.output_text.done`, and
+/// `response.completed`. MoA always knows the full body before writing,
+/// so we don't bother with incremental delta streaming — it would only
+/// make the UI's spinner-to-text transition smoother.
+async fn send_moa_as_responses_sse(
+    mut stream: TcpStream,
+    response: &serde_json::Value,
+    extra_headers: &[(&str, String)],
+) -> std::io::Result<()> {
+    let mut header = String::from(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nCache-Control: no-cache\r\nConnection: close\r\n",
+    );
+    for (name, value) in extra_headers {
+        crate::network::openai::transport::append_safe_header(&mut header, name, value);
+    }
+    header.push_str("\r\n");
+    stream.write_all(header.as_bytes()).await?;
+
+    let response_id = response
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("resp_moa")
+        .to_string();
+    let model = response
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or(moa::VIRTUAL_MODEL_NAME)
+        .to_string();
+    let raw_content = response
+        .pointer("/choices/0/message/content")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let content = strip_think_from_content(raw_content);
+    let usage = response.get("usage").cloned();
+    let item_id = format!("msg_moa_{}", short_id_from_response(response));
+    let created_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    use openai_frontend::responses as resp;
+
+    let events = [
+        resp::responses_stream_created_event(&model, created_at),
+        resp::responses_stream_delta_event(&item_id, &content),
+        resp::responses_stream_text_done_event(&item_id, &content),
+        resp::responses_stream_completed_event(
+            &response_id,
+            created_at,
+            &model,
+            &item_id,
+            &content,
+            usage,
+        ),
+    ];
+
+    for event in &events {
+        let data = format!("data: {}\n\n", event);
+        let framed = format!("{:x}\r\n{}\r\n", data.len(), data);
+        stream.write_all(framed.as_bytes()).await?;
+    }
+
+    let done = "data: [DONE]\n\n";
+    let framed = format!("{:x}\r\n{}\r\n", done.len(), done);
+    stream.write_all(framed.as_bytes()).await?;
+
+    stream.write_all(b"0\r\n\r\n").await?;
+    stream.shutdown().await?;
+    Ok(())
+}
+
+/// Convert a chat.completion JSON body to a Responses-API JSON body.
+/// Used for non-streaming `/v1/responses` requests against MoA.
+fn chat_completion_to_responses_json(chat: &serde_json::Value) -> serde_json::Value {
+    let bytes = serde_json::to_vec(chat).unwrap_or_default();
+    match crate::network::openai::response_adapter::translate_chat_completion_to_responses(&bytes) {
+        Ok(translated) => serde_json::from_slice(&translated).unwrap_or_else(|_| chat.clone()),
+        Err(e) => {
+            tracing::warn!("MoA: chat-to-responses JSON translate failed: {e}");
+            chat.clone()
+        }
+    }
+}
+
+fn short_id_from_response(response: &serde_json::Value) -> String {
+    response
+        .get("id")
+        .and_then(|v| v.as_str())
+        .and_then(|id| id.rsplit('-').next())
+        .unwrap_or("x")
+        .to_string()
 }
 
 #[cfg(test)]
