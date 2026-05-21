@@ -429,12 +429,35 @@ impl SkippyModelHandle {
     }
 
     pub(crate) fn load_stage0_config_with_openai_args(
-        mut config: StageConfig,
+        config: StageConfig,
+        embedded_args: resolver::ResolvedEmbeddedOpenAiArgs,
+        hook_policy: Option<Arc<dyn OpenAiHookPolicy>>,
+        telemetry: SkippyTelemetryOptions,
+    ) -> Result<Self> {
+        Self::load_stage0_runtime_options_with_openai_args(
+            EmbeddedRuntimeOptions {
+                config,
+                topology: None,
+                n_threads: None,
+                n_threads_batch: None,
+                metrics_otlp_grpc: telemetry.metrics_otlp_grpc.clone(),
+                telemetry_queue_capacity: telemetry.queue_capacity,
+                telemetry_level: telemetry.level,
+            },
+            embedded_args,
+            hook_policy,
+            telemetry,
+        )
+    }
+
+    pub(crate) fn load_stage0_runtime_options_with_openai_args(
+        mut runtime_options: EmbeddedRuntimeOptions,
         embedded_args: resolver::ResolvedEmbeddedOpenAiArgs,
         hook_policy: Option<Arc<dyn OpenAiHookPolicy>>,
         telemetry: SkippyTelemetryOptions,
     ) -> Result<Self> {
         configure_materialized_stage_cache();
+        let config = &mut runtime_options.config;
         let materialized_pin = if config.load_mode == LoadMode::LayerPackage {
             if let Some(model_path) = config.model_path.as_deref() {
                 let local_ref = materialization::resolve_hf_package_to_local(
@@ -454,7 +477,7 @@ impl SkippyModelHandle {
             }
             None
         } else {
-            let materialized = materialize_stage_config(&config)?;
+            let materialized = materialize_stage_config(config)?;
             materialized.map(|(artifact, pin)| {
                 config.manifest_sha256 = Some(artifact.manifest_sha256);
                 config.source_model_path = Some(artifact.source_model_path);
@@ -466,35 +489,27 @@ impl SkippyModelHandle {
             })
         };
         if config.kv_cache.is_none() {
-            let family_policy = family_policy_for_stage_config(&config);
-            config.kv_cache = family_policy.stage_kv_cache_config_for_stage(&config);
+            let family_policy = family_policy_for_stage_config(config);
+            config.kv_cache = family_policy.stage_kv_cache_config_for_stage(config);
         }
-        let runtime = SkippyRuntimeHandle::load(EmbeddedRuntimeOptions {
-            config: config.clone(),
-            topology: None,
-            n_threads: None,
-            n_threads_batch: None,
-            metrics_otlp_grpc: telemetry.metrics_otlp_grpc.clone(),
-            telemetry_queue_capacity: telemetry.queue_capacity,
-            telemetry_level: telemetry.level,
-        })
-        .with_context(|| {
+        let runtime_config = config.clone();
+        let runtime = SkippyRuntimeHandle::load(runtime_options).with_context(|| {
             format!(
                 "load skippy stage 0 runtime for model {} from {:?}",
-                config.model_id, config.model_path
+                runtime_config.model_id, runtime_config.model_path
             )
         })?;
         let telemetry = Telemetry::new(
             telemetry.metrics_otlp_grpc.clone(),
             telemetry.queue_capacity,
-            config.clone(),
+            runtime_config.clone(),
             telemetry.level,
         );
         let binding = embedded_openai_backend(EmbeddedOpenAiArgs {
             bind_addr: "127.0.0.1:0"
                 .parse()
                 .expect("static bind address should parse"),
-            config: config.clone(),
+            config: runtime_config.clone(),
             runtime: runtime.runtime(),
             model_id: embedded_args.model_id,
             default_max_tokens: embedded_args.default_max_tokens,
@@ -522,7 +537,7 @@ impl SkippyModelHandle {
         Ok(Self {
             runtime,
             backend: binding.backend,
-            config,
+            config: runtime_config,
             started_at_unix_nanos: now_unix_nanos(),
             status: Arc::new(Mutex::new(HandleState {
                 state: SkippyModelState::Ready,

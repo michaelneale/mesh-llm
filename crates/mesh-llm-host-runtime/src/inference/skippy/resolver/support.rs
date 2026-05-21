@@ -7,7 +7,7 @@ use super::types::{
     BUILTIN_UBATCH,
 };
 use crate::plugin::{
-    BoolOrAuto, IntegerOrString, ModelFitConfig, SkippyConfig, StringOrStringList,
+    BoolOrAuto, HardwareConfig, IntegerOrString, ModelFitConfig, SkippyConfig, StringOrStringList,
 };
 
 pub(super) fn derive_fit_target_mib(
@@ -67,6 +67,28 @@ pub(super) fn reject_unsupported_model_fit_controls(
     }
     if config.lookup_cache_static.is_some() || config.lookup_cache_dynamic.is_some() {
         bail!("skippy lookup cache controls are not supported by the pinned runtime");
+    }
+    Ok(())
+}
+
+pub(super) fn reject_unsupported_hardware_controls(
+    config: Option<&HardwareConfig>,
+    base_path: &str,
+) -> Result<()> {
+    let Some(config) = config else {
+        return Ok(());
+    };
+    if config.placement.is_some() {
+        bail!("skippy {base_path}.placement is not supported by the pinned runtime");
+    }
+    if config.tensor_split.is_some() {
+        bail!("skippy {base_path}.tensor_split is not supported by the pinned runtime");
+    }
+    if config.cpu_moe.is_some() {
+        bail!("skippy {base_path}.cpu_moe is not supported by the pinned runtime");
+    }
+    if config.n_cpu_moe.is_some() {
+        bail!("skippy {base_path}.n_cpu_moe is not supported by the pinned runtime");
     }
     Ok(())
 }

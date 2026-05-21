@@ -8,9 +8,10 @@ use super::speculative::resolve_speculative_config;
 use super::support::{
     bool_or_auto_value, derive_fit_target_mib, effective_flash_attention,
     has_explicit_prefill_controls, kv_macro_defaults, parse_gpu_layers, pick_owned, pick_string,
-    pick_string_owned, pick_value, reject_unsupported_model_fit_controls, resolve_field_string,
-    resolve_field_value, resolve_prefix_cache, resolve_wire_dtype, throughput_macro_defaults,
-    KvMacroDefaults, ThroughputMacroDefaults,
+    pick_string_owned, pick_value, reject_unsupported_hardware_controls,
+    reject_unsupported_model_fit_controls, resolve_field_string, resolve_field_value,
+    resolve_prefix_cache, resolve_wire_dtype, throughput_macro_defaults, KvMacroDefaults,
+    ThroughputMacroDefaults,
 };
 use super::types::{
     ResolvedHardwareConfig, ResolvedModelFitConfig, ResolvedSkippyConfig,
@@ -25,6 +26,7 @@ pub(crate) fn resolve_skippy_config(
 ) -> Result<ResolvedSkippyConfig> {
     let context = ResolverContext::new(request);
     validate_supported_model_fit_controls(&context)?;
+    validate_supported_hardware_controls(&context)?;
 
     let family_policy =
         family_policy_for_model_path(context.request.model_path, Some(context.request.model_id));
@@ -100,6 +102,21 @@ impl<'a> ResolverContext<'a> {
 fn validate_supported_model_fit_controls(context: &ResolverContext<'_>) -> Result<()> {
     reject_unsupported_model_fit_controls(context.model_fit, "models[].model_fit")?;
     reject_unsupported_model_fit_controls(context.global_model_fit, "defaults.model_fit")
+}
+
+fn validate_supported_hardware_controls(context: &ResolverContext<'_>) -> Result<()> {
+    reject_unsupported_hardware_controls(
+        context
+            .model_entry
+            .and_then(|entry| entry.hardware.as_ref()),
+        "models[].hardware",
+    )?;
+    reject_unsupported_hardware_controls(
+        context
+            .defaults
+            .and_then(|defaults| defaults.hardware.as_ref()),
+        "defaults.hardware",
+    )
 }
 
 fn resolve_model_fit_config(

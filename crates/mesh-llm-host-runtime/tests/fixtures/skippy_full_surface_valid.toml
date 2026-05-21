@@ -32,7 +32,6 @@ model_runtime = "cuda"
 device = "CUDA0"
 gpu_layers = "auto"
 split_mode = "auto"
-placement = "auto"
 safety_margin_gb = 2.0
 mmap = "auto"
 warmup = "auto"

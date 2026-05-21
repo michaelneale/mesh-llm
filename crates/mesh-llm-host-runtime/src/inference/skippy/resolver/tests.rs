@@ -848,6 +848,30 @@ fn integrated_full_surface_fixture_resolves_defaults_overrides_staged_and_runtim
 }
 
 #[test]
+fn resolver_rejects_unsupported_hardware_controls_that_cannot_reach_launch() {
+    let mesh_config = parse_config(
+        r#"
+[defaults.hardware]
+placement = "auto"
+"#,
+    );
+    let model_file = temp_model_file();
+
+    let error = resolve_skippy_config(SkippyConfigResolveRequest {
+        mesh_config: &mesh_config,
+        model_id: "Qwen/Qwen3-0.6B:Q4_K_M",
+        model_path: model_file.path(),
+        model_bytes: 2 * 1024 * 1024 * 1024,
+        allocatable_memory_bytes: None,
+        request_defaults: None,
+    })
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("defaults.hardware.placement"));
+}
+
+#[test]
 fn integrated_invalid_fixture_fails_closed_for_request_defaults_and_single_stage_staged_knobs() {
     let repaired_batch = FULL_SURFACE_INVALID_FIXTURE.replace("batch = 0", "batch = 64");
     let repaired_device = format!(
