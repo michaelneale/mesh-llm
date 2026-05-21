@@ -239,7 +239,7 @@ async fn handle_query(
 
     if outputs.is_empty() {
         return TurnResult {
-            response_body: error_response("All MoA workers failed"),
+            response_body: error_response("All MoA workers failed", MOA_ERR_ALL_WORKERS_FAILED),
             worker_summaries: summaries,
             reducer_used: false,
             reducer_attempts: 0,
@@ -360,7 +360,10 @@ async fn handle_tool_result(
             (
                 candidates.first().map(|c| c.0.clone()).unwrap_or_default(),
                 false,
-                error_response(&format!("Reducer failed (tried {attempts}): {err}")),
+                error_response(
+                    &format!("Reducer failed (tried {attempts}): {err}"),
+                    MOA_ERR_ALL_REDUCERS_FAILED,
+                ),
             )
         }
     };
@@ -493,9 +496,15 @@ fn best_answer(outputs: &[WorkerOutput]) -> String {
 ///     so unstructured clients still surface a useful string to the
 ///     human, just not as a successful assistant reply.
 ///
+/// `code` is the machine-parseable failure mode that clients can branch
+/// on. Callers pass one of the [`MOA_ERR_*`] constants so distinct
+/// failure modes (all-workers-failed vs all-reducers-failed vs future
+/// kinds) surface accurately to the caller rather than being collapsed
+/// to a single string.
+///
 /// The ingress layer is responsible for choosing the HTTP status; this
 /// body is the in-band signal.
-fn error_response(message: &str) -> Value {
+fn error_response(message: &str, code: &str) -> Value {
     json!({
         "id": format!("chatcmpl-moa-{}", short_id()),
         "object": "chat.completion",
@@ -503,7 +512,7 @@ fn error_response(message: &str) -> Value {
         "error": {
             "message": message,
             "type": "moa_failure",
-            "code": "all_workers_failed",
+            "code": code,
         },
         "choices": [{
             "index": 0,
@@ -513,6 +522,12 @@ fn error_response(message: &str) -> Value {
         "usage": { "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0 }
     })
 }
+
+/// All fanned-out workers failed before the arbiter could pick a winner.
+pub const MOA_ERR_ALL_WORKERS_FAILED: &str = "all_workers_failed";
+/// Every reducer candidate failed (in both the tool-result and the
+/// arbiter-escalated paths).
+pub const MOA_ERR_ALL_REDUCERS_FAILED: &str = "all_reducers_failed";
 
 fn chat_response(content: &str) -> Value {
     json!({

@@ -577,12 +577,7 @@ async fn send_moa_as_sse(
         "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nCache-Control: no-cache\r\nConnection: close\r\n",
     );
     for (name, value) in extra_headers {
-        // Strip CR/LF defensively against header-injection bugs creeping in later.
-        let safe_value: String = value.chars().filter(|c| *c != '\r' && *c != '\n').collect();
-        header.push_str(name);
-        header.push_str(": ");
-        header.push_str(&safe_value);
-        header.push_str("\r\n");
+        crate::network::openai::transport::append_safe_header(&mut header, name, value);
     }
     header.push_str("\r\n");
     stream.write_all(header.as_bytes()).await?;
