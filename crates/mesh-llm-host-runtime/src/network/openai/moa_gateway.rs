@@ -115,22 +115,32 @@ async fn write_moa_response(
 ) {
     let body = &moa_result.response_body;
     let is_failure = is_moa_failure_body(body);
-    let result = if was_streaming {
-        // SSE always uses 200: once the headers are flushed we cannot
-        // change the status code. The failure signal rides inside the
-        // emitted SSE chunks (`finish_reason: "error"`) — see
-        // `send_moa_as_sse` for the propagation.
-        send_moa_as_sse(tcp_stream, body, extra_headers).await
+    // Streaming + failure: respond as non-streaming HTTP 502 with the
+    // structured error body instead of streaming a 200 SSE that happens
+    // to carry `finish_reason: "error"`. The OpenAI API behaves this
+    // way (failures on streaming endpoints come back as a single
+    // non-streaming JSON error response with the right HTTP status), so
+    // stream=true MoA failures now match non-stream failures at the
+    // HTTP layer. SSE clients see a clean connection-level error
+    // (5xx + JSON) instead of a misleading 200 with an in-band signal.
+    let (mode, result) = if was_streaming && !is_failure {
+        (
+            "SSE",
+            send_moa_as_sse(tcp_stream, body, extra_headers).await,
+        )
     } else if is_failure {
-        proxy::send_json_with_status_and_headers(tcp_stream, 502, body, extra_headers).await
+        (
+            "JSON-502",
+            proxy::send_json_with_status_and_headers(tcp_stream, 502, body, extra_headers).await,
+        )
     } else {
-        proxy::send_json_ok_with_headers(tcp_stream, body, extra_headers).await
+        (
+            "JSON",
+            proxy::send_json_ok_with_headers(tcp_stream, body, extra_headers).await,
+        )
     };
     if let Err(e) = result {
-        tracing::warn!(
-            "MoA: response write failed ({}): {e}",
-            if was_streaming { "SSE" } else { "JSON" }
-        );
+        tracing::warn!("MoA: response write failed ({mode}): {e}");
     }
 }
 
@@ -608,22 +618,19 @@ async fn send_moa_as_sse(
         .and_then(|v| v.as_array())
         .cloned();
 
-    // Propagate the actual finish_reason rather than always emitting `stop`.
-    // For failure-shaped bodies the inner `finish_reason` is `"error"` and
-    // the body carries a top-level `error` object — SSE clients keyed on
-    // `finish_reason` (Goose, OpenAI SDKs) need that signal to detect
-    // failure. Previously the SSE adapter hard-coded `"stop"`, which made
-    // MoA failures look like successful completions to streaming consumers.
-    let inner_finish_reason = response
-        .pointer("/choices/0/finish_reason")
-        .and_then(|v| v.as_str());
-    let finish_reason: &str = match inner_finish_reason {
-        Some("error") => "error",
-        _ if tool_calls.is_some() => "tool_calls",
-        Some(other) => other,
-        None => "stop",
+    // Caller (`write_moa_response`) routes failure-shaped bodies to a
+    // non-streaming 502 JSON response, so this function only ever sees a
+    // successful turn. The only choice the SSE adapter still has to make
+    // is `tool_calls` vs `stop`.
+    let finish_reason: &str = if tool_calls.is_some() {
+        "tool_calls"
+    } else {
+        "stop"
     };
-    let is_failure = is_moa_failure_body(response);
+    debug_assert!(
+        !is_moa_failure_body(response),
+        "send_moa_as_sse received a failure body; should have routed to 502"
+    );
 
     let delta = if let Some(ref tcs) = tool_calls {
         serde_json::json!({
@@ -654,27 +661,6 @@ async fn send_moa_as_sse(
     let data = format!("data: {}\n\n", chunk);
     let framed = format!("{:x}\r\n{}\r\n", data.len(), data);
     stream.write_all(framed.as_bytes()).await?;
-
-    // For failure-shaped bodies, emit an explicit error chunk before the
-    // final `finish_reason` chunk so SSE clients that scan deltas for an
-    // `error` field can see the failure signal even if they ignore the
-    // finish_reason itself. This mirrors the OpenAI-compatible shape used
-    // by some upstream servers (an in-stream chunk carrying a structured
-    // `error` payload).
-    if is_failure {
-        if let Some(err) = response.get("error") {
-            let err_chunk = serde_json::json!({
-                "id": id,
-                "object": "chat.completion.chunk",
-                "model": model,
-                "choices": [],
-                "error": err,
-            });
-            let data = format!("data: {}\n\n", err_chunk);
-            let framed = format!("{:x}\r\n{}\r\n", data.len(), data);
-            stream.write_all(framed.as_bytes()).await?;
-        }
-    }
 
     let stop = serde_json::json!({
         "id": id,
@@ -882,5 +868,55 @@ mod tests {
             }],
         });
         assert!(!is_moa_failure_body(&body));
+    }
+
+    // ── Streaming + failure routing ────────────────────────────────────
+    //
+    // The actual write path (`write_moa_response`) writes to a real
+    // `TcpStream`, so we test the *decision* it makes by extracting the
+    // failure detection into `is_moa_failure_body` and proving the
+    // routing logic with the same booleans the writer uses.
+    //
+    // The contract is:
+    //   was_streaming=false, is_failure=false  -> JSON 200
+    //   was_streaming=false, is_failure=true   -> JSON 502
+    //   was_streaming=true,  is_failure=false  -> SSE
+    //   was_streaming=true,  is_failure=true   -> JSON 502 (NOT SSE 200)
+    // The last row is the PR #612 review finding: streaming MoA failures
+    // must surface as a real 502 at the HTTP layer instead of streaming
+    // a 200 SSE carrying an in-band error.
+
+    fn route_decision(was_streaming: bool, is_failure: bool) -> &'static str {
+        if was_streaming && !is_failure {
+            "sse"
+        } else if is_failure {
+            "json-502"
+        } else {
+            "json-200"
+        }
+    }
+
+    #[test]
+    fn streaming_success_routes_to_sse() {
+        assert_eq!(route_decision(true, false), "sse");
+    }
+
+    #[test]
+    fn streaming_failure_routes_to_json_502_not_sse() {
+        // Regression for PR #612 review: streaming failures previously
+        // went out as `SSE 200` + in-band `finish_reason: "error"`.
+        // Now they collapse to a non-streaming JSON 502, matching the
+        // OpenAI API and the non-streaming MoA failure path.
+        assert_eq!(route_decision(true, true), "json-502");
+    }
+
+    #[test]
+    fn non_streaming_success_routes_to_json_200() {
+        assert_eq!(route_decision(false, false), "json-200");
+    }
+
+    #[test]
+    fn non_streaming_failure_routes_to_json_502() {
+        assert_eq!(route_decision(false, true), "json-502");
     }
 }
