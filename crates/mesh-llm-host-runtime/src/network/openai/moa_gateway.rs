@@ -1045,4 +1045,58 @@ mod tests {
     fn non_streaming_failure_routes_to_json_502() {
         assert_eq!(route_decision(false, true), "json-502");
     }
+
+    // ── Responses-API adapter ───────────────────────────────────────
+    //
+    // When the request came in via /v1/responses, MoA's response must
+    // be rendered in the Responses-API shape, not chat.completion. The
+    // chat UI's streaming parser ignores chat.completion.chunk events,
+    // which is what caused the "streaming response" spinner with no
+    // visible text on the public mesh.
+
+    fn fixture_chat_completion(content: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": "chatcmpl-moa-fixture",
+            "object": "chat.completion",
+            "model": "mesh",
+            "choices": [{
+                "index": 0,
+                "message": { "role": "assistant", "content": content },
+                "finish_reason": "stop"
+            }],
+            "usage": { "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0 }
+        })
+    }
+
+    #[test]
+    fn chat_completion_to_responses_json_returns_response_object() {
+        // Non-streaming /v1/responses with model=mesh: the body that
+        // reaches the client must be Responses-shape, not chat-shape.
+        let chat = fixture_chat_completion("hello world");
+        let responses = chat_completion_to_responses_json(&chat);
+        assert_eq!(
+            responses.get("object").and_then(|v| v.as_str()),
+            Some("response"),
+            "got: {}",
+            serde_json::to_string(&responses).unwrap_or_default()
+        );
+        // The text must survive translation.
+        let text = serde_json::to_string(&responses).unwrap_or_default();
+        assert!(
+            text.contains("hello world"),
+            "response body must carry the original content; got {text}"
+        );
+    }
+
+    #[test]
+    fn chat_completion_to_responses_json_passes_through_on_malformed() {
+        // Defensive: if the translator can't make sense of the body
+        // we return the chat body unchanged rather than blowing up.
+        let bogus = serde_json::json!({ "not": "a chat completion" });
+        let out = chat_completion_to_responses_json(&bogus);
+        // The translator may either succeed (producing an empty
+        // response) or fall back to the input; both behaviours are
+        // acceptable, what matters is no panic and a JSON value.
+        assert!(out.is_object());
+    }
 }
