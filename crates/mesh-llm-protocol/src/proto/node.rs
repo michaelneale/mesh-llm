@@ -116,6 +116,17 @@ pub struct PeerAnnouncement {
     pub latency_age_ms: ::core::option::Option<u32>,
     #[prost(bytes = "vec", optional, tag = "43")]
     pub latency_observer_id: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+    #[prost(message, repeated, tag = "44")]
+    pub advertised_model_throughput: ::prost::alloc::vec::Vec<AdvertisedModelThroughput>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AdvertisedModelThroughput {
+    #[prost(string, tag = "1")]
+    pub model_name: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub avg_tokens_per_second_milli: u64,
+    #[prost(uint64, tag = "3")]
+    pub throughput_samples: u64,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MeshSubprotocol {

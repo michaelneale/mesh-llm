@@ -834,6 +834,8 @@ mod tests {
             stage_protocol_generation_supported: false,
             stage_status_list_supported: false,
             owner_summary: OwnershipSummary::default(),
+            advertised_model_throughput: vec![],
+
             display_rtt: None,
             propagated_latency: None,
         }
@@ -1267,6 +1269,7 @@ mod tests {
             artifact_transfer_supported: true,
             stage_protocol_generation_supported: true,
             stage_status_list_supported: true,
+            advertised_model_throughput: vec![],
             latency_ms: None,
             latency_source: None,
             latency_age_ms: None,
@@ -1311,6 +1314,87 @@ mod tests {
         assert_eq!(roundtripped.claim.owner_id, "owner-abc");
         assert_eq!(roundtripped.claim.cert_id, "cert-123");
         assert_eq!(roundtripped.claim.node_label.as_deref(), Some("studio"));
+    }
+
+    #[test]
+    fn advertised_model_throughput_roundtrips_through_proto_announcement() {
+        let peer_id = EndpointId::from(SecretKey::from_bytes(&[0xAC; 32]).public());
+        let expected_hints = vec![crate::network::metrics::ModelThroughputHint {
+            model_name: "qwen".to_string(),
+            avg_tokens_per_second_milli: 42_000,
+            throughput_samples: 7,
+        }];
+        let ann = super::PeerAnnouncement {
+            addr: iroh::EndpointAddr {
+                id: peer_id,
+                addrs: Default::default(),
+            },
+            role: super::NodeRole::Host { http_port: 9337 },
+            first_joined_mesh_ts: None,
+            models: vec![],
+            vram_bytes: 0,
+            model_source: None,
+            serving_models: vec!["qwen".to_string()],
+            hosted_models: Some(vec!["qwen".to_string()]),
+            available_models: vec![],
+            requested_models: vec![],
+            explicit_model_interests: vec![],
+            version: None,
+            model_demand: HashMap::new(),
+            mesh_id: None,
+            gpu_name: None,
+            hostname: None,
+            is_soc: None,
+            gpu_vram: None,
+            gpu_reserved_bytes: None,
+            gpu_mem_bandwidth_gbps: None,
+            gpu_compute_tflops_fp32: None,
+            gpu_compute_tflops_fp16: None,
+            available_model_metadata: vec![],
+            experts_summary: None,
+            available_model_sizes: HashMap::new(),
+            served_model_descriptors: vec![],
+            served_model_runtime: vec![],
+            owner_attestation: None,
+            artifact_transfer_supported: false,
+            stage_protocol_generation_supported: false,
+            stage_status_list_supported: false,
+            advertised_model_throughput: vec![
+                expected_hints[0].clone(),
+                crate::network::metrics::ModelThroughputHint {
+                    model_name: "ghost".to_string(),
+                    avg_tokens_per_second_milli: 250_000,
+                    throughput_samples: 99,
+                },
+            ],
+            latency_ms: None,
+            latency_source: None,
+            latency_age_ms: None,
+            latency_observer_id: None,
+        };
+
+        let mut proto_pa = local_ann_to_proto_ann(&ann);
+        assert_eq!(proto_pa.advertised_model_throughput.len(), 1);
+        assert_eq!(proto_pa.advertised_model_throughput[0].model_name, "qwen");
+        assert_eq!(
+            proto_pa.advertised_model_throughput[0].avg_tokens_per_second_milli,
+            42_000
+        );
+        assert_eq!(
+            proto_pa.advertised_model_throughput[0].throughput_samples,
+            7
+        );
+        proto_pa
+            .advertised_model_throughput
+            .push(crate::proto::node::AdvertisedModelThroughput {
+                model_name: "ghost".to_string(),
+                avg_tokens_per_second_milli: 250_000,
+                throughput_samples: 99,
+            });
+
+        let (_, roundtripped) =
+            proto_ann_to_local(&proto_pa).expect("proto_ann_to_local must succeed");
+        assert_eq!(roundtripped.advertised_model_throughput, expected_hints);
     }
 
     #[test]
@@ -1396,6 +1480,7 @@ mod tests {
             artifact_transfer_supported: true,
             stage_protocol_generation_supported: true,
             stage_status_list_supported: true,
+            advertised_model_throughput: vec![],
             latency_ms: None,
             latency_source: None,
             latency_age_ms: None,
@@ -1959,6 +2044,7 @@ mod tests {
             artifact_transfer_supported: true,
             stage_protocol_generation_supported: true,
             stage_status_list_supported: true,
+            advertised_model_throughput: vec![],
             latency_ms: None,
             latency_source: None,
             latency_age_ms: None,
@@ -2010,6 +2096,7 @@ mod tests {
             artifact_transfer_supported: false,
             stage_protocol_generation_supported: false,
             stage_status_list_supported: false,
+            advertised_model_throughput: vec![],
             latency_ms: None,
             latency_source: None,
             latency_age_ms: None,

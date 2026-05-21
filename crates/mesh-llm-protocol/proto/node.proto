@@ -51,6 +51,7 @@ message PeerAnnouncement {
   optional LatencySource latency_source = 41;
   optional uint32 latency_age_ms = 42;
   optional bytes latency_observer_id = 43;
+  repeated AdvertisedModelThroughput advertised_model_throughput = 44;
 
 enum LatencySource {
   LATENCY_SOURCE_UNSPECIFIED = 0;
@@ -58,6 +59,12 @@ enum LatencySource {
   LATENCY_SOURCE_ESTIMATED = 2;    // Estimated via transitive gossip
   LATENCY_SOURCE_UNKNOWN = 3;      // Unknown source (e.g. propagated with no origin)
 }
+}
+
+message AdvertisedModelThroughput {
+  string model_name = 1;
+  uint64 avg_tokens_per_second_milli = 2;
+  uint64 throughput_samples = 3;
 }
 
 message MeshSubprotocol {

@@ -3463,6 +3463,8 @@ mod tests {
             artifact_transfer_supported: false,
             stage_protocol_generation_supported,
             stage_status_list_supported: false,
+            advertised_model_throughput: vec![],
+
             display_rtt: None,
             propagated_latency: None,
             owner_summary: crate::crypto::OwnershipSummary::default(),

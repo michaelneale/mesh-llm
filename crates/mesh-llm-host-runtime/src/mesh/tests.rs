@@ -973,6 +973,8 @@ fn make_test_peer_info(peer_id: EndpointId) -> PeerInfo {
         stage_protocol_generation_supported: false,
         stage_status_list_supported: false,
         owner_summary: OwnershipSummary::default(),
+        advertised_model_throughput: vec![],
+
         display_rtt: None,
         propagated_latency: None,
     }
@@ -3017,6 +3019,7 @@ fn gossip_frame_roundtrip_preserves_scanned_model_metadata() {
         artifact_transfer_supported: false,
         stage_protocol_generation_supported: false,
         stage_status_list_supported: false,
+        advertised_model_throughput: vec![],
         latency_ms: None,
         latency_source: None,
         latency_age_ms: None,
@@ -3297,6 +3300,7 @@ fn transitive_peer_update_refreshes_metadata_fields() {
         artifact_transfer_supported: true,
         stage_protocol_generation_supported: true,
         stage_status_list_supported: true,
+        advertised_model_throughput: vec![],
         latency_ms: None,
         latency_source: None,
         latency_age_ms: None,
@@ -3382,6 +3386,7 @@ fn transitive_peer_merge_preserves_richer_direct_address() {
         artifact_transfer_supported: true,
         stage_protocol_generation_supported: true,
         stage_status_list_supported: true,
+        advertised_model_throughput: vec![],
         latency_ms: None,
         latency_source: None,
         latency_age_ms: None,
@@ -3441,6 +3446,7 @@ fn transitive_peer_merge_preserves_richer_direct_address() {
         artifact_transfer_supported: true,
         stage_protocol_generation_supported: true,
         stage_status_list_supported: true,
+        advertised_model_throughput: vec![],
         latency_ms: None,
         latency_source: None,
         latency_age_ms: None,
@@ -4023,6 +4029,7 @@ fn transitive_peer_update_refreshes_last_mentioned() {
         artifact_transfer_supported: true,
         stage_protocol_generation_supported: true,
         stage_status_list_supported: true,
+        advertised_model_throughput: vec![],
         latency_ms: None,
         latency_source: None,
         latency_age_ms: None,
@@ -4775,6 +4782,8 @@ fn make_test_peer(id: EndpointId, rtt_ms: Option<u32>, vram_gb: u64) -> PeerInfo
         stage_protocol_generation_supported: false,
         stage_status_list_supported: false,
         owner_summary: OwnershipSummary::default(),
+        advertised_model_throughput: vec![],
+
         display_rtt: None,
         propagated_latency: None,
     }

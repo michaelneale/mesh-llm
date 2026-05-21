@@ -962,36 +962,158 @@ pub(crate) fn request_budget_tokens_from_parts(
     )
 }
 
-fn reorder_candidates_by_context<T: Clone>(
-    candidates: &[(T, Option<u32>)],
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct TargetThroughputRank {
+    avg_tokens_per_second_milli: u64,
+    throughput_samples: u64,
+    local_observation: bool,
+}
+
+#[derive(Clone)]
+struct RankedTarget<T> {
+    index: usize,
+    candidate: T,
+    context_length: Option<u32>,
+    throughput: Option<TargetThroughputRank>,
+}
+
+const LOCAL_THROUGHPUT_PRECEDENCE_SAMPLES: u64 = 3;
+const TARGET_THROUGHPUT_MAX_SCORE_SAMPLES: u64 = 32;
+
+fn target_throughput_rank_key(throughput: Option<TargetThroughputRank>) -> (bool, bool, u64, u64) {
+    let Some(throughput) = throughput else {
+        return (false, false, 0, 0);
+    };
+    if throughput.avg_tokens_per_second_milli == 0 || throughput.throughput_samples == 0 {
+        return (false, false, 0, 0);
+    }
+    let sample_weight = throughput
+        .throughput_samples
+        .min(TARGET_THROUGHPUT_MAX_SCORE_SAMPLES);
+    (
+        true,
+        throughput.local_observation,
+        throughput.avg_tokens_per_second_milli,
+        sample_weight,
+    )
+}
+
+fn sort_ranked_targets<T>(targets: &mut [RankedTarget<T>]) {
+    targets.sort_by(|a, b| {
+        target_throughput_rank_key(b.throughput)
+            .cmp(&target_throughput_rank_key(a.throughput))
+            .then_with(|| a.index.cmp(&b.index))
+    });
+}
+
+fn reorder_candidates_by_context_and_throughput<T: Clone>(
+    candidates: &[(T, Option<u32>, Option<TargetThroughputRank>)],
     required_tokens: Option<u32>,
 ) -> Vec<T> {
+    let ranked = candidates
+        .iter()
+        .enumerate()
+        .map(
+            |(index, (candidate, context_length, throughput))| RankedTarget {
+                index,
+                candidate: candidate.clone(),
+                context_length: *context_length,
+                throughput: *throughput,
+            },
+        )
+        .collect::<Vec<_>>();
+
     let Some(required_tokens) = required_tokens else {
-        return candidates
-            .iter()
-            .map(|(candidate, _)| candidate.clone())
-            .collect();
+        let mut ranked = ranked;
+        sort_ranked_targets(&mut ranked);
+        return ranked.into_iter().map(|ranked| ranked.candidate).collect();
     };
 
     let mut adequate = Vec::new();
     let mut unknown = Vec::new();
-    for (candidate, context_length) in candidates {
-        match context_length {
-            Some(value) if *value >= required_tokens => adequate.push(candidate.clone()),
+    for ranked in ranked {
+        match ranked.context_length {
+            Some(value) if value >= required_tokens => adequate.push(ranked),
             Some(_) => {}
-            None => unknown.push(candidate.clone()),
+            None => unknown.push(ranked),
         }
     }
 
     if adequate.is_empty() && unknown.is_empty() {
-        candidates
+        let mut fallback = candidates
             .iter()
-            .map(|(candidate, _)| candidate.clone())
-            .collect()
-    } else {
-        adequate.extend(unknown);
-        adequate
+            .enumerate()
+            .map(
+                |(index, (candidate, context_length, throughput))| RankedTarget {
+                    index,
+                    candidate: candidate.clone(),
+                    context_length: *context_length,
+                    throughput: *throughput,
+                },
+            )
+            .collect::<Vec<_>>();
+        sort_ranked_targets(&mut fallback);
+        return fallback
+            .into_iter()
+            .map(|ranked| ranked.candidate)
+            .collect();
     }
+
+    sort_ranked_targets(&mut adequate);
+    sort_ranked_targets(&mut unknown);
+    adequate
+        .into_iter()
+        .chain(unknown)
+        .map(|ranked| ranked.candidate)
+        .collect()
+}
+
+fn local_target_throughput_rank(
+    node: &mesh::Node,
+    model: &str,
+    target: &election::InferenceTarget,
+) -> Option<TargetThroughputRank> {
+    let attempt_target = match target {
+        election::InferenceTarget::Local(port) => {
+            crate::network::metrics::AttemptTarget::Local(format!("127.0.0.1:{port}"))
+        }
+        election::InferenceTarget::Remote(peer_id) => {
+            crate::network::metrics::AttemptTarget::Remote(peer_id.fmt_short().to_string())
+        }
+        election::InferenceTarget::None => return None,
+    };
+    node.routing_metrics()
+        .throughput_hint_for_target(model, attempt_target)
+        .map(|hint| TargetThroughputRank {
+            avg_tokens_per_second_milli: hint.avg_tokens_per_second_milli,
+            throughput_samples: hint.throughput_samples,
+            local_observation: true,
+        })
+}
+
+async fn remote_target_throughput_rank(
+    node: &mesh::Node,
+    model: &str,
+    peer_id: iroh::EndpointId,
+) -> Option<TargetThroughputRank> {
+    let target = election::InferenceTarget::Remote(peer_id);
+    let local = local_target_throughput_rank(node, model, &target);
+    if local
+        .map(|hint| hint.throughput_samples >= LOCAL_THROUGHPUT_PRECEDENCE_SAMPLES)
+        .unwrap_or(false)
+    {
+        return local;
+    }
+
+    let gossiped = node
+        .peer_model_throughput_hint(peer_id, model)
+        .await
+        .map(|hint| TargetThroughputRank {
+            avg_tokens_per_second_milli: hint.avg_tokens_per_second_milli,
+            throughput_samples: hint.throughput_samples,
+            local_observation: false,
+        });
+    gossiped.or(local)
 }
 
 async fn order_remote_hosts_by_context(
@@ -1002,9 +1124,13 @@ async fn order_remote_hosts_by_context(
 ) -> Vec<iroh::EndpointId> {
     let mut candidates = Vec::with_capacity(hosts.len());
     for host in hosts {
-        candidates.push((*host, node.peer_model_context_length(*host, model).await));
+        candidates.push((
+            *host,
+            node.peer_model_context_length(*host, model).await,
+            remote_target_throughput_rank(node, model, *host).await,
+        ));
     }
-    reorder_candidates_by_context(&candidates, required_tokens)
+    reorder_candidates_by_context_and_throughput(&candidates, required_tokens)
 }
 
 async fn order_targets_by_context(
@@ -1022,9 +1148,15 @@ async fn order_targets_by_context(
             }
             election::InferenceTarget::None => None,
         };
-        candidates.push((target.clone(), context_length));
+        let throughput = match target {
+            election::InferenceTarget::Remote(peer_id) => {
+                remote_target_throughput_rank(node, model, *peer_id).await
+            }
+            _ => local_target_throughput_rank(node, model, target),
+        };
+        candidates.push((target.clone(), context_length, throughput));
     }
-    reorder_candidates_by_context(&candidates, required_tokens)
+    reorder_candidates_by_context_and_throughput(&candidates, required_tokens)
 }
 
 fn move_target_first<T: PartialEq>(targets: &mut [T], target: &T) -> bool {
@@ -2825,7 +2957,8 @@ async fn order_mesh_target_hosts(
     let Some(name) = effective_model else {
         return target_hosts;
     };
-    let ordered = order_remote_hosts_by_context(node, name, required_tokens, &target_hosts).await;
+    let mut ordered =
+        order_remote_hosts_by_context(node, name, required_tokens, &target_hosts).await;
     if let (Some(prefix_hash), Some(election::InferenceTarget::Remote(cached_host))) =
         (prepared.learn_prefix_hash, prepared.cached_target.as_ref())
     {
@@ -2837,6 +2970,8 @@ async fn order_mesh_target_hosts(
                 prefix_hash,
                 &election::InferenceTarget::Remote(*cached_host),
             );
+        } else {
+            move_target_first(&mut ordered, cached_host);
         }
     }
     ordered
@@ -5068,8 +5203,12 @@ mod tests {
 
     #[test]
     fn test_reorder_candidates_by_context_prefers_known_fit_then_unknown() {
-        let ordered = reorder_candidates_by_context(
-            &[(1u8, Some(4096)), (2u8, None), (3u8, Some(16384))],
+        let ordered = reorder_candidates_by_context_and_throughput(
+            &[
+                (1u8, Some(4096), None),
+                (2u8, None, None),
+                (3u8, Some(16384), None),
+            ],
             Some(8192),
         );
 
@@ -5078,8 +5217,140 @@ mod tests {
 
     #[test]
     fn test_reorder_candidates_by_context_falls_back_when_all_known_too_small() {
-        let ordered =
-            reorder_candidates_by_context(&[(1u8, Some(4096)), (2u8, Some(6144))], Some(8192));
+        let ordered = reorder_candidates_by_context_and_throughput(
+            &[(1u8, Some(4096), None), (2u8, Some(6144), None)],
+            Some(8192),
+        );
+
+        assert_eq!(ordered, vec![1, 2]);
+    }
+
+    #[test]
+    fn test_reorder_candidates_without_throughput_preserves_stable_order() {
+        let ordered = reorder_candidates_by_context_and_throughput(
+            &[
+                (1u8, Some(8192), None),
+                (2u8, Some(8192), None),
+                (3u8, None, None),
+            ],
+            Some(4096),
+        );
+
+        assert_eq!(ordered, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_reorder_candidates_by_throughput_prefers_stronger_hint() {
+        let ordered = reorder_candidates_by_context_and_throughput(
+            &[
+                (
+                    1u8,
+                    Some(8192),
+                    Some(TargetThroughputRank {
+                        avg_tokens_per_second_milli: 10_000,
+                        throughput_samples: 4,
+                        local_observation: false,
+                    }),
+                ),
+                (
+                    2u8,
+                    Some(8192),
+                    Some(TargetThroughputRank {
+                        avg_tokens_per_second_milli: 40_000,
+                        throughput_samples: 4,
+                        local_observation: false,
+                    }),
+                ),
+            ],
+            Some(4096),
+        );
+
+        assert_eq!(ordered, vec![2, 1]);
+    }
+
+    #[test]
+    fn test_reorder_candidates_uses_samples_as_tiebreaker_not_multiplier() {
+        let ordered = reorder_candidates_by_context_and_throughput(
+            &[
+                (
+                    1u8,
+                    Some(8192),
+                    Some(TargetThroughputRank {
+                        avg_tokens_per_second_milli: 20_000,
+                        throughput_samples: 32,
+                        local_observation: false,
+                    }),
+                ),
+                (
+                    2u8,
+                    Some(8192),
+                    Some(TargetThroughputRank {
+                        avg_tokens_per_second_milli: 40_000,
+                        throughput_samples: 2,
+                        local_observation: false,
+                    }),
+                ),
+            ],
+            Some(4096),
+        );
+
+        assert_eq!(ordered, vec![2, 1]);
+    }
+
+    #[test]
+    fn test_reorder_candidates_keeps_context_fit_ahead_of_faster_unknown() {
+        let ordered = reorder_candidates_by_context_and_throughput(
+            &[
+                (
+                    1u8,
+                    Some(8192),
+                    Some(TargetThroughputRank {
+                        avg_tokens_per_second_milli: 10_000,
+                        throughput_samples: 4,
+                        local_observation: false,
+                    }),
+                ),
+                (
+                    2u8,
+                    None,
+                    Some(TargetThroughputRank {
+                        avg_tokens_per_second_milli: 90_000,
+                        throughput_samples: 16,
+                        local_observation: false,
+                    }),
+                ),
+            ],
+            Some(4096),
+        );
+
+        assert_eq!(ordered, vec![1, 2]);
+    }
+
+    #[test]
+    fn test_reorder_candidates_weights_local_observations_above_gossip() {
+        let ordered = reorder_candidates_by_context_and_throughput(
+            &[
+                (
+                    1u8,
+                    Some(8192),
+                    Some(TargetThroughputRank {
+                        avg_tokens_per_second_milli: 20_000,
+                        throughput_samples: 3,
+                        local_observation: true,
+                    }),
+                ),
+                (
+                    2u8,
+                    Some(8192),
+                    Some(TargetThroughputRank {
+                        avg_tokens_per_second_milli: 50_000,
+                        throughput_samples: 4,
+                        local_observation: false,
+                    }),
+                ),
+            ],
+            Some(4096),
+        );
 
         assert_eq!(ordered, vec![1, 2]);
     }
