@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
-# ci-client-auto-test.sh — verify `mesh-llm client --auto` boots its API.
+# ci-client-auto-test.sh — verify `mesh-llm client --auto` boots its API
+# AND actually joins the public mesh.
 #
-# The critical invariant: even when Nostr discovery returns dead/stale peers,
-# the management API on :3131 must come up. A broken implementation thrashes
-# retrying dead peers and never binds the console port.
+# Two invariants:
+#   1. Even when Nostr discovery returns dead/stale peers, the management API
+#      on :3132 must come up. A broken implementation thrashes retrying dead
+#      peers and never binds the console port.
+#   2. With public Nostr discovery available, the node must actually join a
+#      mesh — i.e. /api/status reports mesh_id set AND (peers non-empty OR
+#      first_joined_mesh_ts set). This catches regressions where discovery,
+#      gossip, or join-handshake silently break and the node sits idle.
 #
 # Usage: scripts/ci-client-auto-test.sh <mesh-llm-binary>
 #
-# Exits 0 if the API is reachable within the timeout, 1 otherwise.
+# Exits 0 only if both invariants hold; 1 otherwise.
 
 set -euo pipefail
 
@@ -15,7 +21,6 @@ MESH_LLM="${1:?Usage: $0 <mesh-llm-binary>}"
 CONSOLE_PORT=3132        # avoid clashing with other CI steps
 API_PORT=9338
 MAX_WAIT=120             # seconds — generous for Nostr discovery + join attempt
-NO_MESH_GRACE=30         # seconds — public discovery can legitimately be empty
 LOG=/tmp/mesh-llm-client-auto.log
 
 echo "=== CI Client-Auto Test ==="
@@ -23,7 +28,6 @@ echo "  mesh-llm:     $MESH_LLM"
 echo "  console port: $CONSOLE_PORT"
 echo "  api port:     $API_PORT"
 echo "  max wait:     ${MAX_WAIT}s"
-echo "  no-mesh grace: ${NO_MESH_GRACE}s"
 echo "  os:           $(uname -s)"
 
 if [ ! -f "$MESH_LLM" ]; then
@@ -72,15 +76,9 @@ for i in $(seq 1 "$MAX_WAIT"); do
         # different (expected) failure. The test only fails if the API never
         # came up while the process was alive.
         if grep -q "No meshes found after" "$LOG" 2>/dev/null; then
-            echo "⚠️  Process exited with 'no meshes found' — this is expected in CI."
-            echo "   Checking whether the API was reachable before exit..."
-            if grep -qE "Console:|📡 Client ready:" "$LOG" 2>/dev/null; then
-                echo "✅ API was started before process exited (console bind logged)"
-                exit 0
-            else
-                echo "❌ API never started — console was never bound"
-                exit 1
-            fi
+            echo "❌ Process exited with 'no meshes found'."
+            echo "   Either the public mesh is currently down, or discovery is broken."
+            exit 1
         fi
         echo "❌ mesh-llm exited unexpectedly"
         exit 1
@@ -97,11 +95,6 @@ for i in $(seq 1 "$MAX_WAIT"); do
         echo "  Still waiting... (${i}s)"
         # Show last few log lines for debugging
         tail -3 "$LOG" 2>/dev/null | sed 's/^/    /' || true
-    fi
-    if [ "$i" -ge "$NO_MESH_GRACE" ] && grep -q "No meshes found yet" "$LOG" 2>/dev/null; then
-        echo "⚠️  Public Nostr discovery has not found a mesh after ${i}s."
-        echo "   Treating this CI run as inconclusive for client --auto boot rather than failing on public mesh availability."
-        exit 0
     fi
     sleep 1
 done
@@ -125,6 +118,63 @@ if [ "$API_UP" = true ]; then
         echo "✅ /v1/models is reachable"
     else
         echo "⚠️  /v1/models not reachable (may be expected with no live peers)"
+    fi
+
+    # Required "actually joined a mesh" signal.
+    #
+    # Predicate: mesh_id set AND peers non-empty.
+    #
+    # We deliberately do NOT accept `first_joined_mesh_ts` as evidence of a
+    # successful public-mesh join. When `client --auto` finds no candidates
+    # via Nostr discovery, it falls through to `run_auto_start_new_mesh`,
+    # which generates a fresh local mesh_id AND sets first_joined_mesh_ts
+    # to "now" with zero peers. That standalone-fallback path would satisfy
+    # a `mesh_id OR first_joined_mesh_ts` predicate and silently pass CI
+    # while the node is talking to nobody — exactly the regression this
+    # test is meant to catch.
+    #
+    # The only honest signal that public discovery + join actually worked
+    # end-to-end is at least one real peer. We poll for up to JOIN_WAIT
+    # seconds; if no peer ever appears, this step fails.
+    JOIN_WAIT=60
+    echo "Polling /api/status for at least one peer (mesh_id set AND peers non-empty, up to ${JOIN_WAIT}s)..."
+    JOINED=false
+    for j in $(seq 1 "$JOIN_WAIT"); do
+        STATUS=$(curl -sf --max-time 5 "http://localhost:${CONSOLE_PORT}/api/status" 2>/dev/null || echo "")
+        if [ -n "$STATUS" ] && echo "$STATUS" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+mesh_id = d.get("mesh_id")
+peers = d.get("peers") or []
+if mesh_id and peers:
+    sys.exit(0)
+sys.exit(1)
+' 2>/dev/null; then
+            MESH_ID=$(echo "$STATUS" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("mesh_id",""))')
+            PEER_COUNT=$(echo "$STATUS" | python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("peers") or []))')
+            echo "✅ Joined mesh after ${j}s — mesh_id=${MESH_ID} peers=${PEER_COUNT}"
+            JOINED=true
+            break
+        fi
+        if [ $((j % 10)) -eq 0 ]; then
+            echo "  Still waiting for at least one peer... (${j}s)"
+        fi
+        sleep 1
+    done
+
+    if [ "$JOINED" = false ]; then
+        echo ""
+        echo "❌ Console API came up but the node never saw any peer within ${JOIN_WAIT}s."
+        echo "   Required signal: /api/status with mesh_id set AND peers non-empty."
+        echo "   (first_joined_mesh_ts alone is NOT accepted — it is also set by the"
+        echo "    standalone-fallback path when no public mesh is discovered.)"
+        if grep -q "No meshes found yet" "$LOG" 2>/dev/null; then
+            echo "   Log indicates public Nostr discovery returned no meshes."
+            echo "   Either the public mesh is currently down, or discovery is broken."
+        fi
+        echo "   Last /api/status body:"
+        echo "$STATUS" | sed 's/^/     /'
+        exit 1
     fi
 
     echo ""
