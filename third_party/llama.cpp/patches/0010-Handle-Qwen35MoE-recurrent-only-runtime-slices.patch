@@ -1,4 +1,4 @@
-From c9d96e127102e92df56ff1e6c55119029952f8b8 Mon Sep 17 00:00:00 2001
+From 99f086935a41aacd88c578b6f8bd6a6ee0083eda Mon Sep 17 00:00:00 2001
 From: James Dumay <jameswdumay@gmail.com>
 Date: Sat, 25 Apr 2026 15:44:46 +1000
 Subject: [PATCH 10/80] Handle Qwen35MoE recurrent-only runtime slices
@@ -9,7 +9,7 @@ Subject: [PATCH 10/80] Handle Qwen35MoE recurrent-only runtime slices
  2 files changed, 25 insertions(+), 8 deletions(-)
 
 diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
-index d289d6fb..627064b7 100644
+index 8fd30f88..34bff803 100644
 --- a/src/llama-graph.cpp
 +++ b/src/llama-graph.cpp
 @@ -590,17 +590,22 @@ void llm_graph_input_attn_cross::set_input(const llama_ubatch * ubatch) {
@@ -58,13 +58,13 @@ index d289d6fb..627064b7 100644
      const int64_t n_rs = mctx->get_recr()->get_n_rs();
  
 diff --git a/src/models/qwen35moe.cpp b/src/models/qwen35moe.cpp
-index 6dcd3aec..dda3ec90 100644
+index 7c2a85d2..da58e020 100644
 --- a/src/models/qwen35moe.cpp
 +++ b/src/models/qwen35moe.cpp
-@@ -119,6 +119,13 @@ llama_model_qwen35moe::graph::graph(const llama_model & model, const llm_graph_p
+@@ -178,6 +178,13 @@ llama_model_qwen35moe::graph::graph(const llama_model & model, const llm_graph_p
      const bool stage_filtered = stage_filter.enabled;
-     const int il_start = stage_filtered ? stage_filter.layer_start : 0;
-     const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
+     const int il_start = stage_filtered ? std::min(stage_filter.layer_start, n_transformer_layers) : 0;
+     const int il_end   = stage_filtered ? std::min(stage_filter.layer_end,   n_transformer_layers) : n_transformer_layers;
 +    bool has_attention_layer = false;
 +    for (int il = il_start; il < il_end; ++il) {
 +        if (!hparams.is_recurrent(il)) {
@@ -75,7 +75,7 @@ index 6dcd3aec..dda3ec90 100644
  
      inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
  
-@@ -126,7 +133,7 @@ llama_model_qwen35moe::graph::graph(const llama_model & model, const llm_graph_p
+@@ -185,7 +192,7 @@ llama_model_qwen35moe::graph::graph(const llama_model & model, const llm_graph_p
  
      auto * inp = build_inp_mem_hybrid();
  
