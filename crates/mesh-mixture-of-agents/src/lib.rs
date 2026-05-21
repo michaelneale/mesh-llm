@@ -456,7 +456,12 @@ fn best_answer(outputs: &[WorkerOutput]) -> String {
     outputs
         .iter()
         .filter(|o| matches!(o.kind, normalize::OutputKind::Answer))
-        .max_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap())
+        // `total_cmp` is total over all f32 (including NaN/Inf); `partial_cmp`
+        // can return `None` on NaN, which would panic on `unwrap`.
+        // `normalize_worker_output` now sanitizes non-finite confidences
+        // before they reach here, but using `total_cmp` keeps this site
+        // panic-free even if a future caller skips the normalizer.
+        .max_by(|a, b| a.confidence.total_cmp(&b.confidence))
         .or(outputs.first())
         .map(|o| o.payload.clone())
         .unwrap_or_default()
@@ -510,10 +515,33 @@ fn chat_response(content: &str) -> Value {
 }
 
 fn tool_call_response(name: &str, arguments: &Value) -> Value {
-    let args_str = if arguments.is_string() {
-        arguments.as_str().unwrap_or("{}").to_string()
-    } else {
-        serde_json::to_string(arguments).unwrap_or_else(|_| "{}".to_string())
+    // OpenAI tool-call `arguments` is a JSON-object *string*. Three input
+    // shapes have to collapse to a valid object string here:
+    //
+    //   * String form: trust the caller's JSON (worker already passed
+    //     through `extract_tool_arguments` so the inner shape is sane).
+    //   * Null / non-object: emit `"{}"` rather than `"null"` or
+    //     `"\"foo\""`. The previous shape would serialize `Value::Null`
+    //     to the literal four-char string `"null"`, which downstream
+    //     OpenAI tool-call consumers reject.
+    //   * Object: serialize as JSON.
+    let args_str = match arguments {
+        Value::String(s) => {
+            // Validate that the string is itself a JSON object; if not,
+            // fall back to `{}` to keep wire-shape sane.
+            if serde_json::from_str::<Value>(s)
+                .map(|v| v.is_object())
+                .unwrap_or(false)
+            {
+                s.clone()
+            } else {
+                "{}".to_string()
+            }
+        }
+        Value::Null => "{}".to_string(),
+        v if v.is_object() => serde_json::to_string(v).unwrap_or_else(|_| "{}".to_string()),
+        // Bare primitives / arrays — not a valid tool-call arguments object.
+        _ => "{}".to_string(),
     };
 
     json!({
@@ -544,4 +572,88 @@ fn short_id() -> String {
         .unwrap_or_default()
         .as_nanos();
     format!("{:x}", t)
+}
+
+#[cfg(test)]
+mod response_builder_tests {
+    use super::*;
+    use crate::normalize::{OutputKind, WorkerOutput};
+    use crate::worker::WorkerRole;
+
+    fn answer(model: &str, confidence: f32, payload: &str) -> WorkerOutput {
+        WorkerOutput {
+            kind: OutputKind::Answer,
+            confidence,
+            tool_name: None,
+            tool_arguments: None,
+            payload: payload.to_string(),
+            model: model.to_string(),
+            role: WorkerRole::Fast,
+            elapsed_ms: 1,
+        }
+    }
+
+    #[test]
+    fn best_answer_does_not_panic_on_nan_confidence() {
+        // Regression for PR #566 review: `partial_cmp(...).unwrap()` could
+        // panic if any confidence reached this site as NaN. After switching
+        // to `total_cmp`, this is safe even if normalize is bypassed.
+        let outputs = vec![
+            answer("a", f32::NAN, "nan-answer"),
+            answer("b", 0.7, "good-answer"),
+            answer("c", f32::NAN, "another-nan"),
+        ];
+        let picked = best_answer(&outputs);
+        // `total_cmp` treats NaN as greater than any finite; the assertion
+        // here is *not* about which specific answer wins, only that we do
+        // not panic and we return *some* answer.
+        assert!(!picked.is_empty());
+    }
+
+    #[test]
+    fn tool_call_response_emits_object_args_for_null() {
+        // Regression: `Value::Null` previously serialized to the literal
+        // string "null", which downstream OpenAI tool-call consumers reject.
+        let resp = tool_call_response("list", &Value::Null);
+        let args_str = resp
+            .pointer("/choices/0/message/tool_calls/0/function/arguments")
+            .and_then(|v| v.as_str())
+            .expect("arguments is string");
+        assert_eq!(args_str, "{}");
+    }
+
+    #[test]
+    fn tool_call_response_emits_object_args_for_primitive() {
+        let resp = tool_call_response("list", &Value::from(42));
+        let args_str = resp
+            .pointer("/choices/0/message/tool_calls/0/function/arguments")
+            .and_then(|v| v.as_str())
+            .expect("arguments is string");
+        assert_eq!(args_str, "{}");
+    }
+
+    #[test]
+    fn tool_call_response_passes_through_string_form_when_valid() {
+        let resp = tool_call_response(
+            "read_file",
+            &Value::String("{\"path\":\"README.md\"}".to_string()),
+        );
+        let args_str = resp
+            .pointer("/choices/0/message/tool_calls/0/function/arguments")
+            .and_then(|v| v.as_str())
+            .expect("arguments is string");
+        let parsed: Value = serde_json::from_str(args_str).unwrap();
+        assert_eq!(parsed["path"], "README.md");
+    }
+
+    #[test]
+    fn tool_call_response_rejects_invalid_string_form() {
+        // If the caller hands us a bare non-JSON string, fall back to `{}`.
+        let resp = tool_call_response("x", &Value::String("not json at all".to_string()));
+        let args_str = resp
+            .pointer("/choices/0/message/tool_calls/0/function/arguments")
+            .and_then(|v| v.as_str())
+            .expect("arguments is string");
+        assert_eq!(args_str, "{}");
+    }
 }
