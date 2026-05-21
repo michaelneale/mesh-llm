@@ -121,16 +121,23 @@ if [ "$API_UP" = true ]; then
     fi
 
     # Required "actually joined a mesh" signal.
-    # `mesh_id` is only Some(...) once the node has joined a mesh (either as
-    # originator or by adopting a peer's id via gossip). `peers` is non-empty
-    # iff at least one peer is known. `first_joined_mesh_ts` is sticky and only
-    # set on the first successful join.
     #
-    # Predicate: mesh_id set AND (peers non-empty OR first_joined_mesh_ts set).
-    # We poll for up to JOIN_WAIT seconds; if the predicate is never satisfied,
-    # this step fails (no inconclusive fallback).
+    # Predicate: mesh_id set AND peers non-empty.
+    #
+    # We deliberately do NOT accept `first_joined_mesh_ts` as evidence of a
+    # successful public-mesh join. When `client --auto` finds no candidates
+    # via Nostr discovery, it falls through to `run_auto_start_new_mesh`,
+    # which generates a fresh local mesh_id AND sets first_joined_mesh_ts
+    # to "now" with zero peers. That standalone-fallback path would satisfy
+    # a `mesh_id OR first_joined_mesh_ts` predicate and silently pass CI
+    # while the node is talking to nobody — exactly the regression this
+    # test is meant to catch.
+    #
+    # The only honest signal that public discovery + join actually worked
+    # end-to-end is at least one real peer. We poll for up to JOIN_WAIT
+    # seconds; if no peer ever appears, this step fails.
     JOIN_WAIT=60
-    echo "Polling /api/status for a join signal (mesh_id AND (peers OR first_joined_mesh_ts), up to ${JOIN_WAIT}s)..."
+    echo "Polling /api/status for at least one peer (mesh_id set AND peers non-empty, up to ${JOIN_WAIT}s)..."
     JOINED=false
     for j in $(seq 1 "$JOIN_WAIT"); do
         STATUS=$(curl -sf --max-time 5 "http://localhost:${CONSOLE_PORT}/api/status" 2>/dev/null || echo "")
@@ -139,8 +146,7 @@ import json, sys
 d = json.load(sys.stdin)
 mesh_id = d.get("mesh_id")
 peers = d.get("peers") or []
-first_joined = d.get("first_joined_mesh_ts")
-if mesh_id and (peers or first_joined):
+if mesh_id and peers:
     sys.exit(0)
 sys.exit(1)
 ' 2>/dev/null; then
@@ -151,15 +157,17 @@ sys.exit(1)
             break
         fi
         if [ $((j % 10)) -eq 0 ]; then
-            echo "  Still waiting for join... (${j}s)"
+            echo "  Still waiting for at least one peer... (${j}s)"
         fi
         sleep 1
     done
 
     if [ "$JOINED" = false ]; then
         echo ""
-        echo "❌ Console API came up but the node never joined a mesh within ${JOIN_WAIT}s."
-        echo "   Required signal: /api/status with mesh_id set AND (peers non-empty OR first_joined_mesh_ts set)."
+        echo "❌ Console API came up but the node never saw any peer within ${JOIN_WAIT}s."
+        echo "   Required signal: /api/status with mesh_id set AND peers non-empty."
+        echo "   (first_joined_mesh_ts alone is NOT accepted — it is also set by the"
+        echo "    standalone-fallback path when no public mesh is discovered.)"
         if grep -q "No meshes found yet" "$LOG" 2>/dev/null; then
             echo "   Log indicates public Nostr discovery returned no meshes."
             echo "   Either the public mesh is currently down, or discovery is broken."
