@@ -247,9 +247,14 @@ fn try_json_parse(
 /// which is logically dead: `.cloned()` on a `Some(Value::String("…"))` is
 /// already `Some`, so the `or_else` branch never ran and string-encoded
 /// arguments leaked through unparsed. We branch explicitly here so each
-/// shape gets the right handling, and missing/null `arguments` collapses to
-/// `Some({})` so the OpenAI tool-call serializer never emits the literal
-/// string `"null"`.
+/// shape gets the right handling.
+///
+/// Missing or `Value::Null` arguments return `None` from this helper;
+/// downstream `tool_call_response` substitutes `"{}"` when serializing
+/// the OpenAI tool-call wire shape, so the literal string `"null"`
+/// never reaches the client. The `WorkerOutput::tool_arguments`
+/// invariant is therefore "`None` or an object", with `None` meaning
+/// "emit empty-object args at wire time".
 fn extract_tool_arguments(value: Option<&Value>) -> Option<Value> {
     match value {
         Some(Value::String(s)) => {

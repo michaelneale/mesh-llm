@@ -91,23 +91,42 @@ impl Session {
                 "assistant" => {
                     if let Some(tool_calls) = msg.get("tool_calls").and_then(|tc| tc.as_array()) {
                         for tc in tool_calls {
-                            let call_id = tc
+                            // Skip malformed tool_calls. Both `id` and
+                            // `function.name` are required by the OpenAI
+                            // wire shape; defaulting them to empty
+                            // strings would let two malformed calls
+                            // share `call_id == ""` and later cross-pair
+                            // with a `role: "tool"` message whose
+                            // `tool_call_id` is also missing. Drop the
+                            // entry with a warning so the rest of the
+                            // history still ingests cleanly.
+                            let Some(call_id) = tc
                                 .get("id")
                                 .and_then(|id| id.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let function_name = tc
+                                .filter(|s| !s.is_empty())
+                            else {
+                                tracing::warn!(
+                                    "moa session: ignoring tool_call with missing/empty `id`"
+                                );
+                                continue;
+                            };
+                            let Some(function_name) = tc
                                 .pointer("/function/name")
                                 .and_then(|n| n.as_str())
-                                .unwrap_or("")
-                                .to_string();
+                                .filter(|s| !s.is_empty())
+                            else {
+                                tracing::warn!(
+                                    "moa session: ignoring tool_call `{call_id}` with missing/empty `function.name`"
+                                );
+                                continue;
+                            };
                             let arguments = tc
                                 .pointer("/function/arguments")
                                 .cloned()
                                 .unwrap_or(Value::Null);
                             self.pending_tools.push(PendingToolCall {
-                                call_id,
-                                function_name,
+                                call_id: call_id.to_string(),
+                                function_name: function_name.to_string(),
                                 arguments,
                                 result: None,
                             });
@@ -115,10 +134,18 @@ impl Session {
                     }
                 }
                 "tool" => {
-                    let call_id = msg
+                    // Skip tool results without a `tool_call_id` rather
+                    // than letting them match an empty-id placeholder.
+                    let Some(call_id) = msg
                         .get("tool_call_id")
                         .and_then(|id| id.as_str())
-                        .unwrap_or("");
+                        .filter(|s| !s.is_empty())
+                    else {
+                        tracing::warn!(
+                            "moa session: ignoring tool result with missing/empty `tool_call_id`"
+                        );
+                        continue;
+                    };
                     let content = msg
                         .get("content")
                         .and_then(|c| c.as_str())
@@ -381,5 +408,44 @@ mod tests {
             ])),
         );
         assert_eq!(s.tool_names(), vec!["read_file", "web_search"]);
+    }
+
+    #[test]
+    fn malformed_tool_calls_are_dropped_not_collapsed_to_empty_id() {
+        // Regression for PR #612 review (Copilot): missing/empty `id` or
+        // `function.name` used to default to "" and still push a
+        // PendingToolCall. Two such malformed entries would then share
+        // `call_id == ""` and any `role: "tool"` with a missing
+        // `tool_call_id` would match the first one. We now skip
+        // malformed tool_calls outright.
+        let mut s = Session::new();
+        s.ingest(
+            &[
+                json!({"role": "user", "content": "do two things"}),
+                json!({
+                    "role": "assistant",
+                    "tool_calls": [
+                        {"id": "call_a", "type": "function", "function": {"name": "good", "arguments": "{}"}},
+                        // Missing id — must be dropped.
+                        {"type": "function", "function": {"name": "no_id", "arguments": "{}"}},
+                        // Missing function.name — must be dropped.
+                        {"id": "call_c", "type": "function", "function": {"arguments": "{}"}},
+                        // Empty id — must be dropped.
+                        {"id": "", "type": "function", "function": {"name": "empty_id", "arguments": "{}"}},
+                    ],
+                }),
+                // A malformed tool result (no `tool_call_id`) must not
+                // attach to any pending call.
+                json!({"role": "tool", "content": "orphaned"}),
+            ],
+            &None,
+        );
+        // Only the one well-formed call survives.
+        let pending = s.pending_tool_calls();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].call_id, "call_a");
+        assert_eq!(pending[0].function_name, "good");
+        // The orphaned tool result did not attach — result still None.
+        assert!(pending[0].result.is_none());
     }
 }
