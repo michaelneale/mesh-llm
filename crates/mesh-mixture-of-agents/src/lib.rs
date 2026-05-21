@@ -175,7 +175,7 @@ pub async fn handle_turn(config: &GatewayConfig, body: &Value) -> TurnResult {
         session::TurnType::ToolResult => {
             handle_tool_result(config, &session, has_tools, &allowed_tools, start).await
         }
-        session::TurnType::Fresh | session::TurnType::Continuation => {
+        session::TurnType::Fresh => {
             handle_query(config, &session, has_tools, &allowed_tools, start).await
         }
     }

@@ -85,18 +85,13 @@ fn pack_fast(session: &Session) -> PackedContext {
     let system = system_with_tool_names(session);
     let user_text = session.last_user_text();
 
-    // Include running summary for multi-turn context
-    let mut system_full = system;
-    if session.turn_count() > 1 {
-        let summary = session.running_summary();
-        if !summary.is_empty() {
-            system_full.push_str(&format!("\n\nConversation so far:\n{summary}"));
-        }
-    }
-
+    // Per-request sessions: the caller owns the multi-turn loop and
+    // sends the full history each request. Continuation context lives
+    // in `session.messages()`; this path intentionally trims to just
+    // the last user message to keep the fast worker's context small.
     PackedContext {
         messages: vec![
-            json!({"role": "system", "content": system_full}),
+            json!({"role": "system", "content": system}),
             json!({"role": "user", "content": user_text}),
         ],
         max_tokens: 256,
