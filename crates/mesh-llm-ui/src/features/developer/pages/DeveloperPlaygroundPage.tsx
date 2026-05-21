@@ -7,10 +7,11 @@ import { ConfigurationControlsArea } from '@/features/developer/playground/areas
 import { DataDisplayArea } from '@/features/developer/playground/areas/DataDisplayArea'
 import { FeatureFlagsArea } from '@/features/developer/playground/areas/FeatureFlagsArea'
 import { MeshVizPerfArea } from '@/features/developer/playground/areas/MeshVizPerfArea'
+import { ReservesPreviewArea } from '@/features/developer/playground/areas/ReservesPreviewArea'
 import { ShellControlsArea } from '@/features/developer/playground/areas/ShellControlsArea'
 import { TokensFoundationsArea } from '@/features/developer/playground/areas/TokensFoundationsArea'
 import { type DeveloperPlaygroundTabId } from '@/features/developer/playground/developer-playground-tabs'
-import { PLAYGROUND_AREAS } from '@/features/developer/playground/registry'
+import { getPlaygroundAreaDefinition } from '@/features/developer/playground/registry'
 import { useDeveloperPlaygroundState } from '@/features/developer/playground/useDeveloperPlaygroundState'
 
 export function DeveloperPlaygroundPage() {
@@ -37,6 +38,14 @@ type DeveloperPlaygroundPageContentProps = {
 
 export function DeveloperPlaygroundPageContent({ activeTab, onTabChange }: DeveloperPlaygroundPageContentProps) {
   const playgroundState = useDeveloperPlaygroundState()
+  const shellControlsArea = getPlaygroundAreaDefinition('shell-controls')
+  const dataDisplayArea = getPlaygroundAreaDefinition('data-display')
+  const chatComponentsArea = getPlaygroundAreaDefinition('chat-components')
+  const configurationControlsArea = getPlaygroundAreaDefinition('configuration-controls')
+  const reservesPreviewArea = getPlaygroundAreaDefinition('reserves-preview')
+  const tokensFoundationsArea = getPlaygroundAreaDefinition('tokens-foundations')
+  const featureFlagsArea = getPlaygroundAreaDefinition('feature-flags')
+  const meshvizPerfArea = getPlaygroundAreaDefinition('meshviz-perf')
 
   return (
     <div className="space-y-4">
@@ -60,49 +69,56 @@ export function DeveloperPlaygroundPageContent({ activeTab, onTabChange }: Devel
             value: 'shell-controls',
             label: 'Shell controls',
             icon: PanelTop,
-            description: PLAYGROUND_AREAS[0].description,
+            description: shellControlsArea.description,
             content: <ShellControlsArea state={playgroundState} />
           },
           {
             value: 'data-display',
             label: 'Data display',
             icon: Table2,
-            description: PLAYGROUND_AREAS[1].description,
+            description: dataDisplayArea.description,
             content: <DataDisplayArea state={playgroundState} />
           },
           {
             value: 'chat-components',
             label: 'Chat components',
             icon: MessageSquare,
-            description: PLAYGROUND_AREAS[2].description,
+            description: chatComponentsArea.description,
             content: <ChatComponentsArea state={playgroundState} />
           },
           {
             value: 'configuration-controls',
             label: 'Configuration controls',
             icon: SlidersHorizontal,
-            description: PLAYGROUND_AREAS[3].description,
+            description: configurationControlsArea.description,
             content: <ConfigurationControlsArea state={playgroundState} />
+          },
+          {
+            value: 'reserves-preview',
+            label: 'Reserves preview',
+            icon: Network,
+            description: reservesPreviewArea.description,
+            content: <ReservesPreviewArea />
           },
           {
             value: 'tokens-foundations',
             label: 'Tokens and foundations',
             icon: Palette,
-            description: PLAYGROUND_AREAS[4].description,
+            description: tokensFoundationsArea.description,
             content: <TokensFoundationsArea />
           },
           {
             value: 'feature-flags',
             label: 'Feature flags',
             icon: Flag,
-            description: PLAYGROUND_AREAS[5].description,
+            description: featureFlagsArea.description,
             content: <FeatureFlagsArea />
           },
           {
             value: 'meshviz-perf',
             label: 'MeshViz 200',
             icon: Network,
-            description: PLAYGROUND_AREAS[6].description,
+            description: meshvizPerfArea.description,
             content: <MeshVizPerfArea />
           }
         ]}

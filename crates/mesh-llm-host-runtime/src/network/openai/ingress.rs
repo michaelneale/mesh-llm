@@ -5,6 +5,7 @@ use crate::mesh;
 use crate::network::affinity;
 use crate::network::openai::transport as proxy;
 use crate::network::router;
+use mesh_mixture_of_agents as moa;
 
 enum AutoRouteResolution {
     Continue {
@@ -204,11 +205,21 @@ async fn resolve_auto_routed_model(
     let media = router::media_requirements(body_json);
     let available_models =
         collect_available_models_for_auto_route(node, targets, plugin_manager).await;
-    let available: Vec<(&str, f64, crate::models::ModelCapabilities)> = available_models
+    let metrics = node.routing_metrics();
+    let available: Vec<router::RoutingCandidate<'_>> = available_models
         .iter()
         .map(|name| {
             let caps = proxy::capabilities_for_model(name, descriptors);
-            (name.as_str(), 0.0, caps)
+            let (tps_hint, throughput_samples) = metrics
+                .tps_for_model(name)
+                .map(|(t, s)| (Some(t), s))
+                .unwrap_or((None, 0));
+            router::RoutingCandidate {
+                name: name.as_str(),
+                caps,
+                tps_hint,
+                throughput_samples,
+            }
         })
         .collect();
     let Some(available) = router::filter_media_compatible_candidates(&available, &media) else {
@@ -573,6 +584,44 @@ async fn try_pipeline_route(
     try_pipeline_proxy(ctx.node, tcp_stream, request, ctx.targets, strong_name).await
 }
 
+enum MoaInterceptResult {
+    /// MoA handled the request; the response has been written and the stream
+    /// is consumed.
+    Handled,
+    /// Not an MoA request — caller should continue with normal routing,
+    /// reusing the returned stream.
+    NotMoa(tokio::net::TcpStream),
+}
+
+/// Dispatch to the MoA gateway when `model == "mesh"`. Self-gates on the
+/// effective model so the call site is unconditional.
+async fn try_handle_moa_intercept(
+    tcp_stream: tokio::net::TcpStream,
+    request: &mut proxy::BufferedHttpRequest,
+    ctx: &ProxyConnectionContext<'_>,
+    decision: &AutoRouteDecision,
+) -> MoaInterceptResult {
+    if decision.effective_model.as_deref() != Some(moa::VIRTUAL_MODEL_NAME) {
+        return MoaInterceptResult::NotMoa(tcp_stream);
+    }
+    // try_handle_moa self-gates on the model name; the Some(_) return path
+    // means it declined to handle despite our outer gate — log and treat as
+    // handled (we can't reliably re-use the stream after the handoff).
+    if let Some(_unused_stream) = crate::network::openai::moa_gateway::try_handle_moa(
+        ctx.route.node,
+        tcp_stream,
+        request,
+        decision.effective_model.as_deref(),
+        Some(ctx.route.targets),
+    )
+    .await
+    {
+        tracing::error!("moa: try_handle_moa returned unused stream despite outer model gate");
+    }
+    proxy::release_request_objects(ctx.route.node, &request.request_object_request_ids).await;
+    MoaInterceptResult::Handled
+}
+
 async fn handle_buffered_api_request(
     tcp_stream: tokio::net::TcpStream,
     mut request: proxy::BufferedHttpRequest,
@@ -599,6 +648,12 @@ async fn handle_buffered_api_request(
             send_media_unsupported(tcp_stream).await;
             return;
         }
+    };
+
+    let tcp_stream = match try_handle_moa_intercept(tcp_stream, &mut request, &ctx, &decision).await
+    {
+        MoaInterceptResult::Handled => return,
+        MoaInterceptResult::NotMoa(stream) => stream,
     };
 
     let mut tcp_stream = tcp_stream;

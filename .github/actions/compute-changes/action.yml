@@ -146,7 +146,7 @@ runs:
         if [[ "${{ inputs.event_name }}" == "workflow_dispatch" ]]; then
           SDK_SMOKE_REQUIRED="true"
         elif [[ -n "$CHANGED_FILES" ]]; then
-          DIRECT_SDK_INPUTS=$(echo "$CHANGED_FILES" | grep -E '(^sdk/|^Package\.swift$|^scripts/ci-(native|kotlin|swift)-sdk-smoke\.sh$|^scripts/ci-sdk-fixture\.sh$)' || true)
+          DIRECT_SDK_INPUTS=$(echo "$CHANGED_FILES" | grep -E '(^sdk/|^Package\.swift$|^scripts/ci-(native|kotlin|swift)-sdk-smoke\.sh$|^scripts/ci-sdk-fixture\.sh$|^\.github/workflows/sdk-smoke\.yml$)' || true)
           if [[ -n "$DIRECT_SDK_INPUTS" ]]; then
             SDK_SMOKE_REQUIRED="true"
           elif echo "$AFFECTED_CRATES" | jq -e 'index("mesh-llm-client") or index("mesh-api") or index("mesh-api-ffi") or index("mesh-llm-protocol") or index("mesh-llm-routing") or index("mesh-llm-types")' >/dev/null; then

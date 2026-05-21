@@ -362,6 +362,7 @@ impl Node {
             || self
                 .discovered_peer_already_known(peer_id, known_peer_check_uses_connections)
                 .await
+            || Self::discovered_peer_is_filtered(peer_id, ann)
         {
             return;
         }
@@ -375,6 +376,26 @@ impl Node {
                 );
             }
         }
+    }
+
+    /// Returns `true` if the announcement would be rejected by the same
+    /// gates that filter ingest. Skipping the dial here avoids spending
+    /// 30s per host walking through unreachable ghost addresses
+    /// sequentially in the gossip exchange dial loop — the wedge that
+    /// caused `--auto` startup to hang.
+    fn discovered_peer_is_filtered(peer_id: EndpointId, ann: &PeerAnnouncement) -> bool {
+        if !version_allowed_for_rebroadcast(ann.version.as_deref())
+            || peer_is_idle_transitive_client(ann)
+        {
+            tracing::debug!(
+                "Skipping discovered peer {} (filtered: version={:?} role={:?})",
+                peer_id.fmt_short(),
+                ann.version,
+                ann.role
+            );
+            return true;
+        }
+        false
     }
 
     fn should_skip_discovered_peer(
@@ -1640,6 +1661,75 @@ mod tests {
         assert!(
             !state.peers.contains_key(&id),
             "direct add of v0.57.0 peer must be rejected (no local state entry)"
+        );
+    }
+
+    /// Regression test for the `--auto` startup wedge: when a transitive
+    /// gossip payload includes peers that would be rejected at ingest
+    /// (version-floor or idle-transitive-client), `maybe_connect_discovered_peer`
+    /// must skip the dial. Otherwise each unreachable ghost address triggers
+    /// a 30 s `connect_to_peer` timeout sequentially in the dial loop,
+    /// wedging the surrounding gossip exchange (and the `attempt_run_auto_join`
+    /// that initiated it) for tens of minutes.
+    ///
+    /// The function returns without panicking and without dialing within a
+    /// generous time bound — a real dial to a fake address would block on
+    /// the 30 s `PEER_CONNECT_AND_GOSSIP_TIMEOUT`. We assert the result is
+    /// reached well under that bound and that no connection entry was created.
+    #[tokio::test]
+    async fn maybe_connect_discovered_peer_skips_filtered_announcements() {
+        let node = Node::new_for_tests(NodeRole::Worker).await.unwrap();
+        let my_role = NodeRole::Worker;
+
+        // Below-floor version — must be skipped without dialing.
+        let old_addr = test_addr(0x57);
+        let old_id = old_addr.id;
+        let mut old_ann = test_announcement(None);
+        old_ann.addr = old_addr.clone();
+        old_ann.role = NodeRole::Client;
+        old_ann.version = Some("0.57.0".to_string());
+
+        // Idle transitive client (matching version, but no hostname / no
+        // direct measurement / no model interests) — must also be skipped.
+        let idle_addr = test_addr(0xC1);
+        let idle_id = idle_addr.id;
+        let mut idle_ann = test_announcement(None);
+        idle_ann.addr = idle_addr.clone();
+        idle_ann.role = NodeRole::Client;
+        idle_ann.version = Some("0.65.1".to_string());
+
+        // Both calls together must return well under the 30 s connect
+        // timeout. If the dial-loop skip is missing, each call will block
+        // on PEER_CONNECT_AND_GOSSIP_TIMEOUT (30 s) attempting to dial the
+        // fake test address.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            node.maybe_connect_discovered_peer(&my_role, old_addr, &old_ann, true, false)
+                .await;
+            node.maybe_connect_discovered_peer(&my_role, idle_addr, &idle_ann, true, false)
+                .await;
+        })
+        .await
+        .expect("filtered peers must be skipped quickly, not dialed");
+
+        // No connection was attempted (no entry in state.connections), and
+        // no peer was added (the filtered announcements never reach add_peer
+        // or update_transitive_peer through this path).
+        let state = node.state.lock().await;
+        assert!(
+            !state.connections.contains_key(&old_id),
+            "below-floor peer must not be dialed"
+        );
+        assert!(
+            !state.connections.contains_key(&idle_id),
+            "idle transitive client must not be dialed"
+        );
+        assert!(
+            !state.peers.contains_key(&old_id),
+            "below-floor peer must not be added (this path is dial-only)"
+        );
+        assert!(
+            !state.peers.contains_key(&idle_id),
+            "idle transitive client must not be added (this path is dial-only)"
         );
     }
 }

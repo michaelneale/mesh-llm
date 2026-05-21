@@ -5,6 +5,7 @@ export const DEVELOPER_PLAYGROUND_TAB_IDS = [
   'data-display',
   'chat-components',
   'configuration-controls',
+  'reserves-preview',
   'tokens-foundations',
   'feature-flags',
   'meshviz-perf'

@@ -19,6 +19,7 @@ WORKSPACE_MEMBERS=(
   "mesh-llm-ui"
   "mesh-llm-plugin"
   "mesh-llm-client"
+  "mesh-mixture-of-agents"
   "mesh-api"
   "mesh-host-core"
   "mesh-api-ffi"

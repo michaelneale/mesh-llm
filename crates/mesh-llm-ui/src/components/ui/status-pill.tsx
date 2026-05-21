@@ -55,17 +55,17 @@ export function StatusPill({
 }
 
 function statusPillToneClass(tone: StatusPillTone) {
-  if (tone === 'warm' || tone === 'good') {
-    return 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+  if (tone === 'good') {
+    return 'border-[color:color-mix(in_oklab,var(--color-good)_34%,var(--color-border))] bg-[color:color-mix(in_oklab,var(--color-good)_7%,transparent)] text-[color:var(--color-good)]'
+  }
+  if (tone === 'warm' || tone === 'warn') {
+    return 'border-[color:color-mix(in_oklab,var(--color-warn)_34%,var(--color-border))] bg-[color:color-mix(in_oklab,var(--color-warn)_7%,transparent)] text-[color:var(--color-warn)]'
   }
   if (tone === 'cold' || tone === 'info') {
-    return 'border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300'
-  }
-  if (tone === 'warn') {
-    return 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+    return 'border-[color:color-mix(in_oklab,var(--color-accent)_34%,var(--color-border))] bg-[color:color-mix(in_oklab,var(--color-accent)_7%,transparent)] text-[color:var(--color-accent)]'
   }
   if (tone === 'bad') {
-    return 'border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-300'
+    return 'border-[color:color-mix(in_oklab,var(--color-bad)_34%,var(--color-border))] bg-[color:color-mix(in_oklab,var(--color-bad)_7%,transparent)] text-[color:var(--color-bad)]'
   }
-  return 'border-border bg-muted text-foreground'
+  return 'border-border/70 bg-panel text-fg-dim'
 }

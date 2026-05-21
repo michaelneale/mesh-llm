@@ -2509,6 +2509,190 @@ async fn test_api_model_targets_combine_interest_demand_and_serving_visibility()
 }
 
 #[tokio::test]
+#[serial]
+async fn test_api_model_targets_surface_capacity_advice_under_derived() {
+    let _catalog_guard = crate::models::remote_catalog::set_catalog_entries_for_test(vec![
+        qwen_coder_remote_catalog_entry(),
+    ]);
+    let state = build_test_mesh_api().await;
+    let node = {
+        let inner = state.inner.lock().await;
+        inner.node.clone()
+    };
+    node.set_role(mesh::NodeRole::Client).await;
+    let model_ref = qwen_coder_remote_catalog_ref();
+    let (interest, _) = state
+        .upsert_model_interest(model_ref.clone(), Some("ui".to_string()))
+        .await;
+
+    node.insert_test_peer(make_test_peer(
+        0x45,
+        mesh::NodeRole::Worker,
+        Vec::new(),
+        Vec::new(),
+        true,
+    ))
+    .await;
+
+    let (addr, handle) = spawn_management_test_server(state).await;
+    let response = send_management_request(
+        addr,
+        "GET /api/model-targets HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
+    )
+    .await;
+
+    assert!(response.starts_with("HTTP/1.1 200"));
+    let payload = json_body(&response);
+    let target = payload["model_targets"]
+        .as_array()
+        .and_then(|targets| {
+            targets
+                .iter()
+                .find(|entry| entry["model_ref"] == interest.model_ref)
+        })
+        .expect("target for explicit interest present");
+    assert_eq!(target["derived"]["target_rank"], json!(1));
+    assert_eq!(target["derived"]["wanted"], json!(true));
+    assert!(target.get("capacity_advice").is_none());
+
+    let advice = &target["derived"]["capacity_advice"];
+    assert_eq!(advice["state"], json!("single_node_fit"));
+    assert_eq!(advice["reason"], json!("single_node_capacity_available"));
+    assert_eq!(advice["required_bytes"], json!(22_000_000_000_u64));
+    assert_eq!(
+        advice["best_single_node_capacity_bytes"],
+        json!(24_000_000_000_u64)
+    );
+    assert_eq!(
+        advice["aggregate_capacity_bytes"],
+        json!(24_000_000_000_u64)
+    );
+    assert_eq!(advice["eligible_node_count"], json!(1));
+    assert_eq!(advice["missing_capacity_node_count"], json!(0));
+    assert_eq!(advice["excluded_client_node_count"], json!(1));
+
+    handle.abort();
+}
+
+#[tokio::test]
+#[serial]
+async fn test_api_model_targets_capacity_advice_stays_unknown_with_partial_capacity() {
+    let _catalog_guard = crate::models::remote_catalog::set_catalog_entries_for_test(vec![
+        qwen_coder_remote_catalog_entry(),
+    ]);
+    let state = build_test_mesh_api().await;
+    let node = {
+        let inner = state.inner.lock().await;
+        inner.node.clone()
+    };
+    let model_ref = qwen_coder_remote_catalog_ref();
+    let (interest, _) = state
+        .upsert_model_interest(model_ref.clone(), Some("ui".to_string()))
+        .await;
+
+    node.insert_test_peer(make_test_peer(
+        0x48,
+        mesh::NodeRole::Worker,
+        Vec::new(),
+        Vec::new(),
+        true,
+    ))
+    .await;
+
+    let (addr, handle) = spawn_management_test_server(state).await;
+    let response = send_management_request(
+        addr,
+        "GET /api/model-targets HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
+    )
+    .await;
+
+    assert!(response.starts_with("HTTP/1.1 200"));
+    let payload = json_body(&response);
+    let target = payload["model_targets"]
+        .as_array()
+        .and_then(|targets| {
+            targets
+                .iter()
+                .find(|entry| entry["model_ref"] == interest.model_ref)
+        })
+        .expect("target for explicit interest present");
+
+    let advice = &target["derived"]["capacity_advice"];
+    assert_eq!(advice["state"], json!("unknown_capacity"));
+    assert_eq!(advice["reason"], json!("eligible_nodes_missing_capacity"));
+    assert_eq!(advice["required_bytes"], json!(22_000_000_000_u64));
+    assert_eq!(
+        advice["best_single_node_capacity_bytes"],
+        json!(24_000_000_000_u64)
+    );
+    assert_eq!(
+        advice["aggregate_capacity_bytes"],
+        json!(24_000_000_000_u64)
+    );
+    assert!(advice.get("shortfall_bytes").is_none());
+    assert_eq!(advice["eligible_node_count"], json!(1));
+    assert_eq!(advice["missing_capacity_node_count"], json!(1));
+
+    handle.abort();
+}
+
+#[tokio::test]
+#[serial]
+async fn test_api_model_targets_capacity_advice_separates_clients_from_missing_vram() {
+    let _catalog_guard = crate::models::remote_catalog::set_catalog_entries_for_test(vec![
+        qwen_coder_remote_catalog_entry(),
+    ]);
+    let state = build_test_mesh_api().await;
+    let node = {
+        let inner = state.inner.lock().await;
+        inner.node.clone()
+    };
+    let model_ref = qwen_coder_remote_catalog_ref();
+    let (interest, _) = state
+        .upsert_model_interest(model_ref.clone(), Some("ui".to_string()))
+        .await;
+
+    let mut client_with_vram =
+        make_test_peer(0x46, mesh::NodeRole::Client, Vec::new(), Vec::new(), true);
+    client_with_vram.vram_bytes = 128_000_000_000;
+    node.insert_test_peer(client_with_vram).await;
+
+    let mut worker_missing_vram =
+        make_test_peer(0x47, mesh::NodeRole::Worker, Vec::new(), Vec::new(), true);
+    worker_missing_vram.vram_bytes = 0;
+    node.insert_test_peer(worker_missing_vram).await;
+
+    let (addr, handle) = spawn_management_test_server(state).await;
+    let response = send_management_request(
+        addr,
+        "GET /api/model-targets HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
+    )
+    .await;
+
+    assert!(response.starts_with("HTTP/1.1 200"));
+    let payload = json_body(&response);
+    let target = payload["model_targets"]
+        .as_array()
+        .and_then(|targets| {
+            targets
+                .iter()
+                .find(|entry| entry["model_ref"] == interest.model_ref)
+        })
+        .expect("target for explicit interest present");
+
+    let advice = &target["derived"]["capacity_advice"];
+    assert_eq!(advice["state"], json!("unknown_capacity"));
+    assert_eq!(advice["reason"], json!("eligible_nodes_missing_capacity"));
+    assert_eq!(advice["required_bytes"], json!(22_000_000_000_u64));
+    assert_eq!(advice["eligible_node_count"], json!(0));
+    assert_eq!(advice["missing_capacity_node_count"], json!(2));
+    assert_eq!(advice["excluded_client_node_count"], json!(1));
+    assert!(advice.get("best_single_node_capacity_bytes").is_none());
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn test_api_status_and_models_surface_wanted_targets() {
     let state = build_test_mesh_api().await;
     let node = {

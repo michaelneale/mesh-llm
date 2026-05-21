@@ -38,14 +38,37 @@ The workspace is split across many crates under `crates/`. The shipped binary `m
 Always use `just`. Never build manually.
 
 ```bash
-just build    # llama.cpp fork + mesh-llm + UI
-just bundle   # portable tarball
-just stop     # stop tracked mesh-llm runtime processes
-just test     # quick inference test against :9337
-just auto     # build + stop + start with --auto
-just ui-dev   # vite dev server with HMR
-just clean-ui # nuke node_modules + dist (fixes stale npm state)
+just build         # DEBUG build → ./target/debug/mesh-llm (fast, for iteration)
+just release-build # RELEASE build → ./target/release/mesh-llm (slow, for serious testing / deploy)
+just bundle        # portable tarball (uses the release binary)
+just stop          # stop tracked mesh-llm runtime processes
+just test          # quick inference test against :9337
+just auto          # build + stop + start with --auto
+just ui-dev        # vite dev server with HMR
+just clean-ui      # nuke node_modules + dist (fixes stale npm state)
 ```
+
+**Which build to use:**
+
+- `just build` → produces `./target/debug/mesh-llm`. Use for fast local iteration
+  and sanity-checking that the code compiles end-to-end (llama.cpp ABI + UI +
+  mesh-llm). Do **not** use this binary for serious behavior testing, perf
+  testing, or deploying to test machines — debug builds are slow and can hide
+  or surface bugs that release builds don't.
+- `just release-build` → produces `./target/release/mesh-llm`. Use this for any
+  serious testing, deploying to test machines, bundling, or releases. This is
+  what `just bundle` consumes and what CI builds.
+- `./target/release/mesh-llm` may exist from a *previous* `just release-build`
+  or `just build-dev` invocation even after you run only `just build` — its
+  presence is **not** evidence that your latest code is in it. When in doubt,
+  check `stat ./target/release/mesh-llm` against the time you last ran
+  `just release-build`, or just re-run `just release-build`.
+- `cargo check` / `cargo build` do **not** count as a build for this repo —
+  they skip llama.cpp ABI prep and the UI, and `cargo check` produces no
+  binary at all.
+
+When in doubt for testing or shipping changes: use `just release-build` and
+then copy `./target/release/mesh-llm`.
 
 ### npm "Exit handler never called" error
 
@@ -304,6 +327,14 @@ Testing matters more than usual in this project because:
 
 When making changes that touch gossip, routing, proxy, election, or capability advertisement, test against at least two nodes before merging. The deploy checklist below is not optional.
 
+### Confidence Testing (multi-node, when warranted)
+
+For changes that affect routing, MoA, gossip, the OpenAI surface, agent harnesses, or anything multi-node, validate with these three shapes before declaring a branch ready:
+
+1. **2-node private mesh** — start one node with `mesh-llm serve --model <big> --port 9337 --console 3131`, grab its invite token from the JSON log, and start the second node with `mesh-llm serve --gguf <small.gguf> --port 9447 --console 3145 --join <token>`. Confirm peers=1 on both consoles and `/v1/models` returns the union. Exercises QUIC tunnelling and cross-node routing.
+2. **Public mesh as a client** — `mesh-llm client --auto` from a workstation. Confirm `discovery_joined` + `Client ready` in the log and an inference call against a mesh-advertised model returns. Exercises the read-only routing path agent users hit.
+3. **Agent harness** — run ≥ 1 of the harnesses (“mini-agent” Python loops at `/tmp/mini-agent*.py`, Goose, OpenCode) against the local proxy with both `model=auto` and `model=mesh` to catch tool-call and reducer regressions that simple curl checks miss.
+
 ### Cargo Concurrency
 
 Run `cargo` commands serially. Do not run multiple `cargo` commands in parallel (including parallel test runs), because this repo frequently hits Cargo lock conflicts (`package cache` / `artifact directory`) under concurrent invocation.
@@ -411,6 +442,19 @@ If an instance is wedged badly enough that the scoped stop path cannot reach it,
 ```bash
 pkill -f mesh-llm
 ```
+
+## Running mesh-llm in the Background (for Testing)
+
+When running `mesh-llm serve` from an agent for testing, the process is non-interactive — it just runs. There is no interactive prompt or TUI to worry about. Use standard backgrounding:
+
+```bash
+bash -c './target/debug/mesh-llm serve --model "..." --auto > /tmp/mesh.log 2>&1 & disown; echo "PID=$!"'
+```
+
+- **Do not use `--headless`** — it disables the web UI but does not change process behavior. The name is misleading and does not help with backgrounding.
+- The mesh process writes TUI-formatted output to stderr which looks like errors but is normal.
+- Wait for models to appear via polling `curl -s http://localhost:9337/v1/models` before sending requests.
+- Kill with `pkill -f "target/debug/mesh-llm"` or `pkill -f mesh-llm`.
 
 ## Deploy Checklist — MANDATORY
 

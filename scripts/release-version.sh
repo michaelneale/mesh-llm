@@ -27,23 +27,6 @@ require_file() {
     fi
 }
 
-update_lib_version() {
-    local file="$1"
-    local next="$2"
-    local before
-    local after
-    before="$(cat "$file")"
-    after="$(perl -0777 -pe 's/pub const VERSION: &str = "\K[^"]+(?=";)/'"$next"'/g' "$file")"
-    if [[ "$before" == "$after" ]]; then
-        if grep -Eq 'pub const VERSION: &str = "'"$next"'";' "$file"; then
-            return
-        fi
-        echo "failed to update VERSION constant in $file" >&2
-        exit 1
-    fi
-    printf '%s\n' "$after" >"$file"
-}
-
 update_manifest_version() {
     local file="$1"
     local next="$2"
@@ -133,11 +116,6 @@ workspace_manifest="$REPO_ROOT/Cargo.toml"
 require_file "$workspace_manifest"
 update_workspace_version "$workspace_manifest" "$version"
 versioned_files+=("$workspace_manifest")
-
-lib_file="$REPO_ROOT/crates/mesh-llm-host-runtime/src/lib.rs"
-require_file "$lib_file"
-update_lib_version "$lib_file" "$version"
-versioned_files+=("$lib_file")
 
 for relative_manifest in "${manifests[@]}"; do
     manifest="$REPO_ROOT/$relative_manifest"

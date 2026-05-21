@@ -1,9 +1,14 @@
 [package]
 name = "mesh-llm-host-runtime"
-version = "0.65.1"
+version.workspace = true
 edition = "2021"
 
 [features]
+default = ["web-ui"]
+# Embed the React web console into the binary. Default on; turn off for
+# lib-style / headless consumers that don't need the console assets.
+# Propagates to `mesh-llm-ui/embed-assets`.
+web-ui = ["mesh-llm-ui/embed-assets"]
 gpu-bench-cuda = ["mesh-llm-system/gpu-bench-cuda"]
 gpu-bench-hip = ["mesh-llm-system/gpu-bench-hip"]
 gpu-bench-intel = ["mesh-llm-system/gpu-bench-intel"]
@@ -13,13 +18,14 @@ workspace = true
 
 [dependencies]
 ansi-to-tui = "8"
+mesh-mixture-of-agents = { path = "../mesh-mixture-of-agents" }
 mesh-llm-plugin = { path = "../mesh-llm-plugin" }
 mesh-llm-identity = { path = "../mesh-llm-identity" }
 mesh-llm-protocol = { path = "../mesh-llm-protocol" }
 mesh-llm-routing = { path = "../mesh-llm-routing" }
 mesh-llm-system = { path = "../mesh-llm-system", features = ["skippy-devices"] }
 mesh-llm-types = { path = "../mesh-llm-types" }
-mesh-llm-ui = { path = "../mesh-llm-ui" }
+mesh-llm-ui = { path = "../mesh-llm-ui", default-features = false }
 mesh-client = { package = "mesh-llm-client", path = "../mesh-client", features = ["host-io"] }
 model-artifact = { path = "../model-artifact" }
 model-package = { path = "../model-package" }

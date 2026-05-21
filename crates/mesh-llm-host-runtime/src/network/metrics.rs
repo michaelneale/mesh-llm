@@ -422,6 +422,26 @@ impl RoutingMetrics {
         }
     }
 
+    /// Cheap per-model throughput lookup for routing decisions.
+    ///
+    /// Returns `(avg_tokens_per_second, throughput_samples)` if the model has
+    /// observed throughput, `None` if the model is unknown or has never
+    /// recorded a token-bearing attempt. Avoids the per-call HashMap
+    /// allocation that [`model_snapshots`](Self::model_snapshots) does —
+    /// callers in the routing hot path can poll this once per candidate
+    /// without rebuilding every model's full snapshot.
+    pub fn tps_for_model(&self, model: &str) -> Option<(f64, u64)> {
+        let shard_index = self.shard_index(model);
+        let shard = self.shards[shard_index].lock().unwrap();
+        let metrics = shard.models.get(model)?;
+        let samples = metrics.throughput_samples;
+        if samples == 0 {
+            return None;
+        }
+        let tps = average_milli(metrics.throughput_tps_milli_sum, samples)?;
+        Some((tps, samples))
+    }
+
     fn shard_index(&self, model: &str) -> usize {
         let mut hasher = DefaultHasher::new();
         model.hash(&mut hasher);

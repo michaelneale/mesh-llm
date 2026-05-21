@@ -10,20 +10,22 @@ mod split_planning;
 mod survey;
 pub(crate) mod wakeable;
 
+pub(crate) use self::capacity::runtime_model_required_bytes;
 use self::capacity::{
-    RuntimeCapacityLedger, RuntimeCapacityPool, RuntimeCapacityRequest, RuntimeCapacityReservation,
+    model_fits_runtime_capacity, RuntimeCapacityLedger, RuntimeCapacityPool,
+    RuntimeCapacityRequest, RuntimeCapacityReservation,
 };
 use self::discovery::{nostr_rediscovery, start_new_mesh};
 use self::interactive::InitialPromptMode;
 use self::local::{
     add_runtime_local_target, add_serving_assignment, advertise_model_ready, local_process_payload,
-    model_fits_runtime_capacity, remove_runtime_local_target, remove_serving_assignment,
-    resolved_model_name, runtime_model_planning_bytes, runtime_model_required_bytes,
-    set_advertised_model_context, set_runtime_verified_served_model_capabilities,
-    start_runtime_local_model, start_runtime_split_model, startup_runtime_plan,
-    stop_split_generation_cleanup, withdraw_advertised_model, LocalRuntimeModelHandle,
-    LocalRuntimeModelStartSpec, ManagedModelController, RuntimeEvent, SplitCoordinatorAck,
-    SplitCoordinatorEvent, SplitRuntimeReason, SplitRuntimeStart, StartupRuntimePlan,
+    remove_runtime_local_target, remove_serving_assignment, resolved_model_name,
+    runtime_model_planning_bytes, set_advertised_model_context,
+    set_runtime_verified_served_model_capabilities, start_runtime_local_model,
+    start_runtime_split_model, startup_runtime_plan, stop_split_generation_cleanup,
+    withdraw_advertised_model, LocalRuntimeModelHandle, LocalRuntimeModelStartSpec,
+    ManagedModelController, RuntimeEvent, SplitCoordinatorAck, SplitCoordinatorEvent,
+    SplitRuntimeReason, SplitRuntimeStart, StartupRuntimePlan,
 };
 use self::proxy::{api_proxy, bootstrap_proxy};
 use crate::api;

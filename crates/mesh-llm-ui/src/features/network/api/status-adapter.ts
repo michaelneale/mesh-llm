@@ -324,6 +324,7 @@ export function adaptStatusToDashboard(payload: StatusPayload, models: ModelSumm
     meshNodeSeeds: adaptMeshNodeSeeds(payload),
     meshId: payload.mesh_id ?? '',
     models,
-    connect: adaptConnect(payload)
+    connect: adaptConnect(payload),
+    wakeableNodes: payload.wakeable_nodes
   }
 }
