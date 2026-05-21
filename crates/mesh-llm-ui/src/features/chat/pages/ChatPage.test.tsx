@@ -622,7 +622,7 @@ describe('ChatPage', () => {
     await waitFor(() => {
       expect(chatMock.sendCalls[0]).toMatchObject({
         content: 'Summarize active models',
-        model: 'auto',
+        model: 'mesh',
         systemPrompt: 'Answer as a mesh-llm operator.'
       })
     })
@@ -642,7 +642,7 @@ describe('ChatPage', () => {
     await waitFor(() => {
       expect(chatMock.sendCalls[0]).toMatchObject({
         content: 'Route without hidden instructions',
-        model: 'auto',
+        model: 'mesh',
         systemPrompt: ''
       })
     })
@@ -679,7 +679,7 @@ describe('ChatPage', () => {
     await waitFor(() => {
       expect(chatMock.sendCalls[0]).toMatchObject({
         content: 'Send without a system prompt',
-        model: 'auto',
+        model: 'mesh',
         systemPrompt: ''
       })
     })
@@ -697,7 +697,7 @@ describe('ChatPage', () => {
     await user.click(screen.getByRole('button', { name: 'Send' }))
 
     await waitFor(() => {
-      expect(chatMock.sendCalls[0]).toMatchObject({ content: 'Use the router', model: 'auto' })
+      expect(chatMock.sendCalls[0]).toMatchObject({ content: 'Use the router', model: 'mesh' })
     })
   })
 
@@ -1437,7 +1437,7 @@ describe('ChatPage', () => {
 
   it('persists submitted live message model labels with the conversation thread', async () => {
     const user = userEvent.setup()
-    const submittedModel = 'auto'
+    const submittedModel = 'mesh'
 
     renderChatPage({ mode: 'live' })
 

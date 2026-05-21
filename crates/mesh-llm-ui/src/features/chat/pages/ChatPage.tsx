@@ -483,8 +483,7 @@ export function ChatPageContent({ data = CHAT_HARNESS }: ChatPageProps) {
   const [composerDrafts, setComposerDrafts] = useState<Record<string, ConversationComposerDraft>>({})
   const [model, setModel] = useState('')
   const modelExists = selectableModels.some((item) => item.name === model)
-  const activeModelName =
-    model === AUTO_MODEL_VALUE ? AUTO_BACKEND_MODEL : modelExists ? model : AUTO_BACKEND_MODEL
+  const activeModelName = model === AUTO_MODEL_VALUE ? AUTO_BACKEND_MODEL : modelExists ? model : AUTO_BACKEND_MODEL
   const [queuedSubmissions, setQueuedSubmissions] = useState<QueuedSubmission[]>([])
   const [attachmentProcessingStatus, setAttachmentProcessingStatus] = useState<AttachmentProcessingStatus | null>(null)
   const [submittedAttachmentsByMessageId, setSubmittedAttachmentsByMessageId] = useState<
