@@ -181,26 +181,33 @@ pub async fn build_moa_config(
     targets: Option<&election::ModelTargets>,
 ) -> Option<moa::GatewayConfig> {
     let http = reqwest::Client::new();
-    let mut seen_bases = std::collections::HashSet::new();
     let mut backends: Vec<std::sync::Arc<dyn moa::ModelBackend>> = Vec::new();
     let mut models: Vec<moa::ModelEntry> = Vec::new();
     let mut local_count = 0usize;
 
     // Full mesh-wide model list (local + every peer's advertised
-    // routable models). Sorted by name length so the shorter (canonical)
-    // form wins dedup.
-    let mut all_models: Vec<String> = node.models_being_served().await;
-    all_models.sort_by_key(|n| n.len());
+    // routable models).
+    let all_models: Vec<String> = node
+        .models_being_served()
+        .await
+        .into_iter()
+        .filter(|n| n != moa::VIRTUAL_MODEL_NAME)
+        .collect();
 
-    for name in all_models {
-        if !accept_for_dedup(&name, &mut seen_bases) {
-            continue;
-        }
-        add_worker_backend(
+    // Group aliases by canonical base. The old shape sorted by name
+    // length, took the *first* alias per base, and dropped the rest —
+    // which silently dropped the model from the worker pool whenever the
+    // shortest-named peer was unreachable (regression flagged by PR #566
+    // review). Now we keep every alias per base and try them in order so
+    // a longer-named reachable alias can still resolve when the shortest
+    // one is offline.
+    let groups = group_aliases_by_canonical_base(all_models, targets);
+    for aliases in groups {
+        resolve_one_worker_from_aliases(
             node,
             targets,
             &http,
-            &name,
+            &aliases,
             &mut backends,
             &mut models,
             &mut local_count,
@@ -246,13 +253,94 @@ pub async fn build_moa_config(
     })
 }
 
-/// Filter out the virtual `"mesh"` name and de-dup by canonical base.
-/// Returns true if `name` is a fresh model that should be considered.
-fn accept_for_dedup(name: &str, seen_bases: &mut std::collections::HashSet<String>) -> bool {
-    if name == moa::VIRTUAL_MODEL_NAME {
-        return false;
+/// Try each alias in `aliases` until one resolves to a backend, then stop.
+///
+/// Aliases are pre-sorted by `group_aliases_by_canonical_base` so the most
+/// preferred (locally-served first, then shortest) is tried first. Falls
+/// back to longer aliases when the preferred one's peer is unreachable.
+#[allow(clippy::too_many_arguments)]
+async fn resolve_one_worker_from_aliases(
+    node: &mesh::Node,
+    targets: Option<&election::ModelTargets>,
+    http: &reqwest::Client,
+    aliases: &[String],
+    backends: &mut Vec<std::sync::Arc<dyn moa::ModelBackend>>,
+    models: &mut Vec<moa::ModelEntry>,
+    local_count: &mut usize,
+) {
+    for name in aliases {
+        if add_worker_backend(node, targets, http, name, backends, models, local_count).await {
+            return;
+        }
     }
-    seen_bases.insert(canonical_base_name(name))
+}
+
+/// Group all advertised model names by their canonical base so each
+/// canonical model contributes exactly one worker, but the resolver gets
+/// to pick the alias that actually has a reachable backend.
+///
+/// The earlier shape committed to a single alias per base *before* trying
+/// to resolve a backend. Two failure modes:
+///
+///   1. The chosen alias is advertised only by a peer that drops between
+///      gossip refresh and orchestration — `hosts_for_model` returns
+///      empty, the worker is dropped, and longer-form aliases for the
+///      same canonical model from still-reachable peers are rejected as
+///      duplicates.
+///   2. The local node advertises a longer convention
+///      (e.g. `unsloth/Qwen3-8B-GGUF:Q4_K_M`) while a peer advertises a
+///      shorter variant (e.g. `Qwen3-8B-Q4_K_M`). The shortest-name rule
+///      picks the peer alias, `add_worker_backend` looks for a local port
+///      under that specific string, finds nothing, and forces a
+///      QUIC-tunnel backend even though the model is right here.
+///
+/// Both failure modes are fixed by grouping first and resolving second.
+/// Within each group the aliases are ordered so the most likely
+/// optimization wins first try: locally-served name (skippy-port fast
+/// path) before remote names, then shortest first as a tiebreaker.
+fn group_aliases_by_canonical_base(
+    names: Vec<String>,
+    targets: Option<&election::ModelTargets>,
+) -> Vec<Vec<String>> {
+    let mut by_base: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for name in names {
+        by_base
+            .entry(canonical_base_name(&name))
+            .or_default()
+            .push(name);
+    }
+    // Deterministic group order so the worker list is stable across
+    // builds even though HashMap iteration is not. Sort group entries
+    // (locally-served first, then shortest), then sort groups by their
+    // first ("best") alias.
+    let mut groups: Vec<Vec<String>> = by_base
+        .into_values()
+        .map(|mut aliases| {
+            aliases.sort_by(|a, b| {
+                let la = is_locally_served(a, targets);
+                let lb = is_locally_served(b, targets);
+                lb.cmp(&la) // local (true) before remote (false)
+                    .then_with(|| a.len().cmp(&b.len()))
+                    .then_with(|| a.cmp(b))
+            });
+            aliases
+        })
+        .collect();
+    groups.sort_by(|a, b| a[0].cmp(&b[0]));
+    groups
+}
+
+/// Does the local routing table have a backend port for this exact name?
+fn is_locally_served(name: &str, targets: Option<&election::ModelTargets>) -> bool {
+    targets
+        .and_then(|t| {
+            t.targets.get(name).map(|tv| {
+                tv.iter()
+                    .any(|t| matches!(t, election::InferenceTarget::Local(_)))
+            })
+        })
+        .unwrap_or(false)
 }
 
 /// Resolve `name` to a backend (local skippy port if available, else first
@@ -696,6 +784,88 @@ mod tests {
             "choices": [{ "finish_reason": "stop", "message": { "content": "hello" } }],
         });
         assert!(!is_moa_failure_body(&body));
+    }
+
+    fn make_targets(local_names: &[&str]) -> election::ModelTargets {
+        let mut t = election::ModelTargets::default();
+        for (i, name) in local_names.iter().enumerate() {
+            t.targets.insert(
+                (*name).to_string(),
+                vec![election::InferenceTarget::Local(50000 + i as u16)],
+            );
+        }
+        t
+    }
+
+    #[test]
+    fn group_aliases_keeps_all_aliases_per_canonical_base() {
+        // Regression for PR #566 review (item #10): the dedup-then-resolve
+        // shape committed to a single alias per base before checking
+        // backend reachability. Now every alias is retained so the
+        // resolver can fall back if the preferred alias is unreachable.
+        let groups = group_aliases_by_canonical_base(
+            vec![
+                "Qwen3-8B-Q4_K_M".to_string(),
+                "unsloth/Qwen3-8B-GGUF:Q4_K_M".to_string(),
+            ],
+            None,
+        );
+        assert_eq!(groups.len(), 1, "both names share a canonical base");
+        assert_eq!(groups[0].len(), 2, "both aliases retained");
+    }
+
+    #[test]
+    fn group_aliases_prefers_locally_served_alias_even_when_longer() {
+        // Without a targets table, length-order wins and the shorter peer
+        // alias would be tried first — forcing an unnecessary QUIC hop
+        // when the model is right here under a different alias.
+        // With targets, the local-served alias must come first.
+        let local = "unsloth/Qwen3-8B-GGUF:Q4_K_M";
+        let peer = "Qwen3-8B-Q4_K_M";
+        let targets = make_targets(&[local]);
+        let groups = group_aliases_by_canonical_base(
+            vec![peer.to_string(), local.to_string()],
+            Some(&targets),
+        );
+        assert_eq!(groups.len(), 1);
+        assert_eq!(
+            groups[0].first().map(String::as_str),
+            Some(local),
+            "locally-served alias must win even though it's longer"
+        );
+    }
+
+    #[test]
+    fn group_aliases_falls_back_to_shortest_when_no_local() {
+        // No targets table at all (pure --client --auto node) — shortest
+        // alias should win, but the longer alias is still in the group so
+        // it can be tried if the shortest one is unreachable.
+        let groups = group_aliases_by_canonical_base(
+            vec![
+                "unsloth/Qwen3-8B-GGUF:Q4_K_M".to_string(),
+                "Qwen3-8B-Q4_K_M".to_string(),
+            ],
+            None,
+        );
+        assert_eq!(groups.len(), 1);
+        assert_eq!(
+            groups[0].first().map(String::as_str),
+            Some("Qwen3-8B-Q4_K_M")
+        );
+        assert_eq!(groups[0].len(), 2, "longer alias kept as fallback");
+    }
+
+    #[test]
+    fn group_aliases_distinct_models_stay_in_separate_groups() {
+        let groups = group_aliases_by_canonical_base(
+            vec![
+                "unsloth/Qwen3-8B-GGUF:Q4_K_M".to_string(),
+                "unsloth/Qwen3-32B-GGUF:Q4_K_M".to_string(),
+                "unsloth/MiniMax-M2.5-GGUF:Q4_K_M".to_string(),
+            ],
+            None,
+        );
+        assert_eq!(groups.len(), 3);
     }
 
     #[test]
