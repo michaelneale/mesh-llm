@@ -1,3 +1,4 @@
+use super::capacity::{model_fits_runtime_capacity, runtime_model_required_bytes};
 use super::context_planning::{
     plan_runtime_resources, RuntimeResourcePlan, RuntimeResourcePlanInput,
 };
@@ -29,8 +30,6 @@ const SPLIT_PARTICIPANT_STABLE_FOR: Duration = Duration::from_secs(2);
 pub(super) const SPLIT_DEFAULT_MIN_PARTICIPANTS: usize = 2;
 const SPLIT_INITIAL_SHUTDOWN_GENERATION: u64 = 1;
 const SPLIT_COORDINATOR_LEASE_SECS: u64 = 4 * 60 * 60;
-const RUNTIME_MODEL_FIT_HEADROOM_NUMERATOR: u64 = 11;
-const RUNTIME_MODEL_FIT_HEADROOM_DENOMINATOR: u64 = 10;
 
 pub(super) enum RuntimeEvent {
     Exited {
@@ -570,16 +569,6 @@ pub(super) fn startup_runtime_plan(
             reason: SplitRuntimeReason::LocalCapacity,
         }
     }
-}
-
-pub(super) fn model_fits_runtime_capacity(model_bytes: u64, local_vram_bytes: u64) -> bool {
-    local_vram_bytes >= runtime_model_required_bytes(model_bytes)
-}
-
-pub(super) fn runtime_model_required_bytes(model_bytes: u64) -> u64 {
-    model_bytes
-        .saturating_mul(RUNTIME_MODEL_FIT_HEADROOM_NUMERATOR)
-        .div_ceil(RUNTIME_MODEL_FIT_HEADROOM_DENOMINATOR)
 }
 
 pub(super) async fn start_runtime_split_model(

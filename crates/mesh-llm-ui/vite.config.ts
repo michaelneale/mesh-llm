@@ -56,15 +56,12 @@ function stripBundledOnnxWasm(): PluginOption {
       // asset-emitter pattern matcher does not constant-fold it back into a
       // static URL. We also alias `import.meta` to a binding so it stops
       // being a syntactic match for `import.meta.url`.
-      const rewritten = code.replace(
-        PATTERN,
-        (_match, _quote, file) => {
-          const half = Math.floor(file.length / 2)
-          const a = JSON.stringify(file.slice(0, half))
-          const b = JSON.stringify(file.slice(half))
-          return `new URL(${a}+${b}, (0,()=>import.meta)().url)`
-        }
-      )
+      const rewritten = code.replace(PATTERN, (_match, _quote, file) => {
+        const half = Math.floor(file.length / 2)
+        const a = JSON.stringify(file.slice(0, half))
+        const b = JSON.stringify(file.slice(half))
+        return `new URL(${a}+${b}, (0,()=>import.meta)().url)`
+      })
       return { code: rewritten, map: null }
     }
   }

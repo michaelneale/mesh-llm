@@ -12513,7 +12513,7 @@ mod tests {
         );
 
         state.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
-            version: "v0.65.0".to_string(),
+            version: "v0.66.0".to_string(),
             message: None,
         }));
         assert_eq!(
@@ -12581,7 +12581,7 @@ mod tests {
 
         let mut failed = DashboardState::default();
         failed.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
-            version: "v0.65.0".to_string(),
+            version: "v0.66.0".to_string(),
             message: None,
         }));
         failed.reduce(DashboardAction::OutputEvent(OutputEvent::Error {
@@ -12602,7 +12602,7 @@ mod tests {
     fn startup_lifecycle_keeps_runtime_ready_as_final_edge() {
         let mut state = DashboardState::default();
         state.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
-            version: "v0.65.0".to_string(),
+            version: "v0.66.0".to_string(),
             message: None,
         }));
         state.reduce(DashboardAction::OutputEvent(OutputEvent::NodeIdentity {
@@ -12661,7 +12661,7 @@ mod tests {
     fn endpoint_rows_remain_starting_until_ready_events() {
         let mut state = DashboardState::default();
         state.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
-            version: "v0.65.0".to_string(),
+            version: "v0.66.0".to_string(),
             message: None,
         }));
         state.reduce(DashboardAction::SnapshotUpdated(DashboardSnapshot {
@@ -12726,7 +12726,7 @@ mod tests {
         let mut formatter = InteractiveDashboardFormatter::default();
         for event in [
             OutputEvent::Startup {
-                version: "v0.65.0".to_string(),
+                version: "v0.66.0".to_string(),
                 message: None,
             },
             OutputEvent::NodeIdentity {
@@ -12786,7 +12786,7 @@ mod tests {
         let mut formatter = InteractiveDashboardFormatter::default();
         for event in [
             OutputEvent::Startup {
-                version: "v0.65.0".to_string(),
+                version: "v0.66.0".to_string(),
                 message: None,
             },
             OutputEvent::NodeIdentity {
@@ -12846,7 +12846,7 @@ mod tests {
         let mut formatter = InteractiveDashboardFormatter::default();
         for event in [
             OutputEvent::Startup {
-                version: "v0.65.0".to_string(),
+                version: "v0.66.0".to_string(),
                 message: None,
             },
             OutputEvent::LlamaStarting {
@@ -12891,7 +12891,7 @@ mod tests {
     fn llama_startup_failures_mark_components_failed() {
         let mut llama_failed = DashboardState::default();
         llama_failed.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
-            version: "v0.65.0".to_string(),
+            version: "v0.66.0".to_string(),
             message: None,
         }));
         llama_failed.reduce(DashboardAction::OutputEvent(OutputEvent::ModelQueued {
@@ -12947,7 +12947,7 @@ mod tests {
     fn discovery_and_join_failures_mark_startup_mesh_component_failed() {
         let mut discovery_failed = DashboardState::default();
         discovery_failed.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
-            version: "v0.65.0".to_string(),
+            version: "v0.66.0".to_string(),
             message: None,
         }));
         discovery_failed.reduce(DashboardAction::OutputEvent(
@@ -12975,7 +12975,7 @@ mod tests {
 
         let mut join_failed = DashboardState::default();
         join_failed.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
-            version: "v0.65.0".to_string(),
+            version: "v0.66.0".to_string(),
             message: None,
         }));
         join_failed.reduce(DashboardAction::OutputEvent(OutputEvent::WaitingForPeers {
@@ -13004,7 +13004,7 @@ mod tests {
     fn post_ready_peer_churn_does_not_reopen_startup_failure() {
         let mut state = DashboardState::default();
         state.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
-            version: "v0.65.0".to_string(),
+            version: "v0.66.0".to_string(),
             message: None,
         }));
         state.reduce(DashboardAction::OutputEvent(OutputEvent::DiscoveryJoined {
@@ -13074,7 +13074,7 @@ mod tests {
     fn generic_error_after_runtime_ready_does_not_reopen_startup_failure() {
         let mut state = DashboardState::default();
         state.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
-            version: "v0.65.0".to_string(),
+            version: "v0.66.0".to_string(),
             message: None,
         }));
         state.reduce(DashboardAction::OutputEvent(OutputEvent::ApiReady {
@@ -13117,7 +13117,7 @@ mod tests {
             160, 32,
         )));
         state.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
-            version: "v0.65.0".to_string(),
+            version: "v0.66.0".to_string(),
             message: None,
         }));
         state.reduce(DashboardAction::OutputEvent(OutputEvent::LaunchPlan {
@@ -13474,7 +13474,7 @@ mod tests {
     fn ready_llama_process_row_stays_ready_when_another_model_starts() {
         let mut state = DashboardState::default();
         state.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
-            version: "v0.65.1".to_string(),
+            version: "v0.66.0".to_string(),
             message: Some("starting multi-model runtime".to_string()),
         }));
         state.reduce(DashboardAction::OutputEvent(OutputEvent::LlamaStarting {
@@ -13532,7 +13532,7 @@ mod tests {
     fn ready_llama_process_row_survives_lagging_startup_snapshot() {
         let mut state = DashboardState::default();
         state.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
-            version: "v0.65.1".to_string(),
+            version: "v0.66.0".to_string(),
             message: Some("starting multi-model runtime".to_string()),
         }));
         state.reduce(DashboardAction::OutputEvent(OutputEvent::LlamaStarting {
@@ -13658,7 +13658,7 @@ mod tests {
     fn raw_snapshot_ready_row_reconciles_with_canonical_loading_row() {
         let mut state = DashboardState::default();
         state.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
-            version: "v0.65.0".to_string(),
+            version: "v0.66.0".to_string(),
             message: None,
         }));
         state.reduce(DashboardAction::OutputEvent(OutputEvent::LaunchPlan {
@@ -13975,7 +13975,7 @@ mod tests {
     fn startup_failure_summary_sanitizes_multiline_detail() {
         let mut state = DashboardState::default();
         state.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
-            version: "v0.65.0".to_string(),
+            version: "v0.66.0".to_string(),
             message: None,
         }));
         state.reduce(DashboardAction::OutputEvent(
@@ -14096,7 +14096,7 @@ tail line"
 
         for event in [
             OutputEvent::Startup {
-                version: "v0.65.0".to_string(),
+                version: "v0.66.0".to_string(),
                 message: None,
             },
             OutputEvent::LlamaStarting {
@@ -14127,7 +14127,7 @@ tail line"
     fn shutdown_suppresses_late_ready_render() {
         let mut state = DashboardState::default();
         state.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
-            version: "v0.65.0".to_string(),
+            version: "v0.66.0".to_string(),
             message: None,
         }));
         state.reduce(DashboardAction::OutputEvent(OutputEvent::ApiStarting {
@@ -16049,7 +16049,7 @@ tail line"
         let mut state = DashboardState::default();
 
         state.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
-            version: "v0.65.0".to_string(),
+            version: "v0.66.0".to_string(),
             message: None,
         }));
 
@@ -16069,7 +16069,7 @@ tail line"
         let mut state = DashboardState::default();
 
         state.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
-            version: "v0.65.0".to_string(),
+            version: "v0.66.0".to_string(),
             message: None,
         }));
         state.reduce(DashboardAction::OutputEvent(OutputEvent::ApiStarting {
@@ -16096,7 +16096,7 @@ tail line"
         let mut state = DashboardState::default();
 
         state.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
-            version: "v0.65.0".to_string(),
+            version: "v0.66.0".to_string(),
             message: None,
         }));
         state.reduce(DashboardAction::OutputEvent(OutputEvent::ModelLoaded {
@@ -16153,7 +16153,7 @@ tail line"
         let mut state = DashboardState::default();
 
         state.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
-            version: "v0.65.0".to_string(),
+            version: "v0.66.0".to_string(),
             message: None,
         }));
         state.reduce(DashboardAction::OutputEvent(OutputEvent::ModelLoaded {

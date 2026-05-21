@@ -1198,8 +1198,9 @@ pub(crate) fn prune_unpinned_materialized_stages() -> Result<usize> {
         if pins.iter().any(|pin| pin == &path) {
             continue;
         }
-        fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
-        removed += 1;
+        if remove_materialized_stage_artifact(&path)? {
+            removed += 1;
+        }
     }
     for entry in fs::read_dir(&root).with_context(|| format!("read {}", root.display()))? {
         let path = entry?.path();
@@ -1229,9 +1230,7 @@ pub(crate) fn remove_materialized_stages_for_sources(sources: &[PathBuf]) -> Res
     let candidates = materialized_stage_removal_candidates(sources)?;
     let mut removed = 0usize;
     for candidate in candidates {
-        if candidate.artifact_path.exists() {
-            fs::remove_file(&candidate.artifact_path)
-                .with_context(|| format!("remove {}", candidate.artifact_path.display()))?;
+        if remove_materialized_stage_artifact(&candidate.artifact_path)? {
             removed += 1;
         }
         let _ = fs::remove_file(candidate.source_index_path);
@@ -1302,6 +1301,23 @@ fn materialized_stage_removal_candidates(
 struct MaterializedStageRemovalCandidate {
     artifact_path: PathBuf,
     source_index_path: PathBuf,
+}
+
+fn remove_materialized_stage_artifact(path: &Path) -> Result<bool> {
+    let removed = match fs::remove_file(path) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error).with_context(|| format!("remove {}", path.display())),
+    };
+    let record_path = package::materialized_layer_package_cache_record_path(path);
+    match fs::remove_file(&record_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| format!("remove {}", record_path.display()));
+        }
+    }
+    Ok(removed)
 }
 
 fn stage_package_info(package_ref: &str, info: LayerPackageInfo) -> Result<StagePackageInfo> {
@@ -2089,6 +2105,8 @@ mod tests {
         let fixture_id = cache_key(&temp.path().to_string_lossy());
         let artifact = root.join(format!("stage-{fixture_id}.gguf"));
         fs::write(&artifact, b"stage").unwrap();
+        let cache_record_path = package::materialized_layer_package_cache_record_path(&artifact);
+        fs::write(&cache_record_path, b"{}").unwrap();
         let index = SourceIndex {
             artifact_path: artifact.clone(),
             source_model_path: source.to_string_lossy().to_string(),
@@ -2105,6 +2123,7 @@ mod tests {
             remove_materialized_stages_for_sources(std::slice::from_ref(&source)).unwrap();
         assert_eq!(removed, 1);
         assert!(!artifact.exists());
+        assert!(!cache_record_path.exists());
         assert!(!index_path.exists());
         fs::remove_dir(unreadable_index_path).unwrap();
     }

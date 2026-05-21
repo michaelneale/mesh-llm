@@ -397,7 +397,7 @@ curl localhost:3131/api/discover # Nostr meshes (current mesh marked by mesh_id)
 - SSE events push every 2s and on topology changes
 - `/api/search` returns 200 JSON with canonical model refs for matching results
 - `/api/model-interests` stores and returns local explicit-interest entries keyed by canonical model refs
-- `/api/model-targets` returns ranked targets with explicit-interest counts, request counts, serving-node counts, and `wanted` for targets not currently served
+- `/api/model-targets` returns ranked targets with explicit-interest counts, request counts, serving-node counts, `wanted` for targets not currently served, and derived `capacity_advice` without changing ranking or routing behavior
 - Discover results can be matched to current mesh by `mesh_id`
 
 ### 24. HTTP proxy single-request connection contract

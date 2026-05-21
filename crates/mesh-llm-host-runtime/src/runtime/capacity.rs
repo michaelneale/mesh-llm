@@ -2,6 +2,9 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
+const RUNTIME_MODEL_FIT_HEADROOM_NUMERATOR: u64 = 11;
+const RUNTIME_MODEL_FIT_HEADROOM_DENOMINATOR: u64 = 10;
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(super) enum RuntimeCapacityPool {
     Node,
@@ -187,6 +190,16 @@ impl Drop for RuntimeCapacityReservation {
 
 fn format_gb(bytes: u64) -> String {
     format!("{:.1}GB", bytes as f64 / 1e9)
+}
+
+pub(crate) fn model_fits_runtime_capacity(model_bytes: u64, local_vram_bytes: u64) -> bool {
+    local_vram_bytes >= runtime_model_required_bytes(model_bytes)
+}
+
+pub(crate) fn runtime_model_required_bytes(model_bytes: u64) -> u64 {
+    model_bytes
+        .saturating_mul(RUNTIME_MODEL_FIT_HEADROOM_NUMERATOR)
+        .div_ceil(RUNTIME_MODEL_FIT_HEADROOM_DENOMINATOR)
 }
 
 #[cfg(test)]

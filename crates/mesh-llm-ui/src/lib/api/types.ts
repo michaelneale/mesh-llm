@@ -2,6 +2,10 @@
 // STATUS API TYPES (GET /api/status + SSE /api/events)
 // ============================================================
 
+import type { WakeableNode } from '@/features/app-shell/lib/status-types'
+
+export type { WakeableNode }
+
 export interface GpuInfo {
   idx: number
   name: string
@@ -127,6 +131,7 @@ export interface StatusPayload {
   nostr_discovery?: boolean
   publication_state?: MeshPublicationState
   first_joined_mesh_ts?: number
+  wakeable_nodes?: WakeableNode[]
 }
 
 // ============================================================

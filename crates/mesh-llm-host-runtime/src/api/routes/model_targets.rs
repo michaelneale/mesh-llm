@@ -1,4 +1,8 @@
-use super::super::{http::respond_json, status::ModelTargetPayload, MeshApi};
+use super::super::{
+    http::respond_json,
+    status::{ModelTargetCapacityAdvicePayload, ModelTargetPayload},
+    MeshApi,
+};
 use serde::Serialize;
 use tokio::net::TcpStream;
 
@@ -33,6 +37,7 @@ struct ModelTargetDerived {
     wanted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     wanted_reason: Option<&'static str>,
+    capacity_advice: ModelTargetCapacityAdvicePayload,
 }
 
 impl From<ModelTargetPayload> for ModelTargetResponseItem {
@@ -52,6 +57,7 @@ impl From<ModelTargetPayload> for ModelTargetResponseItem {
                 target_rank: target.rank,
                 wanted: target.wanted,
                 wanted_reason: target.wanted_reason,
+                capacity_advice: target.capacity_advice,
             },
         }
     }

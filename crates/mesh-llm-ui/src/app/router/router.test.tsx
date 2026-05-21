@@ -18,11 +18,16 @@ import { ChatPageContent } from '@/features/chat/pages/ChatPage'
 import { DeveloperPlaygroundPage } from '@/features/developer/pages/DeveloperPlaygroundPage'
 import { DashboardPageSurface } from '@/features/network/pages/DashboardPage'
 import { parseDeveloperPlaygroundSearch } from '@/features/developer/playground/developer-playground-tabs'
+import { ReservesPageContent } from '@/features/reserves/pages/ReservesPage'
 import { statusKeys } from '@/lib/query/query-keys'
 
 const routeCacheProbe = vi.hoisted(() => ({
   dashboardClient: undefined as QueryClient | undefined,
   chatClient: undefined as QueryClient | undefined
+}))
+
+vi.mock('@/features/reserves/pages/ReservesPage', () => ({
+  ReservesPageContent: () => <div>Reserves route</div>
 }))
 
 vi.mock('@/features/developer/pages/DeveloperPlaygroundPage', async () => {
@@ -97,6 +102,12 @@ const chatRoute = createRoute({
   head: () => ({ meta: [{ title: 'MeshLLM - Chat' }] }),
   component: ChatPageContent
 })
+const reservesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/reserves',
+  head: () => ({ meta: [{ title: 'MeshLLM - Reserves' }] }),
+  component: ReservesPageContent
+})
 const configurationRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/configuration',
@@ -118,6 +129,7 @@ const developerPlaygroundRoute = createRoute({
 })
 const testRouteTree = rootRoute.addChildren([
   indexRoute,
+  reservesRoute,
   chatRoute,
   configurationRoute,
   configurationTabRoute,
@@ -146,6 +158,7 @@ function renderRouterWithHistory(history: ReturnType<typeof createMemoryHistory>
 describe('app router routes', () => {
   it.each([
     ['/', 'MeshLLM - Dashboard', 'Dashboard route'],
+    ['/reserves', 'MeshLLM - Reserves', 'Reserves route'],
     ['/chat', 'MeshLLM - Chat', 'Chat route cache: missing'],
     ['/configuration/defaults', 'MeshLLM - Configuration', 'Active route tab: defaults'],
     ['/__playground?tab=shell-controls', 'MeshLLM - Developer Playground', 'Active developer route tab: shell-controls']

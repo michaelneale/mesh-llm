@@ -19,7 +19,7 @@ const PUBLIC_STATUS_PAYLOAD: StatusPayload = {
       vram_gb: 0,
       serving_models: [],
       hosted_models: [],
-      version: '0.65.0',
+      version: '0.66.0',
       rtt_ms: 7,
       hostname: '1266a345aeb9',
       first_joined_mesh_ts: 1_700_000_600_000
@@ -30,7 +30,7 @@ const PUBLIC_STATUS_PAYLOAD: StatusPayload = {
   gpus: [],
   serving_models: [{ name: 'Hermes-2-Pro-Mistral-7B-Q4_K_M', node_id: '16ce0bb4de', status: 'warm' }],
   my_hostname: 'public-host',
-  version: '0.65.0-rc2'
+  version: '0.66.0'
 }
 
 describe('adaptStatusToDashboard', () => {

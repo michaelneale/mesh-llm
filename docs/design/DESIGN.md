@@ -232,14 +232,21 @@ without the HTML via curl/scripts.
 reports `signals` from observed mesh state (`explicit_interest_count`,
 `request_count`, `last_active_secs_ago`, `serving_node_count`, and `requested`)
 alongside `derived` hints (`target_rank`, `wanted`, and optional
-`wanted_reason`). Ranking is advisory and deterministic: explicit interest is
-ordered first, active request demand second, requested-only unserved models
-third, then recent activity, display name, and canonical ref. A `requested`
-signal does not add a second rank boost when request demand is already present;
-it only breaks into the ranking as its own requested-only signal. `wanted` means
-the model is currently unserved and has at least one explicit-interest, active
-demand, or requested-model signal. It is not a desired replica count, a capacity
-decision, or an unload/load command.
+`wanted_reason`) plus `capacity_advice`. Capacity advice is also advisory: it
+uses existing catalog size and node VRAM signals to report whether a target is
+already served, has a single-node fit, is a split-capable aggregate candidate,
+has a known shortfall, or cannot be judged because model size or node capacity
+is unknown. Client-role exclusions and missing VRAM are reported separately so
+operators can distinguish "this node cannot host" from "this node did not
+advertise usable capacity." Ranking is advisory and deterministic: explicit
+interest is ordered first, active request demand second, requested-only unserved
+models third, then recent activity, display name, and canonical ref. A
+`requested` signal does not add a second rank boost when request demand is
+already present; it only breaks into the ranking as its own requested-only
+signal. `wanted` means the model is currently unserved and has at least one
+explicit-interest, active demand, or requested-model signal. It is not a
+desired replica count, an unload/load command, or proof that a split package is
+ready on every participant.
 
 Always enabled on port 3131 (configurable with `--console <port>`).
 

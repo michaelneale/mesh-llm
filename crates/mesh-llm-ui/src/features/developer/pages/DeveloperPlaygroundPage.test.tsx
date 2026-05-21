@@ -11,6 +11,19 @@ import { FeatureFlagProvider } from '@/lib/feature-flags'
 
 const PLAYGROUND_FEATURE_FLAGS_STORAGE_KEY = 'mesh:test:feature-flags'
 
+const routerMocks = vi.hoisted(() => ({
+  navigate: vi.fn()
+}))
+
+vi.mock('@tanstack/react-router', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@tanstack/react-router')>()
+
+  return {
+    ...actual,
+    useNavigate: vi.fn(() => routerMocks.navigate)
+  }
+})
+
 function renderDeveloperPlaygroundPage() {
   return render(
     <FeatureFlagProvider storageKey={PLAYGROUND_FEATURE_FLAGS_STORAGE_KEY}>
@@ -45,6 +58,7 @@ function createMockDataTransfer() {
 describe('DeveloperPlaygroundPage', () => {
   beforeEach(() => {
     window.localStorage.removeItem(PLAYGROUND_FEATURE_FLAGS_STORAGE_KEY)
+    routerMocks.navigate.mockReset()
   })
 
   it('uses component-use oriented top-level tabs', () => {
@@ -57,6 +71,7 @@ describe('DeveloperPlaygroundPage', () => {
     expect(within(tablist).getByRole('tab', { name: /meshviz 200/i })).toBeInTheDocument()
     expect(within(tablist).getByRole('tab', { name: /chat components/i })).toBeInTheDocument()
     expect(within(tablist).getByRole('tab', { name: /configuration controls/i })).toBeInTheDocument()
+    expect(within(tablist).getByRole('tab', { name: /reserves preview/i })).toBeInTheDocument()
     expect(within(tablist).getByRole('tab', { name: /tokens and foundations/i })).toBeInTheDocument()
     expect(within(tablist).getByRole('tab', { name: /feature flags/i })).toBeInTheDocument()
     expect(within(tablist).getAllByRole('tab').at(-1)).toHaveTextContent(/meshviz 200/i)
@@ -178,6 +193,18 @@ describe('DeveloperPlaygroundPage', () => {
     expect(screen.getAllByRole('region', { name: /capacity/i })).toHaveLength(8)
   })
 
+  it('renders the reserves preview tab with the mockup surface', async () => {
+    const user = userEvent.setup()
+
+    renderDeveloperPlaygroundPage()
+
+    await user.click(screen.getByRole('tab', { name: /reserves preview/i }))
+
+    expect(screen.getByRole('heading', { name: /reserves mockup preview/i })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Reserves' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /add provider/i })).toBeInTheDocument()
+  })
+
   it('clears a non-fitting drag target after mouse release', async () => {
     const user = userEvent.setup()
     const dataTransfer = createMockDataTransfer()
@@ -270,6 +297,8 @@ describe('DeveloperPlaygroundPage', () => {
     expect(screen.getByText(/rollout switches for configuration sections/i)).toBeInTheDocument()
     expect(screen.getByText(/shows the temporary signing, key binding/i)).toBeInTheDocument()
     expect(screen.getByText(/shows the temporary integrations section/i)).toBeInTheDocument()
+    expect(screen.getByText(/shows the reserves tab in configuration/i)).toBeInTheDocument()
+    expect(screen.getByRole('radiogroup', { name: /reserves state/i })).toBeInTheDocument()
 
     const signingControl = screen.getByRole('radiogroup', { name: /signing \/ attestation state/i })
     const signingEnabledOption = within(signingControl).getByRole('radio', { name: /on/i })

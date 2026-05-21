@@ -1,7 +1,7 @@
 {
   "name": "mesh-llm-console-ui",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.66.0",
   "type": "module",
   "engines": {
     "node": ">=24"

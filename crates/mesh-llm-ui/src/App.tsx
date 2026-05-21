@@ -4,7 +4,7 @@ import { router } from '@/app/router/router'
 
 export function App() {
   return (
-    <AppProviders initialDataMode="live" persistDataMode={false}>
+    <AppProviders>
       <RouterProvider router={router} />
     </AppProviders>
   )

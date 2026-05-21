@@ -88,6 +88,7 @@ vi.mock('@/components/ui/select', async () => {
 })
 
 import { defaultQueryClient } from '@/lib/query/query-client'
+import { DATA_MODE_STORAGE_KEY } from '@/lib/data-mode'
 import { attachmentForMessage, ChatPage, describeImageAttachmentForPrompt, describeRenderedPagesAsText } from '@/App'
 import type { StatusPayload } from '@/features/app-shell/lib/status-types'
 
@@ -235,19 +236,27 @@ function setPath(path: string) {
   window.history.replaceState({}, '', path)
 }
 
-function renderAppRoute(path: string) {
+type RenderAppRouteOptions = {
+  initialDataMode?: 'harness' | 'live'
+  persistDataMode?: boolean
+}
+
+function renderAppRoute(
+  path: string,
+  { initialDataMode = 'live', persistDataMode = false }: RenderAppRouteOptions = {}
+) {
   const testRouter = createRouter({
     history: createMemoryHistory({ initialEntries: [path] }),
     routeTree
   })
 
-  render(
-    <AppProviders initialDataMode="live" persistDataMode={false} queryClient={defaultQueryClient}>
+  const result = render(
+    <AppProviders initialDataMode={initialDataMode} persistDataMode={persistDataMode} queryClient={defaultQueryClient}>
       <RouterProvider router={testRouter} />
     </AppProviders>
   )
 
-  return testRouter
+  return Object.assign(testRouter, result)
 }
 
 class MockEventSource {
@@ -315,6 +324,7 @@ beforeEach(() => {
   statusPayload = createStatusPayload()
   modelsPayload = { mesh_models: [] }
   defaultQueryClient.clear()
+  window.localStorage.clear()
   setupFetchMock()
   Object.defineProperty(window, 'EventSource', {
     configurable: true,
@@ -326,6 +336,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.resetAllMocks()
+  window.localStorage.clear()
   setPath('/')
 })
 
@@ -487,6 +498,33 @@ describe('ChatPage', () => {
 })
 
 describe('App routing and status', () => {
+  it('persists the development data source selection across remounts', async () => {
+    const { unmount } = renderAppRoute('/dashboard', { initialDataMode: 'harness', persistDataMode: true })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open interface preferences' }))
+    expect(await screen.findByRole('radio', { name: 'Harness' })).toHaveAttribute('aria-checked', 'true')
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Live API' }))
+    await waitFor(() => expect(window.localStorage.getItem(DATA_MODE_STORAGE_KEY)).toBe('live'))
+
+    unmount()
+
+    const rerenderedLiveApp = renderAppRoute('/dashboard', { initialDataMode: 'harness', persistDataMode: true })
+    fireEvent.click(await screen.findByRole('button', { name: 'Open interface preferences' }))
+
+    expect(await screen.findByRole('radio', { name: 'Live API' })).toHaveAttribute('aria-checked', 'true')
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Harness' }))
+    await waitFor(() => expect(window.localStorage.getItem(DATA_MODE_STORAGE_KEY)).toBe('harness'))
+
+    rerenderedLiveApp.unmount()
+
+    renderAppRoute('/dashboard', { initialDataMode: 'harness', persistDataMode: true })
+    fireEvent.click(await screen.findByRole('button', { name: 'Open interface preferences' }))
+
+    expect(await screen.findByRole('radio', { name: 'Harness' })).toHaveAttribute('aria-checked', 'true')
+  })
+
   it('desktop unknown path fallback resolves to dashboard behavior', async () => {
     const testRouter = renderAppRoute('/unknown-path')
 

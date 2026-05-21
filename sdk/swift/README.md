@@ -8,7 +8,7 @@ Add to your app's `Package.swift` using a tagged release:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Mesh-LLM/mesh-llm", from: "0.1.0"),
+    .package(url: "https://github.com/Mesh-LLM/mesh-llm", from: "0.66.0"),
 ],
 targets: [
     .target(
