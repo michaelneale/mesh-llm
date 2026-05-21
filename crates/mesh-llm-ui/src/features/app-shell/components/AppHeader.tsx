@@ -18,7 +18,7 @@ import { TooltipContent, TooltipRoot, TooltipTrigger } from '@/components/ui/too
 import { cn } from '@/lib/utils'
 import type { TopSection } from '@/features/app-shell/lib/routes'
 
-const DOCS_URL = 'https://docs.meshllm.cloud'
+const DOCS_URL = 'https://docs.anarchai.org'
 
 type ThemeMode = 'auto' | 'light' | 'dark'
 
