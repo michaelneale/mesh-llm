@@ -327,6 +327,14 @@ Testing matters more than usual in this project because:
 
 When making changes that touch gossip, routing, proxy, election, or capability advertisement, test against at least two nodes before merging. The deploy checklist below is not optional.
 
+### Confidence Testing (multi-node, when warranted)
+
+For changes that affect routing, MoA, gossip, the OpenAI surface, agent harnesses, or anything multi-node, validate with these three shapes before declaring a branch ready:
+
+1. **2-node private mesh** — start one node with `mesh-llm serve --model <big> --port 9337 --console 3131`, grab its invite token from the JSON log, and start the second node with `mesh-llm serve --gguf <small.gguf> --port 9447 --console 3145 --join <token>`. Confirm peers=1 on both consoles and `/v1/models` returns the union. Exercises QUIC tunnelling and cross-node routing.
+2. **Public mesh as a client** — `mesh-llm client --auto` from a workstation. Confirm `discovery_joined` + `Client ready` in the log and an inference call against a mesh-advertised model returns. Exercises the read-only routing path agent users hit.
+3. **Agent harness** — run ≥ 1 of the harnesses (“mini-agent” Python loops at `/tmp/mini-agent*.py`, Goose, OpenCode) against the local proxy with both `model=auto` and `model=mesh` to catch tool-call and reducer regressions that simple curl checks miss.
+
 ### Cargo Concurrency
 
 Run `cargo` commands serially. Do not run multiple `cargo` commands in parallel (including parallel test runs), because this repo frequently hits Cargo lock conflicts (`package cache` / `artifact directory`) under concurrent invocation.
