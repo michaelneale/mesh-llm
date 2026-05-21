@@ -15,8 +15,24 @@ describe('DataModeProvider', () => {
     window.localStorage.clear()
   })
 
-  it('defaults to harness mode and persists under the preview namespace', async () => {
+  it('defaults to live mode and persists under the preview namespace', async () => {
+    // Regression: the production console (local mesh-llm, fly app) should
+    // show live mesh data by default, not fixture providers. Harness mode
+    // is an explicit opt-in for the developer playground / mockups via the
+    // in-app data-mode toggle.
     const { result } = renderHook(() => useDataMode(), { wrapper: providerWrapper() })
+
+    expect(result.current.mode).toBe('live')
+
+    await waitFor(() => {
+      expect(window.localStorage.getItem(DATA_MODE_STORAGE_KEY)).toBe('live')
+    })
+  })
+
+  it('still honours an explicit harness initialMode (developer playground)', async () => {
+    const { result } = renderHook(() => useDataMode(), {
+      wrapper: providerWrapper({ initialMode: 'harness' })
+    })
 
     expect(result.current.mode).toBe('harness')
 
