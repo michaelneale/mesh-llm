@@ -10,6 +10,7 @@ members = [
     "crates/mesh-llm-types",
     "crates/mesh-llm-ui",
     "crates/mesh-llm-plugin",
+    "crates/mesh-llm-guardrails",
     "crates/mesh-client",
     "crates/mesh-api",
     "crates/mesh-host-core",

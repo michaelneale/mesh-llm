@@ -3696,6 +3696,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "mesh-llm-guardrails"
+version = "0.66.0"
+dependencies = [
+ "async-trait",
+ "futures-core",
+ "mesh-llm-routing",
+ "openai-frontend",
+ "regex",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "mesh-llm-host-runtime"
 version = "0.66.0"
 dependencies = [
@@ -3722,6 +3737,7 @@ dependencies = [
  "libc",
  "mdns-sd",
  "mesh-llm-client",
+ "mesh-llm-guardrails",
  "mesh-llm-identity",
  "mesh-llm-plugin",
  "mesh-llm-protocol",
