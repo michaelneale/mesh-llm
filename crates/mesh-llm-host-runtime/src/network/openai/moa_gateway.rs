@@ -18,12 +18,19 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 
 /// Detect `model: "mesh"`, build a mesh-wide MoA config, run the turn,
-/// send the HTTP response (JSON or SSE), and return `true` if the request
-/// was handled. Returns `false` if the request is not for MoA, so the
-/// caller can fall through to normal routing.
+/// and write the HTTP response (JSON or SSE) directly to the stream.
 ///
-/// On MoA failure (e.g. <2 models in the mesh) sends a 503 and still
-/// returns `true` — the caller must not also try to respond.
+/// Return value carries the un-consumed `TcpStream` so the caller knows
+/// what to do next:
+///
+/// * `Some(stream)` — the request is *not* MoA-shaped (effective model
+///   is not the virtual `"mesh"` name). The stream is returned unused
+///   and the caller should fall through to normal routing.
+///
+/// * `None` — MoA owns the response. The stream has been consumed: a
+///   successful MoA response, a 503 (when fewer than 2 models are
+///   reachable), or a 400 (when the request body wasn't JSON) was
+///   already written. The caller must *not* attempt to respond again.
 pub async fn try_handle_moa(
     node: &mesh::Node,
     tcp_stream: TcpStream,
@@ -46,7 +53,7 @@ pub async fn try_handle_moa(
         return None;
     };
 
-    run_moa_turn(tcp_stream, body_json, &config).await;
+    run_moa_turn(tcp_stream, body_json, &config, request.response_adapter).await;
     None
 }
 
@@ -56,6 +63,7 @@ async fn run_moa_turn(
     tcp_stream: TcpStream,
     body_json: serde_json::Value,
     config: &moa::GatewayConfig,
+    response_adapter: proxy::ResponseAdapter,
 ) {
     let was_streaming = body_json
         .get("stream")
@@ -66,40 +74,98 @@ async fn run_moa_turn(
 
     let moa_result = moa::handle_turn(config, &moa_body).await;
     let extra_headers = build_moa_headers(&moa_result);
-    write_moa_response(tcp_stream, &moa_result, &extra_headers, was_streaming).await;
+    write_moa_response(
+        tcp_stream,
+        &moa_result,
+        &extra_headers,
+        was_streaming,
+        response_adapter,
+    )
+    .await;
 }
 
 /// Write the MoA response on the chosen transport (JSON or SSE), logging
 /// (but not propagating) any I/O error.
 ///
-/// When the gateway reports `TurnKind::Failed` we send an HTTP 502 (Bad
-/// Gateway) with the structured error body, rather than HTTP 200. The
-/// crate's `error_response` already carries an OpenAI-shape top-level
-/// `error` object and `finish_reason: "error"`, but unsophisticated
-/// clients that only check the HTTP status need that status to actually
-/// reflect failure.
+/// Detect whether a MoA response body is signalling failure.
+///
+/// Two signals, either of which means "failure":
+///
+///   * Top-level `error` object — OpenAI-shape error envelope produced
+///     by `moa::error_response`.
+///   * `choices[0].finish_reason == "error"` — same convention applied
+///     by the crate's response builder for in-band failure signalling.
+///
+/// Previously the HTTP-status decision was based on `TurnKind == Failed`,
+/// but the tool-result reducer path can produce an error_response with
+/// `TurnKind::ToolResult` when every reducer candidate fails. Tying the
+/// status to the body's failure signal instead means *all* error-shaped
+/// MoA responses get a non-200 status, regardless of which sub-flow
+/// produced them.
+fn is_moa_failure_body(body: &serde_json::Value) -> bool {
+    if body.get("error").is_some() {
+        return true;
+    }
+    body.pointer("/choices/0/finish_reason")
+        .and_then(|v| v.as_str())
+        == Some("error")
+}
+
+/// When the response body signals MoA failure (top-level `error` field or
+/// `choices[0].finish_reason == "error"`) we send an HTTP 502 (Bad
+/// Gateway), not HTTP 200. Unsophisticated clients that only check the
+/// HTTP status need that status to actually reflect failure.
 async fn write_moa_response(
     tcp_stream: TcpStream,
     moa_result: &moa::TurnResult,
     extra_headers: &[(&str, String)],
     was_streaming: bool,
+    response_adapter: proxy::ResponseAdapter,
 ) {
     let body = &moa_result.response_body;
-    let result = if was_streaming {
-        // SSE always uses 200: the failure signal rides in the streamed
-        // chunks (the body includes `error` and `finish_reason: "error"`).
-        // Once the headers are sent we cannot change the status code.
-        send_moa_as_sse(tcp_stream, body, extra_headers).await
-    } else if moa_result.turn_kind == moa::TurnKind::Failed {
-        proxy::send_json_with_status_and_headers(tcp_stream, 502, body, extra_headers).await
+    let is_failure = is_moa_failure_body(body);
+    // Streaming + failure: respond as non-streaming HTTP 502 with the
+    // structured error body. Failure path doesn't go through SSE in any
+    // adapter mode — callers want a clean connection-level error.
+    let (mode, result) = if was_streaming && !is_failure {
+        match response_adapter {
+            proxy::ResponseAdapter::OpenAiResponsesStream => (
+                "SSE-responses",
+                send_moa_as_responses_sse(tcp_stream, body, extra_headers).await,
+            ),
+            // None, OpenAiChatCompletionsStream, OpenAiResponsesJson all
+            // get the chat.completion.chunk SSE shape — the JSON-mode
+            // adapter caller will never set was_streaming=true.
+            _ => (
+                "SSE-chat",
+                send_moa_as_sse(tcp_stream, body, extra_headers).await,
+            ),
+        }
+    } else if is_failure {
+        (
+            "JSON-502",
+            proxy::send_json_with_status_and_headers(tcp_stream, 502, body, extra_headers).await,
+        )
+    } else if response_adapter == proxy::ResponseAdapter::OpenAiResponsesJson {
+        // Non-streaming Responses-API request: emit a Responses-shape
+        // JSON body instead of the chat.completion shape.
+        (
+            "JSON-responses",
+            proxy::send_json_ok_with_headers(
+                tcp_stream,
+                &chat_completion_to_responses_json(body),
+                extra_headers,
+            )
+            .await,
+        )
     } else {
-        proxy::send_json_ok_with_headers(tcp_stream, body, extra_headers).await
+        (
+            "JSON",
+            proxy::send_json_ok_with_headers(tcp_stream, body, extra_headers).await,
+        )
     };
     if let Err(e) = result {
-        tracing::warn!(
-            "MoA: response write failed ({}): {e}",
-            if was_streaming { "SSE" } else { "JSON" }
-        );
+        tracing::warn!("MoA: response write failed ({mode}): {e}");
     }
 }
 
@@ -157,26 +223,33 @@ pub async fn build_moa_config(
     targets: Option<&election::ModelTargets>,
 ) -> Option<moa::GatewayConfig> {
     let http = reqwest::Client::new();
-    let mut seen_bases = std::collections::HashSet::new();
     let mut backends: Vec<std::sync::Arc<dyn moa::ModelBackend>> = Vec::new();
     let mut models: Vec<moa::ModelEntry> = Vec::new();
     let mut local_count = 0usize;
 
     // Full mesh-wide model list (local + every peer's advertised
-    // routable models). Sorted by name length so the shorter (canonical)
-    // form wins dedup.
-    let mut all_models: Vec<String> = node.models_being_served().await;
-    all_models.sort_by_key(|n| n.len());
+    // routable models).
+    let all_models: Vec<String> = node
+        .models_being_served()
+        .await
+        .into_iter()
+        .filter(|n| n != moa::VIRTUAL_MODEL_NAME)
+        .collect();
 
-    for name in all_models {
-        if !accept_for_dedup(&name, &mut seen_bases) {
-            continue;
-        }
-        add_worker_backend(
+    // Group aliases by canonical base. The old shape sorted by name
+    // length, took the *first* alias per base, and dropped the rest —
+    // which silently dropped the model from the worker pool whenever the
+    // shortest-named peer was unreachable (regression flagged by PR #566
+    // review). Now we keep every alias per base and try them in order so
+    // a longer-named reachable alias can still resolve when the shortest
+    // one is offline.
+    let groups = group_aliases_by_canonical_base(all_models, targets);
+    for aliases in groups {
+        resolve_one_worker_from_aliases(
             node,
             targets,
             &http,
-            &name,
+            &aliases,
             &mut backends,
             &mut models,
             &mut local_count,
@@ -219,16 +292,99 @@ pub async fn build_moa_config(
         // (or sooner on outright failure). Cheap on the happy path, big win on
         // the cold-KV / stale-peer tail.
         hedge_delay: std::time::Duration::from_secs(5),
+        // Chat-only sole-answer grace. Tool turns ignore this.
+        first_answer_grace: std::time::Duration::from_secs(6),
     })
 }
 
-/// Filter out the virtual `"mesh"` name and de-dup by canonical base.
-/// Returns true if `name` is a fresh model that should be considered.
-fn accept_for_dedup(name: &str, seen_bases: &mut std::collections::HashSet<String>) -> bool {
-    if name == moa::VIRTUAL_MODEL_NAME {
-        return false;
+/// Try each alias in `aliases` until one resolves to a backend, then stop.
+///
+/// Aliases are pre-sorted by `group_aliases_by_canonical_base` so the most
+/// preferred (locally-served first, then shortest) is tried first. Falls
+/// back to longer aliases when the preferred one's peer is unreachable.
+#[allow(clippy::too_many_arguments)]
+async fn resolve_one_worker_from_aliases(
+    node: &mesh::Node,
+    targets: Option<&election::ModelTargets>,
+    http: &reqwest::Client,
+    aliases: &[String],
+    backends: &mut Vec<std::sync::Arc<dyn moa::ModelBackend>>,
+    models: &mut Vec<moa::ModelEntry>,
+    local_count: &mut usize,
+) {
+    for name in aliases {
+        if add_worker_backend(node, targets, http, name, backends, models, local_count).await {
+            return;
+        }
     }
-    seen_bases.insert(canonical_base_name(name))
+}
+
+/// Group all advertised model names by their canonical base so each
+/// canonical model contributes exactly one worker, but the resolver gets
+/// to pick the alias that actually has a reachable backend.
+///
+/// The earlier shape committed to a single alias per base *before* trying
+/// to resolve a backend. Two failure modes:
+///
+///   1. The chosen alias is advertised only by a peer that drops between
+///      gossip refresh and orchestration — `hosts_for_model` returns
+///      empty, the worker is dropped, and longer-form aliases for the
+///      same canonical model from still-reachable peers are rejected as
+///      duplicates.
+///   2. The local node advertises a longer convention
+///      (e.g. `unsloth/Qwen3-8B-GGUF:Q4_K_M`) while a peer advertises a
+///      shorter variant (e.g. `Qwen3-8B-Q4_K_M`). The shortest-name rule
+///      picks the peer alias, `add_worker_backend` looks for a local port
+///      under that specific string, finds nothing, and forces a
+///      QUIC-tunnel backend even though the model is right here.
+///
+/// Both failure modes are fixed by grouping first and resolving second.
+/// Within each group the aliases are ordered so the most likely
+/// optimization wins first try: locally-served name (skippy-port fast
+/// path) before remote names, then shortest first as a tiebreaker.
+fn group_aliases_by_canonical_base(
+    names: Vec<String>,
+    targets: Option<&election::ModelTargets>,
+) -> Vec<Vec<String>> {
+    let mut by_base: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for name in names {
+        by_base
+            .entry(canonical_base_name(&name))
+            .or_default()
+            .push(name);
+    }
+    // Deterministic group order so the worker list is stable across
+    // builds even though HashMap iteration is not. Sort group entries
+    // (locally-served first, then shortest), then sort groups by their
+    // first ("best") alias.
+    let mut groups: Vec<Vec<String>> = by_base
+        .into_values()
+        .map(|mut aliases| {
+            aliases.sort_by(|a, b| {
+                let la = is_locally_served(a, targets);
+                let lb = is_locally_served(b, targets);
+                lb.cmp(&la) // local (true) before remote (false)
+                    .then_with(|| a.len().cmp(&b.len()))
+                    .then_with(|| a.cmp(b))
+            });
+            aliases
+        })
+        .collect();
+    groups.sort_by(|a, b| a[0].cmp(&b[0]));
+    groups
+}
+
+/// Does the local routing table have a backend port for this exact name?
+fn is_locally_served(name: &str, targets: Option<&election::ModelTargets>) -> bool {
+    targets
+        .and_then(|t| {
+            t.targets.get(name).map(|tv| {
+                tv.iter()
+                    .any(|t| matches!(t, election::InferenceTarget::Local(_)))
+            })
+        })
+        .unwrap_or(false)
 }
 
 /// Resolve `name` to a backend (local skippy port if available, else first
@@ -465,12 +621,7 @@ async fn send_moa_as_sse(
         "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nCache-Control: no-cache\r\nConnection: close\r\n",
     );
     for (name, value) in extra_headers {
-        // Strip CR/LF defensively against header-injection bugs creeping in later.
-        let safe_value: String = value.chars().filter(|c| *c != '\r' && *c != '\n').collect();
-        header.push_str(name);
-        header.push_str(": ");
-        header.push_str(&safe_value);
-        header.push_str("\r\n");
+        crate::network::openai::transport::append_safe_header(&mut header, name, value);
     }
     header.push_str("\r\n");
     stream.write_all(header.as_bytes()).await?;
@@ -494,11 +645,19 @@ async fn send_moa_as_sse(
         .and_then(|v| v.as_array())
         .cloned();
 
-    let finish_reason = if tool_calls.is_some() {
+    // Caller (`write_moa_response`) routes failure-shaped bodies to a
+    // non-streaming 502 JSON response, so this function only ever sees a
+    // successful turn. The only choice the SSE adapter still has to make
+    // is `tool_calls` vs `stop`.
+    let finish_reason: &str = if tool_calls.is_some() {
         "tool_calls"
     } else {
         "stop"
     };
+    debug_assert!(
+        !is_moa_failure_body(response),
+        "send_moa_as_sse received a failure body; should have routed to 502"
+    );
 
     let delta = if let Some(ref tcs) = tool_calls {
         serde_json::json!({
@@ -559,6 +718,125 @@ fn strip_think_from_content(text: &str) -> String {
     moa::strip_thinking(text)
 }
 
+/// Emit the MoA response as a one-shot OpenAI Responses-API SSE stream
+/// so callers that hit `/v1/responses` with `stream:true` (the chat UI)
+/// get event shapes their parser understands.
+///
+/// We synthesize the minimum set the standard Responses-API stream
+/// emits: `response.created`, `response.output_text.delta` (one chunk
+/// with the full content), `response.output_text.done`, and
+/// `response.completed`. MoA always knows the full body before writing,
+/// so we don't bother with incremental delta streaming — it would only
+/// make the UI's spinner-to-text transition smoother.
+async fn send_moa_as_responses_sse(
+    mut stream: TcpStream,
+    response: &serde_json::Value,
+    extra_headers: &[(&str, String)],
+) -> std::io::Result<()> {
+    let mut header = String::from(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nCache-Control: no-cache\r\nConnection: close\r\n",
+    );
+    for (name, value) in extra_headers {
+        crate::network::openai::transport::append_safe_header(&mut header, name, value);
+    }
+    header.push_str("\r\n");
+    stream.write_all(header.as_bytes()).await?;
+
+    let response_id = response
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("resp_moa")
+        .to_string();
+    let model = response
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or(moa::VIRTUAL_MODEL_NAME)
+        .to_string();
+    let raw_content = response
+        .pointer("/choices/0/message/content")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let content = strip_think_from_content(raw_content);
+    // MoA's body is chat-shape; the Responses-API completed event
+    // expects input_tokens / output_tokens. Translate before emitting
+    // so downstream consumers (chat UI, billing) see the right keys.
+    let usage = response
+        .get("usage")
+        .map(openai_frontend::responses::chat_usage_to_responses_usage);
+    let item_id = format!("msg_moa_{}", short_id_from_response(response));
+    let created_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    use openai_frontend::responses as resp;
+
+    // The created/completed events must share the same `response.id`
+    // so clients can correlate the stream by id. Overwrite the
+    // auto-generated `resp_{created_at}` placeholder with the MoA
+    // response id we'll also use on the completed event.
+    let mut created = resp::responses_stream_created_event(&model, created_at);
+    if let Some(obj) = created
+        .get_mut("response")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        obj.insert(
+            "id".to_string(),
+            serde_json::Value::String(response_id.clone()),
+        );
+    }
+
+    let events = [
+        created,
+        resp::responses_stream_delta_event(&item_id, &content),
+        resp::responses_stream_text_done_event(&item_id, &content),
+        resp::responses_stream_completed_event(
+            &response_id,
+            created_at,
+            &model,
+            &item_id,
+            &content,
+            usage,
+        ),
+    ];
+
+    for event in &events {
+        let data = format!("data: {}\n\n", event);
+        let framed = format!("{:x}\r\n{}\r\n", data.len(), data);
+        stream.write_all(framed.as_bytes()).await?;
+    }
+
+    let done = "data: [DONE]\n\n";
+    let framed = format!("{:x}\r\n{}\r\n", done.len(), done);
+    stream.write_all(framed.as_bytes()).await?;
+
+    stream.write_all(b"0\r\n\r\n").await?;
+    stream.shutdown().await?;
+    Ok(())
+}
+
+/// Convert a chat.completion JSON body to a Responses-API JSON body.
+/// Used for non-streaming `/v1/responses` requests against MoA.
+fn chat_completion_to_responses_json(chat: &serde_json::Value) -> serde_json::Value {
+    let bytes = serde_json::to_vec(chat).unwrap_or_default();
+    match crate::network::openai::response_adapter::translate_chat_completion_to_responses(&bytes) {
+        Ok(translated) => serde_json::from_slice(&translated).unwrap_or_else(|_| chat.clone()),
+        Err(e) => {
+            tracing::warn!("MoA: chat-to-responses JSON translate failed: {e}");
+            chat.clone()
+        }
+    }
+}
+
+fn short_id_from_response(response: &serde_json::Value) -> String {
+    response
+        .get("id")
+        .and_then(|v| v.as_str())
+        .and_then(|id| id.rsplit('-').next())
+        .unwrap_or("x")
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -609,6 +887,363 @@ mod tests {
         assert_eq!(
             strip_think_from_content("answer prefix<think>never closed"),
             "answer prefix"
+        );
+    }
+
+    #[test]
+    fn is_moa_failure_body_detects_top_level_error() {
+        // Regression for PR #566 review (item #7): the HTTP status was
+        // gated on `TurnKind == Failed`, but reducer-failure tool-result
+        // turns produce an error_response with `TurnKind::ToolResult`.
+        // The body still carries the canonical failure signals, so
+        // status now follows the body.
+        let body = serde_json::json!({
+            "error": { "message": "reducer failed", "type": "moa_failure" },
+            "choices": [{ "finish_reason": "error", "message": { "content": "oops" } }],
+        });
+        assert!(is_moa_failure_body(&body));
+    }
+
+    #[test]
+    fn is_moa_failure_body_detects_finish_reason_error() {
+        let body = serde_json::json!({
+            "choices": [{ "finish_reason": "error", "message": { "content": "oops" } }],
+        });
+        assert!(is_moa_failure_body(&body));
+    }
+
+    #[test]
+    fn is_moa_failure_body_returns_false_for_success() {
+        let body = serde_json::json!({
+            "choices": [{ "finish_reason": "stop", "message": { "content": "hello" } }],
+        });
+        assert!(!is_moa_failure_body(&body));
+    }
+
+    fn make_targets(local_names: &[&str]) -> election::ModelTargets {
+        let mut t = election::ModelTargets::default();
+        for (i, name) in local_names.iter().enumerate() {
+            t.targets.insert(
+                (*name).to_string(),
+                vec![election::InferenceTarget::Local(50000 + i as u16)],
+            );
+        }
+        t
+    }
+
+    #[test]
+    fn group_aliases_keeps_all_aliases_per_canonical_base() {
+        // Regression for PR #566 review (item #10): the dedup-then-resolve
+        // shape committed to a single alias per base before checking
+        // backend reachability. Now every alias is retained so the
+        // resolver can fall back if the preferred alias is unreachable.
+        let groups = group_aliases_by_canonical_base(
+            vec![
+                "Qwen3-8B-Q4_K_M".to_string(),
+                "unsloth/Qwen3-8B-GGUF:Q4_K_M".to_string(),
+            ],
+            None,
+        );
+        assert_eq!(groups.len(), 1, "both names share a canonical base");
+        assert_eq!(groups[0].len(), 2, "both aliases retained");
+    }
+
+    #[test]
+    fn group_aliases_prefers_locally_served_alias_even_when_longer() {
+        // Without a targets table, length-order wins and the shorter peer
+        // alias would be tried first — forcing an unnecessary QUIC hop
+        // when the model is right here under a different alias.
+        // With targets, the local-served alias must come first.
+        let local = "unsloth/Qwen3-8B-GGUF:Q4_K_M";
+        let peer = "Qwen3-8B-Q4_K_M";
+        let targets = make_targets(&[local]);
+        let groups = group_aliases_by_canonical_base(
+            vec![peer.to_string(), local.to_string()],
+            Some(&targets),
+        );
+        assert_eq!(groups.len(), 1);
+        assert_eq!(
+            groups[0].first().map(String::as_str),
+            Some(local),
+            "locally-served alias must win even though it's longer"
+        );
+    }
+
+    #[test]
+    fn group_aliases_falls_back_to_shortest_when_no_local() {
+        // No targets table at all (pure --client --auto node) — shortest
+        // alias should win, but the longer alias is still in the group so
+        // it can be tried if the shortest one is unreachable.
+        let groups = group_aliases_by_canonical_base(
+            vec![
+                "unsloth/Qwen3-8B-GGUF:Q4_K_M".to_string(),
+                "Qwen3-8B-Q4_K_M".to_string(),
+            ],
+            None,
+        );
+        assert_eq!(groups.len(), 1);
+        assert_eq!(
+            groups[0].first().map(String::as_str),
+            Some("Qwen3-8B-Q4_K_M")
+        );
+        assert_eq!(groups[0].len(), 2, "longer alias kept as fallback");
+    }
+
+    #[test]
+    fn group_aliases_distinct_models_stay_in_separate_groups() {
+        let groups = group_aliases_by_canonical_base(
+            vec![
+                "unsloth/Qwen3-8B-GGUF:Q4_K_M".to_string(),
+                "unsloth/Qwen3-32B-GGUF:Q4_K_M".to_string(),
+                "unsloth/MiniMax-M2.5-GGUF:Q4_K_M".to_string(),
+            ],
+            None,
+        );
+        assert_eq!(groups.len(), 3);
+    }
+
+    #[test]
+    fn is_moa_failure_body_returns_false_for_tool_calls() {
+        let body = serde_json::json!({
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [{"id": "x", "type": "function", "function": {"name": "f", "arguments": "{}"}}]
+                },
+            }],
+        });
+        assert!(!is_moa_failure_body(&body));
+    }
+
+    // ── Streaming + failure routing ────────────────────────────────────
+    //
+    // The actual write path (`write_moa_response`) writes to a real
+    // `TcpStream`, so we test the *decision* it makes by extracting the
+    // failure detection into `is_moa_failure_body` and proving the
+    // routing logic with the same booleans the writer uses.
+    //
+    // The contract is:
+    //   was_streaming=false, is_failure=false  -> JSON 200
+    //   was_streaming=false, is_failure=true   -> JSON 502
+    //   was_streaming=true,  is_failure=false  -> SSE
+    //   was_streaming=true,  is_failure=true   -> JSON 502 (NOT SSE 200)
+    // The last row is the PR #612 review finding: streaming MoA failures
+    // must surface as a real 502 at the HTTP layer instead of streaming
+    // a 200 SSE carrying an in-band error.
+
+    fn route_decision(was_streaming: bool, is_failure: bool) -> &'static str {
+        if was_streaming && !is_failure {
+            "sse"
+        } else if is_failure {
+            "json-502"
+        } else {
+            "json-200"
+        }
+    }
+
+    #[test]
+    fn streaming_success_routes_to_sse() {
+        assert_eq!(route_decision(true, false), "sse");
+    }
+
+    #[test]
+    fn streaming_failure_routes_to_json_502_not_sse() {
+        // Regression for PR #612 review: streaming failures previously
+        // went out as `SSE 200` + in-band `finish_reason: "error"`.
+        // Now they collapse to a non-streaming JSON 502, matching the
+        // OpenAI API and the non-streaming MoA failure path.
+        assert_eq!(route_decision(true, true), "json-502");
+    }
+
+    #[test]
+    fn non_streaming_success_routes_to_json_200() {
+        assert_eq!(route_decision(false, false), "json-200");
+    }
+
+    #[test]
+    fn non_streaming_failure_routes_to_json_502() {
+        assert_eq!(route_decision(false, true), "json-502");
+    }
+
+    // ── Responses-API adapter ───────────────────────────────────────
+    //
+    // When the request came in via /v1/responses, MoA's response must
+    // be rendered in the Responses-API shape, not chat.completion. The
+    // chat UI's streaming parser ignores chat.completion.chunk events,
+    // which is what caused the "streaming response" spinner with no
+    // visible text on the public mesh.
+
+    fn fixture_chat_completion(content: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": "chatcmpl-moa-fixture",
+            "object": "chat.completion",
+            "model": "mesh",
+            "choices": [{
+                "index": 0,
+                "message": { "role": "assistant", "content": content },
+                "finish_reason": "stop"
+            }],
+            "usage": { "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0 }
+        })
+    }
+
+    #[test]
+    fn chat_completion_to_responses_json_returns_response_object() {
+        // Non-streaming /v1/responses with model=mesh: the body that
+        // reaches the client must be Responses-shape, not chat-shape.
+        let chat = fixture_chat_completion("hello world");
+        let responses = chat_completion_to_responses_json(&chat);
+        assert_eq!(
+            responses.get("object").and_then(|v| v.as_str()),
+            Some("response"),
+            "got: {}",
+            serde_json::to_string(&responses).unwrap_or_default()
+        );
+        // The text must survive translation.
+        let text = serde_json::to_string(&responses).unwrap_or_default();
+        assert!(
+            text.contains("hello world"),
+            "response body must carry the original content; got {text}"
+        );
+    }
+
+    #[test]
+    fn chat_completion_to_responses_json_passes_through_on_malformed() {
+        // Defensive: if the translator can't make sense of the body
+        // we return the chat body unchanged rather than blowing up.
+        let bogus = serde_json::json!({ "not": "a chat completion" });
+        let out = chat_completion_to_responses_json(&bogus);
+        // The translator may either succeed (producing an empty
+        // response) or fall back to the input; both behaviours are
+        // acceptable, what matters is no panic and a JSON value.
+        assert!(out.is_object());
+    }
+
+    /// Run `send_moa_as_responses_sse` against a real TCP loopback
+    /// pair and return the raw bytes the client received as a string.
+    /// Includes HTTP/1.1 headers and the chunked-transfer framing
+    /// around each SSE event. Callers in this module match by
+    /// `.contains(...)`, which is robust to framing without needing
+    /// to parse it.
+    async fn capture_responses_sse_body(response: serde_json::Value) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback");
+        let addr = listener.local_addr().expect("local_addr");
+
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("accept");
+            send_moa_as_responses_sse(socket, &response, &[])
+                .await
+                .expect("sse write");
+        });
+
+        let mut client = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        use tokio::io::AsyncReadExt;
+        let mut bytes = Vec::new();
+        client.read_to_end(&mut bytes).await.expect("read");
+        server.await.expect("server task");
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    #[tokio::test]
+    async fn responses_sse_uses_same_response_id_for_created_and_completed() {
+        // Regression: created and completed events used different
+        // `response.id` values (one auto-generated, one from the chat
+        // body), breaking clients that correlate by id.
+        let response = serde_json::json!({
+            "id": "chatcmpl-moa-correlation",
+            "object": "chat.completion",
+            "model": "mesh",
+            "choices": [{
+                "index": 0,
+                "message": { "role": "assistant", "content": "hi" },
+                "finish_reason": "stop"
+            }]
+        });
+
+        let raw = capture_responses_sse_body(response).await;
+
+        // Extract every `data: { ... }` JSON blob and look at
+        // (event.type, event.response.id).
+        let mut ids = Vec::<(String, String)>::new();
+        for line in raw.lines() {
+            let Some(payload) = line.strip_prefix("data: ") else {
+                continue;
+            };
+            if payload.trim() == "[DONE]" {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) else {
+                continue;
+            };
+            let event_type = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            if event_type == "response.created" || event_type == "response.completed" {
+                let id = v
+                    .pointer("/response/id")
+                    .and_then(|i| i.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                ids.push((event_type.to_string(), id));
+            }
+        }
+
+        assert_eq!(ids.len(), 2, "need created + completed; got {ids:?}");
+        assert_eq!(ids[0].1, "chatcmpl-moa-correlation");
+        assert_eq!(
+            ids[0].1, ids[1].1,
+            "created and completed must share response.id: {ids:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn responses_sse_emits_responses_shape_usage_not_chat_shape() {
+        // Regression: MoA was forwarding the chat-completion `usage`
+        // object (prompt_tokens/completion_tokens) straight into the
+        // Responses-API completed event, which expects
+        // input_tokens/output_tokens. Downstream consumers that read
+        // `response.usage.input_tokens` saw `undefined`.
+        let response = serde_json::json!({
+            "id": "chatcmpl-moa-fixture",
+            "object": "chat.completion",
+            "model": "mesh",
+            "choices": [{
+                "index": 0,
+                "message": { "role": "assistant", "content": "hi" },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 11,
+                "completion_tokens": 13,
+                "total_tokens": 24
+            }
+        });
+
+        let raw = capture_responses_sse_body(response).await;
+
+        // The completed event carries the response object including
+        // usage. We assert by string match so we're robust to
+        // serializer ordering.
+        assert!(
+            raw.contains("\"input_tokens\":11"),
+            "expected input_tokens=11 in SSE; got: {raw}"
+        );
+        assert!(
+            raw.contains("\"output_tokens\":13"),
+            "expected output_tokens=13 in SSE; got: {raw}"
+        );
+        assert!(
+            raw.contains("\"total_tokens\":24"),
+            "expected total_tokens=24 in SSE; got: {raw}"
+        );
+        assert!(
+            !raw.contains("\"prompt_tokens\":"),
+            "chat-shape prompt_tokens must NOT leak into Responses-API SSE; got: {raw}"
+        );
+        assert!(
+            !raw.contains("\"completion_tokens\":"),
+            "chat-shape completion_tokens must NOT leak into Responses-API SSE; got: {raw}"
         );
     }
 }

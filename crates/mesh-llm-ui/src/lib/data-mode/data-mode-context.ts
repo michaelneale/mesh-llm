@@ -8,7 +8,11 @@ export type DataModeContextValue = {
   setMode: (mode: SetStateAction<DataMode>) => void
 }
 
+// Fallback used only if a component reads `useDataMode` outside a
+// `DataModeProvider` (production always mounts the provider). Match the
+// provider default so the un-wrapped fallback doesn't silently flip
+// surfaces into harness/fixture mode.
 export const DataModeContext = createContext<DataModeContextValue>({
-  mode: 'harness',
+  mode: 'live',
   setMode: () => undefined
 })

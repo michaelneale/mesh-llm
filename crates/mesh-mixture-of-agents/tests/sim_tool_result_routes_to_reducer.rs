@@ -113,6 +113,7 @@ fn config_with_three_recording_workers() -> (
         worker_timeout: Duration::from_secs(2),
         hedge_delay: Duration::from_millis(50),
         reducer_timeout: Duration::from_secs(2),
+        first_answer_grace: Duration::ZERO,
     };
     (config, fast, mid, strong)
 }

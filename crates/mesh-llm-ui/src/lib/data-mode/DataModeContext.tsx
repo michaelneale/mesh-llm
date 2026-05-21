@@ -36,6 +36,23 @@ function writeStoredDataMode(storageKey: string, mode: DataMode, persist: boolea
   }
 }
 
+// Default data mode resolution.
+//
+// Production bundles (fly app, embedded UI in the shipped `mesh-llm` binary,
+// `just build` / `just bundle`, anything built with `vite build`) default to
+// `'live'` so a fresh visitor sees real mesh state — not fixture providers
+// labelled "Vast.ai" / "RunPod" on the Reserves page or harness data on
+// Chat / Configuration. That regression (#615) was caused by the previous
+// hard-coded `'harness'` default leaking into production after the
+// swap-ui-preview commit.
+//
+// Dev builds (`npm run dev` via vite) still default to `'harness'` so
+// designers iterating on mockups don't have to flip the in-app toggle each
+// reload. The toggle is persisted in localStorage per-origin, so any user
+// who explicitly picks a mode keeps it.
+//
+// Tests and the developer playground can pin a specific mode by passing
+// `initialMode="harness"` (or `"live"`) explicitly.
 function defaultInitialMode(): DataMode {
   return env.isDevelopment ? 'harness' : 'live'
 }

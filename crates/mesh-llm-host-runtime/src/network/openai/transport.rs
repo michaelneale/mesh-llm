@@ -4030,9 +4030,58 @@ pub async fn send_json_ok(mut stream: TcpStream, data: &serde_json::Value) -> st
     Ok(())
 }
 
+/// RFC 7230 tchar set for header field names: ASCII alphanumeric plus
+/// `!#$%&'*+-.^_`|~`. We additionally forbid `:` because it terminates
+/// the field-name in the wire grammar. Used to reject caller-provided
+/// header names that could carry CR/LF or other injection bytes.
+pub(crate) fn is_valid_header_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.bytes().all(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(
+                    b,
+                    b'!' | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'.'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'|'
+                        | b'~'
+                )
+        })
+}
+
+/// Append a single `name: value` header line if `name` is a valid HTTP
+/// header field name. CR/LF in `value` is stripped defensively. Used by
+/// the `*_with_headers` writers below so a malformed header from a
+/// future caller can't inject extra headers / smuggle a response.
+pub(crate) fn append_safe_header(headers: &mut String, name: &str, value: &str) {
+    if !is_valid_header_name(name) {
+        tracing::warn!(
+            "openai transport: dropping header with invalid name `{name}` (RFC 7230 tchar required)"
+        );
+        return;
+    }
+    let safe_value: String = value.chars().filter(|c| *c != '\r' && *c != '\n').collect();
+    headers.push_str(name);
+    headers.push_str(": ");
+    headers.push_str(&safe_value);
+    headers.push_str("\r\n");
+}
+
 /// Like `send_json_ok` but allows the caller to append arbitrary response
-/// headers (e.g. `x-moa-*` observability headers). Header names and values
-/// must be plain ASCII without CR/LF; values are not validated further.
+/// headers (e.g. `x-moa-*` observability headers).
+///
+/// Header names must satisfy the RFC 7230 tchar grammar (ASCII
+/// alphanumeric + a small symbol set); invalid names are dropped with a
+/// warning rather than written verbatim. Values are stripped of CR/LF.
 pub async fn send_json_ok_with_headers(
     mut stream: TcpStream,
     data: &serde_json::Value,
@@ -4041,12 +4090,7 @@ pub async fn send_json_ok_with_headers(
     let body = data.to_string();
     let mut headers = String::from("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n");
     for (name, value) in extra_headers {
-        // Strip CR/LF defensively against header-injection bugs creeping in later.
-        let safe_value: String = value.chars().filter(|c| *c != '\r' && *c != '\n').collect();
-        headers.push_str(name);
-        headers.push_str(": ");
-        headers.push_str(&safe_value);
-        headers.push_str("\r\n");
+        append_safe_header(&mut headers, name, value);
     }
     headers.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));
     stream.write_all(headers.as_bytes()).await?;
@@ -4082,12 +4126,7 @@ pub async fn send_json_with_status_and_headers(
     let body = data.to_string();
     let mut headers = format!("HTTP/1.1 {code} {status}\r\nContent-Type: application/json\r\n");
     for (name, value) in extra_headers {
-        // Strip CR/LF defensively against header-injection.
-        let safe_value: String = value.chars().filter(|c| *c != '\r' && *c != '\n').collect();
-        headers.push_str(name);
-        headers.push_str(": ");
-        headers.push_str(&safe_value);
-        headers.push_str("\r\n");
+        append_safe_header(&mut headers, name, value);
     }
     headers.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));
     stream.write_all(headers.as_bytes()).await?;
@@ -4326,6 +4365,46 @@ async fn relay_pipeline_non_streaming_response(
 mod tests {
     use super::*;
     use tokio::net::TcpListener;
+
+    // ── Header-name validation ──────────────────────────────────────
+
+    #[test]
+    fn is_valid_header_name_accepts_normal_observability_headers() {
+        assert!(is_valid_header_name("x-moa-elapsed-ms"));
+        assert!(is_valid_header_name("X-MoA-Workers"));
+        assert!(is_valid_header_name("Content-Type"));
+        assert!(is_valid_header_name("x-request-id"));
+    }
+
+    #[test]
+    fn is_valid_header_name_rejects_injection_attempts() {
+        // Regression for PR #566 review item #5c: header NAMES were not
+        // sanitized, only values. A name carrying CR/LF or a colon would
+        // smuggle extra headers / split the response.
+        assert!(!is_valid_header_name("x-evil\r\nSet-Cookie"));
+        assert!(!is_valid_header_name("x-evil\nSet-Cookie"));
+        assert!(!is_valid_header_name("x-evil: hijacked"));
+        assert!(!is_valid_header_name("x evil")); // space inside name
+        assert!(!is_valid_header_name(""));
+    }
+
+    #[test]
+    fn append_safe_header_drops_invalid_name() {
+        let mut buf = String::new();
+        append_safe_header(&mut buf, "x-evil\r\nSet-Cookie", "bad");
+        assert!(buf.is_empty(), "invalid name must be dropped, got {buf:?}");
+    }
+
+    #[test]
+    fn append_safe_header_strips_crlf_from_value() {
+        let mut buf = String::new();
+        append_safe_header(&mut buf, "x-ok", "ok\r\nSet-Cookie: hijack");
+        assert!(
+            buf.starts_with("x-ok: okSet-Cookie: hijack\r\n"),
+            "value CRLF must be stripped; got {buf:?}"
+        );
+        assert_eq!(buf.matches("\r\n").count(), 1);
+    }
 
     fn hf_descriptor(model_name: &str) -> mesh::ServedModelDescriptor {
         mesh::ServedModelDescriptor {
@@ -5352,5 +5431,86 @@ mod tests {
         let declared: usize = cl_line.split(':').nth(1).unwrap().trim().parse().unwrap();
         assert_eq!(declared, request.raw.len() - body_start);
         assert_eq!(declared, request.body_len_bytes);
+    }
+
+    // ── Direct-model streaming through /v1/responses ─────────────────────
+    //
+    // Regression: when a Responses-API client asks for a real model,
+    // the relay must translate each upstream chat.completion.chunk
+    // into a separate response.output_text.delta event. A refactor
+    // that accidentally buffered the whole upstream body would still
+    // produce a single completed event — the chat UI would render
+    // the answer but it would arrive all at once. The grace work and
+    // the MoA Responses-API adapter both live near this relay; lock
+    // in real per-chunk streaming.
+
+    #[tokio::test]
+    async fn relay_translated_responses_stream_emits_one_delta_per_upstream_chunk() {
+        use tokio::io::AsyncWriteExt;
+
+        // ── upstream side: a writer we can push chat.completion.chunk frames into
+        let (mut upstream_writer, mut upstream_reader) = tokio::io::duplex(64 * 1024);
+
+        // ── client-side TCP stream to capture relay output
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server_task = tokio::spawn(async move {
+            let (mut client_socket, _) = listener.accept().await.unwrap();
+            let probe = ResponseProbe {
+                buffered: b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec(),
+                header_end: b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n".len(),
+                status_code: 200,
+                retryable_context_overflow: false,
+            };
+            relay_translated_responses_stream(
+                &mut client_socket,
+                &mut upstream_reader,
+                probe,
+                false,
+            )
+            .await
+            .expect("relay")
+        });
+
+        // ── push three separate delta chunks plus a finish chunk
+        for delta in ["Hello", " world", "!"] {
+            let chunk = format!(
+                r#"{{"id":"chatcmpl-x","object":"chat.completion.chunk","created":1,"model":"qwen","choices":[{{"index":0,"delta":{{"content":"{delta}"}},"finish_reason":null}}]}}"#
+            );
+            let framed = format!("data: {}\n\n", chunk);
+            upstream_writer.write_all(framed.as_bytes()).await.unwrap();
+            // tiny gap so the relay actually services the chunk
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let finish = r#"{"id":"chatcmpl-x","object":"chat.completion.chunk","created":1,"model":"qwen","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#;
+        upstream_writer
+            .write_all(format!("data: {}\n\n", finish).as_bytes())
+            .await
+            .unwrap();
+        upstream_writer
+            .write_all(b"data: [DONE]\n\n")
+            .await
+            .unwrap();
+        upstream_writer.shutdown().await.unwrap();
+
+        // ── read everything the relay wrote
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        use tokio::io::AsyncReadExt;
+        let mut output = Vec::new();
+        client.read_to_end(&mut output).await.unwrap();
+        let _ = server_task.await.expect("server task");
+
+        let body = String::from_utf8_lossy(&output);
+        let delta_count = body
+            .matches("\"type\":\"response.output_text.delta\"")
+            .count();
+        assert!(
+            delta_count >= 3,
+            "expected ≥3 delta events, one per upstream chunk; got {delta_count}.\nBody:\n{body}"
+        );
+        assert!(
+            body.contains("\"type\":\"response.completed\""),
+            "missing completed event:\n{body}"
+        );
     }
 }

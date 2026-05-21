@@ -44,28 +44,50 @@ pub fn normalize_worker_output(
     let text = if cleaned.is_empty() { raw } else { &cleaned };
 
     // Strategy 1: try JSON parse
-    if let Some(output) = try_json_parse(text, model, role, elapsed_ms) {
-        return output;
-    }
-
     // Strategy 2: try line-based key:value extraction
-    if let Some(output) = try_kv_parse(text, model, role, elapsed_ms) {
-        return output;
-    }
-
     // Strategy 3: heuristic classification
-    let mut output = heuristic_classify(text, model, role, elapsed_ms);
+    //
+    // Whichever strategy wins, we then run a single sanitize pass over the
+    // result so the invariants hold regardless of parse path. The previous
+    // shape returned early on Strategy 1 / 2 and only sanitized Strategy 3,
+    // which let non-finite confidences (e.g. KV `confidence: NaN` parsed via
+    // `parse::<f32>()`) escape into the arbiter where `partial_cmp/total_cmp`
+    // can panic on `unwrap`.
+    let output = try_json_parse(text, model, role, elapsed_ms)
+        .or_else(|| try_kv_parse(text, model, role, elapsed_ms))
+        .unwrap_or_else(|| {
+            let mut heuristic = heuristic_classify(text, model, role, elapsed_ms);
+            // Heuristic path can leak stray KV envelope lines into the payload
+            // when the model output contains a partial `kind:/confidence:/`
+            // block; structured parsers already isolate the payload field.
+            heuristic.payload = strip_kv_envelope(&heuristic.payload);
+            heuristic
+        });
 
-    // Final cleanup: strip any KV envelope lines that leaked into the payload
-    // (e.g. when KV parse fails but the text ends with kind:/confidence:/payload:
-    // lines from truncated model output).
-    output.payload = strip_kv_envelope(&output.payload);
+    sanitize_worker_output(output)
+}
 
-    // Sanitize confidence: clamp NaN/Inf to 0.5 so comparisons never panic.
+/// Enforce the invariants every arbiter / reducer call site assumes.
+///
+/// * `confidence` is finite (NaN/Inf clamp to 0.5 so comparisons never panic).
+/// * `tool_arguments`, when `Some`, is an object — callers serialize it as a
+///   JSON object string; `Value::Null` collapses to an empty object, and bare
+///   primitives collapse to `{}` rather than producing invalid `arguments`.
+fn sanitize_worker_output(mut output: WorkerOutput) -> WorkerOutput {
     if !output.confidence.is_finite() {
         output.confidence = 0.5;
     }
-
+    if let Some(args) = output.tool_arguments.as_ref() {
+        if args.is_null() {
+            output.tool_arguments = Some(serde_json::json!({}));
+        } else if !args.is_object() {
+            // Primitive or array payloads cannot be re-serialized as a valid
+            // OpenAI tool-call `arguments` object string. Replace with an
+            // empty object so downstream callers always see a well-formed
+            // structure rather than `"null"` / `"\"foo\""`.
+            output.tool_arguments = Some(serde_json::json!({}));
+        }
+    }
     output
 }
 
@@ -154,11 +176,7 @@ fn try_json_parse(
             .or_else(|| obj.get("name").and_then(|v| v.as_str()))
             .or_else(|| obj.get("tool").and_then(|v| v.as_str()));
         if let Some(tname) = openai_tool_name {
-            let args = obj.get("arguments").cloned().or_else(|| {
-                obj.get("arguments")
-                    .and_then(|a| a.as_str())
-                    .and_then(|s| serde_json::from_str(s).ok())
-            });
+            let args = extract_tool_arguments(obj.get("arguments"));
             return Some(WorkerOutput {
                 kind: OutputKind::ToolProposal,
                 // OpenAI-shape tool calls have no native confidence
@@ -195,12 +213,7 @@ fn try_json_parse(
         .and_then(|t| t.as_str())
         .map(|s| s.to_string());
 
-    let tool_arguments = obj.get("arguments").cloned().or_else(|| {
-        // Sometimes models put args as a string
-        obj.get("arguments")
-            .and_then(|a| a.as_str())
-            .and_then(|s| serde_json::from_str(s).ok())
-    });
+    let tool_arguments = extract_tool_arguments(obj.get("arguments"));
 
     let payload = obj
         .get("payload")
@@ -218,6 +231,46 @@ fn try_json_parse(
         role,
         elapsed_ms,
     })
+}
+
+/// Pull a tool-call `arguments` value out of a parsed JSON envelope.
+///
+/// Models emit `arguments` in two shapes:
+///
+/// 1. As a JSON object: `"arguments": {"path": "README.md"}` — use as-is.
+/// 2. As a JSON-encoded string: `"arguments": "{\"path\":\"README.md\"}"`
+///    — the OpenAI wire shape. We need to `from_str` the inner string so
+///    the downstream `Value::Object` invariant holds.
+///
+/// The original code wrote
+///     obj.get("arguments").cloned().or_else(|| obj.get("arguments").and_then(as_str)...)
+/// which is logically dead: `.cloned()` on a `Some(Value::String("…"))` is
+/// already `Some`, so the `or_else` branch never ran and string-encoded
+/// arguments leaked through unparsed. We branch explicitly here so each
+/// shape gets the right handling.
+///
+/// Missing or `Value::Null` arguments return `None` from this helper;
+/// downstream `tool_call_response` substitutes `"{}"` when serializing
+/// the OpenAI tool-call wire shape, so the literal string `"null"`
+/// never reaches the client. The `WorkerOutput::tool_arguments`
+/// invariant is therefore "`None` or an object", with `None` meaning
+/// "emit empty-object args at wire time".
+fn extract_tool_arguments(value: Option<&Value>) -> Option<Value> {
+    match value {
+        Some(Value::String(s)) => {
+            // String form: parse the inner JSON. If it doesn't parse,
+            // fall through to `{}` rather than carrying a bare string.
+            serde_json::from_str(s)
+                .ok()
+                .or_else(|| Some(serde_json::json!({})))
+        }
+        Some(Value::Null) | None => None,
+        Some(other) if other.is_object() => Some(other.clone()),
+        // Bare arrays / numbers / bools cannot be a valid OpenAI tool-call
+        // arguments object — collapse to `{}`. The sanitize pass in
+        // `normalize_worker_output` also enforces this defensively.
+        Some(_) => Some(serde_json::json!({})),
+    }
 }
 
 /// Try line-based `key: value` extraction.
@@ -670,5 +723,69 @@ mod tests {
         let raw = r#"{"kind": "answer", "confidence": "NaN", "payload": "hello"}"#;
         let out = normalize_worker_output(raw, "test-model", WorkerRole::Fast, 100);
         assert!(out.confidence.is_finite());
+    }
+
+    #[test]
+    fn kv_path_clamps_nan_confidence() {
+        // Regression for PR #566 review: the JSON path was being clamped
+        // but the KV path was not, so `confidence: NaN` in the KV envelope
+        // returned `f32::NAN` straight to the arbiter where `partial_cmp`
+        // panicked. After the refactor, sanitize runs on every parse path.
+        let raw = "kind: answer\nconfidence: NaN\npayload: hello";
+        let out = normalize_worker_output(raw, "test-model", WorkerRole::Fast, 100);
+        assert!(
+            out.confidence.is_finite(),
+            "KV NaN must be sanitized; got {}",
+            out.confidence
+        );
+        assert_eq!(out.confidence, 0.5);
+    }
+
+    #[test]
+    fn kv_path_clamps_inf_confidence() {
+        // `parse::<f32>()` happily accepts `inf` / `-inf` too.
+        let raw = "kind: answer\nconfidence: inf\npayload: hello";
+        let out = normalize_worker_output(raw, "test-model", WorkerRole::Fast, 100);
+        assert!(out.confidence.is_finite());
+        assert_eq!(out.confidence, 0.5);
+    }
+
+    #[test]
+    fn json_string_encoded_arguments_are_parsed_to_object() {
+        // Regression: the original `obj.get("arguments").cloned().or_else(…)`
+        // chain had a dead `or_else` branch — string-encoded JSON arguments
+        // never made it through the inner `from_str` and leaked as a bare
+        // string into the tool-call wire shape. With `extract_tool_arguments`,
+        // the string is parsed into a real JSON object.
+        let raw = r#"{"function": "read_file", "arguments": "{\"path\": \"README.md\"}"}"#;
+        let out = normalize_worker_output(raw, "test-model", WorkerRole::Fast, 100);
+        assert_eq!(out.kind, OutputKind::ToolProposal);
+        assert_eq!(out.tool_name.as_deref(), Some("read_file"));
+        let args = out.tool_arguments.expect("args parsed");
+        assert!(args.is_object(), "args should be object, got {args}");
+        assert_eq!(args["path"], "README.md");
+    }
+
+    #[test]
+    fn null_tool_arguments_become_none() {
+        // `"arguments": null` previously parsed as `Some(Value::Null)`,
+        // which then serialized as the literal string `"null"` in the
+        // OpenAI tool-call wire shape. Now it becomes `None`, and the
+        // response builder substitutes `"{}"`.
+        let raw = r#"{"function": "list", "arguments": null}"#;
+        let out = normalize_worker_output(raw, "test-model", WorkerRole::Fast, 100);
+        assert_eq!(out.kind, OutputKind::ToolProposal);
+        assert!(out.tool_arguments.is_none());
+    }
+
+    #[test]
+    fn primitive_tool_arguments_collapse_to_empty_object() {
+        // Defensive: a model that emits `"arguments": 42` should not
+        // produce a wire-invalid tool call.
+        let raw = r#"{"function": "list", "arguments": 42}"#;
+        let out = normalize_worker_output(raw, "test-model", WorkerRole::Fast, 100);
+        let args = out.tool_arguments.expect("sanitize produced an object");
+        assert!(args.is_object());
+        assert_eq!(args.as_object().unwrap().len(), 0);
     }
 }

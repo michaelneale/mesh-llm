@@ -177,18 +177,34 @@ pub(crate) async fn call_backend(
 }
 
 /// Extract retry-after seconds from an error message containing "retry-after: N".
+///
+/// The earlier shape called `err.to_lowercase()` (Unicode-aware) and then
+/// sliced the *original* `err` using the byte offset from the lowercased
+/// string. For non-ASCII inputs, `to_lowercase()` can change UTF-8 byte
+/// length, so the offset could land mid-codepoint and either panic or
+/// produce garbage. Use `to_ascii_lowercase()` which is a 1:1 byte mapping
+/// so the offset stays valid in the original string.
 fn parse_retry_after(err: &str) -> Option<u64> {
-    let lower = err.to_lowercase();
-    lower
-        .find("retry-after:")
-        .map(|i| &err[i + 12..])
-        .and_then(|s| s.split_whitespace().next())
+    let lower = err.to_ascii_lowercase();
+    let i = lower.find("retry-after:")?;
+    let tail = err.get(i + "retry-after:".len()..)?;
+    tail.split_whitespace()
+        .next()
         .and_then(|s| s.trim().parse::<u64>().ok())
 }
 
 /// Extract assistant text from a chat completion response body.
+///
+/// The response comes from an untrusted backend (peer node, local skippy,
+/// or in tests a mock). Direct indexing like `resp["choices"][0]["message"]`
+/// returns `Value::Null` on missing fields, which then silently produces
+/// an empty string — or worse, panics in `.unwrap()` chains. Use
+/// `.pointer()` so a malformed response surfaces as a structured `Err`
+/// rather than a hidden empty answer.
 fn extract_text_from_response(resp: &Value) -> Result<String, String> {
-    let message = &resp["choices"][0]["message"];
+    let message = resp
+        .pointer("/choices/0/message")
+        .ok_or_else(|| "malformed response: missing choices[0].message".to_string())?;
 
     // Native tool_calls → KV format for normalizer
     if let Some(tool_calls) = message.get("tool_calls").and_then(|tc| tc.as_array()) {
@@ -254,6 +270,35 @@ mod tests {
     fn parse_retry_after_case_insensitive() {
         let err = "Retry-After: 5";
         assert_eq!(parse_retry_after(err), Some(5));
+    }
+
+    #[test]
+    fn parse_retry_after_handles_non_ascii_prefix_without_panic() {
+        // Regression for PR #566 review: the prior shape used
+        // `to_lowercase()` (Unicode-aware, can change byte length) and
+        // sliced the original `err` with that offset. For inputs with
+        // non-ASCII before the marker, the slice could land mid-codepoint
+        // and panic. With `to_ascii_lowercase()` the offset is byte-stable.
+        let err = "über-error: retry-after: 7";
+        assert_eq!(parse_retry_after(err), Some(7));
+    }
+
+    #[test]
+    fn extract_text_returns_err_on_missing_choices() {
+        // Regression for PR #566 review: direct-indexing
+        // `resp["choices"][0]["message"]` returns `Value::Null` on
+        // malformed responses; downstream `.unwrap()` chains then panicked.
+        // Now a structured error surfaces instead.
+        let resp: Value = serde_json::json!({"id": "x"});
+        let err = extract_text_from_response(&resp).unwrap_err();
+        assert!(err.contains("missing choices"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn extract_text_returns_err_on_empty_choices() {
+        let resp: Value = serde_json::json!({"choices": []});
+        let err = extract_text_from_response(&resp).unwrap_err();
+        assert!(err.contains("missing choices"));
     }
 
     #[test]

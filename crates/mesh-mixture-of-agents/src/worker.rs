@@ -159,22 +159,40 @@ pub fn truncate_chars(text: &str, max_bytes: usize) -> &str {
 }
 
 /// Strip `<think>...</think>` tags, return the remaining content.
+///
+/// Single linear scan over the input: skips think blocks (matched or
+/// unclosed) and removes orphan `</think>` closers. The earlier shape
+/// rebuilt the whole string on every block (`format!`/`replace` in a
+/// loop) which is O(n*k) on long outputs with many tags.
 pub fn strip_thinking(text: &str) -> String {
-    let mut result = text.to_string();
-    while let Some(start) = result.find("<think>") {
-        if let Some(end) = result[start..].find("</think>") {
-            result = format!(
-                "{}{}",
-                &result[..start],
-                &result[start + end + "</think>".len()..]
-            );
-        } else {
-            result = result[..start].to_string();
-            break;
+    const OPEN: &str = "<think>";
+    const CLOSE: &str = "</think>";
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        // Match a full <think>...</think> block.
+        if bytes[i..].starts_with(OPEN.as_bytes()) {
+            match text[i + OPEN.len()..].find(CLOSE) {
+                Some(rel_end) => {
+                    i += OPEN.len() + rel_end + CLOSE.len();
+                    continue;
+                }
+                // Unclosed <think> — drop the rest of the string.
+                None => break,
+            }
         }
+        // Drop an orphan </think> (a closer with no matching opener).
+        if bytes[i..].starts_with(CLOSE.as_bytes()) {
+            i += CLOSE.len();
+            continue;
+        }
+        // Otherwise copy one char (UTF-8 safe: walk by character).
+        let ch = text[i..].chars().next().expect("char boundary");
+        out.push(ch);
+        i += ch.len_utf8();
     }
-    result = result.replace("</think>", "");
-    result.trim().to_string()
+    out.trim().to_string()
 }
 
 /// Extract content inside `<think>` tags.
@@ -340,5 +358,37 @@ mod tests {
         );
         assert_eq!(strip_thinking("<think>only thinking"), "");
         assert_eq!(strip_thinking("no tags here"), "no tags here");
+    }
+
+    #[test]
+    fn strip_thinking_drops_orphan_close() {
+        // Orphan </think> with no matching opener: drop the closer,
+        // keep surrounding content.
+        assert_eq!(strip_thinking("stuff</think>answer"), "stuffanswer");
+    }
+
+    #[test]
+    fn strip_thinking_handles_multiple_blocks_in_linear_time() {
+        // Regression for PR #566 review item #5b: the previous shape
+        // rebuilt the whole string on every think block (`format!` /
+        // `replace` in a loop), which is O(n*k). Verify the new linear
+        // implementation produces the same output for many blocks.
+        let mut input = String::new();
+        for i in 0..50 {
+            input.push_str(&format!("<think>think-{i}</think>seg{i} "));
+        }
+        let stripped = strip_thinking(&input);
+        let mut expected = String::new();
+        for i in 0..50 {
+            expected.push_str(&format!("seg{i} "));
+        }
+        assert_eq!(stripped, expected.trim());
+    }
+
+    #[test]
+    fn strip_thinking_preserves_utf8() {
+        // Multibyte characters outside think blocks must survive intact.
+        assert_eq!(strip_thinking("<think>思</think>答案"), "答案");
+        assert_eq!(strip_thinking("前置</think>中间<think>隐"), "前置中间");
     }
 }
