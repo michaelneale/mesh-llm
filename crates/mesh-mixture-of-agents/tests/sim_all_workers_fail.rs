@@ -91,6 +91,7 @@ fn three_failing_backends() -> moa::GatewayConfig {
         worker_timeout: Duration::from_secs(2),
         hedge_delay: Duration::from_millis(200),
         reducer_timeout: Duration::from_secs(2),
+        first_answer_grace: Duration::ZERO,
     }
 }
 

@@ -112,6 +112,7 @@ fn four_workers_two_fast_consensus() -> moa::GatewayConfig {
         worker_timeout: Duration::from_secs(10),
         hedge_delay: Duration::from_millis(200),
         reducer_timeout: Duration::from_secs(2),
+        first_answer_grace: Duration::ZERO,
     }
 }
 

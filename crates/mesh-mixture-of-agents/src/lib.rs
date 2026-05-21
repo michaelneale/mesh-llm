@@ -79,6 +79,10 @@ pub struct GatewayConfig {
     pub hedge_delay: Duration,
     /// Reducer timeout.
     pub reducer_timeout: Duration,
+    /// Chat-only grace: after this long since dispatch, if a single answer
+    /// (conf >= 0.5) is in, accept it instead of waiting for consensus.
+    /// Disabled for tool turns. Zero disables entirely.
+    pub first_answer_grace: Duration,
 }
 
 // ─── Turn result ─────────────────────────────────────────────────────
@@ -234,8 +238,14 @@ async fn handle_query(
         });
     }
 
-    let (outputs, summaries, early_decision) =
-        gather_workers_incremental(&mut join_set, &dispatched, has_tools, allowed_tools).await;
+    let (outputs, summaries, early_decision) = gather_workers_incremental(
+        &mut join_set,
+        &dispatched,
+        has_tools,
+        allowed_tools,
+        config.first_answer_grace,
+    )
+    .await;
 
     if outputs.is_empty() {
         return TurnResult {

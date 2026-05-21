@@ -7,10 +7,15 @@
 //! the remaining workers are cancelled and the decision is returned
 //! immediately.
 
+use std::time::{Duration, Instant};
+
 use crate::enforce_allowed_tools;
 use crate::worker::WorkerRole;
 use crate::{arbiter, normalize, WorkerSummary};
 use normalize::WorkerOutput;
+
+/// Min confidence for the time-based grace path; matches the consensus rule.
+const GRACE_MIN_CONFIDENCE: f32 = 0.5;
 
 /// Identifier for a worker we dispatched. Used to reconcile the
 /// per-worker accounting at the end of fan-out so the — possibly
@@ -26,6 +31,7 @@ pub(crate) async fn gather_workers_incremental(
     dispatched: &[DispatchedWorker],
     has_tools: bool,
     allowed_tools: &[String],
+    first_answer_grace: Duration,
 ) -> (
     Vec<WorkerOutput>,
     Vec<WorkerSummary>,
@@ -35,8 +41,54 @@ pub(crate) async fn gather_workers_incremental(
     let mut outputs = Vec::new();
     let mut summaries = Vec::new();
     let mut total_finished: usize = 0;
+    let dispatched_at = Instant::now();
+    let grace_enabled = !has_tools && !first_answer_grace.is_zero();
 
-    while let Some(join_result) = join_set.join_next().await {
+    let grace_eligible = |outs: &[WorkerOutput]| -> bool {
+        if !grace_enabled {
+            return false;
+        }
+        let answers: Vec<&WorkerOutput> = outs
+            .iter()
+            .filter(|o| o.kind == normalize::OutputKind::Answer)
+            .collect();
+        answers.len() == 1 && answers[0].confidence >= GRACE_MIN_CONFIDENCE
+    };
+
+    loop {
+        let grace_remaining = if grace_eligible(&outputs) {
+            first_answer_grace.saturating_sub(dispatched_at.elapsed())
+        } else {
+            Duration::from_secs(60 * 60)
+        };
+        let armed = grace_eligible(&outputs);
+
+        let join_result = tokio::select! {
+            biased;
+            join = join_set.join_next() => join,
+            _ = tokio::time::sleep(grace_remaining), if armed => {
+                tracing::info!(
+                    "moa: grace early-exit — sole answer after {}ms (grace={}ms), {} pending",
+                    dispatched_at.elapsed().as_millis(),
+                    first_answer_grace.as_millis(),
+                    total_workers.saturating_sub(total_finished),
+                );
+                drain_after_early_exit(join_set, &mut summaries).await;
+                reconcile_dispatched(dispatched, &mut summaries);
+                let answer = outputs
+                    .iter()
+                    .find(|o| o.kind == normalize::OutputKind::Answer)
+                    .expect("grace_eligible guaranteed exactly one Answer")
+                    .payload
+                    .clone();
+                return (outputs, summaries, Some(arbiter::Decision::Answer(answer)));
+            }
+        };
+
+        let Some(join_result) = join_result else {
+            break;
+        };
+
         match join_result {
             Ok((model, role, Ok(text), elapsed)) => {
                 total_finished += 1;
