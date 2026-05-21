@@ -541,7 +541,7 @@ describe('ChatPage', () => {
     renderChatPage()
 
     const trigger = screen.getByRole('combobox', { name: 'Select model' })
-    expect(trigger).toHaveTextContent('Auto (router picks best)')
+    expect(trigger).toHaveTextContent('Mesh — automatic')
 
     await user.click(trigger)
 
@@ -622,7 +622,7 @@ describe('ChatPage', () => {
     await waitFor(() => {
       expect(chatMock.sendCalls[0]).toMatchObject({
         content: 'Summarize active models',
-        model: 'auto',
+        model: 'mesh',
         systemPrompt: 'Answer as a mesh-llm operator.'
       })
     })
@@ -642,7 +642,7 @@ describe('ChatPage', () => {
     await waitFor(() => {
       expect(chatMock.sendCalls[0]).toMatchObject({
         content: 'Route without hidden instructions',
-        model: 'auto',
+        model: 'mesh',
         systemPrompt: ''
       })
     })
@@ -679,7 +679,7 @@ describe('ChatPage', () => {
     await waitFor(() => {
       expect(chatMock.sendCalls[0]).toMatchObject({
         content: 'Send without a system prompt',
-        model: 'auto',
+        model: 'mesh',
         systemPrompt: ''
       })
     })
@@ -691,14 +691,40 @@ describe('ChatPage', () => {
 
     renderChatPage({ mode: 'live' })
 
-    expect(screen.getByRole('combobox', { name: 'Select model' })).toHaveTextContent('Auto (router picks best)')
+    expect(screen.getByRole('combobox', { name: 'Select model' })).toHaveTextContent('Mesh — automatic')
 
     await user.type(screen.getByLabelText('Prompt'), 'Use the router')
     await user.click(screen.getByRole('button', { name: 'Send' }))
 
     await waitFor(() => {
-      expect(chatMock.sendCalls[0]).toMatchObject({ content: 'Use the router', model: 'auto' })
+      expect(chatMock.sendCalls[0]).toMatchObject({ content: 'Use the router', model: 'mesh' })
     })
+  })
+
+  it('keeps Auto highlighted in the dropdown even when other live models are available', async () => {
+    // Regression: the chat "Auto" pick routes to `mesh` on the wire,
+    // but the dropdown's visible selection must stay on the Auto row.
+    // With multiple models present, the buggy version drifted to the
+    // first real model option because Radix Select couldn't find an
+    // option matching value="mesh".
+    const user = userEvent.setup()
+    vi.mocked(adaptModelsToSummary).mockReturnValue(CHAT_HARNESS.models)
+
+    renderChatPage({ mode: 'live' })
+
+    const trigger = screen.getByRole('combobox', { name: 'Select model' })
+    expect(trigger).toHaveTextContent('Mesh — automatic')
+
+    await user.type(screen.getByLabelText('Prompt'), 'multi-model auto')
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+
+    await waitFor(() => {
+      expect(chatMock.sendCalls[0]).toMatchObject({ content: 'multi-model auto', model: 'mesh' })
+    })
+
+    // Trigger label must still read the Auto/Mesh label, not whichever
+    // real model happened to be options[0].
+    expect(trigger).toHaveTextContent('Mesh — automatic')
   })
 
   it('shows conversation metadata as message count followed by localized timestamp', async () => {
@@ -1437,7 +1463,7 @@ describe('ChatPage', () => {
 
   it('persists submitted live message model labels with the conversation thread', async () => {
     const user = userEvent.setup()
-    const submittedModel = 'auto'
+    const submittedModel = 'mesh'
 
     renderChatPage({ mode: 'live' })
 

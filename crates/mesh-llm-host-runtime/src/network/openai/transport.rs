@@ -5432,4 +5432,85 @@ mod tests {
         assert_eq!(declared, request.raw.len() - body_start);
         assert_eq!(declared, request.body_len_bytes);
     }
+
+    // ── Direct-model streaming through /v1/responses ─────────────────────
+    //
+    // Regression: when a Responses-API client asks for a real model,
+    // the relay must translate each upstream chat.completion.chunk
+    // into a separate response.output_text.delta event. A refactor
+    // that accidentally buffered the whole upstream body would still
+    // produce a single completed event — the chat UI would render
+    // the answer but it would arrive all at once. The grace work and
+    // the MoA Responses-API adapter both live near this relay; lock
+    // in real per-chunk streaming.
+
+    #[tokio::test]
+    async fn relay_translated_responses_stream_emits_one_delta_per_upstream_chunk() {
+        use tokio::io::AsyncWriteExt;
+
+        // ── upstream side: a writer we can push chat.completion.chunk frames into
+        let (mut upstream_writer, mut upstream_reader) = tokio::io::duplex(64 * 1024);
+
+        // ── client-side TCP stream to capture relay output
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server_task = tokio::spawn(async move {
+            let (mut client_socket, _) = listener.accept().await.unwrap();
+            let probe = ResponseProbe {
+                buffered: b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec(),
+                header_end: b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n".len(),
+                status_code: 200,
+                retryable_context_overflow: false,
+            };
+            relay_translated_responses_stream(
+                &mut client_socket,
+                &mut upstream_reader,
+                probe,
+                false,
+            )
+            .await
+            .expect("relay")
+        });
+
+        // ── push three separate delta chunks plus a finish chunk
+        for delta in ["Hello", " world", "!"] {
+            let chunk = format!(
+                r#"{{"id":"chatcmpl-x","object":"chat.completion.chunk","created":1,"model":"qwen","choices":[{{"index":0,"delta":{{"content":"{delta}"}},"finish_reason":null}}]}}"#
+            );
+            let framed = format!("data: {}\n\n", chunk);
+            upstream_writer.write_all(framed.as_bytes()).await.unwrap();
+            // tiny gap so the relay actually services the chunk
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let finish = r#"{"id":"chatcmpl-x","object":"chat.completion.chunk","created":1,"model":"qwen","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#;
+        upstream_writer
+            .write_all(format!("data: {}\n\n", finish).as_bytes())
+            .await
+            .unwrap();
+        upstream_writer
+            .write_all(b"data: [DONE]\n\n")
+            .await
+            .unwrap();
+        upstream_writer.shutdown().await.unwrap();
+
+        // ── read everything the relay wrote
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        use tokio::io::AsyncReadExt;
+        let mut output = Vec::new();
+        client.read_to_end(&mut output).await.unwrap();
+        let _ = server_task.await.expect("server task");
+
+        let body = String::from_utf8_lossy(&output);
+        let delta_count = body
+            .matches("\"type\":\"response.output_text.delta\"")
+            .count();
+        assert!(
+            delta_count >= 3,
+            "expected ≥3 delta events, one per upstream chunk; got {delta_count}.\nBody:\n{body}"
+        );
+        assert!(
+            body.contains("\"type\":\"response.completed\""),
+            "missing completed event:\n{body}"
+        );
+    }
 }

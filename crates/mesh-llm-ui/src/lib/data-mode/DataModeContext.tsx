@@ -38,7 +38,14 @@ function writeStoredDataMode(storageKey: string, mode: DataMode, persist: boolea
 
 export function DataModeProvider({
   children,
-  initialMode = 'harness',
+  // Default to live mesh data. `harness` mode (fixtures / mock providers) is
+  // useful for the developer playground and visual design work, but a fresh
+  // visitor to a production console (local `mesh-llm`, fly app, etc.) should
+  // see real mesh state, not mock data labelled "Vast.ai" / "RunPod". Pages
+  // that need fixtures explicitly opt in via the in-app toggle (persisted in
+  // localStorage) or by passing `initialMode="harness"` (e.g. tests, the
+  // developer playground).
+  initialMode = 'live',
   persist = true,
   storageKey = DATA_MODE_STORAGE_KEY
 }: DataModeProviderProps) {

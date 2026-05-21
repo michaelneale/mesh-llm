@@ -20,7 +20,7 @@ const ModelSelectImpl = ({ options, value, onChange, className }: ModelSelectPro
   const hasOptions = options.length > 0
   const selectedOption = options.find((option) => option.value === value)
   const selected = selectedOption ?? options[0]
-  const selectedLabel = selected?.value === 'auto' ? 'Auto (router picks best)' : (selected?.label ?? 'Select model')
+  const selectedLabel = selected?.label ?? 'Select model'
   return (
     <Select.Root value={selectedOption?.value} onValueChange={onChange} disabled={!hasOptions}>
       <Select.Trigger

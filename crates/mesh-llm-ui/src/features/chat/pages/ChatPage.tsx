@@ -87,11 +87,16 @@ type FailedSubmission = ComposerSubmission & {
 }
 type DeleteConversationOptions = { returnFocusElement?: HTMLElement | null }
 
+// The dropdown shows a single "Mesh — automatic" entry. Selecting it
+// keeps `model === AUTO_MODEL_VALUE` in UI state (so the Radix Select
+// can highlight it correctly) but sends `AUTO_BACKEND_MODEL` on the
+// wire so requests fan out through the Mixture-of-Agents gateway.
 const AUTO_MODEL_VALUE = 'auto'
+const AUTO_BACKEND_MODEL = 'mesh'
+const AUTO_MODEL_LABEL = 'Mesh — automatic'
 const AUTO_MODEL_OPTION: ModelSelectOption = {
   value: AUTO_MODEL_VALUE,
-  label: 'Auto',
-  meta: 'Router picks best model for each request',
+  label: AUTO_MODEL_LABEL,
   status: { label: 'Auto', tone: 'accent' }
 }
 
@@ -478,7 +483,12 @@ export function ChatPageContent({ data = CHAT_HARNESS }: ChatPageProps) {
   const [composerDrafts, setComposerDrafts] = useState<Record<string, ConversationComposerDraft>>({})
   const [model, setModel] = useState('')
   const modelExists = selectableModels.some((item) => item.name === model)
-  const activeModelName = model === AUTO_MODEL_VALUE ? AUTO_MODEL_VALUE : modelExists ? model : AUTO_MODEL_VALUE
+  // selectedModelValue is what the dropdown shows (always a value
+  // present in `options`, so Radix Select can highlight it).
+  // activeModelName is what we send on the wire — the "Auto" pick
+  // routes through the MoA gateway via the virtual `mesh` model.
+  const selectedModelValue = modelExists ? model : AUTO_MODEL_VALUE
+  const activeModelName = selectedModelValue === AUTO_MODEL_VALUE ? AUTO_BACKEND_MODEL : selectedModelValue
   const [queuedSubmissions, setQueuedSubmissions] = useState<QueuedSubmission[]>([])
   const [attachmentProcessingStatus, setAttachmentProcessingStatus] = useState<AttachmentProcessingStatus | null>(null)
   const [submittedAttachmentsByMessageId, setSubmittedAttachmentsByMessageId] = useState<
@@ -1143,7 +1153,7 @@ export function ChatPageContent({ data = CHAT_HARNESS }: ChatPageProps) {
         <span className="hidden shrink-0 whitespace-nowrap text-[length:var(--density-type-caption)] text-fg-faint md:inline">
           {data.modelLabel}
         </span>
-        <ModelSelect options={options} value={activeModelName} onChange={setModel} />
+        <ModelSelect options={options} value={selectedModelValue} onChange={setModel} />
       </div>
     </>
   )
