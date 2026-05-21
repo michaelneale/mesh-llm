@@ -30,8 +30,7 @@ impl ResidentCacheConfig {
         let reserved_seq_count = i32::try_from(config.lane_count.saturating_mul(2))
             .unwrap_or(i32::MAX)
             .max(2);
-        let max_resident_tokens =
-            derive_max_resident_tokens(u64::from(config.ctx_size), cache.min_tokens);
+        let max_resident_tokens = derive_max_resident_tokens(u64::from(config.ctx_size));
         Self {
             max_entries: cache.max_entries.clamp(1, 512),
             max_bytes: cache.max_bytes,
@@ -48,22 +47,27 @@ impl ResidentCacheConfig {
 /// `kv_unified = true`. The cap reserves half of the pool for in-flight
 /// lane prefills and lets the cache use at most the other half.
 ///
-/// For very small contexts (smoke-test / tiny-model configs) the cap
-/// can be smaller than a single prompt, which defeats the cache
-/// without preventing any real wedge. The cap is therefore disabled
-/// when `n_ctx / 2` cannot hold at least four minimum-sized cache
-/// entries (`min_tokens * 4`). At that point the cache is small
-/// enough relative to the cell pool that `max_entries` and
-/// `max_bytes` already keep cell pressure bounded. The original
+/// For small contexts (smoke-test / tiny-model configs) the half-pool
+/// can be smaller than a single typical prompt; applying the cap then
+/// rejects the very first record and degrades the cache without
+/// preventing any real wedge. The cap is therefore disabled when the
+/// model's `n_ctx` is below `MIN_CTX_FOR_CELL_CAP` cells. The original
 /// failure mode this cap fixes is large-context unified-KV serving
-/// (e.g. `n_ctx = 131072`), where this floor is comfortably cleared.
-fn derive_max_resident_tokens(ctx_size: u64, min_tokens: u64) -> u64 {
-    let half = ctx_size.saturating_div(2);
-    let min_floor = min_tokens.saturating_mul(4).max(1);
-    if half < min_floor {
+/// (e.g. `n_ctx = 131072`), which comfortably clears this floor.
+///
+/// Picking `min_tokens` as the floor would be tempting but does not
+/// match the actual wedge: callers can configure `min_tokens` as low
+/// as 64 while still using a small `n_ctx`, and the cap would still
+/// be smaller than typical prompts. A hard cell-count floor is easier
+/// to reason about and matches the real-world contexts the cap is
+/// designed for (long-context unified-KV serving).
+const MIN_CTX_FOR_CELL_CAP: u64 = 8192;
+
+fn derive_max_resident_tokens(ctx_size: u64) -> u64 {
+    if ctx_size < MIN_CTX_FOR_CELL_CAP {
         return 0;
     }
-    half
+    ctx_size.saturating_div(2)
 }
 
 #[cfg(test)]
@@ -71,31 +75,28 @@ mod resident_cache_config_tests {
     use super::*;
 
     #[test]
-    fn cap_disabled_when_ctx_smaller_than_four_min_entries() {
-        // Smoke-test / SmolLM2 scenario: ctx_size=768, min_tokens=256.
-        // half=384, floor=1024 -> cap disabled (0).
-        assert_eq!(derive_max_resident_tokens(768, 256), 0);
+    fn cap_disabled_for_smoke_test_ctx_size() {
+        // Smoke-test / SmolLM2 scenario: ctx_size=768. Half=384 would
+        // be smaller than a typical 533-token smoke prompt; cap stays
+        // disabled.
+        assert_eq!(derive_max_resident_tokens(768), 0);
     }
 
     #[test]
-    fn cap_enabled_when_ctx_has_room_for_four_min_entries() {
-        // Production scenario: large unified-KV pool.
-        assert_eq!(derive_max_resident_tokens(131072, 256), 65536);
-        // Right at the boundary.
-        assert_eq!(derive_max_resident_tokens(2048, 256), 1024);
+    fn cap_enabled_for_production_ctx_size() {
+        // Production failure mode the cap is designed for.
+        assert_eq!(derive_max_resident_tokens(131072), 65536);
+        // Exactly at the floor.
+        assert_eq!(derive_max_resident_tokens(8192), 4096);
+        // Just above the floor.
+        assert_eq!(derive_max_resident_tokens(16384), 8192);
     }
 
     #[test]
     fn cap_disabled_just_below_floor() {
-        // half=1023, floor=1024 -> disabled.
-        assert_eq!(derive_max_resident_tokens(2046, 256), 0);
-    }
-
-    #[test]
-    fn zero_min_tokens_treats_floor_as_one() {
-        // Defensive: min_tokens=0 should not divide by zero or disable
-        // the cap on real-sized contexts.
-        assert_eq!(derive_max_resident_tokens(8192, 0), 4096);
+        // Below the hard floor.
+        assert_eq!(derive_max_resident_tokens(8191), 0);
+        assert_eq!(derive_max_resident_tokens(4096), 0);
     }
 }
 
