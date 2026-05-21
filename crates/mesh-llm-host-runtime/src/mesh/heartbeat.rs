@@ -539,6 +539,7 @@ impl Node {
                 for (peer_id, conn) in peers_and_conns {
                     let hb_start = std::time::Instant::now();
                     let alive = if let Some(conn) = conn {
+                        let protocol = connection_protocol(&conn);
                         // Gossip as heartbeat — syncs state but won't re-discover dead peers
                         let result = tokio::time::timeout(
                             std::time::Duration::from_secs(10),
@@ -553,6 +554,15 @@ impl Node {
                             if result { "ok" } else { "fail" },
                             hb_start.elapsed().as_millis()
                         );
+                        if result {
+                            node.capture_direct_proof_of_life(
+                                peer_id,
+                                protocol,
+                                0,
+                                false,
+                                "heartbeat",
+                            );
+                        }
                         result
                     } else {
                         // No connection — try to reconnect using stored address
@@ -572,6 +582,22 @@ impl Node {
                                         "💚 Heartbeat: reconnected to {}",
                                         peer_id.fmt_short()
                                     ));
+                                    node.capture_selected_connection_path(
+                                        peer_id,
+                                        &new_conn,
+                                        "heartbeat_reconnect_path",
+                                    );
+                                    node.capture_connection_event(ConnectionCaptureEvent {
+                                        event: "peer_connection_opened",
+                                        remote: peer_id,
+                                        direction: "outbound",
+                                        phase: "heartbeat_reconnect",
+                                        protocol: Some(connection_protocol(&new_conn)),
+                                        path_type: None,
+                                        rtt_ms: None,
+                                        admitted_peer: Some(true),
+                                        reason: None,
+                                    });
                                     node.state
                                         .lock()
                                         .await
@@ -584,15 +610,51 @@ impl Node {
                                         n2.dispatch_streams(nc, peer_id).await;
                                     });
                                     // Try gossip on the new connection
-                                    tokio::time::timeout(
+                                    let protocol = connection_protocol(&new_conn);
+                                    let gossip_ok = tokio::time::timeout(
                                         std::time::Duration::from_secs(10),
                                         node.initiate_gossip_inner(new_conn, peer_id, false),
                                     )
                                     .await
                                     .map(|r| r.is_ok())
-                                    .unwrap_or(false)
+                                    .unwrap_or(false);
+                                    if gossip_ok {
+                                        node.capture_direct_proof_of_life(
+                                            peer_id,
+                                            protocol,
+                                            0,
+                                            false,
+                                            "heartbeat_reconnect",
+                                        );
+                                    } else {
+                                        node.capture_connection_event(ConnectionCaptureEvent {
+                                            event: "peer_connection_failed",
+                                            remote: peer_id,
+                                            direction: "outbound",
+                                            phase: "heartbeat_reconnect_gossip",
+                                            protocol: Some(protocol),
+                                            path_type: None,
+                                            rtt_ms: None,
+                                            admitted_peer: Some(true),
+                                            reason: Some("gossip_timeout_or_error"),
+                                        });
+                                    }
+                                    gossip_ok
                                 }
-                                _ => false,
+                                _ => {
+                                    node.capture_connection_event(ConnectionCaptureEvent {
+                                        event: "peer_connection_failed",
+                                        remote: peer_id,
+                                        direction: "outbound",
+                                        phase: "heartbeat_reconnect",
+                                        protocol: None,
+                                        path_type: None,
+                                        rtt_ms: None,
+                                        admitted_peer: Some(true),
+                                        reason: Some("connect_timeout_or_error"),
+                                    });
+                                    false
+                                }
                             }
                         } else {
                             false
@@ -674,6 +736,13 @@ impl Node {
                                     count,
                                     if *count == 1 { "" } else { "s" }
                                 ));
+                                node.capture_peer_lifecycle_snapshot(
+                                    "peer_down_confirmed",
+                                    peer_id,
+                                    "heartbeat_unreachable",
+                                    None,
+                                )
+                                .await;
                                 fail_counts.remove(&peer_id);
                                 node.handle_peer_death(peer_id).await;
                             } else {
@@ -711,6 +780,13 @@ impl Node {
                         stale_id.fmt_short(),
                         PEER_STALE_SECS * 2
                     ));
+                    node.capture_peer_lifecycle_snapshot(
+                        "peer_pruned",
+                        stale_id,
+                        "stale_direct_and_transitive",
+                        None,
+                    )
+                    .await;
                     node.remove_peer(stale_id).await;
                     // Also close any lingering connection
                     node.state.lock().await.connections.remove(&stale_id);
@@ -720,12 +796,30 @@ impl Node {
                 // re-learned transitively through gossip.
                 {
                     let mut state = node.state.lock().await;
+                    let expired_dead_peers: Vec<EndpointId> = state
+                        .dead_peers
+                        .iter()
+                        .filter_map(|(id, ts)| (ts.elapsed() >= DEAD_PEER_TTL).then_some(*id))
+                        .collect();
                     state
                         .dead_peers
                         .retain(|_, ts| ts.elapsed() < DEAD_PEER_TTL);
                     state
                         .peer_down_rejections
                         .retain(|_, ts| ts.elapsed().as_secs() < PEER_DOWN_REPORTER_COOLDOWN_SECS);
+                    drop(state);
+                    for expired_id in expired_dead_peers {
+                        node.capture_peer_lifecycle_event(PeerLifecycleCaptureEvent {
+                            event: "peer_dead_ttl_expired",
+                            peer: expired_id,
+                            reason: "dead_peer_ttl_expired",
+                            reporter: None,
+                            last_seen_age_ms: None,
+                            last_mentioned_age_ms: None,
+                            had_connection: None,
+                            bridge_id: None,
+                        });
+                    }
                 }
 
                 // GC expired demand entries to prevent unbounded map growth
@@ -748,6 +842,13 @@ impl Node {
             // Don't remove: state.connections.remove(&dead_id);
             state.dead_peers.insert(dead_id, std::time::Instant::now());
         }
+        self.capture_peer_lifecycle_snapshot(
+            "peer_dead_marked",
+            dead_id,
+            "handle_peer_death",
+            None,
+        )
+        .await;
         self.remove_peer(dead_id).await;
         self.broadcast_peer_down(dead_id).await;
     }

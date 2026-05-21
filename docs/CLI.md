@@ -77,6 +77,9 @@ Runtime switches:
   multi-interface hosts where Docker/CNI bridge addresses overlap across nodes.
 - `--bind-port <PORT>`: bind mesh QUIC to a fixed UDP port, usually paired
   with `--bind-ip` for firewall or NAT rules.
+- `--swarm-capture <DIR>`: write passive local mesh membership and connection
+  diagnostics as JSONL. See [SWARM_CAPTURE.md](SWARM_CAPTURE.md) for the full
+  debug-capture workflow.
 - `--publish`: publish your mesh for discovery.
 - `--mesh-name <MESH_NAME>`: friendly mesh name in discovery.
 - `--region <REGION>`: region hint for discovery.

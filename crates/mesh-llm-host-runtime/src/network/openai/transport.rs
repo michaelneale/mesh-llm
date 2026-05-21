@@ -65,6 +65,7 @@ pub struct BufferedHttpRequest {
     body_bytes: Option<Vec<u8>>,
     pub body_len_bytes: usize,
     pub completion_tokens: Option<u32>,
+    pub stream: Option<bool>,
     pub model_name: Option<String>,
     pub request_object_request_ids: Vec<String>,
     pub response_adapter: ResponseAdapter,
@@ -334,6 +335,7 @@ async fn read_http_request_with_limits(
         body_bytes,
         body_len_bytes,
         completion_tokens,
+        stream: metadata.as_ref().and_then(|value| value.stream),
         model_name,
         request_object_request_ids: rewrite.request_object_request_ids,
         response_adapter,
@@ -2638,6 +2640,7 @@ pub async fn handle_mesh_request(
     affinity: AffinityRouter,
 ) {
     let mut tcp_stream = tcp_stream;
+    let source_addr = tcp_stream.peer_addr().ok();
     let plugin_manager = node.plugin_manager().await;
     let mut request =
         match read_http_request_with_plugin_manager(&mut tcp_stream, plugin_manager.as_ref()).await
@@ -2648,6 +2651,18 @@ pub async fn handle_mesh_request(
                 return;
             }
         };
+    if node.swarm_capture_enabled() {
+        node.capture_http_request(crate::mesh::HttpCaptureEvent {
+            event: "openai_ingress_http_request",
+            source_addr,
+            method: &request.method,
+            path: &request.path,
+            body_len_bytes: request.body_len_bytes,
+            model_name: request.model_name.as_deref(),
+            completion_tokens: request.completion_tokens,
+            stream: request.stream,
+        });
+    }
 
     // Handle /v1/models
     if is_models_list_request(&request.method, &request.path) {
@@ -4661,6 +4676,7 @@ mod tests {
             body_len_bytes: 0,
             completion_tokens: None,
             model_name: Some("tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M".to_string()),
+            stream: None,
             request_object_request_ids: Vec::new(),
             response_adapter: ResponseAdapter::None,
         };
@@ -5403,6 +5419,7 @@ mod tests {
             body_len_bytes: 45,
             completion_tokens: None,
             model_name: Some("auto".to_string()),
+            stream: None,
             request_object_request_ids: Vec::new(),
             response_adapter: ResponseAdapter::None,
         };

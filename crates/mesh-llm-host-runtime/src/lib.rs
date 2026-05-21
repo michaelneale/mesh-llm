@@ -1,6 +1,7 @@
 #![recursion_limit = "256"]
 
 mod api;
+mod capture;
 mod cli;
 pub mod crypto;
 mod inference;

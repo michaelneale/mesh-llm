@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useChat } from '@tanstack/ai-react'
 import type { UseChatReturn } from '@tanstack/ai-react'
 import type { ThreadMessage } from '@/features/app-tabs/types'
@@ -14,8 +14,8 @@ type UseMeshChatOptions = {
   onResponseMetadata?: (metadata: ChatResponseMetadata) => void
 }
 
-function createMutableStringSource() {
-  let current = ''
+function createMutableStringSource(initialValue: string) {
+  let current = initialValue
 
   return {
     get value() {
@@ -35,8 +35,8 @@ export function useMeshChat({
   onResponseMetadata
 }: UseMeshChatOptions): UseChatReturn {
   const previousConversationIdRef = useRef(conversationId)
-  const currentModel = useMemo(() => createMutableStringSource(), [])
-  const currentSystemPrompt = useMemo(() => createMutableStringSource(), [])
+  const [currentModel] = useState(() => createMutableStringSource(model))
+  const [currentSystemPrompt] = useState(() => createMutableStringSource(systemPrompt))
 
   useLayoutEffect(() => {
     currentModel.setValue(model)
