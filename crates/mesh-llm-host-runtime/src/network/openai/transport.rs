@@ -13,6 +13,7 @@ use crate::network::router;
 use crate::network::target_health::TargetHealthOutcome;
 use crate::plugin;
 use anyhow::{anyhow, bail, Context, Result};
+// moa imports relocated into moa_gateway.rs (sole user after merge)
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use std::collections::HashMap;
@@ -2656,6 +2657,34 @@ pub async fn handle_mesh_request(
         return;
     }
 
+    // MoA routing directive: `model: "mesh"` triggers mixture-of-agents
+    // fan-out. Orchestration happens here, regardless of whether this node
+    // is serving models locally — the worker pool is built from gossip.
+    // On a pure --client node every backend is remote (QUIC tunnels to
+    // peers serving each model); on a host node the locally-served model
+    // is wired directly to its skippy port via the targets table.
+    //
+    // try_handle_moa self-gates on the model name and returns the stream
+    // back unchanged if this isn't a MoA request, so we can call it
+    // unconditionally here.
+    let moa_model_name = request.model_name.clone();
+    let tcp_stream = match crate::network::openai::moa_gateway::try_handle_moa(
+        &node,
+        tcp_stream,
+        &mut request,
+        moa_model_name.as_deref(),
+        None, // passive path has no local targets table
+    )
+    .await
+    {
+        Some(stream) => stream,
+        None => {
+            // MoA handled the request and consumed the stream.
+            release_request_objects(&node, &request.request_object_request_ids).await;
+            return;
+        }
+    };
+
     let plan = match build_mesh_request_plan(&node, &mut request, track_demand, &affinity).await {
         Ok(plan) => plan,
         Err(failure) => {
@@ -3149,11 +3178,23 @@ async fn resolve_auto_model_request(
     }
 
     let cl = router::classify(body_json);
-    let with_caps: Vec<(&str, f64, crate::models::ModelCapabilities)> = served
+    // Build candidates with observed throughput so pick_model_classified
+    // can weight by locally-measured tok/s where samples exist.
+    let routing_metrics = node.routing_metrics();
+    let with_caps: Vec<router::RoutingCandidate<'_>> = served
         .iter()
         .map(|name| {
             let caps = capabilities_for_model(name, descriptors);
-            (name.as_str(), 0.0, caps)
+            let (tps_hint, throughput_samples) = routing_metrics
+                .tps_for_model(name)
+                .map(|(tps, samples)| (Some(tps), samples))
+                .unwrap_or((None, 0));
+            router::RoutingCandidate {
+                name: name.as_str(),
+                caps,
+                tps_hint,
+                throughput_samples,
+            }
         })
         .collect();
     let Some(available) = router::filter_media_compatible_candidates(&with_caps, &media) else {
@@ -3887,12 +3928,45 @@ fn descriptor_for_model<'a>(
 }
 
 fn public_model_id(model_name: &str, descriptor: Option<&mesh::ServedModelDescriptor>) -> String {
+    // A descriptor with an `artifact` field has enough information to
+    // produce a public ID that round-trips to the same model. Without
+    // it, the HuggingFace path collapses to just the repo name and
+    // silently drops the quant-tag suffix the resolver needs (PR #566
+    // review feedback — "some IDs in /v1/models dropped quant
+    // suffixes"). Only use the descriptor-derived id when it can be
+    // lossless; otherwise prefer the on-disk file (authoritative for
+    // local models), and finally the internal model_name (which
+    // always carries the quant suffix our resolver knows how to
+    // route).
     if let Some(descriptor) = descriptor {
-        return public_model_id_from_identity(&descriptor.identity)
-            .unwrap_or_else(|| model_name.to_string());
+        if descriptor_can_produce_lossless_id(&descriptor.identity) {
+            if let Some(id) = public_model_id_from_identity(&descriptor.identity) {
+                return id;
+            }
+        }
     }
 
-    public_model_id_from_local_path(model_name).unwrap_or_else(|| model_name.to_string())
+    if let Some(id) = public_model_id_from_local_path(model_name) {
+        return id;
+    }
+
+    model_name.to_string()
+}
+
+/// A descriptor identity carries enough information for
+/// `public_model_id_from_identity` to produce an ID that round-trips
+/// to the same model. For HuggingFace that means the `artifact` field
+/// (the GGUF file name) is present so the quant selector can be
+/// derived. Catalog identities always carry a `canonical_ref` with the
+/// selector baked in.
+fn descriptor_can_produce_lossless_id(identity: &mesh::ServedModelIdentity) -> bool {
+    match identity.source_kind {
+        mesh::ModelSourceKind::HuggingFace => identity.artifact.is_some(),
+        mesh::ModelSourceKind::Catalog => identity.canonical_ref.is_some(),
+        mesh::ModelSourceKind::LocalGguf
+        | mesh::ModelSourceKind::DirectUrl
+        | mesh::ModelSourceKind::Unknown => false,
+    }
 }
 
 fn public_model_id_from_identity(identity: &mesh::ServedModelIdentity) -> Option<String> {
@@ -3931,7 +4005,16 @@ fn public_model_id_from_local_path(model_name: &str) -> Option<String> {
 }
 
 fn public_huggingface_model_ref(repo: &str, artifact: Option<&str>) -> Option<String> {
-    let selector = artifact.and_then(model_ref::quant_selector_from_gguf_file);
+    // `artifact` can be either a GGUF filename (e.g. `Falcon-Q4_K_M.gguf`)
+    // or an already-extracted quant selector (e.g. `Q4_K_M` or
+    // `qwen2.5-3b-instruct-q4_k_m`, when the descriptor was built from
+    // a parsed `ModelRef::selector`). Handle both — if the artifact
+    // looks like a quant selector use it directly; otherwise try to
+    // pull a selector out of the filename.
+    let selector = artifact.and_then(|a| {
+        model_ref::quant_selector_from_gguf_file(a)
+            .or_else(|| (!a.is_empty() && !a.ends_with(".gguf")).then(|| a.to_string()))
+    });
     Some(model_ref::format_model_ref(repo, None, selector.as_deref()))
 }
 
@@ -3943,6 +4026,72 @@ pub async fn send_json_ok(mut stream: TcpStream, data: &serde_json::Value) -> st
         body
     );
     stream.write_all(resp.as_bytes()).await?;
+    stream.shutdown().await?;
+    Ok(())
+}
+
+/// Like `send_json_ok` but allows the caller to append arbitrary response
+/// headers (e.g. `x-moa-*` observability headers). Header names and values
+/// must be plain ASCII without CR/LF; values are not validated further.
+pub async fn send_json_ok_with_headers(
+    mut stream: TcpStream,
+    data: &serde_json::Value,
+    extra_headers: &[(&str, String)],
+) -> std::io::Result<()> {
+    let body = data.to_string();
+    let mut headers = String::from("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n");
+    for (name, value) in extra_headers {
+        // Strip CR/LF defensively against header-injection bugs creeping in later.
+        let safe_value: String = value.chars().filter(|c| *c != '\r' && *c != '\n').collect();
+        headers.push_str(name);
+        headers.push_str(": ");
+        headers.push_str(&safe_value);
+        headers.push_str("\r\n");
+    }
+    headers.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));
+    stream.write_all(headers.as_bytes()).await?;
+    stream.write_all(body.as_bytes()).await?;
+    stream.shutdown().await?;
+    Ok(())
+}
+
+/// Send a JSON body with a non-200 status and the given extra headers.
+///
+/// The body is sent verbatim — caller controls the shape. Use for cases
+/// where the in-band payload is already a structured error (e.g. MoA's
+/// `error_response`) and we still want to attach observability headers
+/// while signalling failure via the HTTP status line.
+pub async fn send_json_with_status_and_headers(
+    mut stream: TcpStream,
+    code: u16,
+    data: &serde_json::Value,
+    extra_headers: &[(&str, String)],
+) -> std::io::Result<()> {
+    let status = match code {
+        400 => "Bad Request",
+        404 => "Not Found",
+        409 => "Conflict",
+        422 => "Unprocessable Content",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        504 => "Gateway Timeout",
+        _ => "Error",
+    };
+    let body = data.to_string();
+    let mut headers = format!("HTTP/1.1 {code} {status}\r\nContent-Type: application/json\r\n");
+    for (name, value) in extra_headers {
+        // Strip CR/LF defensively against header-injection.
+        let safe_value: String = value.chars().filter(|c| *c != '\r' && *c != '\n').collect();
+        headers.push_str(name);
+        headers.push_str(": ");
+        headers.push_str(&safe_value);
+        headers.push_str("\r\n");
+    }
+    headers.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));
+    stream.write_all(headers.as_bytes()).await?;
+    stream.write_all(body.as_bytes()).await?;
     stream.shutdown().await?;
     Ok(())
 }
@@ -4276,6 +4425,62 @@ mod tests {
             "tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M"
         );
         assert_eq!(body["data"][0]["owned_by"], "mesh-llm");
+    }
+
+    #[test]
+    fn models_list_id_preserves_quant_suffix_when_descriptor_has_no_artifact() {
+        // Regression for PR #566 review feedback: the gateway's view of a
+        // model's public ID must include enough information to route a
+        // request back to that exact model. When a `ServedModelDescriptor`
+        // for a HuggingFace model has no `artifact` field (because the
+        // descriptor was built without inspecting the GGUF file on disk),
+        // `public_huggingface_model_ref` collapses the public ID to just
+        // the repo name — dropping the quant-tag suffix the internal
+        // `model_name` carries. The model is then advertised in `/v1/models`
+        // under a shorter ID than the resolver knows how to route.
+        //
+        // Symptom on a real 2-node mesh: the studio's Qwen3-0.6B-GGUF
+        // shows as `unsloth/Qwen3-0.6B-GGUF:BF16` (descriptor has
+        // artifact), but the gateway-local Qwen2.5-3B-Instruct-GGUF
+        // shows as `Qwen/Qwen2.5-3B-Instruct-GGUF` (descriptor has no
+        // artifact). A client doing the natural thing — read /v1/models,
+        // call /v1/chat/completions with the listed id — then 404s on
+        // remote models because the resolver doesn't know the short id.
+        //
+        // Acceptable behaviour: the public ID either round-trips to the
+        // same model, OR includes the quant suffix the internal name
+        // carries.
+        let models = vec!["Qwen/Qwen2.5-3B-Instruct-GGUF:qwen2.5-3b-instruct-q4_k_m".to_string()];
+        let descriptor = mesh::ServedModelDescriptor {
+            identity: mesh::ServedModelIdentity {
+                model_name: models[0].clone(),
+                source_kind: mesh::ModelSourceKind::HuggingFace,
+                repository: Some("Qwen/Qwen2.5-3B-Instruct-GGUF".to_string()),
+                // No artifact — this is the field whose absence loses the
+                // quant suffix.
+                artifact: None,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let descriptors = vec![descriptor];
+
+        let body = models_list_json(&models, &descriptors);
+        let public_id = body["data"][0]["id"].as_str().unwrap_or_default();
+
+        // The public ID must NOT silently drop the quant suffix that the
+        // internal model_name carries. Acceptable IDs:
+        //   * the full internal name, OR
+        //   * the repo with a quant tag we can route back to.
+        assert!(
+            public_id == models[0]
+                || public_id
+                    .strip_prefix("Qwen/Qwen2.5-3B-Instruct-GGUF:")
+                    .is_some_and(|tag| !tag.is_empty()),
+            "public id must keep enough information to route back; got {public_id:?}, \
+             internal model_name was {:?}",
+            models[0]
+        );
     }
 
     #[test]

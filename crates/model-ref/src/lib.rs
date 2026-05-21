@@ -113,10 +113,19 @@ pub fn quant_selector_from_gguf_file(file: &str) -> Option<String> {
         stem = prefix;
     }
 
+    // Markers are matched case-insensitively. Real-world GGUF filenames
+    // are inconsistent: `Qwen3-32B-Q4_K_M.gguf` (uppercase markers) is
+    // common, but so is `qwen2.5-3b-instruct-q4_k_m.gguf` (all
+    // lowercase). The matcher in `gguf_matches_quant_selector` already
+    // lowercases both sides, so emitting a lowercase selector here is
+    // safe and keeps the public ID round-trippable.
+    let stem_lower = stem.to_ascii_lowercase();
     for marker in [
-        "-UD-", ".UD-", "-IQ", ".IQ", "-Q", ".Q", "-BF16", ".BF16", "-F16", ".F16", "-F32", ".F32",
+        "-ud-", ".ud-", "-iq", ".iq", "-q", ".q", "-bf16", ".bf16", "-f16", ".f16", "-f32", ".f32",
     ] {
-        if let Some(pos) = stem.rfind(marker) {
+        if let Some(pos) = stem_lower.rfind(marker) {
+            // Use the original casing for the returned slice so callers
+            // that build a public ID keep the model's preferred display.
             return Some(stem[pos + 1..].to_string());
         }
     }

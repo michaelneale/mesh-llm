@@ -18,6 +18,7 @@ workspace = true
 
 [dependencies]
 ansi-to-tui = "8"
+mesh-mixture-of-agents = { path = "../mesh-mixture-of-agents" }
 mesh-llm-plugin = { path = "../mesh-llm-plugin" }
 mesh-llm-identity = { path = "../mesh-llm-identity" }
 mesh-llm-protocol = { path = "../mesh-llm-protocol" }

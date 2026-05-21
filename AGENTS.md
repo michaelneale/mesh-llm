@@ -435,6 +435,19 @@ If an instance is wedged badly enough that the scoped stop path cannot reach it,
 pkill -f mesh-llm
 ```
 
+## Running mesh-llm in the Background (for Testing)
+
+When running `mesh-llm serve` from an agent for testing, the process is non-interactive — it just runs. There is no interactive prompt or TUI to worry about. Use standard backgrounding:
+
+```bash
+bash -c './target/debug/mesh-llm serve --model "..." --auto > /tmp/mesh.log 2>&1 & disown; echo "PID=$!"'
+```
+
+- **Do not use `--headless`** — it disables the web UI but does not change process behavior. The name is misleading and does not help with backgrounding.
+- The mesh process writes TUI-formatted output to stderr which looks like errors but is normal.
+- Wait for models to appear via polling `curl -s http://localhost:9337/v1/models` before sending requests.
+- Kill with `pkill -f "target/debug/mesh-llm"` or `pkill -f mesh-llm`.
+
 ## Deploy Checklist — MANDATORY
 
 **Every deploy to test machines MUST follow this checklist.**

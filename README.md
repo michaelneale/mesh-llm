@@ -59,6 +59,7 @@ mesh-llm serve --auto --headless
 | Run an API-only client | `mesh-llm client --auto` | [docs/MESHES.md](docs/MESHES.md) |
 | Run a big model with splits | `mesh-llm serve --model hf://meshllm/<repo>@<rev> --split` | [docs/SKIPPY_SPLITS.md](docs/SKIPPY_SPLITS.md) |
 | Attach a Flash-MoE SSD backend | `mesh-llm serve` with `[[plugin]] name = "flash-moe"` | [docs/plugins/flash-moe.md](docs/plugins/flash-moe.md) |
+| Fan out one prompt to every model in the mesh | `curl ... -d '{"model":"mesh", ...}'` | [docs/design/MOA_GATEWAY.md](docs/design/MOA_GATEWAY.md) |
 | Use Goose, OpenCode, Claude Code, or Pi | `mesh-llm goose`, `mesh-llm opencode`, `mesh-llm claude`, `mesh-llm pi` | [docs/AGENTS.md](docs/AGENTS.md) |
 | Build or contribute | `just build` | [CONTRIBUTING.md](CONTRIBUTING.md) |
 
@@ -82,6 +83,26 @@ mesh-llm serve --auto --headless
 
 For a deeper operator guide, see [docs/USAGE.md](docs/USAGE.md). For every CLI
 command and switch, see [docs/CLI.md](docs/CLI.md).
+
+## Mixture-of-Agents (`model: "mesh"`)
+
+Send a request with `"model": "mesh"` and the proxy fans it out to every
+model available in the mesh in parallel, arbitrates their responses with
+deterministic logic, and returns one OpenAI-compatible reply. The arbiter
+runs in code (not as another model call) and only escalates to a reducer
+LLM on genuine conflict. Tool calls flow through the full pipeline.
+
+```bash
+curl http://localhost:9337/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"mesh","messages":[{"role":"user","content":"What is the capital of Japan?"}]}'
+```
+
+Requires at least two distinct models in the mesh. See
+[docs/design/MOA_GATEWAY.md](docs/design/MOA_GATEWAY.md) for the
+architecture, arbitration rules, and tuning knobs.
+
+
 
 ## Supported model families
 

@@ -3729,6 +3729,7 @@ dependencies = [
  "mesh-llm-system",
  "mesh-llm-types",
  "mesh-llm-ui",
+ "mesh-mixture-of-agents",
  "model-artifact",
  "model-package",
  "model-ref",
@@ -3866,6 +3867,18 @@ name = "mesh-llm-ui"
 version = "0.66.0"
 dependencies = [
  "include_dir",
+]
+
+[[package]]
+name = "mesh-mixture-of-agents"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

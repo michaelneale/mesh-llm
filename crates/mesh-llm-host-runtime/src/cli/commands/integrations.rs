@@ -255,11 +255,13 @@ async fn fetch_mesh_models(
         }
         model.clone()
     } else {
-        let available: Vec<(&str, f64, crate::models::ModelCapabilities)> = models
+        // Pre-startup path: no live routing metrics yet, so candidates
+        // are scored as cold (uniform weight).
+        let available: Vec<crate::network::router::RoutingCandidate<'_>> = models
             .iter()
             .map(|name| {
                 let caps = crate::models::installed_model_capabilities(name);
-                (name.as_str(), 0.0, caps)
+                crate::network::router::RoutingCandidate::unscored(name.as_str(), caps)
             })
             .collect();
         let agentic = crate::network::router::Classification {

@@ -35,6 +35,7 @@ members = [
     "crates/llama-spec-bench",
     "crates/skippy-bench",
     "crates/skippy-prompt",
+    "crates/mesh-mixture-of-agents",
     "tools/xtask",
 ]
 default-members = [
