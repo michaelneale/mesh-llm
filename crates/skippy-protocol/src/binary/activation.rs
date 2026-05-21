@@ -1,6 +1,8 @@
 use std::io;
 
-use super::{invalid_data, state_flags, WireActivationDType};
+use super::{
+    invalid_data, state_flags, types::MAX_STAGE_DECODED_ACTIVATION_BYTES, WireActivationDType,
+};
 
 pub fn activation_wire_bytes(
     dtype: WireActivationDType,
@@ -42,6 +44,19 @@ pub fn activation_wire_bytes_with_state_flags(
     }
 }
 
+pub(crate) fn activation_decoded_f32_bytes_with_state_flags(
+    token_count: i32,
+    n_embd: i32,
+    state_flag_bits: i32,
+) -> io::Result<usize> {
+    activation_wire_bytes_with_state_flags(
+        WireActivationDType::F32,
+        token_count,
+        n_embd,
+        state_flag_bits,
+    )
+}
+
 pub fn encode_f32_activation_payload(
     dtype: WireActivationDType,
     token_count: i32,
@@ -64,6 +79,11 @@ pub fn encode_f32_activation_payload_with_state_flags(
         n_embd,
         state_flag_bits,
     )?;
+    if expected_f32_bytes > MAX_STAGE_DECODED_ACTIVATION_BYTES {
+        return Err(invalid_data(
+            "decoded activation payload byte count exceeds maximum",
+        ));
+    }
     if f32_payload.len() != expected_f32_bytes {
         return Err(invalid_data("F32 activation payload size mismatch"));
     }
@@ -90,10 +110,19 @@ pub fn activation_payload_multiplier_from_state_flags(state_flag_bits: i32) -> u
 }
 
 pub(crate) fn decode_f16_to_f32_bytes(input: &[u8]) -> io::Result<Vec<u8>> {
-    if !input.len().is_multiple_of(2) {
+    if input.len() & 1 != 0 {
         return Err(invalid_data("F16 activation payload has odd byte length"));
     }
-    let mut out = Vec::with_capacity((input.len() / 2) * 4);
+    let decoded_bytes = input
+        .len()
+        .checked_mul(2)
+        .ok_or_else(|| invalid_data("decoded activation byte count overflow"))?;
+    if decoded_bytes > MAX_STAGE_DECODED_ACTIVATION_BYTES {
+        return Err(invalid_data(
+            "decoded activation payload byte count exceeds maximum",
+        ));
+    }
+    let mut out = Vec::with_capacity(decoded_bytes);
     for chunk in input.chunks_exact(2) {
         let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
         out.extend_from_slice(&f16_bits_to_f32(bits).to_le_bytes());
@@ -102,7 +131,7 @@ pub(crate) fn decode_f16_to_f32_bytes(input: &[u8]) -> io::Result<Vec<u8>> {
 }
 
 fn encode_f32_to_f16_bytes(input: &[u8]) -> io::Result<Vec<u8>> {
-    if !input.len().is_multiple_of(4) {
+    if input.len() & 3 != 0 {
         return Err(invalid_data("F32 activation payload size is not aligned"));
     }
     let mut out = Vec::with_capacity(input.len() / 2);
@@ -134,10 +163,21 @@ pub(crate) fn decode_q8_to_f32_bytes_with_state_flags(
     let value_bytes = token_count
         .checked_mul(n_embd)
         .ok_or_else(|| invalid_data("Q8 value byte count overflow"))?;
-    if input.len() != scale_bytes + value_bytes {
+    let expected_bytes = scale_bytes
+        .checked_add(value_bytes)
+        .ok_or_else(|| invalid_data("Q8 activation payload byte count overflow"))?;
+    if input.len() != expected_bytes {
         return Err(invalid_data("Q8 activation payload size mismatch"));
     }
-    let mut out = Vec::with_capacity(value_bytes * 4);
+    let decoded_bytes = value_bytes
+        .checked_mul(4)
+        .ok_or_else(|| invalid_data("decoded activation byte count overflow"))?;
+    if decoded_bytes > MAX_STAGE_DECODED_ACTIVATION_BYTES {
+        return Err(invalid_data(
+            "decoded activation payload byte count exceeds maximum",
+        ));
+    }
+    let mut out = Vec::with_capacity(decoded_bytes);
     for token_index in 0..token_count {
         let scale_offset = token_index * 4;
         let scale = f32::from_le_bytes([

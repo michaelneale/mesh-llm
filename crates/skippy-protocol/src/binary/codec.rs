@@ -1,10 +1,14 @@
 use std::io::{self, Read, Write};
 
 use super::{
-    activation::activation_wire_bytes_with_state_flags, invalid_data, invalid_input,
-    StageLogitBias, StageReply, StageReplyStats, StageSamplingConfig, StageStateHeader,
-    StageWireMessage, WireActivationDType, WireMessageKind, WireReplyKind, MAX_STAGE_LOGIT_BIAS,
-    READY_MAGIC, STAGE_STATE_VERSION,
+    activation::{
+        activation_decoded_f32_bytes_with_state_flags, activation_wire_bytes_with_state_flags,
+    },
+    invalid_data, invalid_input, StageLogitBias, StageReply, StageReplyStats, StageSamplingConfig,
+    StageStateHeader, StageWireMessage, WireActivationDType, WireMessageKind, WireReplyKind,
+    MAX_STAGE_ACTIVATION_BYTES, MAX_STAGE_CHAT_SAMPLING_METADATA_BYTES,
+    MAX_STAGE_DECODED_ACTIVATION_BYTES, MAX_STAGE_LOGIT_BIAS, MAX_STAGE_PREDICTED_TOKENS,
+    MAX_STAGE_SIDEBAND_VALUES, MAX_STAGE_STATE_IMPORT_BYTES, READY_MAGIC, STAGE_STATE_VERSION,
 };
 
 pub fn send_ready(mut writer: impl Write) -> io::Result<()> {
@@ -51,6 +55,9 @@ pub fn send_reply_predicted_tokens_with_stats(
     predicted_tokens: &[i32],
     stats: StageReplyStats,
 ) -> io::Result<()> {
+    if predicted_tokens.len() > MAX_STAGE_PREDICTED_TOKENS {
+        return Err(invalid_input("too many predicted tokens"));
+    }
     let predicted = predicted_tokens.first().copied().unwrap_or(0);
     write_i32(&mut writer, WireReplyKind::PredictedTokens as i32)?;
     write_i32(&mut writer, predicted)?;
@@ -68,11 +75,13 @@ pub fn send_reply_predicted_tokens_with_stats(
 pub fn recv_reply(mut reader: impl Read) -> io::Result<StageReply> {
     let kind = WireReplyKind::try_from(read_i32(&mut reader)?)?;
     let predicted = read_i32(&mut reader)?;
-    let predicted_count = read_i32(&mut reader)?;
-    if predicted_count < 0 {
-        return Err(invalid_data("negative predicted token count"));
-    }
-    let mut predicted_tokens = Vec::with_capacity(predicted_count as usize);
+    let predicted_count = checked_i32_len(
+        read_i32(&mut reader)?,
+        MAX_STAGE_PREDICTED_TOKENS,
+        "negative predicted token count",
+        "predicted token count exceeds maximum",
+    )?;
+    let mut predicted_tokens = Vec::with_capacity(predicted_count);
     for _ in 0..predicted_count {
         predicted_tokens.push(read_i32(&mut reader)?);
     }
@@ -99,10 +108,16 @@ pub fn write_stage_message(
     write_i32(&mut writer, message.kind as i32)?;
     write_i32(&mut writer, message.pos_start)?;
     write_i32(&mut writer, message.token_count)?;
+    if message.tokens.len() > MAX_STAGE_SIDEBAND_VALUES {
+        return Err(invalid_input("too many tokens"));
+    }
     write_i32(
         &mut writer,
         i32::try_from(message.tokens.len()).map_err(|_| invalid_input("too many tokens"))?,
     )?;
+    if message.positions.len() > MAX_STAGE_SIDEBAND_VALUES {
+        return Err(invalid_input("too many position sideband values"));
+    }
     write_i32(
         &mut writer,
         i32::try_from(message.positions.len())
@@ -129,6 +144,9 @@ pub fn write_stage_message(
     }
     if let Some(metadata) = message.chat_sampling_metadata.as_ref() {
         let bytes = metadata.as_bytes();
+        if bytes.len() > MAX_STAGE_CHAT_SAMPLING_METADATA_BYTES {
+            return Err(invalid_input("chat sampling metadata is too large"));
+        }
         write_u32(
             &mut writer,
             u32::try_from(bytes.len())
@@ -138,6 +156,14 @@ pub fn write_stage_message(
     }
 
     if message.kind == WireMessageKind::StateImport {
+        let raw_byte_count = usize::try_from(message.token_count)
+            .map_err(|_| invalid_input("state import raw byte count mismatch"))?;
+        if raw_byte_count != message.raw_bytes.len() {
+            return Err(invalid_input("state import raw byte count mismatch"));
+        }
+        if raw_byte_count > MAX_STAGE_STATE_IMPORT_BYTES {
+            return Err(invalid_input("state import raw byte count exceeds maximum"));
+        }
         writer.write_all(&message.raw_bytes)?;
         return Ok(());
     }
@@ -170,8 +196,11 @@ pub fn read_stage_message(mut reader: impl Read, n_embd: i32) -> io::Result<Stag
     };
     let chat_sampling_metadata = if (state.flags & super::state_flags::CHAT_SAMPLING_METADATA) != 0
     {
-        let len = usize::try_from(read_u32(&mut reader)?)
-            .map_err(|_| invalid_data("chat sampling metadata length overflows usize"))?;
+        let len = checked_u32_len(
+            read_u32(&mut reader)?,
+            MAX_STAGE_CHAT_SAMPLING_METADATA_BYTES,
+            "chat sampling metadata length exceeds maximum",
+        )?;
         let mut bytes = vec![0_u8; len];
         reader.read_exact(&mut bytes)?;
         Some(
@@ -201,8 +230,26 @@ pub fn read_stage_message(mut reader: impl Read, n_embd: i32) -> io::Result<Stag
     if token_count < 0 || token_sideband_count < 0 || position_sideband_count < 0 {
         return Err(invalid_data("negative wire count"));
     }
+    let token_sideband_count = checked_i32_len(
+        token_sideband_count,
+        MAX_STAGE_SIDEBAND_VALUES,
+        "negative wire count",
+        "token sideband count exceeds maximum",
+    )?;
+    let position_sideband_count = checked_i32_len(
+        position_sideband_count,
+        MAX_STAGE_SIDEBAND_VALUES,
+        "negative wire count",
+        "position sideband count exceeds maximum",
+    )?;
     if kind == WireMessageKind::StateImport {
-        let mut raw_bytes = vec![0; token_count as usize];
+        let raw_byte_count = checked_i32_len(
+            token_count,
+            MAX_STAGE_STATE_IMPORT_BYTES,
+            "negative wire count",
+            "state import byte count exceeds maximum",
+        )?;
+        let mut raw_bytes = vec![0; raw_byte_count];
         reader.read_exact(&mut raw_bytes)?;
         return Ok(StageWireMessage {
             kind,
@@ -220,11 +267,11 @@ pub fn read_stage_message(mut reader: impl Read, n_embd: i32) -> io::Result<Stag
         });
     }
 
-    let mut tokens = Vec::with_capacity(token_sideband_count as usize);
+    let mut tokens = Vec::with_capacity(token_sideband_count);
     for _ in 0..token_sideband_count {
         tokens.push(read_i32(&mut reader)?);
     }
-    let mut positions = Vec::with_capacity(position_sideband_count as usize);
+    let mut positions = Vec::with_capacity(position_sideband_count);
     for _ in 0..position_sideband_count {
         positions.push(read_i32(&mut reader)?);
     }
@@ -234,6 +281,20 @@ pub fn read_stage_message(mut reader: impl Read, n_embd: i32) -> io::Result<Stag
         } else {
             activation_wire_bytes_with_state_flags(dtype, token_count, n_embd, state.flags)?
         };
+    if activation_bytes > MAX_STAGE_ACTIVATION_BYTES {
+        return Err(invalid_data(
+            "activation payload byte count exceeds maximum",
+        ));
+    }
+    if activation_bytes > 0 {
+        let decoded_activation_bytes =
+            activation_decoded_f32_bytes_with_state_flags(token_count, n_embd, state.flags)?;
+        if decoded_activation_bytes > MAX_STAGE_DECODED_ACTIVATION_BYTES {
+            return Err(invalid_data(
+                "decoded activation payload byte count exceeds maximum",
+            ));
+        }
+    }
     let mut activation = vec![0; activation_bytes];
     if activation_bytes > 0 {
         reader.read_exact(&mut activation)?;
@@ -252,6 +313,30 @@ pub fn read_stage_message(mut reader: impl Read, n_embd: i32) -> io::Result<Stag
         activation,
         raw_bytes: Vec::new(),
     })
+}
+
+fn checked_i32_len(
+    value: i32,
+    max: usize,
+    negative_message: &'static str,
+    too_large_message: &'static str,
+) -> io::Result<usize> {
+    if value < 0 {
+        return Err(invalid_data(negative_message));
+    }
+    let value = usize::try_from(value).map_err(|_| invalid_data(too_large_message))?;
+    if value > max {
+        return Err(invalid_data(too_large_message));
+    }
+    Ok(value)
+}
+
+fn checked_u32_len(value: u32, max: usize, too_large_message: &'static str) -> io::Result<usize> {
+    let value = usize::try_from(value).map_err(|_| invalid_data(too_large_message))?;
+    if value > max {
+        return Err(invalid_data(too_large_message));
+    }
+    Ok(value)
 }
 
 fn write_state_header(mut writer: impl Write, state: StageStateHeader) -> io::Result<()> {
