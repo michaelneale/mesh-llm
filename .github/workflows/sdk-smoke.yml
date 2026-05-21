@@ -73,7 +73,17 @@ jobs:
 
       - name: Install macOS SDK dependencies
         if: ${{ runner.os == 'macOS' }}
-        run: brew install jq
+        # `lld` is required because the Swift smoke job's transitive
+        # cargo build (via `sdk/swift/scripts/generate-swift-bindings.sh`
+        # in a temp dir) ends up invoking `cc` with
+        # `-fuse-ld=/opt/homebrew/bin/ld64.lld`. Apple clang accepts
+        # that flag only when the binary actually exists on disk;
+        # without `lld` installed the link step fails with
+        # `clang: error: invalid linker name in argument`. The
+        # `macos_targets` job already does `brew install ... lld` for
+        # the same reason — install it here too so the swift smoke
+        # lane matches.
+        run: brew install jq lld
 
       - name: Configure Linux Rust linker
         if: ${{ runner.os == 'Linux' }}
